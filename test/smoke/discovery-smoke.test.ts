@@ -9,7 +9,7 @@
  * the containers, network, image and files it created.
  */
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,8 +118,10 @@ const appEnv = (port: number) => [
   names.network,
   "--add-host",
   "host.docker.internal:host-gateway",
+  // Mount only the public certificate, world-readable, so the image's
+  // unprivileged user can read it on any host UID; the key stays on the host.
   "-v",
-  `${dir}:/certs:ro`,
+  `${join(dir, "cert.pem")}:/certs/cert.pem:ro`,
   "-e",
   "NODE_EXTRA_CA_CERTS=/certs/cert.pem",
   "-e",
@@ -189,6 +191,7 @@ describe.skipIf(!enabled)("container discovery smoke test", () => {
       "-out",
       join(dir, "cert.pem"),
     ]);
+    await chmod(join(dir, "cert.pem"), 0o644);
     fixture = createServer({
       key: await readFile(join(dir, "key.pem")),
       cert: await readFile(join(dir, "cert.pem")),
