@@ -30,18 +30,19 @@ export class DiscoveryFetchError extends Error {
   }
 }
 
-const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+/** Delay that rejects on abort and always detaches its abort listener. */
+export const abortableSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 
 /** Parse a configured URL, throwing a sanitised error that never contains the value. */
@@ -144,7 +145,7 @@ export async function boundedFetchText(
   options: BoundedFetchOptions,
   signal?: AbortSignal,
 ): Promise<string> {
-  const sleep = options.sleep ?? defaultSleep;
+  const sleep = options.sleep ?? abortableSleep;
   const attempts = Math.max(1, options.maxAttempts);
   for (let attempt = 1; ; attempt++) {
     try {
