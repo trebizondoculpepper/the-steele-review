@@ -41,3 +41,15 @@ Prohibited material includes credentials, tokens, private keys, actual hostnames
 Public application architecture may describe generic dependencies, interfaces, configuration variable names, and deployment requirements using placeholders. It must not document the actual home lab topology or connection details. Supply private runtime configuration from outside this repository.
 
 If private information is discovered in this project, stop propagating it, report the issue without repeating the sensitive values, and remove it from the working files. If it has entered Git history or a public service, report that separately so remediation can be coordinated.
+
+<!-- pdb:coordination:start -->
+## Coordination with Presidential Daily Briefing (pdb)
+
+This project (trebizondoculpepper/the-steele-review) uses pdb for status, priorities, claims and handoffs.
+
+- At the start of every session, read the current rules: `pdb rules`.
+- First use: `pdb --repo trebizondoculpepper/the-steele-review --role implementer|designer`. PDB reuses or safely creates your identity, saves it and continues. If selection is ambiguous, select your logical entry with --entry KEY. A verified binding retains it; unsupported sessions must keep passing --entry KEY on every invocation. Never reuse another agent's name.
+- See what to do next: `pdb --repo trebizondoculpepper/the-steele-review`. Help: `pdb --help`; onboarding: `pdb onboard --repo trebizondoculpepper/the-steele-review`.
+- MCP clients: `pdb-mcp --repo trebizondoculpepper/the-steele-review`.
+- Prefer pdb over raw gh for status and priorities; use gh only for operations pdb does not support.
+<!-- pdb:coordination:end -->
