@@ -45,24 +45,30 @@ const responseError = (statusCode: number) =>
 
 function fakeClient(overrides: Partial<ElasticsearchClientLike> = {}) {
   const store = new Map<string, unknown>();
-  const calls: Array<{ index: string; id: string; timeout: number }> = [];
+  const aliases = new Set(["existing"]);
+  const calls: Array<{ index: string; id: string; timeout: number; requireAlias: boolean }> = [];
   const client: ElasticsearchClientLike = {
     info: async () => ({}),
     close: async () => {},
     indices: {
-      exists: async ({ index }) => index === "existing",
-      create: async () => ({}),
+      exists: async () => false,
+      existsAlias: async ({ name }) => aliases.has(name),
+      create: async ({ aliases: a }) => {
+        for (const name of Object.keys(a)) aliases.add(name);
+        return {};
+      },
     },
-    index: async ({ index, id, document }, { requestTimeout }) => {
-      calls.push({ index, id, timeout: requestTimeout });
+    index: async ({ index, id, document, require_alias }, { requestTimeout }) => {
+      calls.push({ index, id, timeout: requestTimeout, requireAlias: require_alias });
+      if (require_alias && !aliases.has(index)) throw responseError(404);
       const key = `${index}/${id}`;
       const result = store.has(key) ? "updated" : "created";
       store.set(key, document);
-      return { _index: index, _id: id, result, _version: calls.length };
+      return { _index: `${index}-000001`, _id: id, result, _version: calls.length };
     },
     ...overrides,
   };
-  return { client, store, calls };
+  return { client, store, calls, aliases };
 }
 
 describe("classifyIndexingError", () => {
@@ -94,13 +100,15 @@ describe("ElasticsearchController.indexDocument", () => {
     expect(fake.store.size).toBe(1);
   });
 
-  it("refuses a missing index instead of letting it be auto-created", async () => {
+  it("requires the alias on every write, so a missing index is never auto-created", async () => {
     const fake = fakeClient();
     const es = new ElasticsearchController("http://unused", undefined, fake.client);
-    await expect(es.indexFulltextDocument(doc, "absent")).rejects.toMatchObject({
+    await es.indexFulltextDocument(doc, "existing");
+    fake.aliases.delete("existing"); // index deleted after a successful write
+    await expect(es.indexFulltextDocument(doc, "existing")).rejects.toMatchObject({
       category: "missing-index",
     });
-    expect(fake.calls).toHaveLength(0);
+    expect(fake.calls.every((c) => c.requireAlias)).toBe(true);
   });
 
   it("bounds the request timeout", async () => {
@@ -135,21 +143,18 @@ describe("ElasticsearchController.indexDocument", () => {
 });
 
 describe("ElasticsearchController.provisionIndex", () => {
-  it("creates a missing index and leaves an existing one untouched", async () => {
-    const created: string[] = [];
-    const fake = fakeClient({
-      indices: {
-        exists: async ({ index }) => index === "existing",
-        create: async ({ index }) => {
-          created.push(index);
-          return {};
-        },
-      },
-    });
+  it("creates a backing index with the alias and leaves an existing alias untouched", async () => {
+    const created: Array<{ index: string; aliases: string[] }> = [];
+    const fake = fakeClient();
+    const create = fake.client.indices.create;
+    fake.client.indices.create = async (params) => {
+      created.push({ index: params.index, aliases: Object.keys(params.aliases) });
+      return create(params);
+    };
     const es = new ElasticsearchController("http://unused", undefined, fake.client);
     expect(await es.provisionIndex("existing", FULLTEXT_INDEX_MAPPING)).toBe("unchanged");
     expect(await es.provisionIndex("fresh", FULLTEXT_INDEX_MAPPING)).toBe("created");
-    expect(created).toEqual(["fresh"]);
+    expect(created).toEqual([{ index: "fresh-000001", aliases: ["fresh"] }]);
   });
 });
 
@@ -184,8 +189,15 @@ describe.skipIf(!esUrl)("Elasticsearch integration", () => {
       await expect(
         es.indexDocument(index, "bad", { ...doc, unexpected: true }),
       ).rejects.toMatchObject({ category: "rejected", retryable: false });
+
+      // Deleting the index after successful writes must not let a write recreate it.
+      await admin.indices.delete({ index: `${index}-000001` });
+      await expect(es.indexFulltextDocument(doc, index)).rejects.toMatchObject({
+        category: "missing-index",
+      });
+      expect(await admin.indices.exists({ index })).toBe(false);
     } finally {
-      await admin.indices.delete({ index }).catch(() => undefined);
+      await admin.indices.delete({ index: `${index}-000001` }).catch(() => undefined);
       await admin.close();
       await es.close();
     }

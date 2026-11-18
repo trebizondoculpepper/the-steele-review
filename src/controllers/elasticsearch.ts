@@ -10,10 +10,13 @@ import {
  * client. Provides the read-only connectivity probe, idempotent one-document
  * indexing by stable ID, and explicit index provisioning.
  *
- * Indexing never creates or changes an index or mapping: it refuses to write
- * to an index that does not exist (which would otherwise be auto-created with
- * a dynamic mapping). Provisioning is a separate, explicit call that creates a
- * missing index and leaves an existing one untouched.
+ * Indexing never creates or changes an index or mapping. Each logical index
+ * name is an alias over a provisioned backing index, and every write sets
+ * `require_alias`, so Elasticsearch itself rejects a write when the alias is
+ * missing instead of auto-creating an index with a dynamic mapping, even if
+ * the index was deleted after earlier successful writes. Provisioning is a
+ * separate, explicit call that creates the backing index and alias when
+ * absent and leaves existing ones untouched.
  *
  * Failures are reported as categories only; raw client errors, which can
  * contain endpoints or credentials, are never exposed or logged.
@@ -50,12 +53,23 @@ export interface IndexResult {
 export interface ElasticsearchClientLike {
   info(): Promise<unknown>;
   index(
-    params: { index: string; id: string; document: unknown; refresh?: boolean | "wait_for" },
+    params: {
+      index: string;
+      id: string;
+      document: unknown;
+      require_alias: boolean;
+      refresh?: boolean | "wait_for";
+    },
     options: { requestTimeout: number; maxRetries: number },
   ): Promise<{ _index: string; _id: string; result: string; _version: number }>;
   indices: {
     exists(params: { index: string }): Promise<boolean>;
-    create(params: { index: string; mappings: unknown }): Promise<unknown>;
+    create(params: {
+      index: string;
+      mappings: unknown;
+      aliases: Record<string, Record<string, never>>;
+    }): Promise<unknown>;
+    existsAlias(params: { name: string }): Promise<boolean>;
   };
   close(): Promise<void>;
 }
@@ -88,7 +102,6 @@ export interface IndexOptions {
 
 export class ElasticsearchController {
   private readonly client: ElasticsearchClientLike;
-  private readonly knownIndices = new Set<string>();
 
   constructor(node: string, apiKey?: string, client?: ElasticsearchClientLike) {
     this.client =
@@ -123,17 +136,12 @@ export class ElasticsearchController {
     if (!id || id.length > 512) throw new IndexingError("rejected", false);
     const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
     try {
-      if (!this.knownIndices.has(index)) {
-        if (!(await this.client.indices.exists({ index }))) {
-          throw new IndexingError("missing-index", false);
-        }
-        this.knownIndices.add(index);
-      }
       const response = await this.client.index(
         {
           index,
           id,
           document,
+          require_alias: true,
           ...(options.refresh === undefined ? {} : { refresh: options.refresh }),
         },
         { requestTimeout: timeoutMs, maxRetries: 0 },
@@ -145,9 +153,7 @@ export class ElasticsearchController {
       if (!result) throw new IndexingError("failed", true);
       return { index: response._index, id: response._id, result, version: response._version };
     } catch (error) {
-      const failure = classifyIndexingError(error);
-      if (failure.category === "missing-index") this.knownIndices.delete(index);
-      throw failure;
+      throw classifyIndexingError(error);
     }
   }
 
@@ -162,13 +168,16 @@ export class ElasticsearchController {
   }
 
   /**
-   * Explicitly create an index with the given mapping if it does not exist.
-   * An existing index is never modified.
+   * Explicitly provision a logical index: create the backing index
+   * `<alias>-000001` with the mapping and point the alias at it. An existing
+   * alias (or backing index) is never modified.
    */
-  async provisionIndex(index: string, mappings: unknown): Promise<"created" | "unchanged"> {
+  async provisionIndex(alias: string, mappings: unknown): Promise<"created" | "unchanged"> {
     try {
-      if (await this.client.indices.exists({ index })) return "unchanged";
-      await this.client.indices.create({ index, mappings });
+      if (await this.client.indices.existsAlias({ name: alias })) return "unchanged";
+      const backing = `${alias}-000001`;
+      if (await this.client.indices.exists({ index: backing })) return "unchanged";
+      await this.client.indices.create({ index: backing, mappings, aliases: { [alias]: {} } });
       return "created";
     } catch (error) {
       throw classifyIndexingError(error);
