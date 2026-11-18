@@ -74,6 +74,18 @@ describe("parseFeed", () => {
     expect(skipped).toHaveLength(2);
   });
 
+  it("uses a canonical guid as the URL when the link is absent", async () => {
+    const feed = `<?xml version="1.0"?><rss version="2.0"><channel><title>x</title>
+      <item><title>Guid only</title>
+      <guid isPermaLink="false">https://example-pub.substack.com/p/guid-only</guid></item>
+      </channel></rss>`;
+    const [item] = await parseFeed(feed, "example-pub");
+    expect(item).toMatchObject({
+      postId: "guid-only",
+      url: "https://example-pub.substack.com/p/guid-only",
+    });
+  });
+
   it("rejects a malformed feed", async () => {
     await expect(parseFeed("<rss><channel><item>", "example-pub")).rejects.toBeInstanceOf(
       FeedParseError,
@@ -176,6 +188,20 @@ describe("SubstackRssDiscovery", () => {
     await expect(collect(controller.getRecentItems())).rejects.toSatisfy(
       (e: Error) => !e.message.includes("example-pub"),
     );
+  });
+
+  it("rejects a malformed feed URL without echoing it", () => {
+    try {
+      new SubstackRssDiscovery({
+        feedUrl: "https://secret host/feed",
+        publicationId: "example-pub",
+      });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(DiscoveryFetchError);
+      expect(JSON.stringify(error)).not.toContain("secret");
+      expect(String(error)).not.toContain("secret");
+    }
   });
 
   it("validates the publication ID", () => {

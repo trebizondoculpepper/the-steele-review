@@ -46,6 +46,15 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     );
   });
 
+/** Parse a configured URL, throwing a sanitised error that never contains the value. */
+export function parseConfiguredUrl(value: string, name: string): URL {
+  try {
+    return new URL(value);
+  } catch {
+    throw new DiscoveryFetchError(`${name} is not a valid URL`, false);
+  }
+}
+
 /** Throw unless the URL is HTTPS to an allowed host. */
 export function assertAllowedDestination(url: URL, allowedHosts: ReadonlySet<string>): void {
   if (url.protocol !== "https:") {
