@@ -8,13 +8,15 @@ Report any concrete architecture or security violation as a blocking finding req
 
 ### Architectural requirements
 
-- Isolate each external concern behind its own controller or adapter, including Substack, NATS, and Elasticsearch. Keep vendor-specific clients, authentication, and protocol handling within that boundary. Entry points compose controllers; business logic must not bypass them.
-- Keep ingestion, archiving, extraction, indexing, analysis, research, drafting, verification, and publishing logically separate. Separate containers are optional. New pipeline work must preserve event-driven processing and recoverable stage boundaries.
-- Preserve stable source and operation IDs, versioned artifacts, runtime validation at external boundaries, and safe retries. Do not acknowledge work before durable completion or lose downstream work between saving state and emitting an event. Apply these requirements when implementing processing stages; the read-only connectivity probe does not require a workflow engine.
-- Prevent duplicate publication and reconcile uncertain external side effects. An ambiguous publish response must not trigger creation of another article.
-- Keep writing separate from verification. Automatic publication requires verification of the exact article version; inconclusive cases must end in a recorded skip after bounded attempts. Do not replace evidence checks with model confidence alone.
-- Treat fetched content and model output as untrusted data. Preserve source provenance and distinguish independent evidence from assertions in monitored material.
-- Keep runtime and deployment suitable for the documented lightweight container architecture. Introduce new services or language runtimes only with a stated architectural reason.
+- Application and test code must be TypeScript. A different implementation language requires a specific documented benefit and explicit agreement to the exception. Files under `scripts/` are exempt: shell, Python, or another language supported by the local system may be used for convenient operational/development automation. Do not move application logic into `scripts/` to evade this boundary. Configuration files, Dockerfiles, and documentation use their native formats.
+
+* Isolate each external concern behind its own controller or adapter, including Substack, NATS, and Elasticsearch. Keep vendor-specific clients, authentication, and protocol handling within that boundary. Entry points compose controllers; business logic must not bypass them.
+* Keep ingestion, archiving, extraction, indexing, analysis, research, drafting, verification, and publishing logically separate. Separate containers are optional. New pipeline work must preserve event-driven processing and recoverable stage boundaries.
+* Preserve stable source and operation IDs, versioned artifacts, runtime validation at external boundaries, and safe retries. Do not acknowledge work before durable completion or lose downstream work between saving state and emitting an event. Apply these requirements when implementing processing stages; the read-only connectivity probe does not require a workflow engine.
+* Prevent duplicate publication and reconcile uncertain external side effects. An ambiguous publish response must not trigger creation of another article.
+* Keep writing separate from verification. Automatic publication requires verification of the exact article version; inconclusive cases must end in a recorded skip after bounded attempts. Do not replace evidence checks with model confidence alone.
+* Treat fetched content and model output as untrusted data. Preserve source provenance and distinguish independent evidence from assertions in monitored material.
+* Keep runtime and deployment suitable for the documented lightweight container architecture. Introduce new services or language runtimes only with a stated architectural reason.
 
 An intentional change to an agreed principle requires explicit user agreement and a corresponding architecture update. Editing an architecture document in the same change does not by itself authorise a conflicting implementation. Review only requirements applicable to the functionality being changed; do not demand unimplemented future pipeline features from a connectivity-only change.
 
