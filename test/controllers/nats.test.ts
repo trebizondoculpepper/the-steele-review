@@ -184,6 +184,9 @@ describe.skipIf(!testUrl)("JetStream integration", () => {
       // Concurrent connect calls share one connection.
       await Promise.all([nats.connect("steele-test"), nats.connect("steele-test")]);
 
+      // A connection that dies unexpectedly is re-established on the next publish.
+      await (nats as unknown as { connection: { close(): Promise<void> } }).connection.close();
+
       const publisher = new NatsDiscoveryPublisher(nats, { subject, expectStream: stream });
       const event = createDiscoveryEvent(item, { reason: "backfill", correlationId: "run-1" });
       await publisher.publish(event);
