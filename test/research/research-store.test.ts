@@ -50,12 +50,18 @@ const entry = (
 /** In-memory index with naive term matching, standing in for Elasticsearch. */
 function fakeIndex() {
   const docs = new Map<string, Map<string, Record<string, unknown>>>();
+  const versions = new Map<string, number>();
   const writes: Array<{ index: string; id: string }> = [];
   const searched: string[] = [];
   const index: ResearchSearchIndex = {
-    async indexDocument(name, id, document) {
+    async indexDocument(name, id, document, options) {
       writes.push({ index: name, id });
       if (!docs.has(name)) docs.set(name, new Map());
+      const current = versions.get(`${name}/${id}`);
+      if (options?.version !== undefined && current !== undefined && options.version <= current) {
+        throw Object.assign(new Error("version conflict"), { category: "stale-version" });
+      }
+      if (options?.version !== undefined) versions.set(`${name}/${id}`, options.version);
       docs.get(name)!.set(id, document as Record<string, unknown>);
     },
     async search(name, query) {
@@ -172,6 +178,39 @@ describe("ResearchStore", () => {
     const results = await store.search({ text: "fees" });
     expect(fake.searched.every((name) => name === RESEARCH_INDEX_V1)).toBe(true);
     expect(results.map((r) => r.entryId)).toEqual([researchEntryId(entry().question)]);
+  });
+
+  it("never lets an older revision replace a newer indexed one", async () => {
+    const fake = fakeIndex();
+    const store = new ResearchStore(artifacts, fake.index);
+    const first = await store.save(entry(), 0);
+    await store.save(entry("contradicted"), 1);
+    // A delayed indexing request for revision 1 arrives after revision 2.
+    await (store as unknown as { indexStored(s: unknown): Promise<void> }).indexStored(first);
+    const indexed = fake.docs.get(RESEARCH_INDEX_V1)!.get(first.entryId)!;
+    expect(indexed.revision).toBe(2);
+    const [hit] = await store.search({ text: "fees" });
+    expect(hit?.matches[0]?.finding).toBe("contradicted");
+  });
+
+  it("keeps the reason for unresolved claims in results", async () => {
+    const { index } = fakeIndex();
+    const store = new ResearchStore(artifacts, index);
+    const unresolved = entry();
+    unresolved.addressedClaims = [
+      {
+        ...unresolved.addressedClaims[0]!,
+        finding: "unresolved" as never,
+        evidence: [],
+        unresolvedReason: "No independent source reports the fee change.",
+      } as never,
+    ];
+    await store.save(unresolved, 0);
+    const [hit] = await store.search({ text: "fees" });
+    expect(hit?.matches[0]).toMatchObject({
+      finding: "unresolved",
+      unresolvedReason: "No independent source reports the fee change.",
+    });
   });
 
   it("drops index hits that Git cannot vouch for", async () => {

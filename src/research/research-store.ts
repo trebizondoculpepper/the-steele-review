@@ -75,7 +75,12 @@ const IndexedResearchSchema = z.object({
 
 /** Narrow search-index surface (the Elasticsearch controller), injectable for tests. */
 export interface ResearchSearchIndex {
-  indexDocument(index: string, id: string, document: unknown): Promise<unknown>;
+  indexDocument(
+    index: string,
+    id: string,
+    document: unknown,
+    options?: { version?: number },
+  ): Promise<unknown>;
   search(index: string, query: unknown, options?: { size?: number }): Promise<SearchHit[]>;
 }
 
@@ -104,6 +109,8 @@ export interface ResearchCandidate {
     statement: string;
     claimId?: string;
     finding: Finding;
+    /** Why the claim is unresolved; present for `unresolved` findings. */
+    unresolvedReason?: string;
     evidence: EvidenceSource[];
   }>;
   /** Generated prose, labelled with its generator; never evidence. */
@@ -207,7 +214,7 @@ export class ResearchStore {
 
   private async indexStored(stored: StoredResearchEntry): Promise<void> {
     const { entry } = stored;
-    await this.index.indexDocument(this.indexName, stored.entryId, {
+    const document = {
       corpus: "research",
       entryId: stored.entryId,
       revision: stored.revision,
@@ -218,7 +225,17 @@ export class ResearchStore {
       evidenceUrls: entry.addressedClaims.flatMap((c) => c.evidence.map((e) => e.url)),
       artifact: stored.artifact,
       createdAt: entry.provenance.createdAt,
-    });
+    };
+    try {
+      // The revision is the external version: an overlapping older save or
+      // reindex cannot replace a newer indexed revision.
+      await this.index.indexDocument(this.indexName, stored.entryId, document, {
+        version: stored.revision,
+      });
+    } catch (error) {
+      if ((error as { category?: string }).category === "stale-version") return;
+      throw error;
+    }
   }
 
   /**
@@ -267,6 +284,7 @@ export class ResearchStore {
           statement: c.statement,
           ...(c.claimId ? { claimId: c.claimId } : {}),
           finding: c.finding,
+          ...(c.unresolvedReason ? { unresolvedReason: c.unresolvedReason } : {}),
           evidence: c.evidence,
         }));
       candidates.push({
@@ -281,6 +299,7 @@ export class ResearchStore {
                 statement: c.statement,
                 ...(c.claimId ? { claimId: c.claimId } : {}),
                 finding: c.finding,
+                ...(c.unresolvedReason ? { unresolvedReason: c.unresolvedReason } : {}),
                 evidence: c.evidence,
               })),
         explanation: { ...entry.explanation, isEvidence: false },

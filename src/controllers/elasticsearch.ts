@@ -29,6 +29,7 @@ export type IndexingFailure =
   | "throttled"
   | "unavailable"
   | "timeout"
+  | "stale-version"
   | "failed";
 
 export class IndexingError extends Error {
@@ -59,6 +60,8 @@ export interface ElasticsearchClientLike {
       document: unknown;
       require_alias: boolean;
       refresh?: boolean | "wait_for";
+      version?: number;
+      version_type?: "external";
     },
     options: { requestTimeout: number; maxRetries: number },
   ): Promise<{ _index: string; _id: string; result: string; _version: number }>;
@@ -101,6 +104,7 @@ export function classifyIndexingError(error: unknown): IndexingError {
   if (status === 401 || status === 403) return new IndexingError("unauthorized", false);
   if (status === 429) return new IndexingError("throttled", true);
   if (status !== undefined && status >= 500) return new IndexingError("unavailable", true);
+  if (status === 409) return new IndexingError("stale-version", false);
   if (status !== undefined && status >= 400) return new IndexingError("rejected", false);
   return new IndexingError("failed", true);
 }
@@ -110,6 +114,12 @@ export interface IndexOptions {
   timeoutMs?: number;
   /** Make the write visible to search before returning (tests, small volumes). */
   refresh?: boolean | "wait_for";
+  /**
+   * External version (e.g. a revision number). Elasticsearch rejects a write
+   * whose version is not higher than the stored one, reported as
+   * `stale-version`, so an older write can never replace a newer document.
+   */
+  version?: number;
 }
 
 export class ElasticsearchController {
@@ -155,6 +165,9 @@ export class ElasticsearchController {
           document,
           require_alias: true,
           ...(options.refresh === undefined ? {} : { refresh: options.refresh }),
+          ...(options.version === undefined
+            ? {}
+            : { version: options.version, version_type: "external" as const }),
         },
         { requestTimeout: timeoutMs, maxRetries: 0 },
       );
