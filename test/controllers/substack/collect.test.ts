@@ -62,8 +62,8 @@ function collector(routes: Routes) {
 const POST_PATH = "/api/v1/posts/a-post";
 
 describe("htmlToPlainText", () => {
-  it("drops links, images and figures", () => {
-    expect(htmlToPlainText(basePost.body_html)).toBe("Hello world.");
+  it("keeps link destinations and drops images and figures", () => {
+    expect(htmlToPlainText(basePost.body_html)).toBe("Hello world [https://x.test].");
   });
 });
 
@@ -73,7 +73,7 @@ describe("SubstackContentCollector", () => {
     const result = await c.collect(item);
     expect(result).toMatchObject({
       kind: "text",
-      text: "Hello world.",
+      text: "Hello world [https://x.test].",
       complete: true,
       supplied: { articleHtml: basePost.body_html },
       provenance: {
@@ -100,7 +100,8 @@ describe("SubstackContentCollector", () => {
       { start: 1.5, end: 4, text: " First sentence." },
       { start: 4.2, end: 7.9, text: " Second sentence." },
     ]);
-    expect(result.text).toBe("Hello world.\n\nFirst sentence. Second sentence.");
+    expect(result.text).toBe("Hello world [https://x.test].\n\nFirst sentence. Second sentence.");
+    expect(JSON.parse(result.supplied.transcriptDocument!)).toEqual(segments);
     expect(result.provenance).toMatchObject({
       method: "supplied-transcript+article-html",
       mediaUploadId: "u1",
@@ -123,7 +124,7 @@ describe("SubstackContentCollector", () => {
     expect(await c.collect(item)).toMatchObject({
       kind: "transcription-required",
       media: { kind: "audio", url: "https://api.substack.com/audio/1.mp3", durationSeconds: 99 },
-      articleText: "Hello world.",
+      articleText: "Hello world [https://x.test].",
     });
   });
 
@@ -147,6 +148,20 @@ describe("SubstackContentCollector", () => {
       cdn: { not: "segments" },
     });
     expect((await c.collect(item)).kind).toBe("transcription-required");
+  });
+
+  it("marks a media post incomplete when only its description is usable", async () => {
+    const { c } = collector({
+      [POST_PATH]: {
+        ...basePost,
+        type: "podcast",
+        podcastUpload: {
+          ...transcribed,
+          transcription: { ...transcribed.transcription, cdn_url: "https://evil.test/t.json" },
+        },
+      },
+    });
+    expect(await c.collect(item)).toMatchObject({ kind: "text", complete: false });
   });
 
   it("ignores transcript links outside the Substack CDN", async () => {

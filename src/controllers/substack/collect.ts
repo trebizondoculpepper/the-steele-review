@@ -47,7 +47,13 @@ export interface TextAcquired {
   kind: "text";
   item: SubstackItem;
   /** Supplied text exactly as received. */
-  supplied: { articleHtml?: string; transcript?: TranscriptSegment[] };
+  supplied: {
+    articleHtml?: string;
+    /** Normalised timed segments (start, end, text) derived from the document below. */
+    transcript?: TranscriptSegment[];
+    /** The supplied transcript document exactly as received, including word timings. */
+    transcriptDocument?: string;
+  };
   /** Plain normalised text: article text, then transcript text. */
   text: string;
   /** False when the article body is known to be truncated. */
@@ -138,12 +144,13 @@ export interface CollectorConfig {
   now?: () => Date;
 }
 
-/** Convert article HTML to plain text without links or images. */
+/** Convert article HTML to plain text, keeping link destinations and dropping images. */
 export function htmlToPlainText(html: string): string {
   return convert(html, {
     wordwrap: false,
     selectors: [
-      { selector: "a", options: { ignoreHref: true } },
+      // Keep link destinations: cited evidence must stay followable in the text.
+      { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
       { selector: "img", format: "skip" },
       { selector: "figure", format: "skip" },
     ],
@@ -217,7 +224,7 @@ export class SubstackContentCollector {
     );
 
     if (upload?.transcription?.cdn_url && !restricted) {
-      let transcript: TranscriptSegment[] | undefined;
+      let transcript: { segments: TranscriptSegment[]; document: string } | undefined;
       try {
         transcript = await this.fetchTranscript(upload.transcription.cdn_url, signal);
       } catch (error) {
@@ -226,11 +233,17 @@ export class SubstackContentCollector {
         if (!isPermanentHttpFailure(error)) return this.failure(item, error);
       }
       if (transcript) {
-        const text = [articleText, transcriptText(transcript)].filter(Boolean).join("\n\n");
+        const text = [articleText, transcriptText(transcript.segments)]
+          .filter(Boolean)
+          .join("\n\n");
         return {
           kind: "text",
           item,
-          supplied: { articleHtml, transcript },
+          supplied: {
+            articleHtml,
+            transcript: transcript.segments,
+            transcriptDocument: transcript.document,
+          },
           text,
           complete: true,
           provenance: {
@@ -260,12 +273,19 @@ export class SubstackContentCollector {
       };
     }
     if (articleText) {
+      // A media post whose transcript and media are both unusable still has its
+      // description, but the substantive content is missing: not complete.
+      const isMediaPost =
+        post.type === "podcast" ||
+        post.type === "video" ||
+        Boolean(post.podcastUpload) ||
+        Boolean(post.videoUpload);
       return {
         kind: "text",
         item,
         supplied: { articleHtml },
         text: articleText,
-        complete: true,
+        complete: !isMediaPost,
         provenance: { ...baseProvenance, method: "article-html" },
       };
     }
@@ -276,7 +296,7 @@ export class SubstackContentCollector {
   private async fetchTranscript(
     cdnUrl: string,
     signal?: AbortSignal,
-  ): Promise<TranscriptSegment[] | undefined> {
+  ): Promise<{ segments: TranscriptSegment[]; document: string } | undefined> {
     let url: URL;
     try {
       url = new URL(cdnUrl);
@@ -294,7 +314,7 @@ export class SubstackContentCollector {
     const parsed = SegmentsSchema.safeParse(raw);
     if (!parsed.success) return undefined;
     const segments = parsed.data.map(({ start, end, text }) => ({ start, end, text }));
-    return transcriptText(segments) ? segments : undefined;
+    return transcriptText(segments) ? { segments, document: body } : undefined;
   }
 
   /** Audio before video; only HTTPS audio references are returned. */
