@@ -28,8 +28,15 @@ export interface OperationStoreConfig {
   now?: () => number;
 }
 
+/** Handle for one claim attempt; the attempt number fences out stale holders. */
+export interface OperationClaim {
+  key: string;
+  owner: string;
+  attempt: number;
+}
+
 export type ClaimResult =
-  | { kind: "claimed"; attempt: number; leaseExpiresAt: number }
+  | { kind: "claimed"; attempt: number; leaseExpiresAt: number; claim: OperationClaim }
   | { kind: "completed"; artifact: unknown }
   | { kind: "busy"; leaseExpiresAt: number }
   | { kind: "exhausted"; errorCode?: string };
@@ -52,7 +59,8 @@ export type OperationStoreErrorCode =
   | "invalid-input"
   | "not-owner"
   | "busy"
-  | "unsupported-schema";
+  | "unsupported-schema"
+  | "event-conflict";
 
 export class OperationStoreError extends Error {
   constructor(readonly code: OperationStoreErrorCode) {
@@ -158,6 +166,16 @@ export class OperationStore {
       .get(key) as OperationRow | undefined;
   }
 
+  /** True when the row is still held by exactly this claim attempt. */
+  private holds(row: OperationRow | undefined, claim: OperationClaim): boolean {
+    return (
+      row !== undefined &&
+      row.status === "claimed" &&
+      row.owner === claim.owner &&
+      row.attempts === claim.attempt
+    );
+  }
+
   /** Atomically claim an operation, or report why it cannot be claimed. */
   claim(key: string, owner: string, leaseMs: number, maxAttempts = 5): ClaimResult {
     if (
@@ -178,7 +196,7 @@ export class OperationStore {
             "INSERT INTO operations (key, status, owner, lease_expires_at, attempts, max_attempts, updated_at) VALUES (?, 'claimed', ?, ?, 1, ?, ?)",
           )
           .run(key, owner, leaseExpiresAt, maxAttempts, now);
-        return { kind: "claimed", attempt: 1, leaseExpiresAt };
+        return { kind: "claimed", attempt: 1, leaseExpiresAt, claim: { key, owner, attempt: 1 } };
       }
       if (row.status === "completed") {
         return { kind: "completed", artifact: JSON.parse(row.artifact ?? "null") };
@@ -203,16 +221,17 @@ export class OperationStore {
           "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
         )
         .run(owner, leaseExpiresAt, attempt, now, key);
-      return { kind: "claimed", attempt, leaseExpiresAt };
+      return { kind: "claimed", attempt, leaseExpiresAt, claim: { key, owner, attempt } };
     });
   }
 
   /** Extend a held lease. Throws not-owner if the lease was lost. */
-  renew(key: string, owner: string, leaseMs: number): number {
+  renew(claim: OperationClaim, leaseMs: number): number {
+    const { key } = claim;
     return this.transaction(() => {
       const now = this.now();
       const row = this.row(key);
-      if (!row || row.status !== "claimed" || row.owner !== owner) {
+      if (!this.holds(row, claim)) {
         throw new OperationStoreError("not-owner");
       }
       const expires = now + leaseMs;
@@ -228,7 +247,8 @@ export class OperationStore {
    * Call only after the artifact is durably committed. A repeated completion
    * with the same event IDs is a no-op returning the stored artifact.
    */
-  complete(key: string, owner: string, artifact: unknown, events: PendingEventInput[]): unknown {
+  complete(claim: OperationClaim, artifact: unknown, events: PendingEventInput[]): unknown {
+    const { key } = claim;
     for (const event of events) {
       if (!event.eventId || !event.subject || typeof event.payload !== "string") {
         throw new OperationStoreError("invalid-input");
@@ -238,7 +258,7 @@ export class OperationStore {
       const now = this.now();
       const row = this.row(key);
       if (row?.status === "completed") return JSON.parse(row.artifact ?? "null");
-      if (!row || row.status !== "claimed" || row.owner !== owner) {
+      if (!this.holds(row, claim)) {
         throw new OperationStoreError("not-owner");
       }
       this.db
@@ -246,10 +266,27 @@ export class OperationStore {
           "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
         )
         .run(JSON.stringify(artifact), now, key);
+      const existing = this.db.prepare(
+        "SELECT operation_key, subject, payload FROM pending_events WHERE event_id = ?",
+      );
       const insert = this.db.prepare(
-        "INSERT OR IGNORE INTO pending_events (event_id, operation_key, subject, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+        "INSERT INTO pending_events (event_id, operation_key, subject, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
       );
       for (const event of events) {
+        const found = existing.get(event.eventId) as
+          | { operation_key: string; subject: string; payload: string }
+          | undefined;
+        if (found) {
+          // Same record already present: fine. Anything else would drop downstream work.
+          if (
+            found.operation_key !== key ||
+            found.subject !== event.subject ||
+            found.payload !== event.payload
+          ) {
+            throw new OperationStoreError("event-conflict");
+          }
+          continue;
+        }
         insert.run(event.eventId, key, event.subject, event.payload, now, now);
       }
       return artifact;
@@ -260,11 +297,12 @@ export class OperationStore {
    * Release a held claim after a failed attempt. A retryable failure leaves
    * the operation claimable until attempts run out; a permanent one fails it.
    */
-  fail(key: string, owner: string, errorCode: string, retryable: boolean): void {
+  fail(claim: OperationClaim, errorCode: string, retryable: boolean): void {
+    const { key } = claim;
     this.transaction(() => {
       const now = this.now();
       const row = this.row(key);
-      if (!row || row.status !== "claimed" || row.owner !== owner) {
+      if (!this.holds(row, claim) || !row) {
         throw new OperationStoreError("not-owner");
       }
       const terminal = !retryable || row.attempts >= row.max_attempts;

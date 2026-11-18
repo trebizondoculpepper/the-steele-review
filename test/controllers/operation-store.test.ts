@@ -8,6 +8,8 @@ import {
   OperationStore,
   OperationStoreError,
   SCHEMA_VERSION,
+  type ClaimResult,
+  type OperationClaim,
 } from "../../src/controllers/operation-store.js";
 
 let dir: string;
@@ -29,6 +31,12 @@ afterEach(async () => {
   for (const s of stores.splice(0)) s.close();
   await rm(dir, { recursive: true, force: true });
 });
+
+/** Unwrap a successful claim result to its handle. */
+const held = (result: ClaimResult): OperationClaim => {
+  if (result.kind !== "claimed") throw new Error(`expected claim, got ${result.kind}`);
+  return result.claim;
+};
 
 const artifact = {
   repository: "archive",
@@ -71,45 +79,61 @@ describe("OperationStore", () => {
 
   it("lets another owner claim after the lease expires", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
+    const stale = held(store.claim("op-1", "worker-a", 1_000));
     clock += 1_001;
     expect(store.claim("op-1", "worker-b", 1_000)).toMatchObject({ kind: "claimed", attempt: 2 });
-    expect(() => store.complete("op-1", "worker-a", artifact, [])).toThrow("not-owner");
+    expect(() => store.complete(stale, artifact, [])).toThrow("not-owner");
+  });
+
+  it("fences out a stale attempt by the same owner after reclaim", () => {
+    const store = open();
+    const first = held(store.claim("op-1", "worker-a", 1_000));
+    clock += 1_001;
+    const second = held(store.claim("op-1", "worker-a", 1_000));
+    expect(() => store.complete(first, artifact, [event(1)])).toThrow("not-owner");
+    expect(() => store.fail(first, "late", true)).toThrow("not-owner");
+    expect(() => store.renew(first, 1_000)).toThrow("not-owner");
+    expect(store.complete(second, artifact, [event(1)])).toEqual(artifact);
   });
 
   it("renews only a lease the caller still holds", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
-    expect(store.renew("op-1", "worker-a", 5_000)).toBe(clock + 5_000);
-    expect(() => store.renew("op-1", "worker-b", 5_000)).toThrow("not-owner");
+    const claim = held(store.claim("op-1", "worker-a", 1_000));
+    expect(store.renew(claim, 5_000)).toBe(clock + 5_000);
+    expect(() => store.renew({ ...claim, owner: "worker-b" }, 5_000)).toThrow("not-owner");
   });
 
   it("records completion and pending events atomically and reuses the result", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
-    store.complete("op-1", "worker-a", artifact, [event(1), event(2)]);
+    store.complete(held(store.claim("op-1", "worker-a", 1_000)), artifact, [event(1), event(2)]);
     expect(store.claim("op-1", "worker-b", 1_000)).toEqual({ kind: "completed", artifact });
     expect(store.duePendingEvents().map((e) => e.eventId)).toEqual(["evt-1", "evt-2"]);
   });
 
   it("treats a duplicate completion as a no-op", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
-    store.complete("op-1", "worker-a", artifact, [event(1)]);
-    expect(store.complete("op-1", "worker-a", { other: true }, [event(1), event(9)])).toEqual(
-      artifact,
-    );
+    const claim = held(store.claim("op-1", "worker-a", 1_000));
+    store.complete(claim, artifact, [event(1)]);
+    expect(store.complete(claim, { other: true }, [event(1), event(9)])).toEqual(artifact);
     expect(store.duePendingEvents().map((e) => e.eventId)).toEqual(["evt-1"]);
+  });
+
+  it("rejects an event ID already used for different work and rolls back", () => {
+    const store = open();
+    store.complete(held(store.claim("op-1", "w", 1_000)), artifact, [event(1)]);
+    const other = held(store.claim("op-2", "w", 1_000));
+    expect(() =>
+      store.complete(other, artifact, [{ ...event(1), payload: '{"different":true}' }]),
+    ).toThrow("event-conflict");
+    expect(store.claim("op-2", "w", 1_000).kind).toBe("busy");
+    expect(store.duePendingEvents()).toMatchObject([{ eventId: "evt-1", payload: '{"n":1}' }]);
   });
 
   it("rolls back completion when an event record is invalid", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
+    const claim = held(store.claim("op-1", "worker-a", 1_000));
     expect(() =>
-      store.complete("op-1", "worker-a", artifact, [
-        event(1),
-        { eventId: "", subject: "x", payload: "" },
-      ]),
+      store.complete(claim, artifact, [event(1), { eventId: "", subject: "x", payload: "" }]),
     ).toThrow("invalid-input");
     expect(store.duePendingEvents()).toEqual([]);
     expect(store.claim("op-1", "worker-a", 1_000).kind).toBe("busy");
@@ -117,8 +141,7 @@ describe("OperationStore", () => {
 
   it("retries pending events until marked sent, keeping the same event ID", () => {
     const store = open();
-    store.claim("op-1", "worker-a", 1_000);
-    store.complete("op-1", "worker-a", artifact, [event(1)]);
+    store.complete(held(store.claim("op-1", "worker-a", 1_000)), artifact, [event(1)]);
     store.markEventRetry("evt-1", 500);
     expect(store.duePendingEvents()).toEqual([]);
     clock += 500;
@@ -130,8 +153,7 @@ describe("OperationStore", () => {
 
   it("survives a restart with state intact", () => {
     const first = open();
-    first.claim("op-1", "worker-a", 1_000);
-    first.complete("op-1", "worker-a", artifact, [event(1)]);
+    first.complete(held(first.claim("op-1", "worker-a", 1_000)), artifact, [event(1)]);
     first.claim("op-2", "worker-a", 1_000);
     first.close();
     const second = open();
@@ -142,14 +164,13 @@ describe("OperationStore", () => {
 
   it("bounds attempts and distinguishes permanent failures", () => {
     const store = open();
-    expect(store.claim("op-1", "w", 1_000, 2).kind).toBe("claimed");
-    store.fail("op-1", "w", "timeout", true);
-    expect(store.claim("op-1", "w", 1_000, 2)).toMatchObject({ kind: "claimed", attempt: 2 });
-    store.fail("op-1", "w", "timeout", true);
+    store.fail(held(store.claim("op-1", "w", 1_000, 2)), "timeout", true);
+    const second = store.claim("op-1", "w", 1_000, 2);
+    expect(second).toMatchObject({ kind: "claimed", attempt: 2 });
+    store.fail(held(second), "timeout", true);
     expect(store.claim("op-1", "w", 1_000, 2)).toEqual({ kind: "exhausted", errorCode: "timeout" });
 
-    store.claim("op-2", "w", 1_000);
-    store.fail("op-2", "w", "malformed", false);
+    store.fail(held(store.claim("op-2", "w", 1_000)), "malformed", false);
     expect(store.claim("op-2", "w", 1_000)).toEqual({ kind: "exhausted", errorCode: "malformed" });
   });
 
