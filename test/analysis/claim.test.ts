@@ -199,6 +199,32 @@ describe("grounding failures", () => {
     );
   });
 
+  it("rejects a normalised date attached to vague wording", () => {
+    const claim = createClaim(draft(), source);
+    expect(() =>
+      parseClaim({ ...claim, dates: [{ text: "last spring", value: "2026-05-03" }] }, source),
+    ).toThrow(InvalidClaimError);
+  });
+
+  it("rejects a normalised date that does not match its wording", () => {
+    const text = "The synthetic council met on 3 May 2026 and may raise fees.";
+    const dated = { text, sourceVersion: sourceVersionFor(text) };
+    const claim = createClaim(
+      {
+        ...draft(),
+        claimType: "factual",
+        sourceVersion: dated.sourceVersion,
+        span: { start: 0, end: text.length },
+        passage: text,
+        dates: [{ text: "3 May 2026", value: "2026-05-03" }],
+      },
+      dated,
+    );
+    expect(() =>
+      parseClaim({ ...claim, dates: [{ text: "3 May 2026", value: "2026-05-04" }] }, dated),
+    ).toThrow(InvalidClaimError);
+  });
+
   it("rejects an ID that does not match the claim fields", () => {
     const claim = createClaim(draft(), source);
     expect(() => parseClaim({ ...claim, id: `sha256:${"00".repeat(32)}` }, source)).toThrow(

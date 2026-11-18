@@ -25,8 +25,8 @@ import { sourceVersionFor } from "../content/fulltext-document.js";
  * - The ID is derived from the validated, normalised fields and is rejected if
  *   a supplied ID does not match them, so identity cannot be forged or stale.
  * - Qualifiers are preserved as written. Vague dates (`"last spring"`) stay as
- *   their exact wording; `value` is present only when the passage states an
- *   unambiguous calendar date.
+ *   their exact wording; `value` is present only when that wording is itself
+ *   unambiguous and the value matches it.
  *
  * The schema is strict: an unknown field such as `verdict` fails validation
  * rather than being silently carried through.
@@ -71,7 +71,9 @@ export const DateMentionSchema = z
     value: z.iso
       .date()
       .optional()
-      .describe("Calendar date, only when the passage states it unambiguously. Omitted otherwise."),
+      .describe(
+        "Calendar date, only when `text` itself is unambiguous (ISO 8601, or a day and named month with a year) and matches it. Omitted otherwise.",
+      ),
   })
   .strict()
   .meta({
@@ -215,7 +217,81 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
     if (!claim.passage.includes(date.text)) {
       throw new InvalidClaimError("date wording does not occur in the passage");
     }
+    if (date.value !== undefined) {
+      const canonical = isoDateFromText(date.text);
+      if (canonical === undefined) {
+        throw new InvalidClaimError("date value supplied for ambiguous date wording");
+      }
+      if (canonical !== date.value) {
+        throw new InvalidClaimError("date value does not match the date wording");
+      }
+    }
   }
+}
+
+const MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+] as const;
+
+function isRealDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+function monthNumber(name: string): number | undefined {
+  const index = MONTH_NAMES.indexOf(name.toLowerCase() as (typeof MONTH_NAMES)[number]);
+  return index === -1 ? undefined : index + 1;
+}
+
+/**
+ * Canonical ISO date for wording that states one unambiguously, else
+ * undefined. Vague wording such as "last spring" is deliberately not parsed,
+ * so a normalised value can never be attached to it.
+ */
+function isoDateFromText(text: string): string | undefined {
+  const trimmed = text.trim();
+
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (iso) {
+    const [year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+    return isRealDate(year, month, day) ? trimmed : undefined;
+  }
+
+  const dayFirst = /^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/.exec(trimmed);
+  if (dayFirst) {
+    const month = monthNumber(dayFirst[2] as string);
+    const [day, year] = [Number(dayFirst[1]), Number(dayFirst[3])];
+    if (month !== undefined && isRealDate(year, month, day)) {
+      return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+    return undefined;
+  }
+
+  const monthFirst = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(trimmed);
+  if (monthFirst) {
+    const month = monthNumber(monthFirst[1] as string);
+    const [day, year] = [Number(monthFirst[2]), Number(monthFirst[3])];
+    if (month !== undefined && isRealDate(year, month, day)) {
+      return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+    return undefined;
+  }
+
+  return undefined;
 }
 
 /** Recompute the canonical claim ID from validated fields. */
