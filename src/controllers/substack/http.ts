@@ -16,6 +16,8 @@ export interface BoundedFetchOptions {
   maxRedirects: number;
   /** Base backoff delay; doubles per retry. */
   retryDelayMs: number;
+  /** Accept header; defaults to RSS/XML. */
+  accept?: string;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -95,7 +97,9 @@ async function fetchOnce(
       response = await doFetch(url, {
         redirect: "manual",
         signal: combined,
-        headers: { accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8" },
+        headers: {
+          accept: options.accept ?? "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
+        },
       });
     } catch {
       if (signal?.aborted) throw new DiscoveryFetchError("request cancelled", false);
