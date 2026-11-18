@@ -15,7 +15,10 @@ const longText = Array.from(
   (_, index) => `Paragraph ${index}. A synthetic sentence for passage splitting coverage.`,
 ).join("\n\n");
 
+const SOURCE_ID = "substack/example-pub/a-synthetic-post";
+
 const input = (text: string, extra: Record<string, unknown> = {}) => ({
+  sourceId: SOURCE_ID,
   text,
   sourceVersion: sourceVersionFor(text),
   ...extra,
@@ -167,7 +170,13 @@ describe("splitPassages", () => {
 
 describe("passage identity", () => {
   it("derives stable IDs that change with the splitter version", () => {
-    const base = { sourceVersion: sourceVersionFor(longText), index: 0, start: 0, end: 100 };
+    const base = {
+      sourceId: SOURCE_ID,
+      sourceVersion: sourceVersionFor(longText),
+      index: 0,
+      start: 0,
+      end: 100,
+    };
     const v1 = passageIdFor({ ...base, splitterVersion: 1 });
     const v2 = passageIdFor({ ...base, splitterVersion: 2 });
     expect(v1).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -177,9 +186,30 @@ describe("passage identity", () => {
 
   it("derives different IDs for different spans and ordinals", () => {
     const sourceVersion = sourceVersionFor(longText);
-    const a = passageIdFor({ sourceVersion, splitterVersion: 1, index: 0, start: 0, end: 100 });
-    const b = passageIdFor({ sourceVersion, splitterVersion: 1, index: 1, start: 0, end: 100 });
-    const c = passageIdFor({ sourceVersion, splitterVersion: 1, index: 0, start: 0, end: 99 });
+    const a = passageIdFor({
+      sourceId: SOURCE_ID,
+      sourceVersion,
+      splitterVersion: 1,
+      index: 0,
+      start: 0,
+      end: 100,
+    });
+    const b = passageIdFor({
+      sourceId: SOURCE_ID,
+      sourceVersion,
+      splitterVersion: 1,
+      index: 1,
+      start: 0,
+      end: 100,
+    });
+    const c = passageIdFor({
+      sourceId: SOURCE_ID,
+      sourceVersion,
+      splitterVersion: 1,
+      index: 0,
+      start: 0,
+      end: 99,
+    });
     expect(new Set([a, b, c]).size).toBe(3);
   });
 
@@ -188,6 +218,21 @@ describe("passage identity", () => {
     const other = splitPassages(input(`${longText} Changed.`)).passages[0]!;
     expect(other.sourceVersion).not.toBe(one.sourceVersion);
     expect(other.id).not.toBe(one.id);
+  });
+
+  it("derives different IDs for identical text in different sources", () => {
+    const first = splitPassages(input(longText)).passages[0]!;
+    const second = splitPassages(input(longText, { sourceId: "substack/example-pub/another-post" }))
+      .passages[0]!;
+    expect(second.sourceVersion).toBe(first.sourceVersion);
+    expect(second.sourceId).not.toBe(first.sourceId);
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it("retains the source identity on the set and every passage", () => {
+    const set = splitPassages(input(longText));
+    expect(set.sourceId).toBe(SOURCE_ID);
+    for (const passage of set.passages) expect(passage.sourceId).toBe(SOURCE_ID);
   });
 });
 
@@ -221,6 +266,17 @@ describe("input validation", () => {
     expect(() => splitPassages(input("synthetic", { updatedAt: 123 }))).toThrow(
       InvalidPassageInputError,
     );
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["with spaces", "substack/example pub/post"],
+    ["too long", `a${"b".repeat(300)}`],
+  ])("rejects a %s source identity", (_name, sourceId) => {
+    expect(() =>
+      splitPassages({ ...input("synthetic text"), sourceId: sourceId as never }),
+    ).toThrow(InvalidPassageInputError);
   });
 
   it("rejects non-string text", () => {

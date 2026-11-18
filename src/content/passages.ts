@@ -20,6 +20,9 @@ import { sourceVersionFor } from "./fulltext-document.js";
  *   or other astral character is never torn between passages.
  *
  * Identity:
+ * - `sourceId` is the stable logical identity of the source (for Substack,
+ *   `substack/<publicationId>/<postId>`). Two posts with byte-identical text
+ *   are still different sources, so the identifier is part of every passage.
  * - `sourceVersion` is the content hash of the whole text (see
  *   {@link sourceVersionFor}) and is validated against it, so a passage set
  *   cannot claim a version its text does not have.
@@ -45,7 +48,11 @@ const SourceVersionSchema = z
 
 const IsoDateSchema = z.iso.datetime({ offset: true });
 
+const SOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/;
+
 export interface PassageInput {
+  /** Stable logical source identity, e.g. `substack/<publicationId>/<postId>`. */
+  sourceId: string;
   /** Normalised source text to split. */
   text: string;
   /** Content hash of `text`; must equal {@link sourceVersionFor}`(text)`. */
@@ -57,7 +64,7 @@ export interface PassageInput {
 }
 
 export interface Passage {
-  /** Stable ID derived from source, splitter version and span. */
+  /** Stable ID derived from source identity, versions and span. */
   id: string;
   /** Zero-based position in the passage set. */
   index: number;
@@ -67,6 +74,7 @@ export interface Passage {
   start: number;
   /** Exclusive end offset in UTF-16 code units. */
   end: number;
+  sourceId: string;
   sourceVersion: string;
   splitterVersion: number;
   publishedAt?: string;
@@ -74,6 +82,7 @@ export interface Passage {
 }
 
 export interface PassageSet {
+  sourceId: string;
   sourceVersion: string;
   splitterVersion: number;
   maxChars: number;
@@ -90,15 +99,16 @@ export class InvalidPassageInputError extends Error {
 
 /** Stable passage ID: source version, splitter version, ordinal and span. */
 export function passageIdFor(input: {
+  sourceId: string;
   sourceVersion: string;
   splitterVersion: number;
   index: number;
   start: number;
   end: number;
 }): string {
-  const { sourceVersion, splitterVersion, index, start, end } = input;
+  const { sourceId, sourceVersion, splitterVersion, index, start, end } = input;
   return sourceVersionFor(
-    `${sourceVersion}\u0000v${splitterVersion}\u0000${index}\u0000${start}\u0000${end}`,
+    `${sourceId}\u0000${sourceVersion}\u0000v${splitterVersion}\u0000${index}\u0000${start}\u0000${end}`,
   );
 }
 
@@ -167,6 +177,11 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
   if (typeof input.text !== "string") {
     throw new InvalidPassageInputError("text must be a string");
   }
+  if (typeof input.sourceId !== "string" || !SOURCE_ID.test(input.sourceId)) {
+    throw new InvalidPassageInputError(
+      "sourceId must be a stable logical identifier of 1-300 safe characters",
+    );
+  }
   if (!SourceVersionSchema.safeParse(input.sourceVersion).success) {
     throw new InvalidPassageInputError("sourceVersion must be sha256:<64 lower-case hex>");
   }
@@ -203,6 +218,7 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
 
   const passages = spans.map(({ start: spanStart, end: spanEnd }, index) => {
     const id = passageIdFor({
+      sourceId: input.sourceId,
       sourceVersion: input.sourceVersion,
       splitterVersion: PASSAGE_SPLITTER_VERSION,
       index,
@@ -215,6 +231,7 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
       text: text.slice(spanStart, spanEnd),
       start: spanStart,
       end: spanEnd,
+      sourceId: input.sourceId,
       sourceVersion: input.sourceVersion,
       splitterVersion: PASSAGE_SPLITTER_VERSION,
       ...(input.publishedAt === undefined ? {} : { publishedAt: input.publishedAt }),
@@ -223,6 +240,7 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
   });
 
   return {
+    sourceId: input.sourceId,
     sourceVersion: input.sourceVersion,
     splitterVersion: PASSAGE_SPLITTER_VERSION,
     maxChars,
