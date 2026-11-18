@@ -87,6 +87,23 @@ describe("createClaim", () => {
     expect(reExtracted.id).not.toBe(first.id);
   });
 
+  it("derives the ID from the validated, trimmed statement", () => {
+    const padded = createClaim({ ...draft(), statement: `  ${draft().statement}  ` }, source);
+    const trimmed = createClaim(draft(), source);
+    expect(padded.statement).toBe(trimmed.statement);
+    expect(padded.id).toBe(trimmed.id);
+    expect(padded.id).toBe(
+      claimIdFor({
+        sourceVersion: source.sourceVersion,
+        start: span.start,
+        end: span.end,
+        statement: trimmed.statement,
+        modelVersion: extraction.modelVersion,
+        promptVersion: extraction.promptVersion,
+      }),
+    );
+  });
+
   it.each(["factual", "opinion", "prediction", "ambiguous"] as const)(
     "accepts claim type %s",
     (claimType) => {
@@ -96,18 +113,29 @@ describe("createClaim", () => {
 
   it("preserves qualifiers and vague date wording", () => {
     const claim = createClaim(
-      { ...draft(), qualifiers: ["may", "according to"], dates: [{ text: "last spring" }] },
+      { ...draft(), qualifiers: ["may"], dates: [{ text: "last spring" }] },
       source,
     );
-    expect(claim.qualifiers).toEqual(["may", "according to"]);
+    expect(claim.qualifiers).toEqual(["may"]);
     expect(claim.dates[0]).toEqual({ text: "last spring" });
     expect(claim.dates[0]).not.toHaveProperty("value");
   });
 
-  it("accepts a normalised date when the passage is unambiguous", () => {
+  it("accepts a normalised date when the passage states it", () => {
+    const text = "The synthetic council met on 3 May 2026 and may raise fees.";
+    const dated = { text, sourceVersion: sourceVersionFor(text) };
     const claim = createClaim(
-      { ...draft(), dates: [{ text: "3 May 2026", value: "2026-05-03" }] },
-      source,
+      {
+        ...draft(),
+        statement: "The synthetic council met on 3 May 2026.",
+        claimType: "factual",
+        sourceVersion: dated.sourceVersion,
+        span: { start: 0, end: text.length },
+        passage: text,
+        qualifiers: ["may"],
+        dates: [{ text: "3 May 2026", value: "2026-05-03" }],
+      },
+      dated,
     );
     expect(claim.dates[0]?.value).toBe("2026-05-03");
   });
@@ -154,6 +182,31 @@ describe("grounding failures", () => {
         text: SYNTHETIC_SOURCE_TEXT,
         sourceVersion: sourceVersionFor("different text"),
       }),
+    ).toThrow(InvalidClaimError);
+  });
+
+  it("rejects invented date wording that is not in the passage", () => {
+    const claim = createClaim(draft(), source);
+    expect(() =>
+      parseClaim({ ...claim, dates: [{ text: "3 May 2026", value: "2026-05-03" }] }, source),
+    ).toThrow(InvalidClaimError);
+  });
+
+  it("rejects invented qualifiers that are not in the passage", () => {
+    const claim = createClaim(draft(), source);
+    expect(() => parseClaim({ ...claim, qualifiers: ["probably"] }, source)).toThrow(
+      InvalidClaimError,
+    );
+  });
+
+  it("rejects an ID that does not match the claim fields", () => {
+    const claim = createClaim(draft(), source);
+    expect(() => parseClaim({ ...claim, id: `sha256:${"00".repeat(32)}` }, source)).toThrow(
+      InvalidClaimError,
+    );
+    // A changed field with the old ID is equally rejected.
+    expect(() =>
+      parseClaim({ ...claim, statement: "A different synthetic claim." }, source),
     ).toThrow(InvalidClaimError);
   });
 });

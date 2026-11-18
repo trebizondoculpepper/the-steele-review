@@ -19,6 +19,11 @@ import { sourceVersionFor } from "../content/fulltext-document.js";
  *   attached to a version it was not extracted from.
  * - The model and prompt versions that produced the claim are recorded, so a
  *   deliberate re-extraction is distinguishable from an untracked change.
+ * - Verbatim annotations are grounded too: every qualifier and every date
+ *   wording must occur in the quoted passage, so a genuine quote cannot carry
+ *   an invented precise date or hedge.
+ * - The ID is derived from the validated, normalised fields and is rejected if
+ *   a supplied ID does not match them, so identity cannot be forged or stale.
  * - Qualifiers are preserved as written. Vague dates (`"last spring"`) stay as
  *   their exact wording; `value` is present only when the passage states an
  *   unambiguous calendar date.
@@ -125,7 +130,7 @@ export const ClaimSchema = z
       .array(z.string().trim().min(1).max(200))
       .max(50)
       .describe(
-        "People, organisations, places or things the claim concerns, as named in the passage.",
+        "People, organisations, places or things the claim concerns, as named or referred to in the passage.",
       ),
     dates: z.array(DateMentionSchema).max(20).describe("Dates the passage mentions, in order."),
     extraction: ClaimExtractionMetaSchema,
@@ -138,6 +143,9 @@ export const ClaimSchema = z
   });
 
 export type Claim = z.infer<typeof ClaimSchema>;
+
+/** A claim without its derived ID: what an extractor is allowed to supply. */
+const ClaimBodySchema = ClaimSchema.omit({ id: true });
 
 /** What a claim is checked against: one versioned source text. */
 export interface ClaimSource {
@@ -195,12 +203,38 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
   if (claim.passage !== exact) {
     throw new InvalidClaimError("passage does not match the source text at that span");
   }
+  // Verbatim annotations must occur in the validated passage. Otherwise model
+  // output could turn vague source wording into an invented precise date or
+  // qualifier while the quote itself stays genuine.
+  for (const qualifier of claim.qualifiers) {
+    if (!claim.passage.includes(qualifier)) {
+      throw new InvalidClaimError("qualifier does not occur in the passage");
+    }
+  }
+  for (const date of claim.dates) {
+    if (!claim.passage.includes(date.text)) {
+      throw new InvalidClaimError("date wording does not occur in the passage");
+    }
+  }
+}
+
+/** Recompute the canonical claim ID from validated fields. */
+function canonicalClaimId(claim: Claim): string {
+  return claimIdFor({
+    sourceVersion: claim.sourceVersion,
+    start: claim.span.start,
+    end: claim.span.end,
+    statement: claim.statement,
+    modelVersion: claim.extraction.modelVersion,
+    promptVersion: claim.extraction.promptVersion,
+  });
 }
 
 /**
  * Validate untrusted extracted output against its source. Rejects malformed
- * claims, fabricated quotes, mismatched spans and unknown fields such as a
- * truth verdict.
+ * claims, fabricated quotes, mismatched spans, verbatim annotations the
+ * passage does not contain, an ID that does not match the claim fields, and
+ * unknown fields such as a truth verdict.
  */
 export function parseClaim(input: unknown, source: ClaimSource): Claim {
   const parsed = ClaimSchema.safeParse(input);
@@ -208,6 +242,9 @@ export function parseClaim(input: unknown, source: ClaimSource): Claim {
     throw new InvalidClaimError("structured output failed validation");
   }
   assertGrounded(parsed.data, source);
+  if (parsed.data.id !== canonicalClaimId(parsed.data)) {
+    throw new InvalidClaimError("id does not match the claim fields");
+  }
   return parsed.data;
 }
 
@@ -225,20 +262,13 @@ export interface ClaimDraft {
 }
 
 /**
- * Build, validate and identify one claim. The ID is computed, never supplied;
- * grounding is checked against `source` exactly as {@link parseClaim} does.
+ * Build, validate and identify one claim. The ID is computed from the
+ * validated, normalised fields, never supplied; grounding is checked against
+ * `source` exactly as {@link parseClaim} does.
  */
 export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
-  const candidate = {
+  const body = ClaimBodySchema.parse({
     schemaVersion: CLAIM_SCHEMA_VERSION,
-    id: claimIdFor({
-      sourceVersion: draft.sourceVersion,
-      start: draft.span.start,
-      end: draft.span.end,
-      statement: draft.statement,
-      modelVersion: draft.extraction.modelVersion,
-      promptVersion: draft.extraction.promptVersion,
-    }),
     statement: draft.statement,
     claimType: draft.claimType,
     sourceVersion: draft.sourceVersion,
@@ -249,8 +279,16 @@ export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
     entities: draft.entities ?? [],
     dates: draft.dates ?? [],
     extraction: draft.extraction,
-  };
-  return parseClaim(candidate, source);
+  });
+  const id = claimIdFor({
+    sourceVersion: body.sourceVersion,
+    start: body.span.start,
+    end: body.span.end,
+    statement: body.statement,
+    modelVersion: body.extraction.modelVersion,
+    promptVersion: body.extraction.promptVersion,
+  });
+  return parseClaim({ ...body, id }, source);
 }
 
 /** Synthetic source text used by the documentation examples and their tests. */
