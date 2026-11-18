@@ -159,6 +159,10 @@ export function transcriptText(segments: TranscriptSegment[]): string {
     .join(" ");
 }
 
+function isPermanentHttpFailure(error: unknown): boolean {
+  return error instanceof DiscoveryFetchError && /HTTP status (40[134]|410)/.test(error.message);
+}
+
 export class SubstackContentCollector {
   private readonly base: URL;
   private readonly publicationOptions: BoundedFetchOptions;
@@ -217,7 +221,9 @@ export class SubstackContentCollector {
       try {
         transcript = await this.fetchTranscript(upload.transcription.cdn_url, signal);
       } catch (error) {
-        return this.failure(item, error);
+        // A missing, expired or forbidden transcript document means no usable
+        // supplied transcript; only transient failures abort collection.
+        if (!isPermanentHttpFailure(error)) return this.failure(item, error);
       }
       if (transcript) {
         const text = [articleText, transcriptText(transcript)].filter(Boolean).join("\n\n");
@@ -287,7 +293,8 @@ export class SubstackContentCollector {
     }
     const parsed = SegmentsSchema.safeParse(raw);
     if (!parsed.success) return undefined;
-    return parsed.data.map(({ start, end, text }) => ({ start, end, text }));
+    const segments = parsed.data.map(({ start, end, text }) => ({ start, end, text }));
+    return transcriptText(segments) ? segments : undefined;
   }
 
   /** Audio before video; only HTTPS audio references are returned. */

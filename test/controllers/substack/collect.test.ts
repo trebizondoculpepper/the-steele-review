@@ -200,6 +200,33 @@ describe("SubstackContentCollector", () => {
     expect(JSON.stringify(transient)).not.toContain("example-pub.substack.com/api");
   });
 
+  it.each([403, 404, 410])(
+    "treats a transcript document returning %i as missing, not the post",
+    async (status) => {
+      const { c } = collector({
+        [POST_PATH]: {
+          ...basePost,
+          podcast_url: "https://api.substack.com/audio/1.mp3",
+          podcastUpload: transcribed,
+        },
+        cdn: status,
+      });
+      expect((await c.collect(item)).kind).toBe("transcription-required");
+    },
+  );
+
+  it("rejects a transcript with no usable text", async () => {
+    const { c } = collector({
+      [POST_PATH]: {
+        ...basePost,
+        podcast_url: "https://api.substack.com/audio/1.mp3",
+        podcastUpload: transcribed,
+      },
+      cdn: [{ start: 0, end: 10, text: "  " }],
+    });
+    expect((await c.collect(item)).kind).toBe("transcription-required");
+  });
+
   it("reports a transient transcript failure rather than requesting transcription", async () => {
     const { c } = collector({
       [POST_PATH]: { ...basePost, podcastUpload: transcribed },
