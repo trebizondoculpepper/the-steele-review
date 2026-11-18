@@ -2,17 +2,17 @@
 
 ## Agreed direction
 
-| Decision                                          | Rationale                                          |
-| ------------------------------------------------- | -------------------------------------------------- |
-| Project name: The Steele Review                   | User-provided name                                 |
-| Primary language: TypeScript                      | User preference, including readable error traces   |
-| Vite+ tooling                                     | Original project setup request                     |
-| Mac development; Docker execution on Raspberry Pi | User's intended operating environment              |
-| Existing remote NATS and Elasticsearch            | Infrastructure already available on another server |
-| Event-driven processing with separated components | Independent stages and recoverable execution       |
-| Accumulate historical source content              | Recurrence, narrative evolution, and comparisons   |
-| Automatic Substack publication                    | Minimise routine human interaction                 |
-| Skip cases that fail verification                 | Manual review is deferred                          |
+| Decision                                          | Rationale                                                                                                  |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Project name: The Steele Review                   | User-provided name                                                                                         |
+| Application and test code: TypeScript             | Other languages require a justified, agreed exception; scripts automation may use suitable local languages |
+| Vite+ tooling                                     | Original project setup request                                                                             |
+| Mac development; Docker execution on Raspberry Pi | User's intended operating environment                                                                      |
+| Existing remote NATS and Elasticsearch            | Infrastructure already available on another server                                                         |
+| Event-driven processing with separated components | Independent stages and recoverable execution                                                               |
+| Accumulate historical source content              | Recurrence, narrative evolution, and comparisons                                                           |
+| Automatic Substack publication                    | Minimise routine human interaction                                                                         |
+| Skip cases that fail verification                 | Manual review is deferred                                                                                  |
 
 ## Proposed implementation choices
 

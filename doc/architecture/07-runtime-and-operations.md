@@ -2,7 +2,7 @@
 
 ## Language and tooling
 
-Use TypeScript as the primary implementation language on Node.js. Use Vite+ for development tooling, checks, and tests; backend workers execute under Node rather than requiring a Vite frontend server. The repository's initial tooling setup was interrupted and must be inspected and completed separately.
+Use TypeScript as the primary implementation language on Node.js. Use Vite+ for development tooling, checks, and tests; backend workers execute under Node rather than requiring a Vite frontend server. The initial backend baseline includes compilation, type checking, Vite+ formatting/lint checks, and a read-only connectivity service.
 
 Compile with source maps and run Node with source-map support so production stack traces identify TypeScript locations. Validate configuration, events, and model outputs at runtime using a schema library to be selected. Application and test code must be TypeScript. Other implementation languages require a specific documented benefit and explicit agreement to an exception. Files under `scripts/` may use shell, Python, or any suitable language supported by the local system for operational/development automation; application logic must not be moved there to bypass the TypeScript requirement. Configuration and documentation retain their native formats.
 
