@@ -98,6 +98,30 @@ describe("splitPassages", () => {
     }
   });
 
+  it("keeps surrogate pairs intact and stays bounded when minChars equals maxChars", () => {
+    const emoji = "🙂".repeat(1200);
+    const emojiPassages = splitPassages(input(emoji), {
+      maxChars: 1000,
+      overlapChars: 100,
+      minChars: 1000,
+    }).passages;
+    expect(emojiPassages.length).toBeGreaterThan(1);
+    for (const passage of emojiPassages) {
+      expect(passage.text.length).toBeLessThanOrEqual(1000);
+      expect(passage.text.isWellFormed()).toBe(true);
+      expect(emoji.slice(passage.start, passage.end)).toBe(passage.text);
+    }
+
+    const unbroken = "a".repeat(3500);
+    for (const passage of splitPassages(input(unbroken), {
+      maxChars: 1000,
+      overlapChars: 100,
+      minChars: 1000,
+    }).passages) {
+      expect(passage.text.length).toBeLessThanOrEqual(1000);
+    }
+  });
+
   it("retains the supplied timestamps and omits missing ones", () => {
     const withDates = splitPassages(
       input("A short synthetic post.", {

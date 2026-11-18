@@ -184,8 +184,12 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
   while (start < text.length) {
     const limit = Math.min(start + maxChars, text.length);
     let end = limit;
-    if (limit < text.length && minChars < maxChars) {
-      end = chooseCut(text, start + Math.max(minChars, 1), limit);
+    if (limit < text.length) {
+      // Clamp the boundary window below the limit so `chooseCut` always has a
+      // non-empty range and therefore always applies surrogate-pair safety,
+      // including when minChars === maxChars would otherwise leave none.
+      const from = Math.min(start + Math.max(minChars, 1), limit - 1);
+      end = chooseCut(text, from, limit);
     }
     end = Math.max(start + 1, Math.min(end, text.length));
     spans.push({ start, end });
