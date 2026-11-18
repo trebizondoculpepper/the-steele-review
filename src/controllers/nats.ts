@@ -36,6 +36,21 @@ export class NatsPublishError extends Error {
   }
 }
 
+/** One delivered JetStream message, with acknowledgment controls. */
+export interface DeliveredMessage {
+  data: Uint8Array;
+  /** 1 on first delivery, incremented on each redelivery. */
+  deliveryCount: number;
+  /** Acknowledge and wait for the server to confirm. */
+  ack(): Promise<void>;
+  /** Ask for redelivery after a delay. */
+  nak(delayMs?: number): void;
+  /** Stop redelivering this message. */
+  term(): void;
+  /** Extend the acknowledgment deadline while work continues. */
+  working(): void;
+}
+
 export interface PublishReceipt {
   stream: string;
   seq: number;
@@ -204,6 +219,52 @@ export class NatsController {
   ): Promise<PublishReceipt> {
     const js = jetstream(this.requireConnection());
     return publishWithRetry(js, assertPublishSubject(subject), payload, options);
+  }
+
+  /**
+   * Consume a provisioned durable consumer one message at a time until the
+   * signal aborts. The handler owns acknowledgment; a handler error naks the
+   * message for redelivery. Never creates the stream or consumer.
+   */
+  async consume(
+    stream: string,
+    durable: string,
+    handler: (message: DeliveredMessage) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const js = jetstream(this.requireConnection());
+    let consumer;
+    try {
+      consumer = await js.consumers.get(stream, durable);
+    } catch {
+      throw new NatsPublishError("no-stream", false);
+    }
+    const messages = await consumer.consume({ max_messages: 1 });
+    const stop = () => void messages.stop();
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      for await (const m of messages) {
+        const delivered: DeliveredMessage = {
+          data: m.data,
+          deliveryCount: m.info.deliveryCount,
+          ack: async () => {
+            await m.ackAck();
+          },
+          nak: (delayMs) => m.nak(delayMs),
+          term: () => m.term(),
+          working: () => m.working(),
+        };
+        try {
+          await handler(delivered);
+        } catch {
+          m.nak(1_000);
+        }
+        if (signal.aborted) break;
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+      stop();
+    }
   }
 
   /** JetStream manager for explicit provisioning tools; never used by publish(). */
