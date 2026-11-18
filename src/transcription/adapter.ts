@@ -359,7 +359,10 @@ export class TranscriptionAdapter {
         cleanup: release,
       };
     } catch (error) {
-      await release();
+      // The job is no longer active, so a sweep may remove it if this
+      // deletion fails; report the original failure, not the cleanup error.
+      this.activeJobs.delete(jobName);
+      await release().catch(() => undefined);
       throw error;
     }
   }
@@ -383,7 +386,11 @@ export class TranscriptionAdapter {
         const location = response.headers.get("location");
         await response.body?.cancel();
         if (!location) throw new TranscriptionError("download-failed", false);
-        url = new URL(location, url);
+        try {
+          url = new URL(location, url);
+        } catch {
+          throw new TranscriptionError("download-failed", false);
+        }
         continue;
       }
       break;

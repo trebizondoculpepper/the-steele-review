@@ -324,6 +324,38 @@ describe("TranscriptionAdapter", () => {
     await job.cleanup();
   });
 
+  it("classifies a malformed redirect as a download failure", async () => {
+    const { a } = adapter(
+      {},
+      {
+        [AUDIO.url]: () => new Response(null, { status: 302, headers: { location: "https://[" } }),
+      },
+    );
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "download-failed" });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("lets a sweep remove a failed job whose cleanup failed", async () => {
+    let clock = Date.now();
+    const { p } = provider(async (input) => {
+      // Make the job directory undeletable for the first cleanup attempt.
+      const { chmod } = await import("node:fs/promises");
+      const { dirname } = await import("node:path");
+      await chmod(dirname(input.path), 0o500);
+      setTimeout(() => void chmod(dirname(input.path), 0o700), 50);
+      throw new Error("provider down");
+    });
+    const { a } = adapter(
+      { provider: p, retentionMs: 1_000, now: () => clock },
+      { [AUDIO.url]: bytes("A") },
+    );
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "provider-failed" });
+    await new Promise((r) => setTimeout(r, 100));
+    clock += 60_000;
+    expect(await a.sweepExpired()).toBe(1);
+    expect(await jobs()).toHaveLength(0);
+  });
+
   it("treats a rate-limited download as retryable", async () => {
     const { a } = adapter({}, { [AUDIO.url]: 429 });
     await expect(a.transcribe([AUDIO])).rejects.toMatchObject({
