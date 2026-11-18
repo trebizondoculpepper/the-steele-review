@@ -1,0 +1,19 @@
+# The Steele Review architecture
+
+The Steele Review monitors selected Substack publications, archives and indexes their content, and automatically publishes evidence-based criticism to a separate Substack publication. Historical coverage helps explain recurring themes, changing narratives, and inconsistencies in specific claims.
+
+## Document map
+
+| Document                                                           | Theme                                                       |
+| ------------------------------------------------------------------ | ----------------------------------------------------------- |
+| [System overview](01-system-overview.md)                           | Scope, boundaries, and event flow                           |
+| [Ingestion and archiving](02-ingestion-and-archiving.md)           | Detection, extraction, audio, and historical imports        |
+| [Storage and retrieval](03-storage-and-retrieval.md)               | Elasticsearch, source records, and historical comparison    |
+| [Analysis and verification](04-analysis-and-verification.md)       | Research, drafting, automated checks, and skips             |
+| [Events and reliability](05-events-and-reliability.md)             | NATS subjects, retries, idempotency, and workflow state     |
+| [Substack integration](06-substack-integration.md)                 | Reading, authenticated publishing, and reconciliation       |
+| [Runtime and operations](07-runtime-and-operations.md)             | TypeScript tooling, Docker, Raspberry Pi, and observability |
+| [Decisions and open questions](08-decisions-and-open-questions.md) | Agreed direction and unresolved implementation details      |
+| [Suggested software choices](09-software-choices.md)               | Candidate libraries and workflow tooling to evaluate        |
+
+These documents capture the architecture discussion, not a claim that the system is implemented. “Proposed” choices are implementation recommendations awaiting validation; agreed direction is listed in the decisions document.
