@@ -6,6 +6,7 @@ import {
 } from "../../content/substack-item.js";
 import {
   DiscoveryFetchError,
+  abortableSleep,
   boundedFetchText,
   parseConfiguredUrl,
   type BoundedFetchOptions,
@@ -88,20 +89,6 @@ const ArchivePageSchema = z.looseObject({
   nextCursor: z.string().min(1).nullable().optional(),
 });
 
-const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
-  new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
-  });
-
 function toIso(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   const time = Date.parse(value);
@@ -160,7 +147,7 @@ export class SubstackArchiveDiscovery {
       .int()
       .positive()
       .parse(config.maxPages ?? 1_000);
-    this.sleep = config.sleep ?? defaultSleep;
+    this.sleep = config.sleep ?? abortableSleep;
     this.fetchOptions = {
       allowedHosts: new Set([this.endpoint.hostname.toLowerCase()]),
       timeoutMs: config.timeoutMs ?? 15_000,
@@ -255,8 +242,10 @@ export class SubstackArchiveDiscovery {
         }
       }
 
+      // An empty page with a cursor is not the end: keep following it. The
+      // repeated-cursor check and page cap bound any loop of empty pages.
       const next = page!.nextCursor ?? undefined;
-      if (!next || page!.posts.length === 0) {
+      if (!next) {
         options.onComplete?.({ reason: "exhausted", ...stats });
         return;
       }

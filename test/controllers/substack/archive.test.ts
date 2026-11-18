@@ -167,6 +167,16 @@ describe("SubstackArchiveDiscovery", () => {
     expect(summary).toMatchObject({ reason: "exhausted", duplicates: 1 });
   });
 
+  it("follows a cursor from an empty page", async () => {
+    const { discovery } = controller({
+      "": { posts: [], nextCursor: "c1" },
+      c1: { posts: POSTS.slice(0, 2), nextCursor: null },
+    });
+    const { items, summary } = await run(discovery, { maxItems: 10 });
+    expect(items).toHaveLength(2);
+    expect(summary).toMatchObject({ reason: "exhausted", pages: 2 });
+  });
+
   it("reports a repeated cursor as incomplete rather than looping", async () => {
     const { discovery } = controller({
       "": { posts: POSTS.slice(0, 3), nextCursor: "c1" },
