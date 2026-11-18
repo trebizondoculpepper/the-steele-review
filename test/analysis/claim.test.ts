@@ -87,6 +87,18 @@ describe("createClaim", () => {
     expect(reExtracted.id).not.toBe(first.id);
   });
 
+  it("encodes identity fields without ambiguous delimiters", () => {
+    const base = {
+      sourceVersion: source.sourceVersion,
+      start: 0,
+      end: 10,
+      promptVersion: "claim-extraction-v1",
+    };
+    const embedded = claimIdFor({ ...base, statement: "a\u0000b", modelVersion: "c" });
+    const shifted = claimIdFor({ ...base, statement: "a", modelVersion: "b\u0000c" });
+    expect(embedded).not.toBe(shifted);
+  });
+
   it("derives the ID from the validated, trimmed statement", () => {
     const padded = createClaim({ ...draft(), statement: `  ${draft().statement}  ` }, source);
     const trimmed = createClaim(draft(), source);

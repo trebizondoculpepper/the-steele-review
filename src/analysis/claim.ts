@@ -186,8 +186,10 @@ export function claimIdFor(input: {
   promptVersion: string;
 }): string {
   const { sourceVersion, start, end, statement, modelVersion, promptVersion } = input;
+  // JSON encoding makes the field boundaries unambiguous: a delimiter embedded
+  // in one field cannot be confused with the start of the next.
   return sourceVersionFor(
-    `${sourceVersion}\u0000${start}\u0000${end}\u0000${statement}\u0000${modelVersion}\u0000${promptVersion}`,
+    JSON.stringify([sourceVersion, start, end, statement, modelVersion, promptVersion]),
   );
 }
 
