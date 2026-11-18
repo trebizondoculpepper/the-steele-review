@@ -32,7 +32,9 @@ import { sourceVersionFor } from "./fulltext-document.js";
  *   silently mixed with passages produced by different rules.
  *
  * Timestamps are passed through when the source supplies them and omitted
- * otherwise; splitting never invents one.
+ * otherwise; splitting never invents one. A supplied transcript may carry
+ * timed segments: each passage keeps the timings that overlap its span, so a
+ * reader can return to the media at the right offset.
  */
 
 export const PASSAGE_SPLITTER_VERSION = 1;
@@ -50,6 +52,27 @@ const IsoDateSchema = z.iso.datetime({ offset: true });
 
 const SOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/;
 
+/**
+ * A timed transcript segment, aligned to a character range of `text`.
+ * Offsets are UTF-16 code units; `startSeconds`/`endSeconds` are taken from
+ * the supplied transcript and are never derived from character counts.
+ */
+export interface TranscriptTiming {
+  /** Inclusive start offset in `text`. */
+  start: number;
+  /** Exclusive end offset in `text`. */
+  end: number;
+  /** Seconds from the start of the media. */
+  startSeconds: number;
+  endSeconds: number;
+}
+
+/** Supplied media timing retained on a passage, never invented. */
+export interface PassageTranscriptTiming {
+  startSeconds: number;
+  endSeconds: number;
+}
+
 export interface PassageInput {
   /** Stable logical source identity, e.g. `substack/<publicationId>/<postId>`. */
   sourceId: string;
@@ -61,6 +84,8 @@ export interface PassageInput {
   publishedAt?: string;
   /** Last update time, when the source supplies it. */
   updatedAt?: string;
+  /** Timed transcript segments aligned to `text`, when the source supplies them. */
+  transcriptTimings?: TranscriptTiming[];
 }
 
 export interface Passage {
@@ -79,6 +104,8 @@ export interface Passage {
   splitterVersion: number;
   publishedAt?: string;
   updatedAt?: string;
+  /** Supplied transcript timings overlapping this passage, when any. */
+  transcriptTimings?: PassageTranscriptTiming[];
 }
 
 export interface PassageSet {
@@ -151,6 +178,22 @@ function chooseCut(text: string, from: number, to: number): number {
   return splitsSurrogatePair(text, to) ? to - 1 : to;
 }
 
+/**
+ * Timings that overlap a passage span, in supplied order. Returns undefined
+ * when the source supplied none, so the field is omitted rather than empty.
+ */
+function overlappingTimings(
+  timings: TranscriptTiming[] | undefined,
+  start: number,
+  end: number,
+): { transcriptTimings: PassageTranscriptTiming[] } | undefined {
+  if (timings === undefined || timings.length === 0) return undefined;
+  const overlapping = timings
+    .filter((timing) => timing.start < end && timing.end > start)
+    .map(({ startSeconds, endSeconds }) => ({ startSeconds, endSeconds }));
+  return overlapping.length === 0 ? undefined : { transcriptTimings: overlapping };
+}
+
 export interface PassageOptions {
   maxChars?: number;
   overlapChars?: number;
@@ -192,6 +235,38 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
     const value = input[field];
     if (value !== undefined && !IsoDateSchema.safeParse(value).success) {
       throw new InvalidPassageInputError(`${field} must be an ISO 8601 datetime with offset`);
+    }
+  }
+  const timings = input.transcriptTimings;
+  if (timings !== undefined) {
+    if (!Array.isArray(timings)) {
+      throw new InvalidPassageInputError("transcriptTimings must be an array");
+    }
+    let previousStart = -1;
+    for (const timing of timings) {
+      const validOffsets =
+        Number.isInteger(timing.start) &&
+        Number.isInteger(timing.end) &&
+        timing.start >= 0 &&
+        timing.end > timing.start &&
+        timing.end <= input.text.length;
+      const validSeconds =
+        Number.isFinite(timing.startSeconds) &&
+        Number.isFinite(timing.endSeconds) &&
+        timing.startSeconds >= 0 &&
+        timing.endSeconds > timing.startSeconds;
+      if (!validOffsets) {
+        throw new InvalidPassageInputError("transcript timing offsets must lie within the text");
+      }
+      if (!validSeconds) {
+        throw new InvalidPassageInputError(
+          "transcript timing seconds must be finite, non-negative and increasing",
+        );
+      }
+      if (timing.start < previousStart) {
+        throw new InvalidPassageInputError("transcript timings must be ordered by offset");
+      }
+      previousStart = timing.start;
     }
   }
 
@@ -236,6 +311,7 @@ export function splitPassages(input: PassageInput, options: PassageOptions = {})
       splitterVersion: PASSAGE_SPLITTER_VERSION,
       ...(input.publishedAt === undefined ? {} : { publishedAt: input.publishedAt }),
       ...(input.updatedAt === undefined ? {} : { updatedAt: input.updatedAt }),
+      ...overlappingTimings(input.transcriptTimings, spanStart, spanEnd),
     };
   });
 

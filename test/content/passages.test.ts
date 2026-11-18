@@ -168,6 +168,53 @@ describe("splitPassages", () => {
   });
 });
 
+describe("transcript timings", () => {
+  const text = "word ".repeat(800);
+  const timings = [
+    { start: 0, end: 1800, startSeconds: 0, endSeconds: 120 },
+    { start: 1800, end: 3600, startSeconds: 120, endSeconds: 240 },
+  ];
+
+  it("retains the supplied timings that overlap each passage", () => {
+    const { passages } = splitPassages(input(text, { transcriptTimings: timings }));
+    expect(passages.length).toBeGreaterThan(2);
+    for (const passage of passages) {
+      const expected = timings
+        .filter((timing) => timing.start < passage.end && timing.end > passage.start)
+        .map(({ startSeconds, endSeconds }) => ({ startSeconds, endSeconds }));
+      expect(passage.transcriptTimings ?? []).toEqual(expected);
+    }
+    expect(passages[0]!.transcriptTimings).toEqual([{ startSeconds: 0, endSeconds: 120 }]);
+    expect(passages.at(-1)!.transcriptTimings).toEqual([{ startSeconds: 120, endSeconds: 240 }]);
+  });
+
+  it("omits the field when no timing overlaps or none was supplied", () => {
+    const early = [{ start: 0, end: 10, startSeconds: 0, endSeconds: 1 }];
+    const { passages } = splitPassages(input(text, { transcriptTimings: early }));
+    expect(passages.at(-1)).not.toHaveProperty("transcriptTimings");
+    expect(passages[0]!.transcriptTimings).toEqual([{ startSeconds: 0, endSeconds: 1 }]);
+    expect(splitPassages(input(text)).passages[0]).not.toHaveProperty("transcriptTimings");
+  });
+
+  it.each([
+    ["offset past the text", [{ start: 0, end: text.length + 1, startSeconds: 0, endSeconds: 1 }]],
+    ["inverted offsets", [{ start: 10, end: 10, startSeconds: 0, endSeconds: 1 }]],
+    ["negative seconds", [{ start: 0, end: 10, startSeconds: -1, endSeconds: 1 }]],
+    ["non-increasing seconds", [{ start: 0, end: 10, startSeconds: 5, endSeconds: 5 }]],
+    [
+      "unordered offsets",
+      [
+        { start: 20, end: 30, startSeconds: 2, endSeconds: 3 },
+        { start: 0, end: 10, startSeconds: 0, endSeconds: 1 },
+      ],
+    ],
+  ])("rejects %s", (_name, transcriptTimings) => {
+    expect(() => splitPassages(input(text, { transcriptTimings }))).toThrow(
+      InvalidPassageInputError,
+    );
+  });
+});
+
 describe("passage identity", () => {
   it("derives stable IDs that change with the splitter version", () => {
     const base = {
