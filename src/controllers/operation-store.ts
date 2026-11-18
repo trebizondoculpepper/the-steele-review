@@ -18,7 +18,7 @@ import { z } from "zod";
  * proceed during writes. Errors carry codes only: no paths or payloads.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export interface OperationStoreConfig {
   /** Absolute path of the SQLite file on a local persistent volume (runtime configuration). */
@@ -41,6 +41,36 @@ export type ClaimResult =
   | { kind: "busy"; leaseExpiresAt: number }
   | { kind: "exhausted"; errorCode?: string };
 
+export type PublicationStatus =
+  | "intent"
+  | "draft-saved"
+  | "uncertain"
+  | "unpublished"
+  | "published";
+
+/** Identity of the exact artifact approved for publication. */
+export interface PublicationArtifact {
+  /** Content hash of the approved draft, e.g. sha256:<hex>. */
+  hash: string;
+  /** Immutable artifact reference (repository, commit, path, hash). */
+  ref: unknown;
+}
+
+export interface PublicationReceipt {
+  url: string;
+  publishedAt: string;
+  destinationPostId?: string;
+}
+
+export interface PublicationState {
+  key: string;
+  status: PublicationStatus;
+  artifactHash: string;
+  artifact: unknown;
+  destinationDraftId?: string;
+  receipt?: PublicationReceipt;
+}
+
 export interface PendingEventInput {
   /** Stable event identity; the same ID is reused on every publication retry. */
   eventId: string;
@@ -60,7 +90,10 @@ export type OperationStoreErrorCode =
   | "not-owner"
   | "busy"
   | "unsupported-schema"
-  | "event-conflict";
+  | "event-conflict"
+  | "artifact-mismatch"
+  | "destination-conflict"
+  | "invalid-transition";
 
 export class OperationStoreError extends Error {
   constructor(readonly code: OperationStoreErrorCode) {
@@ -72,6 +105,19 @@ export class OperationStoreError extends Error {
 const Key = z.string().min(1).max(512);
 const Owner = z.string().min(1).max(200);
 const Positive = z.number().int().positive();
+
+const MIGRATION_V2 = `
+CREATE TABLE IF NOT EXISTS publications (
+  key TEXT PRIMARY KEY REFERENCES operations(key),
+  artifact_hash TEXT NOT NULL,
+  artifact TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('intent', 'draft-saved', 'uncertain', 'unpublished', 'published')),
+  destination_draft_id TEXT,
+  receipt TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS operations (
@@ -137,7 +183,13 @@ export class OperationStore {
     if (version < 1) {
       this.transaction(() => {
         this.db.exec(MIGRATION_V1);
-        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        this.db.exec("PRAGMA user_version = 1");
+      });
+    }
+    if (version < 2) {
+      this.transaction(() => {
+        this.db.exec(MIGRATION_V2);
+        this.db.exec("PRAGMA user_version = 2");
       });
     }
   }
@@ -216,6 +268,49 @@ export class OperationStore {
         return { kind: "exhausted", errorCode: row.error_code ?? "attempts-exhausted" };
       }
       const attempt = row.attempts + 1;
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
+        )
+        .run(owner, leaseExpiresAt, attempt, now, key);
+      return { kind: "claimed", attempt, leaseExpiresAt, claim: { key, owner, attempt } };
+    });
+  }
+
+  /**
+   * Claim a publication operation for reconciliation even if its attempts
+   * are exhausted. Allowed only while a destination draft exists and the
+   * outcome is unresolved (`draft-saved` or `uncertain`): an external side
+   * effect may already have happened, so the state must be read back rather
+   * than abandoned. A live lease held by another owner is still respected.
+   */
+  claimForReconciliation(key: string, owner: string, leaseMs: number): ClaimResult {
+    if (
+      !Key.safeParse(key).success ||
+      !Owner.safeParse(owner).success ||
+      !Positive.safeParse(leaseMs).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction<ClaimResult>(() => {
+      const now = this.now();
+      const row = this.row(key);
+      const publication = this.publicationRow(key);
+      if (
+        !row ||
+        !publication?.destination_draft_id ||
+        (publication.status !== "draft-saved" && publication.status !== "uncertain")
+      ) {
+        throw new OperationStoreError("invalid-transition");
+      }
+      if (row.status === "completed") {
+        return { kind: "completed", artifact: JSON.parse(row.artifact ?? "null") };
+      }
+      if (row.status === "claimed" && (row.lease_expires_at ?? 0) > now) {
+        return { kind: "busy", leaseExpiresAt: row.lease_expires_at ?? now };
+      }
+      const attempt = row.attempts + 1;
+      const leaseExpiresAt = now + leaseMs;
       this.db
         .prepare(
           "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
@@ -395,6 +490,153 @@ export class OperationStore {
         "UPDATE pending_events SET attempts = attempts + 1, next_attempt_at = ? WHERE event_id = ? AND status = 'pending'",
       )
       .run(now + Math.max(0, delayMs), eventId);
+  }
+
+  private publicationRow(key: string):
+    | {
+        status: PublicationStatus;
+        artifact_hash: string;
+        artifact: string;
+        destination_draft_id: string | null;
+        receipt: string | null;
+      }
+    | undefined {
+    return this.db
+      .prepare(
+        "SELECT status, artifact_hash, artifact, destination_draft_id, receipt FROM publications WHERE key = ?",
+      )
+      .get(key) as never;
+  }
+
+  private toPublicationState(key: string): PublicationState | undefined {
+    const row = this.publicationRow(key);
+    if (!row) return undefined;
+    return {
+      key,
+      status: row.status,
+      artifactHash: row.artifact_hash,
+      artifact: JSON.parse(row.artifact),
+      ...(row.destination_draft_id ? { destinationDraftId: row.destination_draft_id } : {}),
+      ...(row.receipt ? { receipt: JSON.parse(row.receipt) as PublicationReceipt } : {}),
+    };
+  }
+
+  /** Run a publication transition for the current holder of the operation's claim. */
+  private publicationTransition(
+    claim: OperationClaim,
+    work: (now: number) => void,
+  ): PublicationState {
+    return this.transaction(() => {
+      if (!this.holds(this.row(claim.key), claim)) throw new OperationStoreError("not-owner");
+      work(this.now());
+      return this.toPublicationState(claim.key)!;
+    });
+  }
+
+  /**
+   * Persist publication intent for the exact approved artifact before any
+   * external side effect. Repeating with the same artifact returns the stored
+   * state (including any known destination draft); a different artifact is
+   * refused.
+   */
+  recordPublicationIntent(claim: OperationClaim, artifact: PublicationArtifact): PublicationState {
+    if (!artifact.hash || artifact.hash.length > 200) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.publicationTransition(claim, (now) => {
+      const existing = this.publicationRow(claim.key);
+      if (existing) {
+        if (existing.artifact_hash !== artifact.hash) {
+          throw new OperationStoreError("artifact-mismatch");
+        }
+        return;
+      }
+      this.db
+        .prepare(
+          "INSERT INTO publications (key, artifact_hash, artifact, status, created_at, updated_at) VALUES (?, ?, ?, 'intent', ?, ?)",
+        )
+        .run(claim.key, artifact.hash, JSON.stringify(artifact.ref ?? null), now, now);
+    });
+  }
+
+  /**
+   * Record the destination draft ID. Once known it is never replaced: the
+   * same ID is a no-op and a different one is refused, so a retry reuses the
+   * existing draft instead of creating another.
+   */
+  saveDestinationDraft(claim: OperationClaim, draftId: string): PublicationState {
+    if (!draftId || draftId.length > 200) throw new OperationStoreError("invalid-input");
+    return this.publicationTransition(claim, (now) => {
+      const row = this.publicationRow(claim.key);
+      if (!row) throw new OperationStoreError("invalid-transition");
+      if (row.destination_draft_id) {
+        if (row.destination_draft_id !== draftId) {
+          throw new OperationStoreError("destination-conflict");
+        }
+        return;
+      }
+      if (row.status !== "intent") throw new OperationStoreError("invalid-transition");
+      this.db
+        .prepare(
+          "UPDATE publications SET destination_draft_id = ?, status = 'draft-saved', updated_at = ? WHERE key = ?",
+        )
+        .run(draftId, now, claim.key);
+    });
+  }
+
+  /** Record that a publish attempt's outcome is unknown (e.g. lost response). */
+  markPublicationUncertain(claim: OperationClaim): PublicationState {
+    return this.publicationTransition(claim, (now) => {
+      const row = this.publicationRow(claim.key);
+      if (!row?.destination_draft_id) throw new OperationStoreError("invalid-transition");
+      if (row.status === "published" || row.status === "uncertain") return;
+      this.db
+        .prepare("UPDATE publications SET status = 'uncertain', updated_at = ? WHERE key = ?")
+        .run(now, claim.key);
+    });
+  }
+
+  /** Record that read-back established the draft is not published. */
+  markPublicationUnpublished(claim: OperationClaim): PublicationState {
+    return this.publicationTransition(claim, (now) => {
+      const row = this.publicationRow(claim.key);
+      if (!row?.destination_draft_id) throw new OperationStoreError("invalid-transition");
+      if (row.status === "published") throw new OperationStoreError("invalid-transition");
+      this.db
+        .prepare("UPDATE publications SET status = 'unpublished', updated_at = ? WHERE key = ?")
+        .run(now, claim.key);
+    });
+  }
+
+  /**
+   * Record a confirmed publication receipt. Repeating with the same receipt
+   * is a no-op; a different receipt for a published item is refused.
+   */
+  confirmPublished(claim: OperationClaim, receipt: PublicationReceipt): PublicationState {
+    if (!receipt.url || !receipt.publishedAt) throw new OperationStoreError("invalid-input");
+    const serialised = JSON.stringify({
+      url: receipt.url,
+      publishedAt: receipt.publishedAt,
+      ...(receipt.destinationPostId ? { destinationPostId: receipt.destinationPostId } : {}),
+    });
+    return this.publicationTransition(claim, (now) => {
+      const row = this.publicationRow(claim.key);
+      if (!row?.destination_draft_id) throw new OperationStoreError("invalid-transition");
+      if (row.status === "published") {
+        if (row.receipt !== serialised) throw new OperationStoreError("destination-conflict");
+        return;
+      }
+      this.db
+        .prepare(
+          "UPDATE publications SET status = 'published', receipt = ?, updated_at = ? WHERE key = ?",
+        )
+        .run(serialised, now, claim.key);
+    });
+  }
+
+  /** Read-only view of a publication's state. */
+  publicationState(key: string): PublicationState | undefined {
+    return this.toPublicationState(key);
   }
 
   close(): void {
