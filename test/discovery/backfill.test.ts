@@ -92,6 +92,32 @@ describe("parseBackfillArgs", () => {
     expect((error as Error).message).not.toContain("example-pub.substack");
   });
 
+  it("compares date bounds as instants, not strings", () => {
+    // 10:00+02:00 is 08:00Z, which is before 09:00Z even though the string sorts after it.
+    expect(
+      parseBackfillArgs([
+        ...BASE,
+        "--max-items",
+        "5",
+        "--since",
+        "2025-01-01T10:00:00+02:00",
+        "--until",
+        "2025-01-01T09:00:00Z",
+      ]).since,
+    ).toEqual(new Date("2025-01-01T08:00:00Z"));
+    expect(() =>
+      parseBackfillArgs([
+        ...BASE,
+        "--max-items",
+        "5",
+        "--since",
+        "2025-01-01T09:00:00Z",
+        "--until",
+        "2025-01-01T10:00:00+02:00",
+      ]),
+    ).toThrow(BackfillUsageError);
+  });
+
   it("rejects unknown options", () => {
     expect(() => parseBackfillArgs([...BASE, "--max-items", "5", "--everything"])).toThrow(
       BackfillUsageError,

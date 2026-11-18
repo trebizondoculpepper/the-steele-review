@@ -26,7 +26,7 @@ const OptionsSchema = z
     since: z.iso.datetime({ offset: true }).optional(),
     until: z.iso.datetime({ offset: true }).optional(),
   })
-  .refine((o) => !o.since || !o.until || o.since <= o.until, {
+  .refine((o) => !o.since || !o.until || Date.parse(o.since) <= Date.parse(o.until), {
     message: "since must not be after until",
   });
 
