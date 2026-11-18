@@ -167,6 +167,47 @@ describe("runDiscovery", () => {
     expect(closed).toBe(true);
   });
 
+  it("does not request another item after cancellation during publish", async () => {
+    const abort = new AbortController();
+    let requested = 0;
+    const counting: AsyncIterable<SubstackItem> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          requested++;
+          return { done: false, value: item(requested) };
+        },
+      }),
+    };
+    const summary = await runDiscovery({
+      source: counting,
+      reason: "live",
+      createEvent,
+      publisher: new FakePublisher(() => abort.abort()),
+      signal: abort.signal,
+    });
+    expect(summary).toMatchObject({ status: "cancelled", published: 1 });
+    expect(requested).toBe(1);
+  });
+
+  it("reports a source that fails to start as a source failure", async () => {
+    const broken: AsyncIterable<SubstackItem> = {
+      [Symbol.asyncIterator]: () => {
+        throw new RangeError("bad bounds");
+      },
+    };
+    const summary = await runDiscovery({
+      source: broken,
+      reason: "backfill",
+      createEvent,
+      publisher: new FakePublisher(),
+    });
+    expect(summary).toMatchObject({
+      status: "failed",
+      discovered: 0,
+      failure: { stage: "source", errorName: "RangeError" },
+    });
+  });
+
   it("reports an aborted publish as cancelled, not failed", async () => {
     const abort = new AbortController();
     const publisher: DiscoveryPublisher = {

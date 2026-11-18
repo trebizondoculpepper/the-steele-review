@@ -71,9 +71,15 @@ export async function runDiscovery(input: DiscoveryRunInput): Promise<DiscoveryR
   };
 
   if (signal?.aborted) return { ...summary, status: "cancelled" };
-  const iterator = input.source[Symbol.asyncIterator]();
+  let iterator: AsyncIterator<SubstackItem>;
+  try {
+    iterator = input.source[Symbol.asyncIterator]();
+  } catch (error) {
+    return stop("source", error);
+  }
   try {
     for (;;) {
+      if (signal?.aborted) return { ...summary, status: "cancelled" };
       let next: IteratorResult<SubstackItem>;
       try {
         next = await iterator.next();
