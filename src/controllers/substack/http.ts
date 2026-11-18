@@ -69,6 +69,7 @@ export function assertAllowedDestination(url: URL, allowedHosts: ReadonlySet<str
 async function readBounded(response: Response, maxBytes: number): Promise<string> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
     throw new DiscoveryFetchError("response exceeds size limit", false);
   }
   if (!response.body) return "";

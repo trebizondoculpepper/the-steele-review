@@ -160,6 +160,21 @@ describe("SubstackRssDiscovery", () => {
     await expect(collect(controller.getRecentItems())).rejects.toThrow("size limit");
   });
 
+  it("cancels the body when the declared size exceeds the limit", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { controller } = discovery(
+      () => new Response(body, { headers: { "content-length": "1000000" } }),
+      { maxBytes: 100 },
+    );
+    await expect(collect(controller.getRecentItems())).rejects.toThrow("size limit");
+    expect(cancelled).toBe(true);
+  });
+
   it("honours cancellation", async () => {
     const abort = new AbortController();
     abort.abort();
