@@ -17,3 +17,7 @@ The Steele Review monitors selected Substack publications, archives and indexes 
 | [Suggested software choices](09-software-choices.md)               | Candidate libraries and workflow tooling to evaluate        |
 
 These documents capture the architecture discussion, not a claim that the system is implemented. “Proposed” choices are implementation recommendations awaiting validation; agreed direction is listed in the decisions document.
+
+See [processing stages](10-processing-stages.md) for the agreed collection-through-publication flow and proof-of-concept boundaries.
+
+See the [implementation preparation brief](11-implementation-brief.md) for the ticket map, readiness and unresolved live-integration inputs.

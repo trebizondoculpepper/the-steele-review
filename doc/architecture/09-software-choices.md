@@ -51,3 +51,11 @@ Neither approach removes the need for stable operation IDs, external-side-effect
 - [Substack RSS documentation](https://support.substack.com/hc/en-us/articles/360038239391-Is-there-an-RSS-feed-for-my-publication)
 - [substack-ts](https://github.com/ma2za/substack-ts)
 - [unofficial-substack-sdk](https://github.com/cucoleadan/unofficial-substack-sdk)
+
+## Agreed message schema stack
+
+Use CloudEvents 1.0 structured JSON (`cloudevents`) for envelopes and Zod for runtime payload validation and inferred TypeScript types. Export JSON Schema from the Zod definitions for the shared contract and field dictionary. These choices are agreed rather than provisional; implementation remains future work. AsyncAPI can later describe subjects and message contracts. See [events and reliability](05-events-and-reliability.md) for field meanings, versioning, validation, and deduplication.
+
+## Collector proof-of-concept choice
+
+The initial collector uses SQLite for operation state/pending handoffs and a private Git repository on a persistent volume for text artifacts. Restate is deferred as a possible later evaluation, not a launch dependency. Backups and disaster recovery are outside the proof of concept; ordinary retries, immutable provenance and duplicate-publication prevention remain required.
