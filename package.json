@@ -1,0 +1,28 @@
+{
+  "name": "the-steele-review",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && node --env-file-if-exists=.env --watch --enable-source-maps dist/main.js",
+    "build": "tsc",
+    "check": "vp check",
+    "typecheck": "tsc --noEmit",
+    "lint": "vp lint",
+    "format": "vp fmt",
+    "start": "node --env-file-if-exists=.env --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@elastic/elasticsearch": "^8.19.2",
+    "@nats-io/transport-node": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.7.0"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
+  },
+  "packageManager": "npm@11.19.0"
+}
