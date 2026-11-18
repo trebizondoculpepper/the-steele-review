@@ -6,7 +6,10 @@ import {
   publishWithRetry,
   type JetStreamPublisherLike,
 } from "../../src/controllers/nats.js";
-import { NatsDiscoveryPublisher } from "../../src/controllers/nats-discovery.js";
+import {
+  NatsDiscoveryPublisher,
+  discoveryMessageId,
+} from "../../src/controllers/nats-discovery.js";
 import {
   StreamConflictError,
   provisionDiscoveryStream,
@@ -120,8 +123,15 @@ describe("NatsDiscoveryPublisher", () => {
     await publisher.publish(event);
     expect(sent[0]!.subject).toBe("steele.v1.source.detected");
     expect(parseDiscoveryEvent(sent[0]!.body).id).toBe(event.id);
-    expect(sent[0]!.msgId).toBe(`${event.source}#${event.id}`);
+    expect(sent[0]!.msgId).toBe(discoveryMessageId(event));
     expect(sent[1]!.msgId).toBe(sent[0]!.msgId);
+  });
+
+  it("derives distinct message IDs for identities that share a delimiter", () => {
+    const a = discoveryMessageId({ source: "https://example.test/a#b", id: "c" });
+    const b = discoveryMessageId({ source: "https://example.test/a", id: "b#c" });
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("rejects an invalid event before sending", async () => {

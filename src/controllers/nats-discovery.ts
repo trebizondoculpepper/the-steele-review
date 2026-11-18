@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   parseDiscoveryEvent,
   serializeDiscoveryEvent,
@@ -31,6 +32,17 @@ export interface NatsDiscoveryPublisherConfig {
 
 const encoder = new TextEncoder();
 
+/**
+ * Collision-free JetStream message ID for an event's (source, id) identity:
+ * SHA-256 of the JSON-encoded pair, so no delimiter can make two distinct
+ * identities share a key.
+ */
+export function discoveryMessageId(event: Pick<DiscoveryEvent, "source" | "id">): string {
+  return createHash("sha256")
+    .update(JSON.stringify([event.source, event.id]))
+    .digest("hex");
+}
+
 /** Satisfies the DiscoveryPublisher interface of the single discovery run (#9). */
 export class NatsDiscoveryPublisher {
   private readonly subject: string;
@@ -48,7 +60,7 @@ export class NatsDiscoveryPublisher {
     const wire = serializeDiscoveryEvent(event);
     parseDiscoveryEvent(wire); // throws InvalidDiscoveryEventError before anything is sent
     this.lastReceipt = await this.nats.publish(this.subject, encoder.encode(wire), {
-      msgId: `${event.source}#${event.id}`,
+      msgId: discoveryMessageId(event),
       expectStream: this.config.expectStream,
       timeoutMs: this.config.timeoutMs,
       maxAttempts: this.config.maxAttempts,
