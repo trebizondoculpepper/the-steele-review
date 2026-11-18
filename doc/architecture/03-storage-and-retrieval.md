@@ -17,7 +17,11 @@ The official Node client, `@elastic/elasticsearch`, includes TypeScript support.
 | Analysis          | Claims, themes, historical matches, evidence references, model and prompt versions       |
 | Article           | Source versions, draft versions, verification results, destination ID, publication state |
 
-Exact Elasticsearch indices and mappings are not yet selected. Use stable logical IDs and explicit schema versions; avoid coupling event consumers to an index layout.
+Exact Elasticsearch indices and mappings are not yet selected beyond the source-text index described below. Use stable logical IDs and explicit schema versions; avoid coupling event consumers to an index layout.
+
+## Source text index v1
+
+The first index is `steele-source-text-v1`, defined by `src/content/fulltext-document.ts`. It holds the retained text of one source post per document, with content identity, acquisition origin, source version and an immutable artifact reference. The document ID is derived from content identity (`substack:<publicationId>:<postId>`), so retried indexing rewrites the same document instead of appending; a changed source replaces it deliberately, and earlier bytes remain addressable through the artifact reference. The mapping is explicit and strict, and declares no vector or semantic fields: semantic retrieval remains a later decision. The index name carries the schema version, so a breaking contract change needs a new index and a deliberate re-index.
 
 ## Historical questions
 
