@@ -1,0 +1,264 @@
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  TranscriptionAdapter,
+  TranscriptionError,
+  type MediaCandidate,
+  type TranscriptionAdapterConfig,
+  type TranscriptionProvider,
+} from "../../src/transcription/adapter.js";
+
+let dir: string;
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "steele-transcribe-"));
+});
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+const AUDIO: MediaCandidate = {
+  kind: "audio",
+  url: "https://media.test/a.mp3",
+  durationSeconds: 60,
+};
+const VIDEO: MediaCandidate = {
+  kind: "video",
+  url: "https://media.test/v.mp4",
+  durationSeconds: 60,
+};
+
+type Route = number | Uint8Array | (() => Response | Promise<Response>);
+function fakeFetch(routes: Record<string, Route>) {
+  const calls: string[] = [];
+  const fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    const route = routes[url];
+    if (init?.signal?.aborted) throw init.signal.reason;
+    if (route === undefined) return new Response("", { status: 404 });
+    if (typeof route === "number") return new Response("", { status: route });
+    if (typeof route === "function") return route();
+    return new Response(route);
+  }) as typeof globalThis.fetch;
+  return { fetch, calls };
+}
+
+function provider(
+  behaviour: (input: { path: string; kind: string }) => Promise<unknown> | unknown = () => ({
+    segments: [
+      { text: " Hello ", start: 0, end: 1.5 },
+      { text: "world.", start: 1.5, end: 2 },
+    ],
+    language: "en",
+    confidence: 0.9,
+    complete: true,
+  }),
+) {
+  const seen: Array<{ kind: string; bytes: string }> = [];
+  const p: TranscriptionProvider = {
+    name: "fake",
+    model: "fake-1",
+    async transcribe(input, signal) {
+      seen.push({ kind: input.kind, bytes: await readFile(input.path, "utf8") });
+      signal.throwIfAborted();
+      return (await behaviour(input)) as never;
+    },
+  };
+  return { p, seen };
+}
+
+function adapter(extra: Partial<TranscriptionAdapterConfig>, routes: Record<string, Route>) {
+  const fake = fakeFetch(routes);
+  const prov = extra.provider ? { p: extra.provider, seen: [] } : provider();
+  const a = new TranscriptionAdapter({
+    provider: prov.p,
+    workspaceDir: dir,
+    allowedHosts: ["media.test"],
+    maxBytes: 1024,
+    maxWorkspaceBytes: 4096,
+    fetch: fake.fetch,
+    ...extra,
+  });
+  return { a, calls: fake.calls, seen: prov.seen };
+}
+
+const bytes = (s: string) => new TextEncoder().encode(s);
+const jobs = async () => (await readdir(dir)).filter((e) => e.startsWith("job-"));
+
+describe("TranscriptionAdapter", () => {
+  it("transcribes audio with provenance and keeps media until cleanup", async () => {
+    const { a, seen } = adapter({}, { [AUDIO.url]: bytes("AUDIO") });
+    const job = await a.transcribe([VIDEO, AUDIO]);
+    expect(job.transcript).toEqual({
+      text: "Hello world.",
+      segments: [
+        { text: "Hello", start: 0, end: 1.5 },
+        { text: "world.", start: 1.5, end: 2 },
+      ],
+      timestamped: true,
+      language: "en",
+      provider: "fake",
+      model: "fake-1",
+      mediaKind: "audio",
+      confidence: 0.9,
+      complete: true,
+      machineGenerated: true,
+    });
+    expect(seen).toEqual([{ kind: "audio", bytes: "AUDIO" }]);
+    expect(await jobs()).toHaveLength(1);
+    await job.cleanup();
+    await job.cleanup();
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("falls back to video only when audio is unusable", async () => {
+    const { a, calls } = adapter({}, { [VIDEO.url]: bytes("VIDEO") });
+    const job = await a.transcribe([AUDIO, VIDEO]);
+    expect(job.transcript.mediaKind).toBe("video");
+    expect(calls).toEqual([AUDIO.url, VIDEO.url]);
+    await job.cleanup();
+  });
+
+  it("does not invent timestamps", async () => {
+    const { p } = provider(() => ({ segments: [{ text: "No times." }] }));
+    const { a } = adapter({ provider: p }, { [AUDIO.url]: bytes("A") });
+    const job = await a.transcribe([AUDIO]);
+    expect(job.transcript).toMatchObject({ timestamped: false, complete: false });
+    expect(job.transcript.segments[0]).toEqual({ text: "No times." });
+    await job.cleanup();
+  });
+
+  it("refuses over-long media before downloading", async () => {
+    const { a, calls } = adapter({ maxDurationSeconds: 30 }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "too-long" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("enforces the size bound during download and deletes the partial file", async () => {
+    const { a } = adapter({}, { [AUDIO.url]: bytes("x".repeat(2048)) });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "too-large" });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("refuses destinations and redirects outside the allowlist", async () => {
+    const { a, calls } = adapter(
+      {},
+      {
+        [AUDIO.url]: () =>
+          new Response(null, { status: 302, headers: { location: "https://evil.test/a" } }),
+      },
+    );
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "destination-refused" });
+    expect(calls).toEqual([AUDIO.url]);
+    await expect(
+      a.transcribe([{ kind: "audio", url: "http://media.test/a.mp3" }]),
+    ).rejects.toMatchObject({ reason: "destination-refused" });
+  });
+
+  it("reports provider failure, deletes media and does not try video", async () => {
+    const { p } = provider(() => {
+      throw new Error("provider said https://secret.example");
+    });
+    const { a, calls } = adapter(
+      { provider: p },
+      { [AUDIO.url]: bytes("A"), [VIDEO.url]: bytes("V") },
+    );
+    const error = await a.transcribe([AUDIO, VIDEO]).catch((e: unknown) => e);
+    expect(error).toMatchObject({ reason: "provider-failed", retryable: true });
+    expect(String(error)).not.toContain("secret");
+    expect(calls).toEqual([AUDIO.url]);
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("rejects an empty transcript", async () => {
+    const { p } = provider(() => ({ segments: [{ text: "   " }] }));
+    const { a } = adapter({ provider: p }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "empty-transcript" });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("honours cancellation and cleans up", async () => {
+    const abort = new AbortController();
+    const { p } = provider(async () => {
+      abort.abort();
+      throw new Error("aborted");
+    });
+    const { a } = adapter({ provider: p }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO], abort.signal)).rejects.toMatchObject({
+      reason: "cancelled",
+    });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("bounds concurrency and total workspace use", async () => {
+    let running = 0;
+    let peak = 0;
+    let releaseFirst: () => void = () => {};
+    const { p } = provider(async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise<void>((r) => (releaseFirst = r));
+      running--;
+      return { segments: [{ text: "ok" }] };
+    });
+    const { a } = adapter({ provider: p, maxConcurrency: 1 }, { [AUDIO.url]: bytes("A") });
+    const first = a.transcribe([AUDIO]);
+    const second = a.transcribe([AUDIO]);
+    for (let i = 0; i < 50 && running === 0; i++) await new Promise((r) => setImmediate(r));
+    releaseFirst();
+    const job1 = await first;
+    for (let i = 0; i < 50 && running === 0; i++) await new Promise((r) => setImmediate(r));
+    releaseFirst();
+    const job2 = await second;
+    expect(peak).toBe(1);
+    await job1.cleanup();
+    await job2.cleanup();
+
+    const full = adapter(
+      { maxBytes: 1024, maxWorkspaceBytes: 1024, maxConcurrency: 2 },
+      { [AUDIO.url]: bytes("A") },
+    ).a;
+    const held = await full.transcribe([AUDIO]);
+    await expect(full.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+    await held.cleanup();
+  });
+
+  it("sweeps abandoned media left by a crashed process", async () => {
+    const clock = Date.now();
+    const old = join(dir, "job-crashed");
+    const fresh = join(dir, "job-current");
+    await mkdir(old);
+    await mkdir(fresh);
+    const past = new Date(clock - 2 * 3_600_000);
+    await utimes(old, past, past);
+    const { a } = adapter({ retentionMs: 3_600_000, now: () => clock }, {});
+    expect(await a.sweepExpired()).toBe(1);
+    expect((await jobs()).sort()).toEqual(["job-current"]);
+  });
+
+  it("validates configuration", () => {
+    const base = { provider: provider().p, allowedHosts: ["media.test"] };
+    expect(() => new TranscriptionAdapter({ ...base, workspaceDir: "relative" })).toThrow();
+    expect(
+      () =>
+        new TranscriptionAdapter({
+          ...base,
+          workspaceDir: dir,
+          maxBytes: 10,
+          maxWorkspaceBytes: 5,
+        }),
+    ).toThrow(RangeError);
+    expect(
+      () => new TranscriptionAdapter({ ...base, workspaceDir: dir, allowedHosts: [] }),
+    ).toThrow();
+  });
+
+  it("is an error type with a reason", () => {
+    expect(new TranscriptionError("timeout", true)).toMatchObject({
+      reason: "timeout",
+      retryable: true,
+    });
+  });
+});
