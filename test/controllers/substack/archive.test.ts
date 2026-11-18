@@ -125,6 +125,26 @@ describe("SubstackArchiveDiscovery", () => {
     expect(summary?.reason).toBe("date-limit");
   });
 
+  it("skips undated entries when only an upper bound is set", async () => {
+    const skipped: string[] = [];
+    const fake = archiveFetch({
+      "": { posts: [{ ...post(0), post_date: null }, post(1)], nextCursor: null },
+    });
+    const discovery = new SubstackArchiveDiscovery({
+      publicationUrl: "https://example-pub.substack.com/",
+      publicationId: "example-pub",
+      minRequestIntervalMs: 0,
+      fetch: fake.fetch,
+      onSkippedEntry: (reason) => skipped.push(reason),
+    });
+    const { items } = await run(discovery, {
+      maxItems: 10,
+      until: new Date("2026-01-31T00:00:00Z"),
+    });
+    expect(items.map((i) => i.postId)).toEqual(["post-1"]);
+    expect(skipped).toHaveLength(1);
+  });
+
   it("requires a positive count bound and ordered dates", async () => {
     const { discovery } = controller(paged);
     await expect(run(discovery, { maxItems: 0 })).rejects.toThrow();

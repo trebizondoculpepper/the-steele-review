@@ -236,15 +236,15 @@ export class SubstackArchiveDiscovery {
         }
         seenPosts.add(item.postId);
         const published = item.publishedAt ? new Date(item.publishedAt) : undefined;
-        if (options.until && published && published > options.until) continue;
-        if (options.since && (!published || published < options.since)) {
-          if (published) {
-            options.onComplete?.({ reason: "date-limit", ...stats });
-            return;
-          }
+        if ((options.since || options.until) && !published) {
           stats.skipped++;
           this.config.onSkippedEntry?.("entry has no date inside a date-bounded run");
           continue;
+        }
+        if (options.until && published && published > options.until) continue;
+        if (options.since && published && published < options.since) {
+          options.onComplete?.({ reason: "date-limit", ...stats });
+          return;
         }
         if (signal?.aborted) fail("cancelled");
         yield item;
