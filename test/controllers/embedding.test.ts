@@ -161,6 +161,15 @@ describe("vector spaces", () => {
     expect(vectorSpaceId(MODEL)).not.toBe(vectorSpaceId({ ...MODEL, dimensions: 4 }));
   });
 
+  it("cannot be made to collide by separators inside model names or versions", () => {
+    const a = vectorSpaceId({ ...MODEL, model: "a@1", version: "2" });
+    const b = vectorSpaceId({ ...MODEL, model: "a", version: "1@2" });
+    expect(a).not.toBe(b);
+    expect(vectorSpaceId({ ...MODEL, model: "x/y" })).not.toBe(
+      vectorSpaceId({ ...MODEL, provider: "fake", model: "x%2Fy" }),
+    );
+  });
+
   it("refuses to mix vectors from different spaces", async () => {
     const a = await new EmbeddingController({ provider: provider().p }).embed([input(1)]);
     const b = await new EmbeddingController({

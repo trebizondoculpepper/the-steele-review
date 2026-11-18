@@ -26,7 +26,10 @@ export type EmbeddingModel = z.infer<typeof EmbeddingModelSchema>;
 
 /** Stable identifier of one vector space: model identity plus dimensions. */
 export function vectorSpaceId(model: EmbeddingModel): string {
-  return `${model.provider}/${model.model}@${model.version}#${model.dimensions}`;
+  // Percent-encode each part so separators inside a model name or version
+  // cannot make two distinct identities collide.
+  const part = encodeURIComponent;
+  return `${part(model.provider)}/${part(model.model)}@${part(model.version)}#${model.dimensions}`;
 }
 
 const InputHashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
