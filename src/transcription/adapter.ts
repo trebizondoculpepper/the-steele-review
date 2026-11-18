@@ -99,6 +99,26 @@ export class TranscriptionError extends Error {
   }
 }
 
+const Seconds = z.number().finite().nonnegative();
+const ProviderResultSchema = z.object({
+  segments: z
+    .array(
+      z
+        .object({
+          text: z.string().max(100_000),
+          start: Seconds.optional(),
+          end: Seconds.optional(),
+        })
+        .refine((s) => s.start === undefined || s.end === undefined || s.end >= s.start, {
+          message: "segment ends before it starts",
+        }),
+    )
+    .max(1_000_000),
+  language: z.string().min(1).max(35).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  complete: z.boolean().optional(),
+});
+
 const ConfigSchema = z.object({
   workspaceDir: z.string().refine(isAbsolute, "workspaceDir must be absolute"),
   allowedHosts: z.array(z.string().min(1)).min(1),
@@ -135,6 +155,8 @@ export class TranscriptionAdapter {
   private readonly now: () => number;
   private active = 0;
   private reservedBytes = 0;
+  /** Job directories created by this instance; others are surviving media. */
+  private readonly ownJobs = new Set<string>();
   private readonly waiters: Array<() => void> = [];
 
   constructor(private readonly options: TranscriptionAdapterConfig) {
@@ -186,12 +208,19 @@ export class TranscriptionAdapter {
   private async acquireSlot(signal: AbortSignal): Promise<void> {
     while (this.active >= this.config.maxConcurrency) {
       await new Promise<void>((resolve, reject) => {
-        const onAbort = () => reject(new TranscriptionError("cancelled", false));
-        signal.addEventListener("abort", onAbort, { once: true });
-        this.waiters.push(() => {
+        const wake = () => {
           signal.removeEventListener("abort", onAbort);
           resolve();
-        });
+        };
+        const onAbort = () => {
+          // Leave the queue so a later release wakes a live waiter, not this one.
+          const at = this.waiters.indexOf(wake);
+          if (at >= 0) this.waiters.splice(at, 1);
+          reject(new TranscriptionError("cancelled", false));
+        };
+        if (signal.aborted) return onAbort();
+        signal.addEventListener("abort", onAbort, { once: true });
+        this.waiters.push(wake);
       });
     }
     this.active++;
@@ -232,12 +261,15 @@ export class TranscriptionAdapter {
     } catch {
       throw reason();
     }
-    if (this.reservedBytes + this.config.maxBytes > this.config.maxWorkspaceBytes) {
+    const foreign = await this.foreignBytes();
+    if (foreign + this.reservedBytes + this.config.maxBytes > this.config.maxWorkspaceBytes) {
       this.releaseSlot();
       throw new TranscriptionError("workspace-full", true);
     }
     this.reservedBytes += this.config.maxBytes;
-    const jobDir = join(this.config.workspaceDir, `job-${randomUUID()}`);
+    const jobName = `job-${randomUUID()}`;
+    const jobDir = join(this.config.workspaceDir, jobName);
+    this.ownJobs.add(jobName);
     // The concurrency slot covers download and transcription only; the disk
     // reservation lasts until the media is deleted.
     let slotHeld = true;
@@ -252,6 +284,7 @@ export class TranscriptionAdapter {
       if (released) return;
       released = true;
       await rm(jobDir, { recursive: true, force: true });
+      this.ownJobs.delete(jobName);
       this.reservedBytes -= this.config.maxBytes;
     };
 
@@ -264,11 +297,32 @@ export class TranscriptionAdapter {
       });
       let result: ProviderResult;
       try {
-        result = await this.options.provider.transcribe(
-          { path, kind: candidate.kind, durationSeconds: candidate.durationSeconds },
-          signal,
-        );
-      } catch {
+        // Race the provider against cancellation/timeout so a provider that
+        // ignores its signal cannot hold the job past the bound.
+        let onAbort: () => void = () => {};
+        const aborted = new Promise<never>((_, reject) => {
+          onAbort = () => reject(reason());
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+        try {
+          const raw = await Promise.race([
+            this.options.provider.transcribe(
+              { path, kind: candidate.kind, durationSeconds: candidate.durationSeconds },
+              signal,
+            ),
+            aborted,
+          ]);
+          // 1: validate provider output at the boundary.
+          const parsed = ProviderResultSchema.safeParse(raw);
+          if (!parsed.success) throw new TranscriptionError("provider-failed", false);
+          result = parsed.data;
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+          aborted.catch(() => undefined);
+        }
+      } catch (error) {
+        if (error instanceof TranscriptionError) throw error;
         throw signal.aborted ? reason() : new TranscriptionError("provider-failed", true);
       }
       freeSlot();
@@ -348,6 +402,27 @@ export class TranscriptionAdapter {
       if (error instanceof TranscriptionError) throw error;
       throw new TranscriptionError("download-failed", true);
     }
+  }
+
+  /** Bytes held by job directories this instance did not create (e.g. before a restart). */
+  private async foreignBytes(): Promise<number> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.config.workspaceDir);
+    } catch {
+      return 0;
+    }
+    let total = 0;
+    for (const entry of entries) {
+      if (!entry.startsWith("job-") || this.ownJobs.has(entry)) continue;
+      const dir = join(this.config.workspaceDir, entry);
+      try {
+        for (const file of await readdir(dir)) total += (await stat(join(dir, file))).size;
+      } catch {
+        // Removed concurrently; nothing to count.
+      }
+    }
+    return total;
   }
 
   /**

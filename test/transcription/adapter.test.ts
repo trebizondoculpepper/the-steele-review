@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -223,6 +223,67 @@ describe("TranscriptionAdapter", () => {
     const held = await full.transcribe([AUDIO]);
     await expect(full.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
     await held.cleanup();
+  });
+
+  it.each([
+    ["missing segments", { language: "en" }],
+    ["non-string text", { segments: [{ text: 42 }] }],
+    ["negative time", { segments: [{ text: "x", start: -1, end: 2 }] }],
+    ["end before start", { segments: [{ text: "x", start: 5, end: 2 }] }],
+    ["confidence out of range", { segments: [{ text: "x" }], confidence: 7 }],
+  ])("rejects malformed provider output (%s) and cleans up", async (_name, output) => {
+    const { p } = provider(() => output);
+    const { a } = adapter({ provider: p }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({
+      reason: "provider-failed",
+      retryable: false,
+    });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("enforces the timeout even when the provider ignores its signal", async () => {
+    const p: TranscriptionProvider = {
+      name: "hung",
+      model: "hung-1",
+      transcribe: () => new Promise(() => {}),
+    };
+    const { a } = adapter({ provider: p, timeoutMs: 50 }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "timeout" });
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("removes cancelled waiters so the next live job gets the slot", async () => {
+    let releaseFirst: () => void = () => {};
+    let calls = 0;
+    const { p } = provider(async () => {
+      calls++;
+      if (calls === 1) await new Promise<void>((r) => (releaseFirst = r));
+      return { segments: [{ text: "ok" }] };
+    });
+    const { a } = adapter({ provider: p, maxConcurrency: 1 }, { [AUDIO.url]: bytes("A") });
+    const first = a.transcribe([AUDIO]);
+    for (let i = 0; i < 50 && calls === 0; i++) await new Promise((r) => setImmediate(r));
+    const cancel = new AbortController();
+    const cancelled = a.transcribe([AUDIO], cancel.signal);
+    const third = a.transcribe([AUDIO]);
+    cancel.abort();
+    await expect(cancelled).rejects.toMatchObject({ reason: "cancelled" });
+    releaseFirst();
+    await (await first).cleanup();
+    const job3 = await third;
+    expect(job3.transcript.text).toBe("ok");
+    await job3.cleanup();
+  });
+
+  it("counts media surviving from a previous process against the workspace budget", async () => {
+    const survivor = join(dir, "job-previous");
+    await mkdir(survivor);
+    await writeFile(join(survivor, "media.audio"), "x".repeat(3500));
+    const { a } = adapter({ maxBytes: 1024, maxWorkspaceBytes: 4096 }, { [AUDIO.url]: bytes("A") });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+    await rm(survivor, { recursive: true });
+    const job = await a.transcribe([AUDIO]);
+    await job.cleanup();
   });
 
   it("sweeps abandoned media left by a crashed process", async () => {
