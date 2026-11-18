@@ -226,13 +226,9 @@ export class CollectionWorker {
         ingestionReason: reason,
         text: [acquired.articleText, t.text].filter(Boolean).join("\n\n"),
         complete: t.complete,
-        supplied: {
-          ...(t.timestamped
-            ? {
-                transcript: t.segments.map((s) => ({ start: s.start!, end: s.end!, text: s.text })),
-              }
-            : {}),
-        },
+        supplied: t.timestamped
+          ? { transcript: t.segments.map((s) => ({ start: s.start!, end: s.end!, text: s.text })) }
+          : {},
         provenance: {
           ...acquired.provenance,
           method,
