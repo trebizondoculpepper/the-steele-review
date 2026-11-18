@@ -4,7 +4,7 @@ import {
   postIdFromCanonicalUrl,
   type SubstackItem,
 } from "../../content/substack-item.js";
-import { boundedFetchText, type BoundedFetchOptions } from "./http.js";
+import { boundedFetchText, parseConfiguredUrl, type BoundedFetchOptions } from "./http.js";
 
 /**
  * Recent-items discovery for one Substack publication from its public RSS
@@ -58,10 +58,12 @@ export function normaliseFeedItems(
 ): SubstackItem[] {
   const result: SubstackItem[] = [];
   items.forEach((entry, index) => {
-    const url = entry.link?.trim();
-    const postId =
-      (url && postIdFromCanonicalUrl(url)) ??
-      (entry.guid ? postIdFromCanonicalUrl(entry.guid.trim()) : undefined);
+    // Prefer the link; fall back to a canonical guid URL when the link is absent or unusable.
+    const candidates = [entry.link?.trim(), entry.guid?.trim()].filter((value): value is string =>
+      Boolean(value),
+    );
+    const url = candidates.find((value) => postIdFromCanonicalUrl(value) !== undefined);
+    const postId = url ? postIdFromCanonicalUrl(url) : undefined;
     if (!url || !postId) {
       onSkippedEntry?.("entry has no canonical post URL", index);
       return;
@@ -106,7 +108,7 @@ export class SubstackRssDiscovery {
 
   constructor(private readonly config: RssDiscoveryConfig) {
     SubstackItemSchema.shape.publicationId.parse(config.publicationId);
-    this.feedUrl = new URL(config.feedUrl);
+    this.feedUrl = parseConfiguredUrl(config.feedUrl, "feedUrl");
     const allowedHosts = new Set(
       [this.feedUrl.hostname, ...(config.extraAllowedHosts ?? [])].map((h) => h.toLowerCase()),
     );
