@@ -121,8 +121,11 @@ export function locatePassage(
 ): { start: number; end: number } | "absent" | "ambiguous" {
   // An empty passage matches everywhere and would never terminate; it grounds nothing.
   if (passage.length === 0) return "absent";
+  // Stop as soon as the answer is known: the requested occurrence, or a
+  // second match when no occurrence was given (already ambiguous).
+  const needed = occurrence ?? 2;
   const positions: number[] = [];
-  for (let from = 0; ;) {
+  for (let from = 0; positions.length < needed;) {
     const at = text.indexOf(passage, from);
     if (at === -1) break;
     positions.push(at);

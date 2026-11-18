@@ -57,6 +57,12 @@ describe("locatePassage", () => {
     expect(locatePassage(TEXT, FIRST, 3)).toBe("absent");
     expect(locatePassage(TEXT, "invented sentence")).toBe("absent");
     expect(locatePassage("abc", "")).toBe("absent");
+    // Repetitive text: the first occurrence is found without scanning the rest.
+    const repetitive = "a".repeat(2_000_000);
+    const started = Date.now();
+    expect(locatePassage(repetitive, "aaaa", 1)).toEqual({ start: 0, end: 4 });
+    expect(locatePassage(repetitive, "aaaa")).toBe("ambiguous");
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });
 
