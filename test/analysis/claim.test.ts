@@ -12,16 +12,17 @@ import {
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 
 // Synthetic values only.
-const source = {
-  text: SYNTHETIC_SOURCE_TEXT,
-  sourceVersion: sourceVersionFor(SYNTHETIC_SOURCE_TEXT),
-};
-
 const artifact = {
   repository: "synthetic-archive",
   commit: "0123456789abcdef0123456789abcdef01234567",
   path: "sources/synthetic/example.txt",
   hash: `sha256:${"cd".repeat(32)}`,
+};
+
+const source = {
+  text: SYNTHETIC_SOURCE_TEXT,
+  sourceVersion: sourceVersionFor(SYNTHETIC_SOURCE_TEXT),
+  artifact,
 };
 
 const extraction = {
@@ -37,7 +38,6 @@ const draft = () => ({
   statement: "A synthetic council may raise fees by 3%.",
   claimType: "ambiguous" as const,
   sourceVersion: source.sourceVersion,
-  artifact,
   span,
   passage,
   qualifiers: ["may"],
@@ -123,7 +123,7 @@ describe("createClaim", () => {
 
   it("accepts a normalised date when the passage states it", () => {
     const text = "The synthetic council met on 3 May 2026 and may raise fees.";
-    const dated = { text, sourceVersion: sourceVersionFor(text) };
+    const dated = { text, sourceVersion: sourceVersionFor(text), artifact };
     const claim = createClaim(
       {
         ...draft(),
@@ -181,6 +181,7 @@ describe("grounding failures", () => {
       parseClaim(createClaim(draft(), source), {
         text: SYNTHETIC_SOURCE_TEXT,
         sourceVersion: sourceVersionFor("different text"),
+        artifact,
       }),
     ).toThrow(InvalidClaimError);
   });
@@ -208,7 +209,7 @@ describe("grounding failures", () => {
 
   it("rejects a normalised date that does not match its wording", () => {
     const text = "The synthetic council met on 3 May 2026 and may raise fees.";
-    const dated = { text, sourceVersion: sourceVersionFor(text) };
+    const dated = { text, sourceVersion: sourceVersionFor(text), artifact };
     const claim = createClaim(
       {
         ...draft(),
@@ -222,6 +223,19 @@ describe("grounding failures", () => {
     );
     expect(() =>
       parseClaim({ ...claim, dates: [{ text: "3 May 2026", value: "2026-05-04" }] }, dated),
+    ).toThrow(InvalidClaimError);
+  });
+
+  it("rejects an artifact that does not match the trusted source artifact", () => {
+    const claim = createClaim(draft(), source);
+    expect(() =>
+      parseClaim(
+        { ...claim, artifact: { ...artifact, path: "sources/synthetic/other.txt" } },
+        source,
+      ),
+    ).toThrow(InvalidClaimError);
+    expect(() =>
+      parseClaim({ ...claim, artifact: { ...artifact, commit: "f".repeat(40) } }, source),
     ).toThrow(InvalidClaimError);
   });
 

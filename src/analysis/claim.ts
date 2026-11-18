@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
+import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 
 /**
@@ -24,6 +24,8 @@ import { sourceVersionFor } from "../content/fulltext-document.js";
  *   an invented precise date or hedge.
  * - The ID is derived from the validated, normalised fields and is rejected if
  *   a supplied ID does not match them, so identity cannot be forged or stale.
+ * - The archive reference is supplied by trusted context, not by the model, and
+ *   a claim whose artifact differs from the source artifact is rejected.
  * - Qualifiers are preserved as written. Vague dates (`"last spring"`) stay as
  *   their exact wording; `value` is present only when that wording is itself
  *   unambiguous and the value matches it.
@@ -149,10 +151,12 @@ export type Claim = z.infer<typeof ClaimSchema>;
 /** A claim without its derived ID: what an extractor is allowed to supply. */
 const ClaimBodySchema = ClaimSchema.omit({ id: true });
 
-/** What a claim is checked against: one versioned source text. */
+/** What a claim is checked against: one versioned source text and its archive. */
 export interface ClaimSource {
   text: string;
   sourceVersion: string;
+  /** Trusted archive reference for this source version. */
+  artifact: ArtifactReference;
 }
 
 export class InvalidClaimError extends Error {
@@ -204,6 +208,13 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
   const exact = source.text.slice(claim.span.start, claim.span.end);
   if (claim.passage !== exact) {
     throw new InvalidClaimError("passage does not match the source text at that span");
+  }
+  // The archive reference comes from trusted context. A syntactically valid
+  // but unrelated artifact would point a reader somewhere else entirely.
+  for (const field of ["repository", "commit", "path", "hash"] as const) {
+    if (claim.artifact[field] !== source.artifact[field]) {
+      throw new InvalidClaimError("artifact does not match the supplied source artifact");
+    }
   }
   // Verbatim annotations must occur in the validated passage. Otherwise model
   // output could turn vague source wording into an invented precise date or
@@ -328,7 +339,6 @@ export interface ClaimDraft {
   statement: string;
   claimType: ClaimType;
   sourceVersion: string;
-  artifact: z.infer<typeof ArtifactReferenceSchema>;
   span: ClaimSpan;
   passage: string;
   qualifiers?: string[];
@@ -348,7 +358,7 @@ export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
     statement: draft.statement,
     claimType: draft.claimType,
     sourceVersion: draft.sourceVersion,
-    artifact: draft.artifact,
+    artifact: source.artifact,
     span: draft.span,
     passage: draft.passage,
     qualifiers: draft.qualifiers ?? [],
