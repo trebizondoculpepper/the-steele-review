@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { DiscoveryPublisher } from "../discovery/run.js";
 import {
   parseDiscoveryEvent,
   serializeDiscoveryEvent,
@@ -43,8 +44,7 @@ export function discoveryMessageId(event: Pick<DiscoveryEvent, "source" | "id">)
     .digest("hex");
 }
 
-/** Satisfies the DiscoveryPublisher interface of the single discovery run (#9). */
-export class NatsDiscoveryPublisher {
+export class NatsDiscoveryPublisher implements DiscoveryPublisher {
   private readonly subject: string;
   /** Receipt of the most recent acknowledged publication, for diagnostics. */
   lastReceipt?: PublishReceipt;
