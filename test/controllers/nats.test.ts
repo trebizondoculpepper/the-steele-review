@@ -181,6 +181,9 @@ describe.skipIf(!testUrl)("JetStream integration", () => {
         provisionDiscoveryStream(nats, { name: stream, subjects: [`${subject}.other`] }),
       ).rejects.toBeInstanceOf(StreamConflictError);
 
+      // Concurrent connect calls share one connection.
+      await Promise.all([nats.connect("steele-test"), nats.connect("steele-test")]);
+
       const publisher = new NatsDiscoveryPublisher(nats, { subject, expectStream: stream });
       const event = createDiscoveryEvent(item, { reason: "backfill", correlationId: "run-1" });
       await publisher.publish(event);

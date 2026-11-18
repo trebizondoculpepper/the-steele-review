@@ -132,6 +132,7 @@ export async function publishWithRetry(
 
 export class NatsController {
   private connection?: NatsConnection;
+  private connecting?: Promise<void>;
 
   constructor(
     private readonly servers: string,
@@ -154,23 +155,30 @@ export class NatsController {
     }
   }
 
-  /** Open the long-lived connection used for publishing. Idempotent. */
+  /** Open the long-lived connection used for publishing. Idempotent and safe to call concurrently. */
   async connect(name = "steele-discovery"): Promise<void> {
     if (this.connection && !this.connection.isClosed()) return;
-    try {
-      this.connection = await connect({
-        servers: this.servers,
-        token: this.token,
-        timeout: 5000,
-        name,
+    this.connecting ??= connect({
+      servers: this.servers,
+      token: this.token,
+      timeout: 5000,
+      name,
+    })
+      .then((connection) => {
+        this.connection = connection;
+      })
+      .catch(() => {
+        throw new NatsPublishError("not-connected", true);
+      })
+      .finally(() => {
+        this.connecting = undefined;
       });
-    } catch {
-      throw new NatsPublishError("not-connected", true);
-    }
+    return this.connecting;
   }
 
   /** Drain in-flight work and close. Safe to call more than once. */
   async close(): Promise<void> {
+    await this.connecting?.catch(() => undefined);
     const connection = this.connection;
     this.connection = undefined;
     if (!connection || connection.isClosed()) return;
