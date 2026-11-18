@@ -239,6 +239,26 @@ describe("grounding failures", () => {
     ).toThrow(InvalidClaimError);
   });
 
+  it("rejects a span that begins inside a longer number", () => {
+    const text = "The synthetic council met on 13 May 2026.";
+    const start = text.indexOf("3 May 2026");
+    const dated = { text, sourceVersion: sourceVersionFor(text), artifact };
+    expect(() =>
+      createClaim(
+        {
+          ...draft(),
+          claimType: "factual",
+          sourceVersion: dated.sourceVersion,
+          span: { start, end: text.length },
+          passage: text.slice(start),
+          qualifiers: [],
+          dates: [{ text: "3 May 2026", value: "2026-05-03" }],
+        },
+        dated,
+      ),
+    ).toThrow(InvalidClaimError);
+  });
+
   it("rejects a normalised date that does not match its wording", () => {
     const text = "The synthetic council met on 3 May 2026 and may raise fees.";
     const dated = { text, sourceVersion: sourceVersionFor(text), artifact };

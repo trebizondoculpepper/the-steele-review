@@ -222,12 +222,12 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
   // output could turn vague source wording into an invented precise date or
   // qualifier while the quote itself stays genuine.
   for (const qualifier of claim.qualifiers) {
-    if (!occursAsWholeMention(claim.passage, qualifier)) {
+    if (!occursAsWholeMentionWithin(source.text, qualifier, claim.span.start, claim.span.end)) {
       throw new InvalidClaimError("qualifier does not occur in the passage");
     }
   }
   for (const date of claim.dates) {
-    if (!occursAsWholeMention(claim.passage, date.text)) {
+    if (!occursAsWholeMentionWithin(source.text, date.text, claim.span.start, claim.span.end)) {
       throw new InvalidClaimError("date wording does not occur in the passage");
     }
     if (date.value !== undefined) {
@@ -243,18 +243,26 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
 }
 
 /**
- * True when `text` occurs in `passage` as a complete mention: not embedded in
- * a longer word or number. A bare substring match would accept "3 May 2026"
- * inside "13 May 2026", silently changing the date.
+ * True when `text` occurs as a complete mention inside `[start, end)` of the
+ * source text: not embedded in a longer word or number, and entirely within
+ * the quoted span. Checking the source, not just the passage, rejects a span
+ * that begins inside a longer number, where "3 May 2026" could otherwise be
+ * lifted out of "13 May 2026".
  */
-function occursAsWholeMention(passage: string, text: string): boolean {
+function occursAsWholeMentionWithin(
+  source: string,
+  text: string,
+  start: number,
+  end: number,
+): boolean {
   const isWordCharacter = (character: string) => /[A-Za-z0-9]/.test(character);
-  for (let from = 0; from <= passage.length - text.length;) {
-    const index = passage.indexOf(text, from);
-    if (index === -1) return false;
-    const before = index === 0 ? "" : (passage[index - 1] as string);
+  let from = start;
+  while (from <= end - text.length) {
+    const index = source.indexOf(text, from);
+    if (index === -1 || index + text.length > end) return false;
+    const before = index === 0 ? "" : (source[index - 1] as string);
     const afterIndex = index + text.length;
-    const after = afterIndex >= passage.length ? "" : (passage[afterIndex] as string);
+    const after = afterIndex >= source.length ? "" : (source[afterIndex] as string);
     const boundedBefore = before === "" || !isWordCharacter(before);
     const boundedAfter = after === "" || !isWordCharacter(after);
     if (boundedBefore && boundedAfter) return true;
