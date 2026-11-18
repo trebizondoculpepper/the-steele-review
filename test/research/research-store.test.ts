@@ -6,8 +6,10 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import type { SearchHit } from "../../src/controllers/elasticsearch.js";
 import { RESEARCH_ENTRY_SCHEMA_VERSION } from "../../src/research/research-entry.js";
 import {
+  MAX_REVISIONS,
   RESEARCH_INDEX_V1,
   ResearchRevisionConflictError,
+  ResearchRevisionLimitError,
   ResearchStore,
   researchEntryId,
   type ResearchSearchIndex,
@@ -123,6 +125,22 @@ describe("ResearchStore", () => {
       JSON.parse(await artifacts.read({ ...first.artifact, sha256: first.artifact.hash.slice(7) }))
         .addressedClaims[0].finding,
     ).toBe("supported");
+  });
+
+  it("refuses revisions beyond what revision discovery can find", async () => {
+    const { index } = fakeIndex();
+    const store = new ResearchStore(artifacts, index);
+    const entryId = researchEntryId(entry().question);
+    // Pretend the entry already has MAX_REVISIONS revisions.
+    (store as unknown as { latest: () => Promise<unknown> }).latest = async () => ({
+      entryId,
+      revision: MAX_REVISIONS,
+      artifact: {},
+      entry: entry("contradicted"),
+    });
+    await expect(store.save(entry(), MAX_REVISIONS)).rejects.toBeInstanceOf(
+      ResearchRevisionLimitError,
+    );
   });
 
   it("treats saving identical content as a no-op that repeats indexing safely", async () => {

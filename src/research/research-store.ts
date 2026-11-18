@@ -33,7 +33,7 @@ import {
  */
 
 export const RESEARCH_INDEX_V1 = "steele-research-v1";
-const MAX_REVISIONS = 1_000;
+export const MAX_REVISIONS = 1_000;
 const MAX_RESULTS = 20;
 
 /** Explicit strict mapping for {@link RESEARCH_INDEX_V1}. */
@@ -88,6 +88,13 @@ export class ResearchRevisionConflictError extends Error {
   constructor(readonly latestRevision: number) {
     super("research entry was revised by someone else; reload and retry");
     this.name = "ResearchRevisionConflictError";
+  }
+}
+
+export class ResearchRevisionLimitError extends Error {
+  constructor() {
+    super(`research entry has reached the ${MAX_REVISIONS}-revision limit`);
+    this.name = "ResearchRevisionLimitError";
   }
 }
 
@@ -189,6 +196,8 @@ export class ResearchStore {
     if (expectedRevision !== latestRevision)
       throw new ResearchRevisionConflictError(latestRevision);
     const revision = latestRevision + 1;
+    // Revision discovery scans up to MAX_REVISIONS; refuse anything it could not find again.
+    if (revision > MAX_REVISIONS) throw new ResearchRevisionLimitError();
     let ref: ArtifactRef;
     try {
       ref = await this.artifacts.write(revisionPath(entryId, revision), serialise(entry));
