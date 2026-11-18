@@ -272,6 +272,22 @@ export class GitArtifactStore {
     return commits[commits.length - 1] ?? head;
   }
 
+  /**
+   * Reference to the artifact currently stored at a path on the branch, or
+   * undefined if none. Used to reconcile artifacts committed by an attempt
+   * that was interrupted before recording completion.
+   */
+  async lookup(path: string): Promise<ArtifactRef | undefined> {
+    assertArtifactPath(path);
+    const head = await this.head();
+    if (!head) return undefined;
+    const blob = await this.entryAt(head, path);
+    if (blob === undefined) return undefined;
+    const content = await this.blobContent(blob);
+    const commit = await this.introducingCommit(head, path);
+    return { repository: this.config.repository, commit, path, sha256: sha256(content) };
+  }
+
   private async commitExists(commit: string): Promise<boolean> {
     try {
       await this.run(["cat-file", "-e", `${commit}^{commit}`]);
