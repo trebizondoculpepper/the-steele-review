@@ -123,11 +123,13 @@ function lastSentenceEnd(text: string, from: number, to: number): number {
 /**
  * Choose the cut point for a passage ending no later than `to`. The result is
  * always in `(from, to]`, so the loop advances and a passage never exceeds the
- * configured maximum.
+ * configured maximum. Every search is bounded to the current window, so cost
+ * stays linear in the passage length rather than in the whole source.
  */
 function chooseCut(text: string, from: number, to: number): number {
-  const paragraph = text.lastIndexOf("\n\n", to - 1);
-  if (paragraph >= from) return Math.min(to, paragraph + 2);
+  const window = text.slice(from, to);
+  const paragraph = window.lastIndexOf("\n\n");
+  if (paragraph >= 0) return Math.min(to, from + paragraph + 2);
 
   const sentence = lastSentenceEnd(text, from, to);
   if (sentence > from) return Math.min(to, sentence);

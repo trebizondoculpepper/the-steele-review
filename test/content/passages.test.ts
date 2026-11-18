@@ -122,6 +122,22 @@ describe("splitPassages", () => {
     }
   });
 
+  it("handles a large source without a paragraph break", () => {
+    const text = "a".repeat(1_000_000);
+    const { passages } = splitPassages(input(text));
+    const expected =
+      1 +
+      Math.ceil(
+        (text.length - DEFAULT_PASSAGE_MAX_CHARS) /
+          (DEFAULT_PASSAGE_MAX_CHARS - DEFAULT_PASSAGE_OVERLAP_CHARS),
+      );
+    expect(passages).toHaveLength(expected);
+    expect(passages.at(-1)!.end).toBe(text.length);
+    expect(passages.every((passage) => passage.text.length <= DEFAULT_PASSAGE_MAX_CHARS)).toBe(
+      true,
+    );
+  });
+
   it("retains the supplied timestamps and omits missing ones", () => {
     const withDates = splitPassages(
       input("A short synthetic post.", {
