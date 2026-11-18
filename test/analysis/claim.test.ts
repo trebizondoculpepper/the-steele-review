@@ -207,6 +207,26 @@ describe("grounding failures", () => {
     ).toThrow(InvalidClaimError);
   });
 
+  it("rejects a date mention embedded in a longer number", () => {
+    const text = "The synthetic council met on 13 May 2026 and may raise fees.";
+    const dated = { text, sourceVersion: sourceVersionFor(text), artifact };
+    // The wording is only a substring of "13 May 2026", so it is not a genuine mention.
+    expect(() =>
+      createClaim(
+        {
+          ...draft(),
+          claimType: "factual",
+          sourceVersion: dated.sourceVersion,
+          span: { start: 0, end: text.length },
+          passage: text,
+          qualifiers: ["may"],
+          dates: [{ text: "3 May 2026", value: "2026-05-03" }],
+        },
+        dated,
+      ),
+    ).toThrow(InvalidClaimError);
+  });
+
   it("rejects a normalised date that does not match its wording", () => {
     const text = "The synthetic council met on 3 May 2026 and may raise fees.";
     const dated = { text, sourceVersion: sourceVersionFor(text), artifact };
