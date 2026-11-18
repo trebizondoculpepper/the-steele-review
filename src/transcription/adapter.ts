@@ -156,7 +156,7 @@ export class TranscriptionAdapter {
   private active = 0;
   private reservedBytes = 0;
   /** Job directories created by this instance; others are surviving media. */
-  private readonly ownJobs = new Set<string>();
+  private readonly ownJobs = new Map<string, () => Promise<void>>();
   private readonly waiters: Array<() => void> = [];
 
   constructor(private readonly options: TranscriptionAdapterConfig) {
@@ -269,7 +269,6 @@ export class TranscriptionAdapter {
     this.reservedBytes += this.config.maxBytes;
     const jobName = `job-${randomUUID()}`;
     const jobDir = join(this.config.workspaceDir, jobName);
-    this.ownJobs.add(jobName);
     // The concurrency slot covers download and transcription only; the disk
     // reservation lasts until the media is deleted.
     let slotHeld = true;
@@ -287,6 +286,7 @@ export class TranscriptionAdapter {
       this.ownJobs.delete(jobName);
       this.reservedBytes -= this.config.maxBytes;
     };
+    this.ownJobs.set(jobName, release);
 
     try {
       await mkdir(jobDir, { recursive: true, mode: 0o700 });
@@ -381,7 +381,8 @@ export class TranscriptionAdapter {
     }
     if (!response || response.status >= 300) {
       await response?.body?.cancel();
-      throw new TranscriptionError("download-failed", (response?.status ?? 500) >= 500);
+      const status = response?.status ?? 500;
+      throw new TranscriptionError("download-failed", status >= 500 || status === 429);
     }
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > this.config.maxBytes) {
@@ -443,7 +444,11 @@ export class TranscriptionAdapter {
       const dir = join(this.config.workspaceDir, entry);
       try {
         if ((await stat(dir)).mtimeMs <= cutoff) {
-          await rm(dir, { recursive: true, force: true });
+          // An expired job of this instance goes through its own release so
+          // its disk reservation and slot are returned too.
+          const own = this.ownJobs.get(entry);
+          if (own) await own();
+          else await rm(dir, { recursive: true, force: true });
           removed++;
         }
       } catch {

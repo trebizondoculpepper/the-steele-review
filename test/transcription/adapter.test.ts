@@ -286,6 +286,28 @@ describe("TranscriptionAdapter", () => {
     await job.cleanup();
   });
 
+  it("releases the reservation when sweeping its own expired job", async () => {
+    let clock = Date.now();
+    const { a } = adapter(
+      { maxBytes: 1024, maxWorkspaceBytes: 1024, retentionMs: 1_000, now: () => clock },
+      { [AUDIO.url]: bytes("A") },
+    );
+    await a.transcribe([AUDIO]); // caller never cleans up
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+    clock += 60_000;
+    expect(await a.sweepExpired()).toBe(1);
+    const job = await a.transcribe([AUDIO]);
+    await job.cleanup();
+  });
+
+  it("treats a rate-limited download as retryable", async () => {
+    const { a } = adapter({}, { [AUDIO.url]: 429 });
+    await expect(a.transcribe([AUDIO])).rejects.toMatchObject({
+      reason: "download-failed",
+      retryable: true,
+    });
+  });
+
   it("sweeps abandoned media left by a crashed process", async () => {
     const clock = Date.now();
     const old = join(dir, "job-crashed");
