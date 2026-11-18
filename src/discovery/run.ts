@@ -108,7 +108,11 @@ export async function runDiscovery(input: DiscoveryRunInput): Promise<DiscoveryR
     }
   } finally {
     // Release the source (e.g. close an HTTP stream) if we stopped early.
-    await iterator.return?.().catch(() => undefined);
+    try {
+      await iterator.return?.();
+    } catch {
+      // Cleanup failure must not replace the run's own outcome.
+    }
   }
   return signal?.aborted ? { ...summary, status: "cancelled" } : summary;
 }

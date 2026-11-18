@@ -189,6 +189,26 @@ describe("runDiscovery", () => {
     expect(requested).toBe(1);
   });
 
+  it("ignores a source whose cleanup throws synchronously", async () => {
+    const abort = new AbortController();
+    const source: AsyncIterable<SubstackItem> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: false, value: item(1) }),
+        return: () => {
+          throw new Error("cleanup broke");
+        },
+      }),
+    };
+    const summary = await runDiscovery({
+      source,
+      reason: "live",
+      createEvent,
+      publisher: new FakePublisher(() => abort.abort()),
+      signal: abort.signal,
+    });
+    expect(summary).toMatchObject({ status: "cancelled", published: 1 });
+  });
+
   it("reports a source that fails to start as a source failure", async () => {
     const broken: AsyncIterable<SubstackItem> = {
       [Symbol.asyncIterator]: () => {
