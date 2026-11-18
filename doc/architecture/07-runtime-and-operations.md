@@ -10,7 +10,7 @@ Compile with source maps and run Node with source-map support so production stac
 
 Develop on the Mac and deploy Docker containers to the Raspberry Pi. Proposed orchestration is Docker Compose. Confirm the Pi's model, operating system, CPU architecture, memory, and storage before selecting images. Build and verify an image for the Pi's actual architecture rather than assuming the Mac's image will run there.
 
-NATS and Elasticsearch are existing remote dependencies. Do not deploy duplicate instances on the Pi. Persist application state and archive data outside ephemeral container filesystems. The source archive and workflow-state backends are still undecided.
+NATS and Elasticsearch are existing remote dependencies. Do not deploy duplicate instances on the Pi. Persist application state and archive data outside ephemeral container filesystems. Use a private Git text archive and SQLite workflow state on persistent local volumes.
 
 Initially use one application codebase with explicit worker roles. Worker concurrency must be configurable, with conservative limits for audio, network downloads, and model calls. Model inference and transcription providers remain undecided; the design must allow those workloads to run off the Pi.
 
@@ -26,7 +26,7 @@ Track successful and failed polls, pipeline lag, retry counts, skipped articles 
 
 ## Shutdown and recovery
 
-On termination, stop accepting new work, allow bounded completion of in-flight work, and drain connections where possible. Unfinished messages remain recoverable through durable delivery and workflow state. Test restart behaviour and restore procedures, including archive and state backups.
+On termination, stop accepting new work, allow bounded completion of in-flight work, and drain connections where possible. Unfinished messages remain recoverable through durable delivery and workflow state. Test ordinary restart and retry behaviour. Backup, restore procedures, and disaster recovery are outside the proof-of-concept scope.
 
 ## Validation priorities
 

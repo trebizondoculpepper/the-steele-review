@@ -14,6 +14,10 @@
 | Automatic Substack publication                    | Minimise routine human interaction                                                                         |
 | Skip cases that fail verification                 | Manual review is deferred                                                                                  |
 
+## Message format decision
+
+CloudEvents structured JSON is the standard envelope. Zod defines payload validation and inferred TypeScript types; exported JSON Schema provides the shared data contract and dictionary. See [events and reliability](05-events-and-reliability.md).
+
 ## Proposed implementation choices
 
 - RSS-first discovery with a separate historical-import path.
@@ -28,19 +32,19 @@
 
 ## Information still required
 
-| Question                                                                              | Why it matters                                            |
-| ------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| Pi model, OS, architecture, memory, disk, and deployment access                       | Images, resource budgets, and deployment procedure        |
-| NATS address, version, credentials, JetStream availability, and permissions           | Durable delivery and stream/consumer configuration        |
-| Elasticsearch address, version, credentials, existing mappings, and permitted indices | Client compatibility and safe index design                |
-| Source publications and historical coverage target                                    | Discovery, retrieval, and backfill scope                  |
-| Destination publication and authentication method                                     | Publishing proof of concept                               |
-| Available archive and workflow-state infrastructure                                   | Durable originals, concurrency control, and event handoff |
-| Model and transcription providers and budget                                          | Runtime footprint, cost, and throughput                   |
-| Verification acceptance rules and attempt limits                                      | Reliable automatic publication and predictable skips      |
-| Polling and publishing frequency, including subscriber email behaviour                | Operational and editorial policy                          |
-| Behaviour when an already critiqued source post changes                               | Update, new article, or archive-only policy               |
-| Correction policy for published articles                                              | Recovery from evidence changes or discovered errors       |
+| Question                                                                              | Why it matters                                                                                     |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Pi model, OS, architecture, memory, disk, and deployment access                       | Images, resource budgets, and deployment procedure                                                 |
+| NATS address, version, credentials, JetStream availability, and permissions           | Durable delivery and stream/consumer configuration                                                 |
+| Elasticsearch address, version, credentials, existing mappings, and permitted indices | Client compatibility and safe index design                                                         |
+| Source publications and historical coverage target                                    | Discovery, retrieval, and backfill scope                                                           |
+| Destination publication and authentication method                                     | Publishing proof of concept                                                                        |
+| Private archive/state volume configuration                                            | Git artifacts and SQLite backend are settled; private mount paths remain operational configuration |
+| Model and transcription providers and budget                                          | Runtime footprint, cost, and throughput                                                            |
+| Verification acceptance rules and attempt limits                                      | Reliable automatic publication and predictable skips                                               |
+| Polling and publishing frequency, including subscriber email behaviour                | Operational and editorial policy                                                                   |
+| Behaviour when an already critiqued source post changes                               | Update, new article, or archive-only policy                                                        |
+| Correction policy for published articles                                              | Recovery from evidence changes or discovered errors                                                |
 
 ## Suggested implementation order
 
@@ -53,3 +57,11 @@
 7. Enable unattended publishing after duplicate-delivery and failure-recovery checks pass.
 
 No infrastructure credentials or Pi details have been supplied in this discussion. No library choice, integration test, or deployment is implied to be complete by these documents.
+
+## Initial collection storage decision
+
+SQLite stores collector state and durable handoff records; a persistent file volume stores retained text and provenance. Elasticsearch is a derived searchable copy. This settles the initial collector backend; actual storage paths, backup configuration and deployment remain private operational choices. See [storage and retrieval](03-storage-and-retrieval.md).
+
+## Preparation boundary
+
+Discovery contracts are ready for implementers, with historical access investigated inside its ticket. Collection and later processing stages are described in [processing stages](10-processing-stages.md). Models/providers, publication destination and live authenticated tests remain unresolved deployment inputs. They do not block schema work, controlled-adapter tests, full-text indexing or supplied-transcript collection. Existing completed tickets and active implementer claims must not be reset by planning updates.

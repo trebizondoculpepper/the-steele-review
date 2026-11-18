@@ -6,13 +6,13 @@ Maintain a configured list of source publications. Poll each publication's RSS f
 
 Substack documents publication feeds at `/feed`: [official RSS documentation](https://support.substack.com/hc/en-us/articles/360038239391-Is-there-an-RSS-feed-for-my-publication).
 
-Treat an edited post as a new source version when its relevant content changes. Fetch timestamps and content fingerprints distinguish discovery from actual changes. Polling intervals and request limits remain configurable and undecided.
+Initial discovery collects each post once using stable content identity; explicit edit detection is deferred. Preserve available update dates and content fingerprints for future version handling. Polling defaults to five minutes after each completed run, configurable at runtime; request limits are bounded configuration.
 
 ## Archive before transformation
 
 Preserve retrieved article HTML or feed payload where useful, together with source URL, publication and post identifiers, retrieval time, published and updated times, content hash, and extraction status. For audio and video, retain the transcript and provenance only; do not archive the media. Preserve enough metadata to trace extracted passages back to their source.
 
-Retained text records need durable storage independent of Elasticsearch search documents. Audio and video originals are explicitly excluded from this archive. The archive backend is an open decision: a persistent Docker volume may suffice initially; an existing object store may be preferable if available. Record archive references rather than copying large assets into NATS messages.
+Retained text records need durable storage independent of Elasticsearch search documents. Audio and video originals are explicitly excluded from this archive. The initial archive is a private Git repository on a persistent Docker volume; SQLite stores collector state. Record archive references rather than copying large assets into NATS messages.
 
 ## Text and audio
 
