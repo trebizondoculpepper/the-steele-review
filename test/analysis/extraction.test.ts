@@ -161,6 +161,20 @@ describe("ClaimExtractor", () => {
     });
   });
 
+  it("parses a hostile fenced response in linear time", async () => {
+    const hostile = "```json\n" + "\n".repeat(200_000) + "x";
+    const { p } = provider([hostile]);
+    const started = Date.now();
+    const result = await new ClaimExtractor({
+      provider: p,
+      now,
+      maxAttempts: 1,
+      maxResponseChars: 300_000,
+    }).extract(source);
+    expect(result).toMatchObject({ status: "failed", reason: "malformed-output" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it("bounds the response size and the source size", async () => {
     const big = provider(["x".repeat(200)]);
     expect(

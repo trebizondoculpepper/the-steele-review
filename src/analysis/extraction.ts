@@ -278,10 +278,18 @@ export class ClaimExtractor {
 
 /** Accept bare JSON or one fenced JSON block; anything else is malformed. */
 function parseModelOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
-  const trimmed = raw.trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*)\n```$/.exec(trimmed);
+  let body = raw.trim();
+  // Strip one surrounding code fence with plain string operations (no
+  // backtracking regex over attacker-influenced text).
+  if (body.startsWith("```") && body.endsWith("```") && body.length >= 6) {
+    const firstNewline = body.indexOf("\n");
+    if (firstNewline === -1) return undefined;
+    const opener = body.slice(3, firstNewline).trim();
+    if (opener !== "" && opener !== "json") return undefined;
+    body = body.slice(firstNewline + 1, -3);
+  }
   try {
-    const parsed = ModelOutputSchema.safeParse(JSON.parse(fenced ? fenced[1]! : trimmed));
+    const parsed = ModelOutputSchema.safeParse(JSON.parse(body));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
