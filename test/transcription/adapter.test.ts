@@ -300,6 +300,30 @@ describe("TranscriptionAdapter", () => {
     await job.cleanup();
   });
 
+  it("never sweeps a job that is still transcribing", async () => {
+    let clock = Date.now();
+    let finish: () => void = () => {};
+    let started = false;
+    const { p } = provider(async () => {
+      started = true;
+      await new Promise<void>((r) => (finish = r));
+      return { segments: [{ text: "done" }] };
+    });
+    const { a } = adapter(
+      { provider: p, retentionMs: 1_000, now: () => clock },
+      { [AUDIO.url]: bytes("A") },
+    );
+    const pending = a.transcribe([AUDIO]);
+    for (let i = 0; i < 50 && !started; i++) await new Promise((r) => setImmediate(r));
+    clock += 60_000;
+    expect(await a.sweepExpired()).toBe(0);
+    expect(await jobs()).toHaveLength(1);
+    finish();
+    const job = await pending;
+    expect(job.transcript.text).toBe("done");
+    await job.cleanup();
+  });
+
   it("treats a rate-limited download as retryable", async () => {
     const { a } = adapter({}, { [AUDIO.url]: 429 });
     await expect(a.transcribe([AUDIO])).rejects.toMatchObject({

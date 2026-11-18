@@ -157,6 +157,8 @@ export class TranscriptionAdapter {
   private reservedBytes = 0;
   /** Job directories created by this instance; others are surviving media. */
   private readonly ownJobs = new Map<string, () => Promise<void>>();
+  /** Jobs still downloading or transcribing; never swept regardless of age. */
+  private readonly activeJobs = new Set<string>();
   private readonly waiters: Array<() => void> = [];
 
   constructor(private readonly options: TranscriptionAdapterConfig) {
@@ -281,12 +283,17 @@ export class TranscriptionAdapter {
     const release = async () => {
       freeSlot();
       if (released) return;
-      released = true;
+      // Mark released only after the media is actually gone, so a failed
+      // deletion can be retried by calling cleanup again (or by a sweep).
       await rm(jobDir, { recursive: true, force: true });
+      if (released) return;
+      released = true;
       this.ownJobs.delete(jobName);
+      this.activeJobs.delete(jobName);
       this.reservedBytes -= this.config.maxBytes;
     };
     this.ownJobs.set(jobName, release);
+    this.activeJobs.add(jobName);
 
     try {
       await mkdir(jobDir, { recursive: true, mode: 0o700 });
@@ -326,6 +333,8 @@ export class TranscriptionAdapter {
         throw signal.aborted ? reason() : new TranscriptionError("provider-failed", true);
       }
       freeSlot();
+      // Download and transcription are done; the job now only awaits cleanup.
+      this.activeJobs.delete(jobName);
       const segments = result.segments
         .map((s) => ({ ...s, text: s.text.trim() }))
         .filter((s) => s.text.length > 0);
@@ -440,7 +449,7 @@ export class TranscriptionAdapter {
     let removed = 0;
     const cutoff = this.now() - this.config.retentionMs;
     for (const entry of entries) {
-      if (!entry.startsWith("job-")) continue;
+      if (!entry.startsWith("job-") || this.activeJobs.has(entry)) continue;
       const dir = join(this.config.workspaceDir, entry);
       try {
         if ((await stat(dir)).mtimeMs <= cutoff) {
