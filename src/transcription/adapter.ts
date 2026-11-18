@@ -146,6 +146,8 @@ export interface TranscriptionAdapterConfig {
   retentionMs?: number;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  /** Deletes a job directory; injectable to test cleanup failures. */
+  removeDirectory?: (path: string) => Promise<void>;
 }
 
 export class TranscriptionAdapter {
@@ -153,6 +155,7 @@ export class TranscriptionAdapter {
   private readonly hosts: ReadonlySet<string>;
   private readonly fetch: typeof globalThis.fetch;
   private readonly now: () => number;
+  private readonly removeDirectory: (path: string) => Promise<void>;
   private active = 0;
   private reservedBytes = 0;
   /** Job directories created by this instance; others are surviving media. */
@@ -178,6 +181,8 @@ export class TranscriptionAdapter {
     this.hosts = new Set(this.config.allowedHosts.map((h) => h.toLowerCase()));
     this.fetch = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? Date.now;
+    this.removeDirectory =
+      options.removeDirectory ?? ((path) => rm(path, { recursive: true, force: true }));
   }
 
   /**
@@ -273,11 +278,14 @@ export class TranscriptionAdapter {
     const jobDir = join(this.config.workspaceDir, jobName);
     // The concurrency slot covers download and transcription only; the disk
     // reservation lasts until the media is deleted.
+    // A provider that ignores cancellation keeps running after a timeout, so
+    // the slot is only returned once its call has actually settled.
+    let providerSettled: Promise<void> = Promise.resolve();
     let slotHeld = true;
     const freeSlot = () => {
       if (!slotHeld) return;
       slotHeld = false;
-      this.releaseSlot();
+      void providerSettled.then(() => this.releaseSlot());
     };
     let released = false;
     const release = async () => {
@@ -285,7 +293,7 @@ export class TranscriptionAdapter {
       if (released) return;
       // Mark released only after the media is actually gone, so a failed
       // deletion can be retried by calling cleanup again (or by a sweep).
-      await rm(jobDir, { recursive: true, force: true });
+      await this.removeDirectory(jobDir);
       if (released) return;
       released = true;
       this.ownJobs.delete(jobName);
@@ -313,13 +321,15 @@ export class TranscriptionAdapter {
           else signal.addEventListener("abort", onAbort, { once: true });
         });
         try {
-          const raw = await Promise.race([
-            this.options.provider.transcribe(
-              { path, kind: candidate.kind, durationSeconds: candidate.durationSeconds },
-              signal,
-            ),
-            aborted,
-          ]);
+          const call = this.options.provider.transcribe(
+            { path, kind: candidate.kind, durationSeconds: candidate.durationSeconds },
+            signal,
+          );
+          providerSettled = Promise.resolve(call).then(
+            () => undefined,
+            () => undefined,
+          );
+          const raw = await Promise.race([call, aborted]);
           // 1: validate provider output at the boundary.
           const parsed = ProviderResultSchema.safeParse(raw);
           if (!parsed.success) throw new TranscriptionError("provider-failed", false);
