@@ -212,6 +212,35 @@ describe("ClaimExtractor", () => {
     ).toMatchObject({ status: "failed", reason: "timeout" });
   });
 
+  it("snapshots the prompt at construction", async () => {
+    const prompt = { version: "v-test", instructions: "Extract claims." };
+    const { p, requests } = provider([
+      json([{ statement: SECOND, claimType: "factual", passage: SECOND }]),
+    ]);
+    const extractor = new ClaimExtractor({ provider: p, prompt, now });
+    prompt.version = "mutated";
+    prompt.instructions = "Something else.";
+    const result = await extractor.extract(source);
+    expect(result).toMatchObject({ status: "complete", promptVersion: "v-test" });
+    expect(requests[0]!.system).toBe("Extract claims.");
+  });
+
+  it("treats a response that arrives after the deadline as a timeout", async () => {
+    const late: ExtractionModelProvider = {
+      modelVersion: "late",
+      complete: async () => {
+        const until = Date.now() + 1_100;
+        while (Date.now() < until) {
+          // Synchronous work that cannot observe the abort signal.
+        }
+        return json([{ statement: SECOND, claimType: "factual", passage: SECOND }]);
+      },
+    };
+    expect(
+      await new ClaimExtractor({ provider: late, now, timeoutMs: 1_000 }).extract(source),
+    ).toMatchObject({ status: "failed", reason: "timeout" });
+  });
+
   it("deduplicates identical claims", async () => {
     const claim = { statement: SECOND, claimType: "factual", passage: SECOND };
     const { p } = provider([json([claim, claim])]);

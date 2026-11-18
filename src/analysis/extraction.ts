@@ -159,7 +159,10 @@ export class ClaimExtractor {
   private readonly now: () => Date;
 
   constructor(private readonly config: ClaimExtractorConfig) {
-    this.prompt = config.prompt ?? DEFAULT_EXTRACTION_PROMPT;
+    // Snapshot the prompt so later mutation by the caller cannot change the
+    // instructions or the recorded prompt version mid-life.
+    const prompt = config.prompt ?? DEFAULT_EXTRACTION_PROMPT;
+    this.prompt = Object.freeze({ version: prompt.version, instructions: prompt.instructions });
     this.maxResponseChars = config.maxResponseChars ?? 200_000;
     this.maxSourceChars = config.maxSourceChars ?? 200_000;
     this.maxAttempts = Math.max(1, Math.min(config.maxAttempts ?? 2, 5));
@@ -172,6 +175,7 @@ export class ClaimExtractor {
     if (source.text.length > this.maxSourceChars) {
       return { status: "failed", reason: "source-too-large", attempts: 0 };
     }
+    const deadline = Date.now() + this.timeoutMs;
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const stopReason = (): ExtractionFailure => (signal?.aborted ? "cancelled" : "timeout");
@@ -198,6 +202,12 @@ export class ClaimExtractor {
         if (combined.aborted) return { status: "failed", reason: stopReason(), attempts: attempt };
         lastFailure = "provider-failed";
         continue;
+      }
+      // A response that arrives after the deadline does not count as success.
+      // Checked against the clock too: the abort timer cannot fire while
+      // synchronous provider work blocks the event loop.
+      if (combined.aborted || Date.now() > deadline) {
+        return { status: "failed", reason: stopReason(), attempts: attempt };
       }
       if (typeof raw !== "string" || raw.length > this.maxResponseChars) {
         lastFailure = "response-too-large";
