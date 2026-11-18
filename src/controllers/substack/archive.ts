@@ -4,7 +4,12 @@ import {
   postIdFromCanonicalUrl,
   type SubstackItem,
 } from "../../content/substack-item.js";
-import { DiscoveryFetchError, boundedFetchText, type BoundedFetchOptions } from "./http.js";
+import {
+  DiscoveryFetchError,
+  boundedFetchText,
+  parseConfiguredUrl,
+  type BoundedFetchOptions,
+} from "./http.js";
 
 /**
  * Historical discovery for one Substack publication through the public archive
@@ -136,7 +141,10 @@ export class SubstackArchiveDiscovery {
 
   constructor(private readonly config: ArchiveDiscoveryConfig) {
     SubstackItemSchema.shape.publicationId.parse(config.publicationId);
-    this.endpoint = new URL("/api/v1/archive", config.publicationUrl);
+    this.endpoint = new URL(
+      "/api/v1/archive",
+      parseConfiguredUrl(config.publicationUrl, "publicationUrl"),
+    );
     this.pageSize = z
       .number()
       .int()

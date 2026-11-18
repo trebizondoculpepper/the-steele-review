@@ -193,6 +193,16 @@ describe("SubstackArchiveDiscovery", () => {
     expect(items).toHaveLength(1);
   });
 
+  it("rejects a malformed publication URL without echoing it", () => {
+    expect(
+      () =>
+        new SubstackArchiveDiscovery({
+          publicationUrl: "https://secret host/",
+          publicationId: "example-pub",
+        }),
+    ).toThrow(/^publicationUrl is not a valid URL$/);
+  });
+
   it("validates page size against the archive limit", () => {
     expect(
       () =>
