@@ -90,15 +90,35 @@ export class CollectionStore {
     item: SubstackItem,
     owner: string,
     leaseMs: number,
-    options: { maxAttempts?: number; eventsFor: (artifact: ArtifactRef) => PendingEventInput[] },
+    options: {
+      maxAttempts?: number;
+      /** Builds events for a reconciled orphan from the record it actually contains. */
+      eventsFor: (artifact: ArtifactRef, record: CollectionRecord) => PendingEventInput[];
+    },
   ): Promise<ClaimResult> {
     const key = collectionKey(item);
     const result = this.operations.claim(key, owner, leaseMs, options.maxAttempts);
     if (result.kind !== "exhausted") return result;
-    const orphan = await this.artifacts.lookup(collectionArtifactPath(item));
+    const orphan = await this.existing(item);
     if (!orphan) return result;
-    const artifact = this.operations.reconcileCompleted(key, orphan, options.eventsFor(orphan));
+    const artifact = this.operations.reconcileCompleted(
+      key,
+      orphan.artifact,
+      options.eventsFor(orphan.artifact, orphan.record),
+    );
     return { kind: "completed", artifact };
+  }
+
+  /**
+   * The committed artifact and record for a post, if an earlier attempt
+   * committed one (whether or not its completion was recorded).
+   */
+  async existing(
+    item: Pick<SubstackItem, "publicationId" | "postId">,
+  ): Promise<{ artifact: ArtifactRef; record: CollectionRecord } | undefined> {
+    const artifact = await this.artifacts.lookup(collectionArtifactPath(item));
+    if (!artifact) return undefined;
+    return { artifact, record: await this.read(artifact) };
   }
 
   /**

@@ -181,6 +181,71 @@ describe("CollectionWorker", () => {
     expect(restarted.collectCalls()).toBe(0);
   });
 
+  it("finishes from a committed artifact after a crash on a non-final attempt, without refetching", async () => {
+    const first = setup({ owner: "worker-a" });
+    const claim = first.operations.claim(collectionKey(item), "worker-a", 1, 5);
+    if (claim.kind !== "claimed") throw new Error("expected claim");
+    // Crash after the Git commit but before SQLite completion.
+    await artifacts.write(
+      "substack/example-pub/a-post/collected.json",
+      `${JSON.stringify(
+        {
+          item,
+          ingestionReason: "backfill",
+          text: "Committed before the crash.",
+          complete: false,
+          supplied: {},
+          provenance: { ...provenance, method: "article-html" },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await new Promise((r) => setTimeout(r, 5)); // lease expires
+    const restarted = setup({ owner: "worker-b" });
+    const m = message("live");
+    expect(await restarted.worker.handle(m)).toBe("already-collected");
+    expect(restarted.collectCalls()).toBe(0);
+    expect(m.acked).toBe(1);
+    const event = parseTextReadyEvent(restarted.published[0]!.body);
+    // Metadata comes from the retained record, not the redelivered event or a placeholder.
+    expect(event.data).toMatchObject({
+      ingestionReason: "backfill",
+      acquisitionMethod: "article-html",
+      complete: false,
+    });
+  });
+
+  it("labels an exhausted-orphan reconciliation from the retained record", async () => {
+    const first = setup({ owner: "worker-a" });
+    const claim = first.operations.claim(collectionKey(item), "worker-a", 1, 1);
+    if (claim.kind !== "claimed") throw new Error("expected claim");
+    await artifacts.write(
+      "substack/example-pub/a-post/collected.json",
+      `${JSON.stringify(
+        {
+          item,
+          ingestionReason: "live",
+          text: "Partial.",
+          complete: false,
+          supplied: {},
+          provenance: { ...provenance, method: "supplied-transcript" },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    first.operations.fail(claim.claim, "crashed", true); // final attempt used
+    const restarted = setup({ owner: "worker-b" });
+    expect(await restarted.worker.handle(message("backfill"))).toBe("already-collected");
+    const event = parseTextReadyEvent(restarted.published[0]!.body);
+    expect(event.data).toMatchObject({
+      ingestionReason: "live",
+      acquisitionMethod: "supplied-transcript",
+      complete: false,
+    });
+  });
+
   it("records unavailable content visibly and does not retry it", async () => {
     const { worker, operations } = setup({
       collect: () => ({ kind: "unavailable", item, reason: "restricted" }),

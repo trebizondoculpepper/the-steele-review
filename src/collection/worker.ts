@@ -85,37 +85,28 @@ export class CollectionWorker {
     this.retryDelayMs = config.retryDelayMs ?? 60_000;
   }
 
-  private eventsFor(
-    item: SubstackItem,
-    reason: IngestionReason,
-    method: string,
-    complete: boolean,
-    causationId: string,
-  ) {
-    return (artifact: ArtifactRef): PendingEventInput[] => {
+  /** Text-ready events derived from the record actually committed for the artifact. */
+  private eventsFor(causationId: string) {
+    return (artifact: ArtifactRef, record: CollectionRecord): PendingEventInput[] => {
       const event = createTextReadyEvent(
         {
-          publicationId: item.publicationId,
-          postId: item.postId,
-          url: item.url,
-          ingestionReason: reason,
+          publicationId: record.item.publicationId,
+          postId: record.item.postId,
+          url: record.item.url,
+          ingestionReason: record.ingestionReason,
           artifact: {
             repository: artifact.repository,
             commit: artifact.commit,
             path: artifact.path,
             hash: `sha256:${artifact.sha256}`,
           },
-          acquisitionMethod: method,
-          complete,
+          acquisitionMethod: record.provenance.method,
+          complete: record.complete,
         },
         { causationId },
       );
       return [
-        {
-          eventId: event.id,
-          subject: TEXT_READY_SUBJECT,
-          payload: JSON.stringify(event.toJSON()),
-        },
+        { eventId: event.id, subject: TEXT_READY_SUBJECT, payload: JSON.stringify(event.toJSON()) },
       ];
     };
   }
@@ -147,7 +138,7 @@ export class CollectionWorker {
 
     const claimResult = await this.config.store.begin(item, this.config.owner, this.leaseMs, {
       maxAttempts: this.config.maxAttempts,
-      eventsFor: this.eventsFor(item, reason, "reconciled", true, causationId),
+      eventsFor: this.eventsFor(causationId),
     });
     if (claimResult.kind === "completed") {
       await message.ack();
@@ -163,6 +154,24 @@ export class CollectionWorker {
       return { result: "exhausted", item };
     }
     const claim = claimResult.claim;
+
+    // An earlier attempt may have committed the artifact and crashed before
+    // recording completion: finish with that durable record rather than
+    // fetching the source again.
+    const committed = await this.config.store.existing(item).catch(() => undefined);
+    if (committed) {
+      try {
+        await this.config.store.commit(claim, committed.record, (artifact) =>
+          this.eventsFor(causationId)(artifact, committed.record),
+        );
+      } catch {
+        message.nak(this.retryDelayMs);
+        return { result: "retry", item };
+      }
+      await message.ack();
+      await this.dispatchPending(signal);
+      return { result: "already-collected", item };
+    }
 
     let acquired: CollectionResult;
     try {
@@ -250,10 +259,8 @@ export class CollectionWorker {
     }
 
     try {
-      await this.config.store.commit(
-        claim,
-        record,
-        this.eventsFor(item, reason, method, record.complete, causationId),
+      await this.config.store.commit(claim, record, (artifact) =>
+        this.eventsFor(causationId)(artifact, record),
       );
     } catch {
       // Nothing was recorded as complete; temporary media is released and the
