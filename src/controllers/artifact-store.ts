@@ -66,14 +66,14 @@ export class ArtifactStoreError extends Error {
   }
 }
 
-const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
 
 /** Validate a relative artifact path: plain segments, no traversal, dotfiles or .git. */
 export function assertArtifactPath(path: string): string {
   const segments = path.split("/");
   const valid =
     path.length > 0 &&
-    path.length <= 512 &&
+    path.length <= 1024 &&
     segments.every((s) => SEGMENT.test(s) && s !== ".." && s.toLowerCase() !== ".git");
   if (!valid) throw new ArtifactStoreError("invalid-path");
   return path;

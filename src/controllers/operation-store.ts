@@ -266,29 +266,71 @@ export class OperationStore {
           "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
         )
         .run(JSON.stringify(artifact), now, key);
-      const existing = this.db.prepare(
-        "SELECT operation_key, subject, payload FROM pending_events WHERE event_id = ?",
-      );
-      const insert = this.db.prepare(
-        "INSERT INTO pending_events (event_id, operation_key, subject, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-      );
-      for (const event of events) {
-        const found = existing.get(event.eventId) as
-          | { operation_key: string; subject: string; payload: string }
-          | undefined;
-        if (found) {
-          // Same record already present: fine. Anything else would drop downstream work.
-          if (
-            found.operation_key !== key ||
-            found.subject !== event.subject ||
-            found.payload !== event.payload
-          ) {
-            throw new OperationStoreError("event-conflict");
-          }
-          continue;
+      this.insertEvents(key, events, now);
+      return artifact;
+    });
+  }
+
+  /** Insert pending events for an operation; an identical existing record is accepted. */
+  private insertEvents(key: string, events: PendingEventInput[], now: number): void {
+    const existing = this.db.prepare(
+      "SELECT operation_key, subject, payload FROM pending_events WHERE event_id = ?",
+    );
+    const insert = this.db.prepare(
+      "INSERT INTO pending_events (event_id, operation_key, subject, payload, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+    );
+    for (const event of events) {
+      const found = existing.get(event.eventId) as
+        | { operation_key: string; subject: string; payload: string }
+        | undefined;
+      if (found) {
+        // Same record already present: fine. Anything else would drop downstream work.
+        if (
+          found.operation_key !== key ||
+          found.subject !== event.subject ||
+          found.payload !== event.payload
+        ) {
+          throw new OperationStoreError("event-conflict");
         }
-        insert.run(event.eventId, key, event.subject, event.payload, now, now);
+        continue;
       }
+      insert.run(event.eventId, key, event.subject, event.payload, now, now);
+    }
+  }
+
+  /**
+   * Record completion for an operation whose artifact is already durable but
+   * whose completion was never recorded (the worker crashed after committing,
+   * possibly on its final attempt). Refused while another owner holds a live
+   * lease; a no-op returning the stored artifact if already completed.
+   */
+  reconcileCompleted(key: string, artifact: unknown, events: PendingEventInput[]): unknown {
+    for (const event of events) {
+      if (!event.eventId || !event.subject || typeof event.payload !== "string") {
+        throw new OperationStoreError("invalid-input");
+      }
+    }
+    return this.transaction(() => {
+      const now = this.now();
+      const row = this.row(key);
+      if (row?.status === "completed") return JSON.parse(row.artifact ?? "null");
+      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now) {
+        throw new OperationStoreError("busy");
+      }
+      if (row) {
+        this.db
+          .prepare(
+            "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+          )
+          .run(JSON.stringify(artifact), now, key);
+      } else {
+        this.db
+          .prepare(
+            "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+          )
+          .run(key, JSON.stringify(artifact), now);
+      }
+      this.insertEvents(key, events, now);
       return artifact;
     });
   }

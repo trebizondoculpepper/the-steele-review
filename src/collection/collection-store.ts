@@ -81,9 +81,24 @@ export class CollectionStore {
     private readonly artifacts: GitArtifactStore,
   ) {}
 
-  /** Claim collection of a post, or learn that it is done, busy or exhausted. */
-  begin(item: SubstackItem, owner: string, leaseMs: number, maxAttempts?: number): ClaimResult {
-    return this.operations.claim(collectionKey(item), owner, leaseMs, maxAttempts);
+  /**
+   * Claim collection of a post, or learn that it is done, busy or exhausted.
+   * An exhausted operation whose artifact was committed before a crash is
+   * completed from that artifact rather than abandoned.
+   */
+  async begin(
+    item: SubstackItem,
+    owner: string,
+    leaseMs: number,
+    options: { maxAttempts?: number; eventsFor: (artifact: ArtifactRef) => PendingEventInput[] },
+  ): Promise<ClaimResult> {
+    const key = collectionKey(item);
+    const result = this.operations.claim(key, owner, leaseMs, options.maxAttempts);
+    if (result.kind !== "exhausted") return result;
+    const orphan = await this.artifacts.lookup(collectionArtifactPath(item));
+    if (!orphan) return result;
+    const artifact = this.operations.reconcileCompleted(key, orphan, options.eventsFor(orphan));
+    return { kind: "completed", artifact };
   }
 
   /**
