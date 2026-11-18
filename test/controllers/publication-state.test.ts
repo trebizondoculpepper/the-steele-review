@@ -124,6 +124,35 @@ describe("publication state transitions", () => {
     expect(restarted.confirmPublished(retry, receipt).status).toBe("published");
   });
 
+  it("allows reconciliation after the final attempt lost its publish response", () => {
+    const store = open();
+    const last = held(store.claim(KEY, "p1", 1_000, 1));
+    store.recordPublicationIntent(last, artifact);
+    store.saveDestinationDraft(last, "draft-123");
+    store.markPublicationUncertain(last);
+    store.fail(last, "lost-response", true); // final attempt: operation is now exhausted
+    expect(store.claim(KEY, "p2", 60_000, 1).kind).toBe("exhausted");
+
+    const reconcile = held(store.claimForReconciliation(KEY, "reconciler", 60_000));
+    expect(store.publicationState(KEY)).toMatchObject({
+      status: "uncertain",
+      destinationDraftId: "draft-123",
+    });
+    expect(store.confirmPublished(reconcile, receipt).status).toBe("published");
+    // Once published, nothing is left to reconcile.
+    expect(() => store.claimForReconciliation(KEY, "again", 60_000)).toThrow("invalid-transition");
+  });
+
+  it("refuses reconciliation claims without an unresolved destination", () => {
+    const store = open();
+    expect(() => store.claimForReconciliation(KEY, "r", 60_000)).toThrow("invalid-transition");
+    const claim = held(store.claim(KEY, "p", 1_000));
+    store.recordPublicationIntent(claim, artifact);
+    expect(() => store.claimForReconciliation(KEY, "r", 60_000)).toThrow("invalid-transition");
+    store.saveDestinationDraft(claim, "draft-1");
+    expect(store.claimForReconciliation(KEY, "r", 60_000).kind).toBe("busy");
+  });
+
   it("enforces transition order", () => {
     const store = open();
     const claim = held(store.claim(KEY, "p", 60_000));

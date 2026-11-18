@@ -277,6 +277,49 @@ export class OperationStore {
     });
   }
 
+  /**
+   * Claim a publication operation for reconciliation even if its attempts
+   * are exhausted. Allowed only while a destination draft exists and the
+   * outcome is unresolved (`draft-saved` or `uncertain`): an external side
+   * effect may already have happened, so the state must be read back rather
+   * than abandoned. A live lease held by another owner is still respected.
+   */
+  claimForReconciliation(key: string, owner: string, leaseMs: number): ClaimResult {
+    if (
+      !Key.safeParse(key).success ||
+      !Owner.safeParse(owner).success ||
+      !Positive.safeParse(leaseMs).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction<ClaimResult>(() => {
+      const now = this.now();
+      const row = this.row(key);
+      const publication = this.publicationRow(key);
+      if (
+        !row ||
+        !publication?.destination_draft_id ||
+        (publication.status !== "draft-saved" && publication.status !== "uncertain")
+      ) {
+        throw new OperationStoreError("invalid-transition");
+      }
+      if (row.status === "completed") {
+        return { kind: "completed", artifact: JSON.parse(row.artifact ?? "null") };
+      }
+      if (row.status === "claimed" && (row.lease_expires_at ?? 0) > now) {
+        return { kind: "busy", leaseExpiresAt: row.lease_expires_at ?? now };
+      }
+      const attempt = row.attempts + 1;
+      const leaseExpiresAt = now + leaseMs;
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
+        )
+        .run(owner, leaseExpiresAt, attempt, now, key);
+      return { kind: "claimed", attempt, leaseExpiresAt, claim: { key, owner, attempt } };
+    });
+  }
+
   /** Extend a held lease. Throws not-owner if the lease was lost. */
   renew(claim: OperationClaim, leaseMs: number): number {
     const { key } = claim;
