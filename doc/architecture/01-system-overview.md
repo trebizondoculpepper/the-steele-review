@@ -37,6 +37,8 @@ NATS connects processing stages; persistent workflow state records progress. Log
 
 ## External boundaries
 
-Development happens on the user's Mac. Execution will run in Docker on a Raspberry Pi whose details are pending. Existing NATS and Elasticsearch services live on another server. Model inference and transcription are accessed through replaceable interfaces; their execution location is not yet selected.
+Development happens on the user's Mac. Execution targets Docker on a Raspberry Pi; private deployment details live outside this repository. Existing NATS and Elasticsearch services live on another server. Model inference and transcription are accessed through replaceable interfaces; their execution location is not yet selected.
 
 Vite+ is development tooling. It does not imply that this backend requires a browser application. The original tooling setup remains a separate implementation task.
+
+Current acceptance scope is [M1 content capture and searchable text](13-milestones.md). The full flow above is the longer-term architecture, not a requirement to implement research or publishing before capture can be accepted.

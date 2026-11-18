@@ -1,11 +1,13 @@
 # Implementation preparation brief
 
+The [milestone sequence](13-milestones.md) supersedes earlier first-milestone draft targets. GitHub is authoritative for current completion/claims and estimates; the table below is the initial decomposition, not a live status snapshot.
+
 This is the planning handoff for the agreed proof of concept. GitHub tickets carry the current acceptance criteria, estimates, dependencies and claims. This document is a map, not a replacement task tracker.
 
 ## Existing discovery work
 
 - #2 content schema and #6 CloudEvent factory are closed; preserve their merged contracts rather than redefining them.
-- #7 RSS discovery and #8 historical discovery have active PRs. Do not duplicate or reset those implementers’ work.
+- #7 RSS discovery and #8 historical discovery have been implemented; inspect current merged contracts rather than duplicating those implementations.
 - #4 NATS publishing, #9 single discovery run, #10 periodic scheduling, #11 backfill command and #12 container smoke test retain their existing estimates and now have explicit input/output contracts.
 - #5 is the discovery parent; #3 groups the recent and historical controller implementations.
 
@@ -56,9 +58,9 @@ After the existing schema/event contracts, acquisition can proceed alongside the
 ## Inputs still needed for live integration
 
 - Embedding provider, model and dimensions, before accepting the vector mapping and live embedding path.
-- Transcription provider and runtime configuration; supplied-transcript collection remains useful without it.
+- Local Whisper is the first transcription candidate; benchmark representative input. Supplied-transcript collection remains useful without it.
 - Writing/verifying model provider and bounded request/cost policy.
-- Research/search provider and source freshness/applicability policy for live gap research.
+- Kagi API configuration for live search/extraction; corpus-first sufficiency and optional per-post freshness checks, with no scheduled refresh.
 - Destination Substack publication, authentication, subscriber email behaviour and explicitly authorised test publication.
 
 These are deployment/integration dependencies. Do not invent working integrations from fake-adapter tests. Keep credentials and real connection details in private configuration.
@@ -70,3 +72,7 @@ No backup/restore or disaster-recovery implementation, no extra workflow platfor
 ## Review and validation
 
 Every implementation needs focused behavioural evidence, architecture/security review and a linked PR. Planning changes do not authorise merging future implementation PRs or publishing real articles. Immutable provenance must survive all stages. The application repository must not contain private home configuration apart from the explicitly authorised ignored local environment file.
+
+Publisher #46 is now a tracker for #66 approval-reference validation, #67 state, #68 reconciliation and #69 composition. Scope is the simple check-state-first contract in [processing stages](10-processing-stages.md), not multiple publisher services.
+
+Additional agreed decomposition: themes #77–#78; indexed claim occurrences/timeline #79–#81; research coordination #82. See the GitHub milestones and [current milestone definitions](13-milestones.md).

@@ -21,3 +21,7 @@ These documents capture the architecture discussion, not a claim that the system
 See [processing stages](10-processing-stages.md) for the agreed collection-through-publication flow and proof-of-concept boundaries.
 
 See the [implementation preparation brief](11-implementation-brief.md) for the ticket map, readiness and unresolved live-integration inputs.
+
+See [failure handling](12-failure-handling.md) for retry ownership, error classification and JetStream delivery limits.
+
+The [milestone sequence](13-milestones.md) is the current acceptance scope. See [search indices and claim timelines](14-search-indices-and-timeline.md) for content, claims, research and passage boundaries. Technical investigations live in [doc/research](../research/README.md).

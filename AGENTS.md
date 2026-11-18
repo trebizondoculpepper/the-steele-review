@@ -43,6 +43,7 @@ Public application architecture may describe generic dependencies, interfaces, c
 If private information is discovered in this project, stop propagating it, report the issue without repeating the sensitive values, and remove it from the working files. If it has entered Git history or a public service, report that separately so remediation can be coordinated.
 
 <!-- pdb:coordination:start -->
+
 ## Coordination with Presidential Daily Briefing (pdb)
 
 This project (trebizondoculpepper/the-steele-review) uses pdb for status, priorities, claims and handoffs.
@@ -52,4 +53,9 @@ This project (trebizondoculpepper/the-steele-review) uses pdb for status, priori
 - See what to do next: `pdb --repo trebizondoculpepper/the-steele-review`. Help: `pdb --help`; onboarding: `pdb onboard --repo trebizondoculpepper/the-steele-review`.
 - MCP clients: `pdb-mcp --repo trebizondoculpepper/the-steele-review`.
 - Prefer pdb over raw gh for status and priorities; use gh only for operations pdb does not support.
+
 <!-- pdb:coordination:end -->
+
+## SQLite isolation
+
+SQLite is private to the state-controller implementation. Only that implementation may import the driver, issue SQL, manage migrations, or access the database file/path. Other components use its narrow typed domain interface; do not expose generic queries, raw handles, or shared-file database access. Keep completion and pending-event transactions, ownership checks and expiry handling behind this boundary. The proof of concept uses an in-process controller; a separate service is not required. Architectural review must reject bypasses of this boundary.
