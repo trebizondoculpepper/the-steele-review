@@ -56,6 +56,7 @@ describe("locatePassage", () => {
     });
     expect(locatePassage(TEXT, FIRST, 3)).toBe("absent");
     expect(locatePassage(TEXT, "invented sentence")).toBe("absent");
+    expect(locatePassage("abc", "")).toBe("absent");
   });
 });
 

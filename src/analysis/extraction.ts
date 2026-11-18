@@ -119,6 +119,8 @@ export function locatePassage(
   passage: string,
   occurrence?: number,
 ): { start: number; end: number } | "absent" | "ambiguous" {
+  // An empty passage matches everywhere and would never terminate; it grounds nothing.
+  if (passage.length === 0) return "absent";
   const positions: number[] = [];
   for (let from = 0; ;) {
     const at = text.indexOf(passage, from);
