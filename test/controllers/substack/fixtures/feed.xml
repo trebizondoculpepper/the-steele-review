@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[Example Publication]]></title>
+    <description><![CDATA[Synthetic fixture feed.]]></description>
+    <link>https://example-pub.substack.com</link>
+    <generator>Substack</generator>
+    <lastBuildDate>Mon, 02 Feb 2026 10:00:00 GMT</lastBuildDate>
+    <item>
+      <title><![CDATA[Third synthetic post]]></title>
+      <description><![CDATA[Summary three.]]></description>
+      <link>https://example-pub.substack.com/p/third-synthetic-post</link>
+      <guid isPermaLink="false">https://example-pub.substack.com/p/third-synthetic-post</guid>
+      <dc:creator><![CDATA[Example Author]]></dc:creator>
+      <pubDate>Mon, 02 Feb 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Second synthetic post]]></title>
+      <link>https://example-pub.substack.com/p/second-synthetic-post</link>
+      <guid isPermaLink="false">https://example-pub.substack.com/p/second-synthetic-post</guid>
+      <pubDate>Sun, 01 Feb 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Undated synthetic post]]></title>
+      <link>https://example-pub.substack.com/p/undated-synthetic-post</link>
+      <guid isPermaLink="false">https://example-pub.substack.com/p/undated-synthetic-post</guid>
+    </item>
+    <item>
+      <title><![CDATA[Entry without a link]]></title>
+      <pubDate>Sat, 31 Jan 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <link>https://example-pub.substack.com/p/untitled-synthetic-post</link>
+      <guid isPermaLink="false">https://example-pub.substack.com/p/untitled-synthetic-post</guid>
+      <pubDate>Fri, 30 Jan 2026 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
