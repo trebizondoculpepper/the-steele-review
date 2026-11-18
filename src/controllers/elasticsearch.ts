@@ -71,8 +71,20 @@ export interface ElasticsearchClientLike {
     }): Promise<unknown>;
     existsAlias(params: { name: string }): Promise<boolean>;
   };
+  search(
+    params: { index: string; query: unknown; size: number; _source: boolean },
+    options: { requestTimeout: number; maxRetries: number },
+  ): Promise<{ hits: { hits: Array<{ _id: string; _score: number | null; _source?: unknown }> } }>;
   close(): Promise<void>;
 }
+
+export interface SearchHit {
+  id: string;
+  score: number;
+  source: unknown;
+}
+
+export const MAX_SEARCH_RESULTS = 50;
 
 /** Map a client error to a sanitised failure category. */
 export function classifyIndexingError(error: unknown): IndexingError {
@@ -165,6 +177,33 @@ export class ElasticsearchController {
   ): Promise<IndexResult> {
     const request = fulltextIndexRequest(doc, index);
     return this.indexDocument(request.index._index, request.index._id, request.document, options);
+  }
+
+  /**
+   * Run one bounded query against exactly one logical index (alias). The
+   * result count is capped and the per-request timeout bounded; failures are
+   * reported as sanitised categories.
+   */
+  async search(
+    index: string,
+    query: unknown,
+    options: { size?: number; timeoutMs?: number } = {},
+  ): Promise<SearchHit[]> {
+    const size = Math.max(1, Math.min(options.size ?? 10, MAX_SEARCH_RESULTS));
+    const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
+    try {
+      const response = await this.client.search(
+        { index, query, size, _source: true },
+        { requestTimeout: timeoutMs, maxRetries: 0 },
+      );
+      return response.hits.hits.map((hit) => ({
+        id: hit._id,
+        score: hit._score ?? 0,
+        source: hit._source,
+      }));
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
   }
 
   /**
