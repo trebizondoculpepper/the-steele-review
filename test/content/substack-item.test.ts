@@ -71,6 +71,9 @@ describe("postIdFromCanonicalUrl", () => {
   it("returns undefined for other shapes", () => {
     expect(postIdFromCanonicalUrl("https://example.org/archive")).toBeUndefined();
     expect(postIdFromCanonicalUrl("not a url")).toBeUndefined();
+    expect(postIdFromCanonicalUrl("ftp://example.org/p/a-post")).toBeUndefined();
+    expect(postIdFromCanonicalUrl("http://example.org/p/a-post")).toBeUndefined();
+    expect(postIdFromCanonicalUrl(`https://example.org/p/${"a".repeat(201)}`)).toBeUndefined();
   });
 });
 
@@ -83,6 +86,14 @@ describe("JSON Schema export", () => {
     };
     expect(schema.required.sort()).toEqual(["postId", "publicationId", "title", "url"]);
     expect(schema.additionalProperties).toBe(false);
+    const props = schema.properties as Record<
+      string,
+      { pattern?: string; allOf?: { pattern?: string }[] }
+    >;
+    const patterns = (f: string) =>
+      [props[f]?.pattern, ...(props[f]?.allOf ?? []).map((a) => a.pattern)].filter(Boolean);
+    expect(patterns("url")).toContain("^https:\\/\\/");
+    expect(patterns("title")).toContain("\\S");
     for (const [name, prop] of Object.entries(schema.properties)) {
       expect(prop.description, name).toBeTruthy();
     }

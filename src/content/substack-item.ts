@@ -22,6 +22,7 @@ import { z } from "zod";
  */
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_POST_ID = 200;
 const PUBLICATION = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const SubstackItemSchema = z
@@ -33,15 +34,19 @@ export const SubstackItemSchema = z
     postId: z
       .string()
       .min(1)
-      .max(200)
+      .max(MAX_POST_ID)
       .regex(SLUG)
       .describe("Stable post identifier within the publication: the lower-case URL slug."),
-    url: z.url({ protocol: /^https$/ }).describe("Canonical public HTTPS URL of the post."),
+    url: z
+      .url({ protocol: /^https$/ })
+      .regex(/^https:\/\//)
+      .describe("Canonical public HTTPS URL of the post."),
     title: z
       .string()
       .trim()
       .min(1)
       .max(500)
+      .regex(/\S/)
       .describe("Post title as published. Informational only; never used as identity."),
     publishedAt: z.iso
       .datetime({ offset: true })
@@ -83,7 +88,8 @@ export function postIdFromCanonicalUrl(url: string): string | undefined {
   } catch {
     return undefined;
   }
+  if (parsed.protocol !== "https:") return undefined;
   const match = /^\/p\/([^/]+)\/?$/.exec(parsed.pathname);
   const slug = match?.[1]?.toLowerCase();
-  return slug && SLUG.test(slug) ? slug : undefined;
+  return slug && slug.length <= MAX_POST_ID && SLUG.test(slug) ? slug : undefined;
 }
