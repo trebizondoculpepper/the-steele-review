@@ -147,6 +147,38 @@ describe("SubstackDestinationController", () => {
     await expect(destination.getStatus("1")).rejects.toMatchObject({ category: "unavailable" });
   });
 
+  it("does not treat a read-back without a publication state as an unpublished draft", async () => {
+    const destination = new SubstackDestinationController({
+      createDraft: async () => ({ id: 1 }),
+      getDraft: async () => ({ id: 1 }),
+      publishDraft: async () => ({}),
+    });
+    await expect(destination.getStatus("1")).rejects.toMatchObject({ category: "unavailable" });
+    expect(await reconcilePublication(destination, "1")).toEqual({ outcome: "uncertain" });
+  });
+
+  it("reports a draft creation aborted in flight as uncertain, and one aborted before sending as cancelled", async () => {
+    const { client, destination } = setup();
+    const abort = new AbortController();
+    const slow = new SubstackDestinationController({
+      createDraft: async (draft) => {
+        await client.createDraft(draft);
+        abort.abort();
+        throw new Error("aborted after send");
+      },
+      getDraft: (id) => client.getDraft(id),
+      publishDraft: (id, o) => client.publishDraft(id, o),
+    });
+    await expect(slow.createDraft(content, abort.signal)).rejects.toMatchObject({
+      category: "uncertain",
+    });
+    expect(client.drafts.size).toBe(1);
+    await expect(destination.createDraft(content, abort.signal)).rejects.toMatchObject({
+      category: "cancelled",
+    });
+    expect(client.drafts.size).toBe(1);
+  });
+
   it("never surfaces vendor error text", async () => {
     const destination = new SubstackDestinationController({
       createDraft: async () => {

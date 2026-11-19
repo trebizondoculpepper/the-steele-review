@@ -121,7 +121,8 @@ export class VendorResponseError extends Error {
 const CreatedSchema = z.looseObject({ id: z.union([z.string().min(1), z.number().int()]) });
 const VendorDraftSchema = z.looseObject({
   id: z.union([z.string().min(1), z.number().int()]),
-  is_published: z.boolean().optional(),
+  // Required: a read-back without an explicit state proves nothing either way.
+  is_published: z.boolean(),
   canonical_url: z.string().optional(),
   post_date: z.string().nullable().optional(),
 });
@@ -150,6 +151,7 @@ export class SubstackDestinationController implements PublicationDestination {
 
   async createDraft(content: DraftContent, signal?: AbortSignal): Promise<{ draftId: string }> {
     const valid = DraftContentSchema.parse(content);
+    if (signal?.aborted) throw new DestinationError("cancelled", false);
     let raw: unknown;
     try {
       raw = await this.client.createDraft(
@@ -161,7 +163,8 @@ export class SubstackDestinationController implements PublicationDestination {
         signal,
       );
     } catch (error) {
-      if (signal?.aborted) throw new DestinationError("cancelled", false);
+      // Aborting after the request was sent does not undo it: the draft may exist.
+      if (signal?.aborted) throw new DestinationError("uncertain", false);
       throw classify(error, "create");
     }
     const parsed = CreatedSchema.safeParse(raw);
