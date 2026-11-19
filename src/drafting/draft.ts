@@ -183,6 +183,14 @@ export async function draftFromBrief(input: {
   maxAttempts?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Targeted feedback on the previous draft from verification (#43/#99):
+   * the passages to change and what must change. Used for revisions.
+   */
+  revision?: {
+    previousDraft: string;
+    feedback: Array<{ passage?: string; problem: string; requiredChange: string }>;
+  };
 }): Promise<DraftOutcome> {
   const prompt = input.prompt ?? DEFAULT_DRAFT_PROMPT;
   const boundary = `DATA-${randomBytes(12).toString("hex")}`;
@@ -207,6 +215,16 @@ export async function draftFromBrief(input: {
         ...(c.evidence.publishedAt ? { publishedAt: c.evidence.publishedAt } : {}),
       })),
       evidenceGaps: brief.evidenceGaps.map((g) => ({ claimId: g.claimId, statement: g.statement })),
+      ...(input.revision
+        ? {
+            revision: {
+              instruction:
+                "Revise the previous draft: fix every listed problem, using only the brief.",
+              previousDraft: input.revision.previousDraft,
+              feedback: input.revision.feedback,
+            },
+          }
+        : {}),
     }),
     boundary,
   ].join("\n");
