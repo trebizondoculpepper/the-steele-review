@@ -13,6 +13,7 @@
  *   STEELE_COLLECT_STREAM             stream holding discovery events
  *   STEELE_COLLECT_CONSUMER           durable consumer name (provisioned separately)
  *   STEELE_COLLECT_RETRY_DELAY_MS?    redelivery delay after a retryable failure
+ *   STEELE_COLLECT_DISPATCH_INTERVAL_MS?  pending handoff retry interval (default 30 s)
  *
  * No transcription provider is configured here: posts that need
  * transcription are recorded visibly as transcription-unavailable.
@@ -37,6 +38,7 @@ const EnvSchema = z.object({
   STEELE_COLLECT_STREAM: z.string().min(1),
   STEELE_COLLECT_CONSUMER: z.string().min(1),
   STEELE_COLLECT_RETRY_DELAY_MS: z.coerce.number().int().positive().optional(),
+  STEELE_COLLECT_DISPATCH_INTERVAL_MS: z.coerce.number().int().positive().optional(),
 });
 
 async function main(): Promise<number> {
@@ -77,6 +79,12 @@ async function main(): Promise<number> {
     await nats.connect("steele-collect-worker");
     // Hand off anything left pending by an earlier run before consuming.
     await worker.dispatchPending(abort.signal);
+    // Retry failed handoffs on a timer too, so a text-ready event left
+    // pending is not stuck until the next discovery arrives.
+    const retry = setInterval(() => {
+      worker.dispatchPending(abort.signal).catch(() => undefined);
+    }, c.STEELE_COLLECT_DISPATCH_INTERVAL_MS ?? 30_000);
+    abort.signal.addEventListener("abort", () => clearInterval(retry), { once: true });
     console.log(JSON.stringify({ event: "collection", state: "consuming" }));
     await nats.consume(
       c.STEELE_COLLECT_STREAM,
@@ -89,6 +97,7 @@ async function main(): Promise<number> {
     console.error(JSON.stringify({ event: "collection", state: "failed" }));
     return 1;
   } finally {
+    abort.abort();
     await nats.close();
     operations.close();
     console.log(JSON.stringify({ event: "collection", state: "stopped" }));
