@@ -57,6 +57,8 @@ export interface ReplayReport {
   failed: Array<{ path: string; reason: string }>;
   /** True when the selection limit stopped the replay before the archive was exhausted. */
   truncated: boolean;
+  /** True when a shutdown signal stopped the replay before it finished. */
+  interrupted: boolean;
 }
 
 export async function replayArchiveToIndex(input: {
@@ -76,11 +78,13 @@ export async function replayArchiveToIndex(input: {
     skipped: 0,
     failed: [],
     truncated: false,
+    interrupted: false,
   };
   const wanted = sel.postIds ? new Set(sel.postIds) : undefined;
-  const paths = (
-    await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN)
-  ).filter((p) => {
+  const listed = await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN);
+  // A full listing may have stopped at the scan cap before every record.
+  if (listed.length >= MAX_REPLAY_SCAN) report.truncated = true;
+  const paths = listed.filter((p) => {
     const parts = p.split("/");
     return (
       parts.length === 4 && parts[3] === "collected.json" && (!wanted || wanted.has(parts[2]!))
@@ -88,7 +92,12 @@ export async function replayArchiveToIndex(input: {
   });
 
   for (const path of paths) {
-    if (input.signal?.aborted) break;
+    if (input.signal?.aborted) {
+      // Stopped early: the replay did not finish, so it is not reported as success.
+      report.interrupted = true;
+      report.ok = false;
+      break;
+    }
     if (report.selected >= sel.limit) {
       report.truncated = true;
       break;

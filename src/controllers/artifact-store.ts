@@ -304,6 +304,12 @@ export class GitArtifactStore {
   async list(prefix: string, limit: number): Promise<string[]> {
     assertArtifactPath(prefix);
     const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
+    // An unreadable or non-Git archive is a failure, not an empty archive.
+    try {
+      await this.run(["rev-parse", "--git-dir"]);
+    } catch {
+      throw new ArtifactStoreError("git-failed");
+    }
     const head = await this.head();
     if (!head) return [];
     let stdout: string;

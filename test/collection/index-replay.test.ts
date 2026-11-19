@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CollectionRecord } from "../../src/collection/collection-store.js";
-import { replayArchiveToIndex } from "../../src/collection/index-replay.js";
+import { MAX_REPLAY_SCAN, replayArchiveToIndex } from "../../src/collection/index-replay.js";
 import type { FulltextIndexPort } from "../../src/collection/indexing-handler.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { IndexingError } from "../../src/controllers/elasticsearch.js";
@@ -191,6 +191,39 @@ describe("replayArchiveToIndex", () => {
         index: versionedIndex().port,
       }),
     ).rejects.toThrow();
+  });
+
+  it("reports interruption instead of success", async () => {
+    await archive(record("a"), record("b"));
+    const abort = new AbortController();
+    abort.abort();
+    const result = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10 },
+      artifacts,
+      index: versionedIndex().port,
+      signal: abort.signal,
+    });
+    expect(result).toMatchObject({ ok: false, interrupted: true, selected: 0 });
+  });
+
+  it("reports truncation when the archive listing hits the scan cap", async () => {
+    const capped = {
+      list: async () =>
+        Array.from({ length: MAX_REPLAY_SCAN }, (_, i) => `substack/example-pub/p${i}/other.json`),
+      lookup: artifacts.lookup.bind(artifacts),
+      read: artifacts.read.bind(artifacts),
+    };
+    const result = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10 },
+      artifacts: capped,
+      index: versionedIndex().port,
+    });
+    expect(result).toMatchObject({ selected: 0, truncated: true });
+  });
+
+  it("fails rather than reporting an empty archive when the path is not a repository", async () => {
+    const missing = new GitArtifactStore({ repoPath: join(dir, "not-a-repo"), repository: "x" });
+    await expect(missing.list("substack/example-pub", 10)).rejects.toThrow();
   });
 
   it("ignores other publications and non-record artifacts", async () => {
