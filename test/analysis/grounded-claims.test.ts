@@ -197,6 +197,27 @@ describe("extractGroundedClaims", () => {
     expect((await read()).occurrences.map((o) => o.postId)).toEqual(["p1", "p2"]);
   });
 
+  it("does not reuse a cached extraction made against a different theme result", async () => {
+    const one = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c1:theme-proposals/a.json",
+    });
+    const two = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c2:theme-proposals/b.json",
+    });
+    expect(one.status === "extracted" && one.reused).toBe(false);
+    expect(two.status === "extracted" && two.reused).toBe(false);
+    if (two.status !== "extracted") throw new Error();
+    expect(two.record.themeResult).toBe("c2:theme-proposals/b.json");
+  });
+
   it("records model and prompt versions and fails cleanly on invalid output", async () => {
     const ok = await extractGroundedClaims({
       provider: model(RESPONSE),

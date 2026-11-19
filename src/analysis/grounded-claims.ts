@@ -187,9 +187,17 @@ export function claimExtractionPath(
   sourceVersion: string,
   modelVersion: string,
   promptVersion: string,
+  /** The exact theme result the claims link to; part of the cache identity. */
+  themeResult?: string,
 ): string {
   const key = createHash("sha256")
-    .update(JSON.stringify([modelVersion, promptVersion]))
+    .update(
+      JSON.stringify(
+        themeResult === undefined
+          ? [modelVersion, promptVersion]
+          : [modelVersion, promptVersion, themeResult],
+      ),
+    )
     .digest("hex")
     .slice(0, 16);
   return `claim-extractions/${post.publicationId}/${post.postId}/${sourceVersion.slice(7, 39)}-${key}.json`;
@@ -251,6 +259,7 @@ export async function extractGroundedClaims(input: {
     source.sourceVersion,
     input.provider.modelVersion,
     prompt.version,
+    input.themeResult,
   );
 
   let record: ClaimExtractionRecord;
