@@ -168,7 +168,11 @@ export class ThemeCatalogueStore {
         );
         return { ids, stored: { catalogue: next, ref } };
       } catch (error) {
-        const stale = error instanceof ArtifactStoreError && error.code === "stale-revision";
+        // Another writer moved the branch: a stale revision, or a lost
+        // compare-and-swap from a separate process. Reload and retry.
+        const stale =
+          error instanceof ArtifactStoreError &&
+          (error.code === "stale-revision" || error.code === "concurrent-update");
         if (!stale || attempt >= maxRetries) throw error;
       }
     }
@@ -417,6 +421,9 @@ export async function detectThemes(input: {
         return rejected.push({ kind: "proposed", index, reason: "invalid-name" });
       if (seenNames.has(name))
         return rejected.push({ kind: "proposed", index, reason: "duplicate-name" });
+      if (p.possibleMatchOf !== undefined && !knownIds.has(p.possibleMatchOf)) {
+        return rejected.push({ kind: "proposed", index, reason: "unknown-possible-match" });
+      }
       const evidence = locate(p.passages);
       if (typeof evidence === "string")
         return rejected.push({ kind: "proposed", index, reason: `passage-${evidence}` });

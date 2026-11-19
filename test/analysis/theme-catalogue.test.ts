@@ -169,7 +169,15 @@ describe("detectThemes", () => {
             { id: "invented", confidence: "low", passages: [{ passage: "bins" }] },
             { id: "geoengineering", confidence: "low", passages: [{ passage: "not in text" }] },
           ],
-          proposed: [],
+          proposed: [
+            {
+              name: "Bins",
+              definition: "d",
+              confidence: "low",
+              possibleMatchOf: "nonexistent",
+              passages: [{ passage: "Also the bins were late." }],
+            },
+          ],
         }),
       ),
       catalogue,
@@ -179,7 +187,11 @@ describe("detectThemes", () => {
     });
     if (bad.status !== "detected") throw new Error(bad.status);
     expect(bad.themeIds).toEqual([]);
-    expect(bad.detection.rejected.map((r) => r.reason)).toEqual(["unknown-id", "passage-absent"]);
+    expect(bad.detection.rejected.map((r) => r.reason)).toEqual([
+      "unknown-id",
+      "passage-absent",
+      "unknown-possible-match",
+    ]);
   });
 
   it("reports malformed output after bounded attempts and stores nothing", async () => {
