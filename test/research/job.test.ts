@@ -13,6 +13,7 @@ import {
   ResearchRequestSchema,
   ResearchResultSchema,
   finishResearchJob,
+  InvalidResearchManifestError,
   openResearchJob,
   researchJobId,
 } from "../../src/research/job.js";
@@ -94,11 +95,29 @@ describe("research job contracts", () => {
   });
 });
 
+const writeManifest = (jobId: string) =>
+  artifacts.write(
+    `research-jobs/${jobId}/manifest.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      jobId,
+      report: ref("d"),
+      citations: [],
+      gaps: ["payment record not found"],
+      provider: { model: "fixture" },
+    }),
+  );
+
 describe("durable job lifecycle", () => {
   it("records outcome and completion event once; redelivery reuses the job without new work", async () => {
-    const opened = await openResearchJob({ artifacts, operations, request: request() });
-    expect(opened.existing).toBeUndefined();
-    const manifest = await artifacts.write(`research-jobs/${opened.jobId}/manifest.json`, "{}");
+    const opened = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "test",
+      request: request(),
+    });
+    expect(opened.status).toBe("run");
+    const manifest = await writeManifest(opened.jobId);
     const done = await finishResearchJob({
       artifacts,
       operations,
@@ -113,10 +132,11 @@ describe("durable job lifecycle", () => {
     const again = await openResearchJob({
       artifacts,
       operations,
+      owner: "test",
       request: request({ claims: [...request().claims].reverse() }),
     });
     expect(again.jobId).toBe(opened.jobId);
-    expect(again.existing?.outcome).toBe("complete-with-gaps");
+    expect(again.status === "finished" && again.existing.outcome).toBe("complete-with-gaps");
     const due = operations.duePendingEvents(10, RESEARCH_COMPLETED_SUBJECT);
     expect(due).toHaveLength(1);
     const data = parseResearchCompletedEvent(due[0].payload);
@@ -129,20 +149,35 @@ describe("durable job lifecycle", () => {
   });
 
   it("recovers the event after a restart between saving the result and recording it", async () => {
-    const { jobId } = await openResearchJob({ artifacts, operations, request: request() });
+    const { jobId } = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "test",
+      request: request(),
+    });
     // Simulate a crash: the result artifact exists but no event was recorded.
     await artifacts.write(
       `research-jobs/${jobId}/result.json`,
       `${JSON.stringify({ schemaVersion: 1, jobId, outcome: "failed", failure: "interrupted", finishedAt: "2026-01-01T00:00:00Z" }, null, 2)}\n`,
     );
     expect(operations.pendingEventStatus(jobId)).toBeUndefined();
-    const reopened = await openResearchJob({ artifacts, operations, request: request() });
-    expect(reopened.existing?.failure).toBe("interrupted");
+    const reopened = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "test",
+      request: request(),
+    });
+    expect(reopened.status === "finished" && reopened.existing.failure).toBe("interrupted");
     expect(operations.pendingEventStatus(jobId)).toBe("pending");
   });
 
   it("records a provider failure without a manifest, and never overwrites a finished job", async () => {
-    const { jobId } = await openResearchJob({ artifacts, operations, request: request() });
+    const { jobId } = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "test",
+      request: request(),
+    });
     const failed = await finishResearchJob({
       artifacts,
       operations,
@@ -153,7 +188,7 @@ describe("durable job lifecycle", () => {
     expect(failed.result).toMatchObject({ outcome: "failed", failure: "provider-error" });
     expect(failed.result.manifest).toBeUndefined();
     // A later, different outcome for the same job is not written over the saved one.
-    const manifest = await artifacts.write(`research-jobs/${jobId}/manifest.json`, "{}");
+    const manifest = await writeManifest(jobId);
     const retry = await finishResearchJob({
       artifacts,
       operations,
@@ -166,10 +201,16 @@ describe("durable job lifecycle", () => {
   });
 
   it("gives a librarian-directed second pass its own job linked to the first", async () => {
-    const first = await openResearchJob({ artifacts, operations, request: request() });
+    const first = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "test",
+      request: request(),
+    });
     const second = await openResearchJob({
       artifacts,
       operations,
+      owner: "test",
       request: request({
         pass: 2,
         previousJobId: first.jobId,
@@ -209,5 +250,63 @@ describe("manual subject requests (#218)", () => {
     expect(() => ResearchRequestSchema.parse(request({ subject: "x" }))).toThrow();
     expect(() => ResearchRequestSchema.parse(request({ claims: [] }))).toThrow();
     expect(researchJobId(manual())).not.toBe(researchJobId(request()));
+  });
+});
+
+describe("review fixes", () => {
+  it("lets only one caller run a job at a time, and records a vanished run as interrupted", async () => {
+    let clock = 1_000_000;
+    operations.close();
+    operations = new OperationStore({ path: join(dir, "state.sqlite"), now: () => clock });
+    const a = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "a",
+      request: request(),
+      leaseMs: 60_000,
+    });
+    const b = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "b",
+      request: request(),
+      leaseMs: 60_000,
+    });
+    expect([a.status, b.status]).toEqual(["run", "busy"]);
+    clock += 120_000; // a's lease expired without a result
+    const c = await openResearchJob({ artifacts, operations, owner: "c", request: request() });
+    expect(c.status === "finished" && c.existing).toMatchObject({
+      outcome: "failed",
+      failure: "interrupted",
+    });
+  });
+
+  it("refuses invalid manifests and manifests from another job", async () => {
+    const { jobId } = await openResearchJob({
+      artifacts,
+      operations,
+      owner: "t",
+      request: request(),
+    });
+    const junk = await artifacts.write(`research-jobs/${jobId}/manifest.json`, "{}");
+    await expect(
+      finishResearchJob({ artifacts, operations, jobId, outcome: "complete", manifest: junk }),
+    ).rejects.toThrow(InvalidResearchManifestError);
+    const other = researchJobId(request({ question: "Another question?" }));
+    const foreign = await writeManifest(other);
+    await expect(
+      finishResearchJob({ artifacts, operations, jobId, outcome: "complete", manifest: foreign }),
+    ).rejects.toThrow("another job");
+    expect(operations.pendingEventStatus(jobId)).toBeUndefined();
+  });
+
+  it("rejects repeated claim IDs so identity cannot depend on input order", () => {
+    const dup = request({
+      claims: [
+        { claimRecordId: "claim-1", statement: "s", themeIds: ["a"] },
+        { claimRecordId: "claim-1", statement: "s", themeIds: ["b"] },
+      ],
+    });
+    expect(() => ResearchRequestSchema.parse(dup)).toThrow();
   });
 });

@@ -76,6 +76,10 @@ export const ResearchRequestSchema = z
     if (r.pass > 1 && !r.previousJobId) {
       ctx.addIssue({ code: "custom", message: "a later pass must name the job it follows" });
     }
+    const ids = r.claims.map((c) => c.claimRecordId);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: "custom", message: "claims must not repeat a claim record ID" });
+    }
     if (r.pass === 1 && r.previousJobId) {
       ctx.addIssue({ code: "custom", message: "a first pass has no previous job" });
     }
@@ -183,12 +187,19 @@ export function researchJobId(input: unknown): string {
         ]
       : null,
     claims: [...r.claims]
-      .map((c) => [c.claimRecordId, c.statement, [...c.themeIds].sort()])
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      .map((c) => JSON.stringify([c.claimRecordId, c.statement, [...c.themeIds].sort()]))
+      .sort(),
     question: r.question ? r.question.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
     corpus: r.corpusRefs.map(refKey).sort((a, b) => a.join().localeCompare(b.join())),
   });
   return `research-${createHash("sha256").update(canonical).digest("hex").slice(0, 32)}`;
+}
+
+export class InvalidResearchManifestError extends Error {
+  constructor(reason: string) {
+    super(`research manifest rejected: ${reason}`);
+    this.name = "InvalidResearchManifestError";
+  }
 }
 
 export const researchJobPath = (jobId: string, file: "request" | "result" | "manifest") =>
@@ -228,11 +239,30 @@ async function writeOnce(
  * reuses the saved job: `existing` reports an earlier terminal outcome so the
  * caller never runs the provider again.
  */
+/** How long one provider run may hold a job before another caller may treat it as interrupted. */
+export const DEFAULT_RUN_LEASE_MS = 30 * 60_000;
+
+export type OpenedResearchJob =
+  | { status: "run"; jobId: string; requestRef: ArtifactRef; owner: string }
+  | { status: "finished"; jobId: string; requestRef: ArtifactRef; existing: ResearchResult }
+  | { status: "busy"; jobId: string; requestRef: ArtifactRef };
+
+/**
+ * Save a request and decide what the caller may do. Only one caller at a
+ * time receives `run` (a leased state-controller claim), so the provider is
+ * never called twice for one job. A redelivered request for a finished job
+ * returns its saved outcome. A run whose holder disappeared (lease expired)
+ * is not retried: it is recorded as failed (`interrupted`), keeping the
+ * fail-fast, no-automatic-retry rule.
+ */
 export async function openResearchJob(input: {
   artifacts: GitArtifactStore;
   operations: OperationStore;
   request: unknown;
-}): Promise<{ jobId: string; requestRef: ArtifactRef; existing?: ResearchResult }> {
+  owner: string;
+  leaseMs?: number;
+  now?: () => Date;
+}): Promise<OpenedResearchJob> {
   const request = ResearchRequestSchema.parse(input.request);
   const jobId = researchJobId(request);
   const requestRef = await writeOnce(input.artifacts, researchJobPath(jobId, "request"), request);
@@ -241,9 +271,27 @@ export async function openResearchJob(input: {
     const existing = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(resultRef)));
     // Ensure the completion is recorded even if an earlier run stopped between saving and recording.
     recordOutcome(input.operations, jobId, existing);
-    return { jobId, requestRef, existing };
+    return { status: "finished", jobId, requestRef, existing };
   }
-  return { jobId, requestRef };
+  const claim = input.operations.claim(
+    `research-run:${jobId}`,
+    input.owner,
+    input.leaseMs ?? DEFAULT_RUN_LEASE_MS,
+    1,
+  );
+  if (claim.kind === "claimed") return { status: "run", jobId, requestRef, owner: input.owner };
+  if (claim.kind === "busy") return { status: "busy", jobId, requestRef };
+  // Exhausted (the single attempt's holder vanished) or a stale completion
+  // without a saved result: record an interrupted failure, never re-run.
+  const { result } = await finishResearchJob({
+    artifacts: input.artifacts,
+    operations: input.operations,
+    jobId,
+    outcome: "failed",
+    failure: "interrupted",
+    ...(input.now ? { now: input.now } : {}),
+  });
+  return { status: "finished", jobId, requestRef, existing: result };
 }
 
 function recordOutcome(operations: OperationStore, jobId: string, result: ResearchResult): void {
@@ -281,6 +329,20 @@ export async function finishResearchJob(input: {
     const result = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(saved)));
     recordOutcome(input.operations, input.jobId, result);
     return { result, resultRef: saved, reused: true };
+  }
+  // A manifest must be valid and belong to this job before completion is committed.
+  if (input.manifest) {
+    let manifest;
+    try {
+      manifest = ResearchManifestSchema.parse(
+        JSON.parse(await input.artifacts.read(input.manifest)),
+      );
+    } catch {
+      throw new InvalidResearchManifestError("manifest is unreadable or invalid");
+    }
+    if (manifest.jobId !== input.jobId) {
+      throw new InvalidResearchManifestError("manifest belongs to another job");
+    }
   }
   const result = ResearchResultSchema.parse({
     schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
