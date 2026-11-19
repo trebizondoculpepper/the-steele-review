@@ -48,8 +48,9 @@ export const ContentEmbeddedDataSchema = z
     publicationId: Id,
     postId: Id,
     sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-    vectorSpace: z.string().min(1).max(500),
-    chunking: z.string().min(1).max(200),
+    // Percent-encoded model identities can be long; bounded generously.
+    vectorSpace: z.string().min(1).max(4000),
+    chunking: z.string().min(1).max(1000),
     indexName: z.string().min(1).max(255),
     passages: z.number().int().min(1),
     ingestionReason: z.enum(["live", "backfill", "reprocess"]),

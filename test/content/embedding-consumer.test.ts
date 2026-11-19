@@ -288,6 +288,12 @@ describe("EmbeddingConsumer", () => {
     expect(await s.consumer.handle(await message())).toBe("embedded");
   });
 
+  it("emits a valid handoff for a model with a long percent-encoded identity", async () => {
+    const s = setup({ model: { ...MODEL, model: "名".repeat(200), version: "名".repeat(100) } });
+    expect(await s.consumer.handle(await message())).toBe("embedded");
+    expect(() => parseContentEmbeddedEvent(s.payloads[0]!)).not.toThrow();
+  });
+
   it("starts new work for a changed model", async () => {
     await setup().consumer.handle(await message());
     const changed = setup({ model: { ...MODEL, version: "2" } });
