@@ -17,6 +17,7 @@
  * Status lines are sanitised JSON; connection details are never printed.
  * The existing connectivity health service (main.ts) is unchanged.
  */
+import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { z } from "zod";
 import { NatsDiscoveryPublisher } from "../controllers/nats-discovery.js";
 import { NatsController } from "../controllers/nats.js";
@@ -26,8 +27,6 @@ import { runDiscovery } from "../discovery/run.js";
 import { createDiscoveryEvent } from "../events/discovery-event.js";
 
 const EnvSchema = z.object({
-  NATS_URL: z.string().min(1),
-  NATS_TOKEN: z.string().optional(),
   STEELE_FEED_URL: z.url({ protocol: /^https$/ }),
   STEELE_PUBLICATION_ID: z.string().min(1),
   STEELE_POLL_INTERVAL_MS: z.coerce.number().int().positive().optional(),
@@ -44,7 +43,15 @@ async function main(): Promise<number> {
     return 2;
   }
   const config = env.data;
-  const nats = new NatsController(config.NATS_URL, config.NATS_TOKEN || undefined);
+  let natsConn;
+  try {
+    natsConn = natsConnection();
+  } catch (error) {
+    console.error(`discover: ${describeSetupError(error)}`);
+    return 2;
+  }
+
+  const nats = new NatsController(natsConn.url, natsConn.token);
   try {
     await nats.connect("steele-discovery");
   } catch {

@@ -17,6 +17,11 @@
  * Status lines are sanitised JSON. SIGTERM/SIGINT stop consumption after the
  * in-flight message and close connections.
  */
+import {
+  describeSetupError,
+  elasticsearchConnection,
+  natsConnection,
+} from "../config/credentials.js";
 import { hostname } from "node:os";
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
@@ -26,10 +31,6 @@ import { OperationStore } from "../controllers/operation-store.js";
 import { IndexingConsumer } from "../collection/indexing-consumer.js";
 
 const EnvSchema = z.object({
-  NATS_URL: z.string().min(1),
-  NATS_TOKEN: z.string().optional(),
-  ELASTICSEARCH_URL: z.string().min(1),
-  ELASTICSEARCH_API_KEY: z.string().optional(),
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
@@ -47,9 +48,19 @@ async function main(): Promise<number> {
     return 2;
   }
   const c = env.data;
+  let natsConn;
+  let esConn;
+  try {
+    natsConn = natsConnection();
+    esConn = elasticsearchConnection();
+  } catch (error) {
+    console.error(`index-worker: ${describeSetupError(error)}`);
+    return 2;
+  }
+
   const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
-  const es = new ElasticsearchController(c.ELASTICSEARCH_URL, c.ELASTICSEARCH_API_KEY || undefined);
-  const nats = new NatsController(c.NATS_URL, c.NATS_TOKEN || undefined);
+  const es = new ElasticsearchController(esConn.url, esConn.apiKey);
+  const nats = new NatsController(natsConn.url, natsConn.token);
   const consumer = new IndexingConsumer({
     artifacts: new GitArtifactStore({
       repoPath: c.STEELE_ARCHIVE_PATH,
