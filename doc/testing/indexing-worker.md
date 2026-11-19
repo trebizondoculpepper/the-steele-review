@@ -43,3 +43,5 @@ SIGTERM or SIGINT stops consumption after the in-flight message and closes conne
 ## Smoke test
 
 `test/collection/indexing-consumer.test.ts` includes a controlled smoke test that runs when both `STEELE_TEST_NATS_URL` and `STEELE_TEST_ES_URL` point at disposable servers (`scripts/nats-test-server.sh start`, `scripts/es-test-server.sh start`). It delivers one saved text-ready event twice, simulates an index outage on the first attempt, and checks that exactly one searchable document results. Checks against the real deployment belong to the staged capture work (#92).
+
+For deployment prerequisites and staged acceptance gates, see [live capture preflight](live-capture-preflight.md).

@@ -439,3 +439,46 @@ describe("TranscriptionAdapter", () => {
     });
   });
 });
+
+it("reserves provider conversion scratch alongside retained original media", async () => {
+  const fake = fakeFetch({ [AUDIO.url]: bytes("A") });
+  const p = { ...provider().p, maxScratchBytes: 2048 };
+  const a = new TranscriptionAdapter({
+    provider: p,
+    workspaceDir: dir,
+    allowedHosts: ["media.test"],
+    maxBytes: 1024,
+    maxWorkspaceBytes: 4096,
+    fetch: fake.fetch,
+  });
+  const first = await a.transcribe([AUDIO]);
+  await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+  await first.cleanup();
+  const second = await a.transcribe([AUDIO]);
+  await second.cleanup();
+  expect(await jobs()).toHaveLength(0);
+});
+
+it("rejects provider scratch budgets that cannot fit before accepting media", () => {
+  expect(
+    () =>
+      new TranscriptionAdapter({
+        provider: { ...provider().p, maxScratchBytes: 4096 },
+        workspaceDir: dir,
+        allowedHosts: ["media.test"],
+        maxBytes: 1024,
+        maxWorkspaceBytes: 4096,
+      }),
+  ).toThrow("download and provider scratch");
+});
+
+it("counts nested conversion scratch surviving a restart", async () => {
+  const scratch = join(dir, "job-crashed", "whisper-scratch");
+  await mkdir(scratch, { recursive: true });
+  await writeFile(join(scratch, "input.wav"), "x".repeat(3500));
+  const { a } = adapter({}, { [AUDIO.url]: bytes("A") });
+  await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+  await rm(join(dir, "job-crashed"), { recursive: true });
+  const job = await a.transcribe([AUDIO]);
+  await job.cleanup();
+});
