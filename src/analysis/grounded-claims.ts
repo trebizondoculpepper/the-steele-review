@@ -1,6 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
+  CandidateSnapshotSchema,
+  MalformedResponseSchema,
+  RejectionStageSchema,
+  candidateSnapshot,
+  malformedResponse,
+  saveFailureDiagnostics,
+  type MalformedResponse,
+  type RejectionStage,
+} from "./rejection.js";
+import {
   ArtifactStoreError,
   type ArtifactRef,
   type GitArtifactStore,
@@ -111,7 +121,18 @@ export const ClaimExtractionRecordSchema = z
     /** Catalogue IDs too long to link from an occurrence; never truncated. */
     skippedThemeIds: z.array(z.string()).optional(),
     claims: z.array(ExtractedClaimSchema),
-    rejected: z.array(z.object({ index: z.number(), reason: z.string() }).strict()),
+    rejected: z.array(
+      z
+        .object({
+          index: z.number(),
+          reason: z.string(),
+          stage: RejectionStageSchema.optional(),
+          candidate: CandidateSnapshotSchema.optional(),
+        })
+        .strict(),
+    ),
+    /** Malformed responses from earlier attempts of a successful run. */
+    malformedAttempts: z.array(MalformedResponseSchema).optional(),
     extraction: z
       .object({ modelVersion: z.string(), promptVersion: z.string(), extractedAt: z.string() })
       .strict(),
@@ -144,6 +165,16 @@ export const ClaimRecordSchema = z
 export type ClaimRecord = z.infer<typeof ClaimRecordSchema>;
 
 export { claimIdentityKey };
+
+/** Allowlisted candidate fields kept for private inspection of rejections. */
+export const CLAIM_DIAGNOSTIC_FIELDS = ["statement", "passage", "kind", "claimType"] as const;
+
+/** Which validation stage a claim rejection reason belongs to. */
+export function claimRejectionStage(reason: string): RejectionStage {
+  if (reason === "malformed-claim" || reason === "invalid-claim") return "schema";
+  if (reason === "duplicate-occurrence") return "semantic";
+  return "grounding"; // unknown theme, passage or speaker evidence not found
+}
 
 export function claimRecordId(statement: string): string {
   return `claim-${claimIdentityKey(statement).slice(7, 39)}`;
@@ -187,6 +218,7 @@ export type GroundedClaimsOutcome =
       status: "failed";
       reason: "provider-failed" | "malformed-output" | "source-too-large";
       attempts: number;
+      malformed?: MalformedResponse[];
     };
 
 export async function extractGroundedClaims(input: {
@@ -242,6 +274,7 @@ export async function extractGroundedClaims(input: {
     let failure: "provider-failed" | "malformed-output" = "provider-failed";
     const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
     let used = 0;
+    const malformed: MalformedResponse[] = [];
     for (; used < attempts && !output; used++) {
       let raw: string;
       try {
@@ -254,9 +287,25 @@ export async function extractGroundedClaims(input: {
         continue;
       }
       output = raw.length <= maxResponseChars ? parseOutput(raw) : undefined;
-      if (!output) failure = "malformed-output";
+      if (!output) {
+        failure = "malformed-output";
+        malformed.push(malformedResponse(used + 1, raw, maxResponseChars));
+      }
     }
-    if (!output) return { status: "failed", reason: failure, attempts: used };
+    if (!output) {
+      // Keep a bounded, redacted excerpt of each malformed response privately.
+      await saveFailureDiagnostics(input.artifacts, `extraction-failures/claims/${path}`, {
+        reason: failure,
+        attempts: used,
+        malformed,
+      });
+      return {
+        status: "failed",
+        reason: failure,
+        attempts: used,
+        ...(malformed.length > 0 ? { malformed } : {}),
+      };
+    }
 
     const extraction = {
       modelVersion: input.provider.modelVersion,
@@ -335,6 +384,11 @@ export async function extractGroundedClaims(input: {
         ...(m.kind === "question" ? {} : { claimRecordId: claimRecordId(claim.statement) }),
       });
     });
+    const detailed = rejected.map((r) => ({
+      ...r,
+      stage: claimRejectionStage(r.reason),
+      candidate: candidateSnapshot(output.claims[r.index], CLAIM_DIAGNOSTIC_FIELDS),
+    }));
     record = ClaimExtractionRecordSchema.parse({
       schemaVersion: 1,
       post,
@@ -342,7 +396,8 @@ export async function extractGroundedClaims(input: {
       themeIds: [...themeIds],
       ...(skippedThemeIds.length > 0 ? { skippedThemeIds } : {}),
       claims,
-      rejected,
+      rejected: detailed,
+      ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
       extraction,
     });
     const content = `${JSON.stringify(record, null, 2)}\n`;
