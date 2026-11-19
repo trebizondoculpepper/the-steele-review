@@ -7,6 +7,7 @@
  * Configuration (environment):
  *   NATS_URL, NATS_TOKEN?             broker
  *   STEELE_PUBLICATION_URL            public HTTPS publication base URL
+ *   STEELE_PUBLICATION_ID             the publication this worker collects; others are terminated
  *   STEELE_ARCHIVE_PATH               local path of the private artifact repository
  *   STEELE_ARCHIVE_REPOSITORY         logical archive name recorded in references
  *   STEELE_STATE_PATH                 absolute path of the SQLite state file
@@ -27,11 +28,13 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { NatsController } from "../controllers/nats.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { SubstackContentCollector } from "../controllers/substack/collect.js";
+import { parseDiscoveryEvent } from "../events/discovery-event.js";
 
 const EnvSchema = z.object({
   NATS_URL: z.string().min(1),
   NATS_TOKEN: z.string().optional(),
   STEELE_PUBLICATION_URL: z.url({ protocol: /^https$/ }),
+  STEELE_PUBLICATION_ID: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
@@ -89,7 +92,24 @@ async function main(): Promise<number> {
     await nats.consume(
       c.STEELE_COLLECT_STREAM,
       c.STEELE_COLLECT_CONSUMER,
-      (m) => worker.handle(m, abort.signal).then(() => undefined),
+      async (m) => {
+        // One collector serves one publication: a discovery for any other
+        // publication is not this worker's to collect.
+        let publicationId: string | undefined;
+        try {
+          publicationId = parseDiscoveryEvent(new TextDecoder().decode(m.data)).data?.publicationId;
+        } catch {
+          publicationId = undefined; // malformed: the worker terminates it
+        }
+        if (publicationId !== undefined && publicationId !== c.STEELE_PUBLICATION_ID) {
+          console.log(
+            JSON.stringify({ event: "collection", outcome: "other-publication", publicationId }),
+          );
+          m.term();
+          return;
+        }
+        await worker.handle(m, abort.signal);
+      },
       abort.signal,
     );
     return 0;
