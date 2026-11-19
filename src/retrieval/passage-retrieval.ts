@@ -106,6 +106,12 @@ const QuerySchema = z.object({
  * Query terms for passage selection. Short identifiers such as "AI", "UK" or
  * "5G" are kept; single characters are dropped unless they are all there is.
  */
+const tokenize = (text: string) =>
+  text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+
 const terms = (text: string) => {
   const all = [
     ...new Set(
@@ -271,8 +277,9 @@ export class PassageRetriever {
       let best = passages[0];
       let bestScore = -1;
       for (const p of passages) {
-        const lower = p.text.toLowerCase();
-        const score = queryTerms.filter((t) => lower.includes(t)).length;
+        // Whole-token matches only: "AI" must not match inside "said".
+        const tokens = new Set(tokenize(p.text));
+        const score = queryTerms.filter((t) => tokens.has(t)).length;
         if (score > bestScore) {
           best = p;
           bestScore = score;

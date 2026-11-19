@@ -196,6 +196,34 @@ describe("PassageRetriever (fake index)", () => {
     expect(top!.text).toContain("5G");
   });
 
+  it("matches whole tokens, so AI does not match inside said", async () => {
+    const doc = createFulltextDocument(
+      {
+        item: {
+          publicationId: "pub-d",
+          postId: "ai",
+          url: "https://pub-d.substack.com/p/ai",
+          title: "ai",
+        },
+        text: "A resident said nothing useful about it today. Later the AI system was switched on.",
+        acquisitionOrigin: "transcript",
+        artifact: artifact(5),
+        sourceRetrievedAt: "2026-04-01T00:00:00Z",
+      },
+      () => new Date("2026-04-02T00:00:00Z"),
+    );
+    const port: RetrievalIndexPort = {
+      search: async () => [{ id: "a", score: 1, source: doc }],
+      knnSearch: async () => [],
+    };
+    const [top] = (
+      await new PassageRetriever({ index: port, chunking: { ...CHUNKING, maxChars: 50 } }).retrieve(
+        { text: "AI" },
+      )
+    ).passages;
+    expect(top!.text).toContain("AI system");
+  });
+
   it("validates the query and bounds the limit", async () => {
     const port: RetrievalIndexPort = { search: async () => [], knnSearch: async () => [] };
     const retriever = new PassageRetriever({ index: port });
