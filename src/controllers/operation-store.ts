@@ -36,10 +36,31 @@ export interface OperationClaim {
 }
 
 export type ClaimResult =
-  | { kind: "claimed"; attempt: number; leaseExpiresAt: number; claim: OperationClaim }
+  | {
+      kind: "claimed";
+      attempt: number;
+      leaseExpiresAt: number;
+      claim: OperationClaim;
+    }
   | { kind: "completed"; artifact: unknown }
   | { kind: "busy"; leaseExpiresAt: number }
   | { kind: "exhausted"; errorCode?: string };
+
+/** What the caller observed before asking to reopen a failed operation. */
+export interface ReopenExpectation {
+  errorCode: string;
+  attempts: number;
+}
+
+export type ReopenResult =
+  | { kind: "reopened"; attempts: number }
+  /** The same retry was already recorded; its event is pending or sent. */
+  | { kind: "already-reopened" }
+  | { kind: "not-found" }
+  | { kind: "completed" }
+  | { kind: "busy" }
+  /** Not failed, or failed with a different error code or attempt count. */
+  | { kind: "mismatch"; status: string; errorCode?: string; attempts: number };
 
 export type PublicationStatus =
   | "intent"
@@ -297,10 +318,18 @@ export class OperationStore {
             "INSERT INTO operations (key, status, owner, lease_expires_at, attempts, max_attempts, updated_at) VALUES (?, 'claimed', ?, ?, 1, ?, ?)",
           )
           .run(key, owner, leaseExpiresAt, maxAttempts, now);
-        return { kind: "claimed", attempt: 1, leaseExpiresAt, claim: { key, owner, attempt: 1 } };
+        return {
+          kind: "claimed",
+          attempt: 1,
+          leaseExpiresAt,
+          claim: { key, owner, attempt: 1 },
+        };
       }
       if (row.status === "completed") {
-        return { kind: "completed", artifact: JSON.parse(row.artifact ?? "null") };
+        return {
+          kind: "completed",
+          artifact: JSON.parse(row.artifact ?? "null"),
+        };
       }
       if (row.status === "failed") {
         return { kind: "exhausted", errorCode: row.error_code ?? undefined };
@@ -314,7 +343,10 @@ export class OperationStore {
             "UPDATE operations SET status = 'failed', owner = NULL, lease_expires_at = NULL, error_code = COALESCE(error_code, 'attempts-exhausted'), updated_at = ? WHERE key = ?",
           )
           .run(now, key);
-        return { kind: "exhausted", errorCode: row.error_code ?? "attempts-exhausted" };
+        return {
+          kind: "exhausted",
+          errorCode: row.error_code ?? "attempts-exhausted",
+        };
       }
       const attempt = row.attempts + 1;
       this.db
@@ -322,7 +354,12 @@ export class OperationStore {
           "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
         )
         .run(owner, leaseExpiresAt, attempt, now, key);
-      return { kind: "claimed", attempt, leaseExpiresAt, claim: { key, owner, attempt } };
+      return {
+        kind: "claimed",
+        attempt,
+        leaseExpiresAt,
+        claim: { key, owner, attempt },
+      };
     });
   }
 
@@ -354,7 +391,10 @@ export class OperationStore {
         throw new OperationStoreError("invalid-transition");
       }
       if (row.status === "completed") {
-        return { kind: "completed", artifact: JSON.parse(row.artifact ?? "null") };
+        return {
+          kind: "completed",
+          artifact: JSON.parse(row.artifact ?? "null"),
+        };
       }
       if (row.status === "claimed" && (row.lease_expires_at ?? 0) > now) {
         return { kind: "busy", leaseExpiresAt: row.lease_expires_at ?? now };
@@ -366,7 +406,12 @@ export class OperationStore {
           "UPDATE operations SET status = 'claimed', owner = ?, lease_expires_at = ?, attempts = ?, updated_at = ? WHERE key = ?",
         )
         .run(owner, leaseExpiresAt, attempt, now, key);
-      return { kind: "claimed", attempt, leaseExpiresAt, claim: { key, owner, attempt } };
+      return {
+        kind: "claimed",
+        attempt,
+        leaseExpiresAt,
+        claim: { key, owner, attempt },
+      };
     });
   }
 
@@ -396,6 +441,62 @@ export class OperationStore {
           )
           .run(key, errorCode.slice(0, 100), now);
       }
+    });
+  }
+
+  /**
+   * Deliberately reopen one terminally failed operation for exactly one more
+   * attempt, recording the redelivery event in the same transaction so the
+   * retry intent cannot be lost between the two. Fenced on the caller's
+   * observation: the row must still be failed with the expected error code
+   * and attempt count. Completed, claimed or released work is never touched,
+   * and attempt numbers stay monotonic. Repeating the same request (same
+   * event ID) after it succeeded reports `already-reopened`.
+   */
+  reopenFailed(key: string, expected: ReopenExpectation, event: PendingEventInput): ReopenResult {
+    if (
+      !Key.safeParse(key).success ||
+      !expected.errorCode ||
+      !Number.isInteger(expected.attempts) ||
+      expected.attempts < 0 ||
+      !event.eventId ||
+      !event.subject ||
+      typeof event.payload !== "string"
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction<ReopenResult>(() => {
+      const prior = this.db
+        .prepare("SELECT operation_key FROM pending_events WHERE event_id = ?")
+        .get(event.eventId) as { operation_key: string } | undefined;
+      if (prior) {
+        if (prior.operation_key !== key) throw new OperationStoreError("event-conflict");
+        return { kind: "already-reopened" };
+      }
+      const row = this.row(key);
+      if (!row) return { kind: "not-found" };
+      if (row.status === "completed") return { kind: "completed" };
+      if (row.status === "claimed") return { kind: "busy" };
+      if (
+        row.status !== "failed" ||
+        row.error_code !== expected.errorCode ||
+        row.attempts !== expected.attempts
+      ) {
+        return {
+          kind: "mismatch",
+          status: row.status,
+          ...(row.error_code ? { errorCode: row.error_code } : {}),
+          attempts: row.attempts,
+        };
+      }
+      const now = this.now();
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'released', owner = NULL, lease_expires_at = NULL, error_code = NULL, max_attempts = attempts + 1, updated_at = ? WHERE key = ?",
+        )
+        .run(now, key);
+      this.insertEvents(key, [event], now);
+      return { kind: "reopened", attempts: row.attempts };
     });
   }
 
