@@ -115,3 +115,15 @@ An unavailable or malformed verifier leaves the work **pending** and never skips
 ## Worker
 
 `VerificationWorker.handle(message)` consumes `draft.ready` and runs one operation per draft hash, verifier model and prompt. It commits the report to `verifications/<publication>/<post>/<sha256>.json` and hands off `org.steele.draft.verified.v1` on `steele.v1.draft.verified`. **Live verifier: unverified**; only fake-verifier tests have run.
+
+# Revision attempts
+
+`RevisionAttemptStore` (`src/drafting/revision-attempts.ts`) saves each drafting and verification attempt: one draft of one brief at one revision number, with its report and decision (#99).
+
+1. **`begin({ post, briefHash, revision, owner })`** is called before any model work. It claims the attempt, keyed by brief hash and revision, and returns one of:
+   - `already-recorded`, with the saved record for reuse. This also happens when a previous holder committed the record but stopped before completing.
+   - `out-of-order`, while revision n-1 isn't recorded.
+   - `claimed`, with a link to the previous record.
+2. **`finish(claim, record)`** first checks the claim is still held; a worker whose lease was taken over gets `stale-owner`. It then commits the immutable record to `revisions/<publication>/<post>/<brief>/<revision>.json`, keeping the original brief and every draft and report reference. An identical earlier commit is reused; a conflicting one is refused. Finally it completes the state transition with a pending `org.steele.revision.decided.v1` on `steele.v1.revision.decided`.
+
+No model calls, publishing or consumer loop happen here.
