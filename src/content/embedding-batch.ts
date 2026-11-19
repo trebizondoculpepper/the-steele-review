@@ -67,6 +67,8 @@ export async function executeEmbeddingBatch(input: {
   owner: string;
   /** Upper bound on jobs attempted in this call. */
   maxJobs?: number;
+  /** Jobs per provider call; failures are isolated to one sub-batch. */
+  embedBatchSize?: number;
   leaseMs?: number;
   signal?: AbortSignal;
 }): Promise<EmbeddingBatchResult> {
@@ -127,14 +129,34 @@ export async function executeEmbeddingBatch(input: {
     });
   }
 
-  // Embed only what has no reusable vector.
+  // Renew every lease still held; a job whose lease was lost goes back to
+  // the queue untouched so another invocation can finish it.
+  const lost = new Set<Work>();
+  const renewAll = () => {
+    for (const w of work) {
+      if (lost.has(w)) continue;
+      try {
+        operations.renew(w.jobClaim, leaseMs);
+        if (w.reuseClaim) operations.renew(w.reuseClaim, leaseMs);
+      } catch {
+        lost.add(w);
+      }
+    }
+  };
+
+  // Embed only what has no reusable vector, one provider-sized sub-batch at a
+  // time, so a failure affects only the sub-batch that actually failed.
   const toEmbed = work.filter((w) => !w.vector);
-  if (toEmbed.length > 0) {
+  const subBatch = Math.max(1, Math.min(input.embedBatchSize ?? 32, 512));
+  for (let at = 0; at < toEmbed.length; at += subBatch) {
+    renewAll();
+    const slice = toEmbed.slice(at, at + subBatch).filter((w) => !lost.has(w));
+    if (slice.length === 0) continue;
     let produced: EmbeddingVector[] = [];
     let failure: EmbeddingError | undefined;
     try {
       produced = await input.embedder.embed(
-        toEmbed.map((w) => ({
+        slice.map((w) => ({
           id: w.job.passage.id,
           text: w.job.passage.text,
           inputHash: w.job.inputHash,
@@ -147,24 +169,37 @@ export async function executeEmbeddingBatch(input: {
       produced = failure.completed;
     }
     const byId = new Map(produced.map((v) => [v.inputId, v]));
-    for (const w of toEmbed) {
+    for (const w of slice) {
       const vector = byId.get(w.job.passage.id);
       if (vector) {
         w.vector = vector;
-      } else {
-        const reason = (failure?.reason ?? "provider-failed") as JobFailureReason;
-        // Cancellation says nothing about the job: keep it recoverable.
-        const retryable = reason === "cancelled" ? true : (failure?.retryable ?? true);
-        operations.fail(w.jobClaim, `embed:${reason}`, retryable);
-        if (w.reuseClaim) operations.fail(w.reuseClaim, `embed:${reason}`, retryable);
-        result.failed.push({ jobKey: w.job.jobKey, reason, retryable });
+        continue;
       }
+      const reason = (failure?.reason ?? "provider-failed") as JobFailureReason;
+      // Cancellation says nothing about the job: keep it recoverable.
+      const retryable = reason === "cancelled" ? true : (failure?.retryable ?? true);
+      operations.fail(w.jobClaim, `embed:${reason}`, retryable);
+      if (w.reuseClaim) operations.fail(w.reuseClaim, `embed:${reason}`, retryable);
+      result.failed.push({ jobKey: w.job.jobKey, reason, retryable });
     }
+    if (input.signal?.aborted) break;
   }
 
   // Store each vector, then record completion.
   for (const w of work) {
-    if (!w.vector) continue;
+    if (!w.vector) {
+      // Never attempted (cancelled before its sub-batch) or lease lost: still pending.
+      if (lost.has(w) || !result.failed.some((f) => f.jobKey === w.job.jobKey)) {
+        if (!lost.has(w)) operations.fail(w.jobClaim, "embed:not-attempted", true);
+        result.remaining.push(w.job.jobKey);
+      }
+      continue;
+    }
+    renewAll();
+    if (lost.has(w)) {
+      result.remaining.push(w.job.jobKey);
+      continue;
+    }
     const reusedNow = w.reuseClaim === undefined && !toEmbed.includes(w);
     if (w.reuseClaim) {
       operations.complete(w.reuseClaim, { vector: w.vector }, []);

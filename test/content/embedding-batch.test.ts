@@ -234,6 +234,54 @@ describe("executeEmbeddingBatch", () => {
     expect(again.failed).toHaveLength(p.jobs.length);
   });
 
+  it("isolates a rejected sub-batch so later sub-batches still embed", async () => {
+    const p = plan();
+    let call = 0;
+    const { embedder } = provider((texts) => {
+      call++;
+      return texts.map(() => (call === 1 ? [1, 2] : [0.1, 0.2, 0.3]));
+    });
+    const result = await executeEmbeddingBatch({
+      plan: p,
+      embedder,
+      vectors: writer().port,
+      operations,
+      owner: "w",
+      embedBatchSize: 1,
+    });
+    expect(result.failed).toEqual([
+      { jobKey: p.jobs[0]!.jobKey, reason: "invalid-output", retryable: false },
+    ]);
+    expect(result.embedded).toEqual(p.jobs.slice(1).map((j) => j.jobKey));
+  });
+
+  it("does not complete jobs whose lease was taken over mid-batch", async () => {
+    const p = plan();
+    const { embedder } = provider((texts) => {
+      // While embedding, the 1 ms lease expires and another invocation reclaims the first job.
+      const until = Date.now() + 5;
+      while (Date.now() < until) {
+        // wait for the lease to expire
+      }
+      expect(operations.claim(`embed-job:${p.jobs[0]!.jobKey}`, "other-worker", 60_000).kind).toBe(
+        "claimed",
+      );
+      return texts.map(() => [0.1, 0.2, 0.3]);
+    });
+    const { port, written } = writer();
+    const result = await executeEmbeddingBatch({
+      plan: p,
+      embedder,
+      vectors: port,
+      operations,
+      owner: "w",
+      leaseMs: 1,
+    });
+    expect(result.remaining).toContain(p.jobs[0]!.jobKey);
+    expect(written).not.toContain(p.jobs[0]!.passage.id);
+    expect(operations.claim(`embed-job:${p.jobs[0]!.jobKey}`, "x", 1_000).kind).toBe("busy");
+  });
+
   it("reports persistence failures as retryable and keeps the vector for reuse", async () => {
     const p = plan();
     const { embedder, calls } = provider();
