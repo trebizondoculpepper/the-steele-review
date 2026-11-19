@@ -8,11 +8,17 @@
  * model: it only asks each controller whether it is reachable and reads the
  * state controller's pipeline counts.
  *
+ * The state inspection is synchronous SQLite, so it runs in a worker thread:
+ * a large or slow store would otherwise block the event loop, delay every
+ * other check and outlive its own deadline. Aborting the check terminates the
+ * worker.
+ *
  * Output is allowlisted and carries no configuration: no credentials,
  * connection URLs, hosts, filesystem paths or raw exception text. The combined
  * view is an observation across controllers, not an atomic snapshot.
  */
-import { OperationInspector, type OperationStatusCount } from "../controllers/operation-store.js";
+import { Worker } from "node:worker_threads";
+import type { OperationStatusCount } from "../controllers/operation-store.js";
 
 export const RUNTIME_STATUS_SCHEMA_VERSION = 1;
 
@@ -23,31 +29,22 @@ export type CheckState = "healthy" | "not-configured" | "unavailable";
 
 /** A controller's existing read-only connectivity probe. */
 export interface HealthProbe {
-  check(): Promise<void>;
+  check(signal?: AbortSignal): Promise<void>;
 }
 
 /** The state controller's narrow read-only inspection surface. */
 export interface StateCountsProbe {
-  statusCounts(): OperationStatusCount[];
+  readCounts(signal?: AbortSignal): Promise<OperationStatusCount[]>;
 }
 
-/**
- * A state probe for one configured path. Opens the store read-only on each
- * call and closes it, so a missing or incompatible database becomes an
- * unavailable check and nothing is created or migrated.
- */
-export function stateProbeFor(path: string): StateCountsProbe {
-  return {
-    statusCounts() {
-      const opened = OperationInspector.open(path);
-      if (opened.status !== "available") throw new Error("operation store unavailable");
-      try {
-        return opened.inspector.statusCounts();
-      } finally {
-        opened.inspector.close();
-      }
-    },
-  };
+export interface StateProbeOptions {
+  /**
+   * Module the worker imports to reach the state controller. Defaults to the
+   * compiled controller beside this module; tests may point at the source.
+   */
+  moduleUrl?: string | URL;
+  /** Node flags for the worker process (tests load TypeScript through tsx). */
+  execArgv?: string[];
 }
 
 export interface RuntimeStatusDependencies {
@@ -71,20 +68,120 @@ export interface RuntimeStatusReport {
   checks: RuntimeStatusCheck[];
 }
 
+/**
+ * Worker body. It imports the controller rather than reimplementing the
+ * read-only open, so the inspection boundary stays owned by the controller.
+ */
+const STATE_WORKER = `
+import { parentPort, workerData } from "node:worker_threads";
+const reply = (message) => {
+  parentPort.postMessage(message);
+  parentPort.close();
+};
+try {
+  const { OperationInspector } = await import(workerData.moduleUrl);
+  const opened = OperationInspector.open(workerData.path);
+  if (opened.status !== "available") {
+    reply({ status: "unavailable" });
+  } else {
+    try {
+      reply({ status: "healthy", counts: opened.inspector.statusCounts() });
+    } catch {
+      reply({ status: "unavailable" });
+    } finally {
+      opened.inspector.close();
+    }
+  }
+} catch {
+  reply({ status: "unavailable" });
+}
+`;
+
+const countsFromMessage = (message: unknown): OperationStatusCount[] | undefined => {
+  if (message === null || typeof message !== "object") return undefined;
+  const counts = (message as { counts?: unknown }).counts;
+  if (!Array.isArray(counts)) return undefined;
+  if (
+    !counts.every(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof (entry as { status?: unknown }).status === "string" &&
+        typeof (entry as { count?: unknown }).count === "number",
+    )
+  ) {
+    return undefined;
+  }
+  return counts as OperationStatusCount[];
+};
+
+function readCountsInWorker(
+  path: string,
+  moduleUrl: string,
+  signal: AbortSignal | undefined,
+  execArgv: string[] | undefined,
+): Promise<OperationStatusCount[]> {
+  if (signal?.aborted) return Promise.reject(new Error("inspection aborted"));
+  return new Promise((resolve, reject) => {
+    const url = new URL(`data:text/javascript,${encodeURIComponent(STATE_WORKER)}`);
+    // A data: URL is loaded as an ES module, so the worker can await the import.
+    const worker = new Worker(url, {
+      workerData: { path, moduleUrl },
+      ...(execArgv ? { execArgv } : {}),
+    });
+    let settled = false;
+    const finish = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      void worker.terminate().catch(() => undefined);
+      outcome();
+    };
+    const onAbort = () =>
+      finish(() => reject(new Error("inspection aborted")));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    worker.once("message", (message: unknown) => {
+      const counts = countsFromMessage(message);
+      if (counts) finish(() => resolve(counts));
+      else finish(() => reject(new Error("operation store unavailable")));
+    });
+    worker.once("error", () => finish(() => reject(new Error("operation store unavailable"))));
+    worker.once("exit", () => finish(() => reject(new Error("operation store unavailable"))));
+  });
+}
+
+/**
+ * A state probe for one configured path. Each call inspects in a worker with a
+ * freshly opened read-only connection, so a missing or incompatible database
+ * becomes an unavailable check and nothing is created or migrated.
+ */
+export function stateProbeFor(path: string, options: StateProbeOptions = {}): StateCountsProbe {
+  const moduleUrl = String(
+    options.moduleUrl ?? new URL("../controllers/operation-store.js", import.meta.url),
+  );
+  return {
+    readCounts: (signal) => readCountsInWorker(path, moduleUrl, signal, options.execArgv),
+  };
+}
+
 const TIMED_OUT = Symbol("timed-out");
 
-/** Resolve to `TIMED_OUT` rather than waiting on a probe past its budget. */
-async function bounded<T>(work: Promise<T>, timeoutMs: number): Promise<T | typeof TIMED_OUT> {
-  let timer: NodeJS.Timeout | undefined;
+/** Resolve to `TIMED_OUT` and abort the work when its budget is spent. */
+async function bounded<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+): Promise<T | typeof TIMED_OUT> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await Promise.race([
-      work,
+      work(controller.signal),
       new Promise<typeof TIMED_OUT>((resolve) => {
-        timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+        controller.signal.addEventListener("abort", () => resolve(TIMED_OUT), { once: true });
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
   }
 }
 
@@ -95,7 +192,7 @@ async function probe(
 ): Promise<RuntimeStatusCheck> {
   if (!dependency) return { name, status: "not-configured" };
   try {
-    const outcome = await bounded(dependency.check(), timeoutMs);
+    const outcome = await bounded((signal) => dependency.check(signal), timeoutMs);
     return { name, status: outcome === TIMED_OUT ? "unavailable" : "healthy" };
   } catch {
     // A client error may contain an endpoint or credential: never surface it.
@@ -108,12 +205,14 @@ async function stateCheck(
   timeoutMs: number,
 ): Promise<RuntimeStatusCheck> {
   if (!dependency) return { name: "state", status: "not-configured" };
+  const started = Date.now();
   try {
-    const counts = await bounded(
-      Promise.resolve().then(() => dependency.statusCounts()),
-      timeoutMs,
-    );
-    if (counts === TIMED_OUT) return { name: "state", status: "unavailable" };
+    const counts = await bounded((signal) => dependency.readCounts(signal), timeoutMs);
+    // A probe that cannot be interrupted may still answer late; that answer is
+    // not evidence of a healthy bounded check.
+    if (counts === TIMED_OUT || Date.now() - started > timeoutMs) {
+      return { name: "state", status: "unavailable" };
+    }
     return { name: "state", status: "healthy", counts };
   } catch {
     // Missing, incompatible or changed state is unavailable, never a crash.
@@ -144,16 +243,16 @@ export async function collectRuntimeStatus(
 
 /** 0 when every configured check is healthy; 1 when any is unavailable. */
 export function runtimeStatusExitCode(report: RuntimeStatusReport): 0 | 1 {
-  return report.checks.every((check) => check.status === "healthy" || check.status === "not-configured")
+  return report.checks.every(
+    (check) => check.status === "healthy" || check.status === "not-configured",
+  )
     ? 0
     : 1;
 }
 
 /** Human-readable rendering of the same allowlisted fields as the JSON report. */
 export function renderRuntimeStatus(report: RuntimeStatusReport): string {
-  const lines = [
-    `runtime status (observed ${report.observedAt}, schema ${report.schemaVersion})`,
-  ];
+  const lines = [`runtime status (observed ${report.observedAt}, schema ${report.schemaVersion})`];
   for (const check of report.checks) {
     if (check.name === "state" && check.status === "healthy") {
       const counts =

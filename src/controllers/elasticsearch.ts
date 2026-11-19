@@ -52,7 +52,10 @@ export interface IndexResult {
 
 /** Narrow client surface used here, injectable for tests. */
 export interface ElasticsearchClientLike {
-  info(): Promise<unknown>;
+  info(
+    params?: undefined,
+    options?: { requestTimeout?: number; maxRetries?: number; signal?: AbortSignal },
+  ): Promise<unknown>;
   index(
     params: {
       index: string;
@@ -143,8 +146,14 @@ export class ElasticsearchController {
       }) as unknown as ElasticsearchClientLike);
   }
 
-  async check(): Promise<void> {
-    await this.client.info();
+  /** Read-only connectivity probe; aborts the request when signalled. */
+  async check(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error("aborted");
+    await this.client.info(undefined, {
+      requestTimeout: 5_000,
+      maxRetries: 0,
+      ...(signal ? { signal } : {}),
+    });
   }
 
   async close(): Promise<void> {

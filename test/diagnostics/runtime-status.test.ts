@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { OperationStore } from "../../src/controllers/operation-store.js";
+import {
+  OperationStore,
+  type OperationStatusCount,
+} from "../../src/controllers/operation-store.js";
 import {
   collectRuntimeStatus,
   renderRuntimeStatus,
@@ -19,6 +22,12 @@ const failing: HealthProbe = {
   },
 };
 
+/** The worker loads the controller from source under the test runner. */
+const workerOptions = {
+  moduleUrl: new URL("../../src/controllers/operation-store.ts", import.meta.url),
+  execArgv: ["--import", "tsx"],
+};
+
 const directories: string[] = [];
 afterEach(() => {
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -26,10 +35,7 @@ afterEach(() => {
 
 describe("collectRuntimeStatus", () => {
   it("reports a missing dependency as not-configured without failing the others", async () => {
-    const report = await collectRuntimeStatus(
-      { nats: healthy },
-      { now: () => new Date(NOW) },
-    );
+    const report = await collectRuntimeStatus({ nats: healthy }, { now: () => new Date(NOW) });
     expect(report).toEqual({
       schemaVersion: 1,
       observedAt: new Date(NOW).toISOString(),
@@ -55,7 +61,7 @@ describe("collectRuntimeStatus", () => {
 
     const report = await collectRuntimeStatus(
       {
-        state: stateProbeFor(path),
+        state: stateProbeFor(path, workerOptions),
         nats: failing,
         elasticsearch: healthy,
       },
@@ -76,13 +82,47 @@ describe("collectRuntimeStatus", () => {
     expect(runtimeStatusExitCode(report)).toBe(1);
   });
 
-  it("bounds a probe that never settles and reports it unavailable", async () => {
+  it("aborts a probe that never settles and reports it unavailable", async () => {
+    let aborted = false;
     const report = await collectRuntimeStatus(
-      { nats: { check: () => new Promise<void>(() => undefined) }, elasticsearch: healthy },
+      {
+        nats: {
+          check: (signal) =>
+            new Promise<void>((_, reject) => {
+              signal?.addEventListener("abort", () => {
+                aborted = true;
+                reject(new Error("aborted"));
+              });
+            }),
+        },
+        elasticsearch: healthy,
+      },
       { timeoutMs: 10 },
     );
     expect(report.checks[1]).toEqual({ name: "nats", status: "unavailable" });
     expect(report.checks[2]).toEqual({ name: "elasticsearch", status: "healthy" });
+    expect(aborted).toBe(true);
+    expect(runtimeStatusExitCode(report)).toBe(1);
+  });
+
+  it("reports unavailable when synchronous state work exceeds the deadline", async () => {
+    // A probe that cannot be interrupted by the timer: it must still not be
+    // reported healthy after overrunning the bound.
+    const report = await collectRuntimeStatus(
+      {
+        state: {
+          readCounts: async () => {
+            const end = Date.now() + 60;
+            while (Date.now() < end) {
+              // deliberate synchronous delay
+            }
+            return [{ status: "completed", count: 1 }];
+          },
+        },
+      },
+      { timeoutMs: 10 },
+    );
+    expect(report.checks[0]).toEqual({ name: "state", status: "unavailable" });
     expect(runtimeStatusExitCode(report)).toBe(1);
   });
 
@@ -90,14 +130,30 @@ describe("collectRuntimeStatus", () => {
     const dir = mkdtempSync(join(tmpdir(), "steele-status-"));
     directories.push(dir);
     const path = join(dir, "absent.db");
-    const report = await collectRuntimeStatus({ state: stateProbeFor(path) });
+    const report = await collectRuntimeStatus({ state: stateProbeFor(path, workerOptions) });
     expect(report.checks[0]).toEqual({ name: "state", status: "unavailable" });
     expect(runtimeStatusExitCode(report)).toBe(1);
   });
 
+  it("terminates an unresponsive state inspection at the deadline", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steele-status-"));
+    directories.push(dir);
+    const path = join(dir, "operations.db");
+    const store = new OperationStore({ path, now: () => NOW });
+    store.claim("op-claimed", "worker", 60_000);
+    store.close();
+
+    // A deadline shorter than a worker can start and answer forces the abort
+    // path; the check must resolve, not hang.
+    const report = await collectRuntimeStatus(
+      { state: stateProbeFor(path, workerOptions) },
+      { timeoutMs: 1 },
+    );
+    expect(report.checks[0]).toEqual({ name: "state", status: "unavailable" });
+  });
+
   it("never renders a failing dependency's error text, endpoint or credential", async () => {
-    const sentinel =
-      "https://user:sentinel-password@internal-sentinel-host:9200 sentinel-token";
+    const sentinel = "https://user:sentinel-password@internal-sentinel-host:9200 sentinel-token";
     const report = await collectRuntimeStatus({
       nats: {
         check: async () => {
@@ -128,12 +184,9 @@ describe("collectRuntimeStatus", () => {
   });
 
   it("renders status counts in the human report", async () => {
+    const counts: OperationStatusCount[] = [{ status: "completed", count: 3 }];
     const report = await collectRuntimeStatus(
-      {
-        state: {
-          statusCounts: () => [{ status: "completed", count: 3 }],
-        },
-      },
+      { state: { readCounts: async () => counts } },
       { now: () => new Date(NOW) },
     );
     const text = renderRuntimeStatus(report);
