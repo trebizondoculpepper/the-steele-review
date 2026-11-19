@@ -696,6 +696,14 @@ export class OperationStore {
   }
 
   /** Mark an event acknowledged by the broker. Idempotent. */
+  /** Delivery status of one recorded event, or undefined if none was recorded. */
+  pendingEventStatus(eventId: string): "pending" | "sent" | undefined {
+    const row = this.db
+      .prepare("SELECT status FROM pending_events WHERE event_id = ?")
+      .get(eventId) as { status: "pending" | "sent" } | undefined;
+    return row?.status;
+  }
+
   markEventSent(eventId: string): void {
     this.db
       .prepare(
