@@ -192,12 +192,60 @@ export async function mergeClaimRecords(
   artifacts: GitArtifactStore,
   from: string,
   into: string,
-  decision: EquivalenceDecision,
+  decision: Pick<EquivalenceDecision, "reason" | "modelVersion" | "promptVersion" | "decidedAt">,
+  depth = 0,
 ): Promise<void> {
-  await revise(artifacts, from, (r) =>
-    r.canonical === into ? undefined : { ...r, canonical: into },
+  if (depth > 20) throw new Error("redirect chain too long");
+  // Never overwrite an existing redirect: if `from` already points elsewhere,
+  // the two canonical records are themselves equivalent, so merge them (by
+  // the same smaller-ID rule) instead of replacing the earlier redirect.
+  let existing: string | undefined;
+  await revise(artifacts, from, (r) => {
+    if (r.canonical === into) return undefined;
+    if (r.canonical) {
+      existing = r.canonical;
+      return undefined;
+    }
+    return { ...r, canonical: into };
+  });
+  if (existing !== undefined) {
+    const a = await canonicalOf(artifacts, existing);
+    const b = await canonicalOf(artifacts, into);
+    if (a !== b) {
+      const [keep, drop] = a < b ? [a, b] : [b, a];
+      await mergeClaimRecords(artifacts, drop, keep, decision, depth + 1);
+    }
+  }
+  // copyOccurrences follows redirects to the final canonical record.
+  await copyOccurrences(artifacts, from, existing ?? into, decision);
+}
+
+/**
+ * Complete merges into `id` that were interrupted after the redirect: copy
+ * occurrences from every record redirecting here (idempotent). Bounded scan.
+ */
+export async function completePendingMerges(
+  artifacts: GitArtifactStore,
+  id: string,
+): Promise<number> {
+  const paths = (await artifacts.list("claims", MAX_SCANNED_RECORDS)).filter((p) =>
+    RECORD_PATH.test(p),
   );
-  await copyOccurrences(artifacts, from, into, decision);
+  let completed = 0;
+  for (const path of paths) {
+    const other = path.slice("claims/".length, -".json".length);
+    if (other === id) continue;
+    const found = await readRecord(artifacts, other);
+    if (found?.record.canonical !== id) continue;
+    await copyOccurrences(artifacts, other, id, {
+      reason: "merge completed after interruption",
+      modelVersion: "recovery",
+      promptVersion: "recovery",
+      decidedAt: new Date().toISOString(),
+    });
+    completed++;
+  }
+  return completed;
 }
 
 class TargetRedirected extends Error {}
@@ -291,6 +339,8 @@ export async function resolveClaimEquivalence(input: {
     return { status: "already-merged", record: record.id, canonical };
   }
 
+  // Finish any merge into this record that stopped after its redirect.
+  await completePendingMerges(input.artifacts, record.id);
   const candidates = await candidateClaims(input.artifacts, record);
   if (candidates.length === 0) return { status: "separate", record: record.id, reused: false };
   const path = decisionPath(

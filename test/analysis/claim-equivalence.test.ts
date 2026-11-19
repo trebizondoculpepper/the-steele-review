@@ -166,6 +166,40 @@ describe("resolveClaimEquivalence", () => {
     expect((await read(b)).occurrences).toHaveLength(1);
   });
 
+  it("never overwrites an existing redirect in competing merges", async () => {
+    const [a, b, c] = [
+      await post("p1", "Weather modification has been around for decades."),
+      await post("p2", "Weather modification tools have existed for many decades."),
+      await post("p3", "Weather modification has existed for decades now."),
+    ].sort();
+    const d = {
+      reason: "same",
+      modelVersion: "m",
+      promptVersion: "p",
+      decidedAt: new Date(0).toISOString(),
+    };
+    await mergeClaimRecords(content, c, b, d);
+    await mergeClaimRecords(content, c, a, d); // competing decision for c
+    expect((await read(c)).canonical).toBe(b); // first redirect kept
+    expect((await read(b)).canonical).toBe(a); // the two canonicals merged
+    expect((await read(a)).occurrences).toHaveLength(3);
+  });
+
+  it("recovers an interrupted merge when rerun from the canonical side", async () => {
+    const [a, b] = [
+      await post("p1", "Weather modification has been around for decades."),
+      await post("p2", "Weather modification tools have existed for many decades."),
+    ].sort();
+    const ref = (await content.lookup(`claims/${b}.json`))!;
+    await content.revise(
+      `claims/${b}.json`,
+      `${JSON.stringify({ ...(await read(b)), canonical: a }, null, 2)}\n`,
+      ref.sha256,
+    );
+    await resolveClaimEquivalence({ provider: model(), artifacts: content, recordId: a });
+    expect((await read(a)).occurrences).toHaveLength(2);
+  });
+
   it("keeps a negated or materially qualified claim separate", async () => {
     const first = await post("p1", "Weather modification has been around for decades.");
     const negated = await post("p2", "Weather modification has not been around for decades.");
