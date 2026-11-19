@@ -16,7 +16,7 @@ The researcher owns later mapping to existing corpus themes, potentially using e
 
 Each accepted claim references a specific post/version and its available publication date, at least one extracted theme proposal, an exact quotation with source location or timestamp, and a self-contained summary of the assertion. Speaker attribution is separate from publisher identity; unknown information is never invented. Preserve qualifiers, dates, quantities and negation.
 
-A summary may resolve a pronoun from unambiguous source context, but must not guess. Assertions missing a theme, required provenance, exact quotation or clear meaning remain explicit candidates needing refinement, with reasons. Do not index or announce those as accepted claims. The extracted assertion remains separate from any later truth/evidence assessment.
+A summary should attempt the best interpretation of the speaker’s intended assertion using whole-post context. Resolve pronouns where possible; qualify uncertain readings and state important assumptions rather than silently treating an inference as explicit speech. Preserve the exact quotation unchanged. Assertions missing a theme, required provenance, exact quotation or any defensible interpretable assertion remain explicit candidates needing refinement, with reasons. Do not index or announce those as accepted claims. The extracted assertion remains separate from any later truth/evidence assessment.
 
 Schema validation checks structure; quotation checks establish source grounding. Neither proves semantic accuracy. Inspect real outputs for meaning and theme fit before declaring a batch clean.
 
@@ -37,3 +37,5 @@ Hosted research can be submitted asynchronously, tracked by provider job/session
 ## First live experiment: limited evidence
 
 One stored post produced one accepted weather-modification theme and seventeen structurally grounded claims using an experimental clarified prompt and a cheap model fallback. Three claims were unclassified, several summaries retained vague references, and rejected-theme names were not retained. Consequently those seventeen records are not accepted as clean under this refined contract. Reruns reused results without model calls. No NATS, index writes, research or publishing was triggered in that isolated experiment.
+
+The owner authorises contextual interpretation even when it may be wrong: extraction should attempt a useful self-contained summary rather than merely copy unclear wording. The summary must make uncertainty about meaning explicit and must not manufacture unsupported allegations. A prompt-only implementation can express this qualification in the existing statement text; no second model or research stage is required.
