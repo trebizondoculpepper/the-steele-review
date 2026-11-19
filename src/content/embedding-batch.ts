@@ -42,7 +42,8 @@ export type JobFailureReason =
   | "invalid-output"
   | "timeout"
   | "cancelled"
-  | "persistence-failed";
+  | "persistence-failed"
+  | "exhausted";
 
 export interface EmbeddingBatchResult {
   /** Jobs whose vectors were embedded now and stored. */
@@ -97,6 +98,11 @@ export async function executeEmbeddingBatch(input: {
       result.alreadyDone.push(job.jobKey);
       continue;
     }
+    if (jobClaim.kind === "exhausted") {
+      // Permanently failed or out of attempts: terminal, not pending work.
+      result.failed.push({ jobKey: job.jobKey, reason: "exhausted", retryable: false });
+      continue;
+    }
     if (jobClaim.kind !== "claimed") {
       result.remaining.push(job.jobKey);
       continue;
@@ -147,7 +153,8 @@ export async function executeEmbeddingBatch(input: {
         w.vector = vector;
       } else {
         const reason = (failure?.reason ?? "provider-failed") as JobFailureReason;
-        const retryable = failure?.retryable ?? true;
+        // Cancellation says nothing about the job: keep it recoverable.
+        const retryable = reason === "cancelled" ? true : (failure?.retryable ?? true);
         operations.fail(w.jobClaim, `embed:${reason}`, retryable);
         if (w.reuseClaim) operations.fail(w.reuseClaim, `embed:${reason}`, retryable);
         result.failed.push({ jobKey: w.job.jobKey, reason, retryable });

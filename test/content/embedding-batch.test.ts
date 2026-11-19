@@ -189,6 +189,51 @@ describe("executeEmbeddingBatch", () => {
     expect(written).toEqual([]);
   });
 
+  it("keeps cancelled jobs recoverable on the next invocation", async () => {
+    const p = plan();
+    const abort = new AbortController();
+    abort.abort();
+    const first = await executeEmbeddingBatch({
+      plan: p,
+      embedder: provider().embedder,
+      vectors: writer().port,
+      operations,
+      owner: "w",
+      signal: abort.signal,
+    });
+    expect(first.failed.every((f) => f.reason === "cancelled" && f.retryable)).toBe(true);
+    const retry = await executeEmbeddingBatch({
+      plan: p,
+      embedder: provider().embedder,
+      vectors: writer().port,
+      operations,
+      owner: "w",
+    });
+    expect(retry.embedded).toHaveLength(p.jobs.length);
+  });
+
+  it("reports exhausted jobs as terminal failures, not remaining work", async () => {
+    const p = plan();
+    const { embedder } = provider((texts) => texts.map(() => [1, 2]));
+    await executeEmbeddingBatch({
+      plan: p,
+      embedder,
+      vectors: writer().port,
+      operations,
+      owner: "w",
+    });
+    const again = await executeEmbeddingBatch({
+      plan: p,
+      embedder,
+      vectors: writer().port,
+      operations,
+      owner: "w",
+    });
+    expect(again.remaining).toEqual([]);
+    expect(again.failed.every((f) => f.reason === "exhausted" && !f.retryable)).toBe(true);
+    expect(again.failed).toHaveLength(p.jobs.length);
+  });
+
   it("reports persistence failures as retryable and keeps the vector for reuse", async () => {
     const p = plan();
     const { embedder, calls } = provider();
