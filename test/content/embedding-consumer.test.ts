@@ -181,6 +181,20 @@ describe("transcriptTimingsFor", () => {
 });
 
 describe("dense transcript timings", () => {
+  it("keeps short timed runs when the bound permits them", () => {
+    const segs = [
+      { start: 0, end: 1, text: "Hi." },
+      { text: "untimed middle" },
+      { start: 5, end: 6, text: "Yes." },
+    ];
+    const r = {
+      ...record(),
+      text: segs.map((x) => x.text).join(" "),
+      supplied: { transcript: segs },
+    };
+    expect(transcriptTimingsFor(r).transcriptTimings).toHaveLength(2);
+  });
+
   it("never merges across an untimed segment", () => {
     const segs = [
       { start: 0, end: 1, text: "a" },

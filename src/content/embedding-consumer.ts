@@ -309,10 +309,27 @@ export function transcriptTimingsFor(
       };
     } else merged.push({ ...t });
   }
-  // A run too short to reach the minimum span is left out rather than
-  // stretched over untimed text, which keeps the per-passage bound.
-  const kept = merged
-    .filter((t) => t.end - t.start >= minChars || minChars <= 1)
-    .map(({ run: _run, ...t }) => t);
+  const plain = merged.map(({ run: _run, ...t }) => t);
+  // Short runs are kept when no passage-sized window could overlap more
+  // timings than the stored bound; only when one could are runs too short to
+  // reach the minimum span left out (rather than stretched over untimed text).
+  const kept = withinBound(plain, maxPassageChars)
+    ? plain
+    : plain.filter((t) => t.end - t.start >= minChars);
   return kept.length ? { transcriptTimings: kept } : {};
+}
+
+/**
+ * True when no window of `width` characters overlaps more than
+ * MAX_PASSAGE_TIMINGS of the ordered, non-overlapping timings. The count is
+ * conservative: one timing straddling the window start is always added.
+ */
+function withinBound(timings: TranscriptTiming[], width: number): boolean {
+  let j = 0;
+  for (let i = 0; i < timings.length; i++) {
+    if (j < i) j = i;
+    while (j < timings.length && timings[j]!.start < timings[i]!.start + width) j++;
+    if (j - i + 1 > MAX_PASSAGE_TIMINGS) return false;
+  }
+  return true;
 }
