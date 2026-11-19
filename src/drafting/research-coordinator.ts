@@ -115,16 +115,18 @@ export class ResearchCoordinator {
       // The corpus already covers this claim.
       if (a.gaps.length === 0) continue;
       const needId = researchNeedId(post.claims[i]!.statement);
+      // Register as a waiter *before* checking for a result. A completion
+      // recorded after this point will find the waiter and resume the post;
+      // one recorded before it is seen by the check below. Either way no
+      // post can be left waiting on research that already finished.
+      this.wait(needId, post);
       // saved / unresolved / failed are settled; failed leaves an evidence gap.
       if (operations.operationStatus(`research-result:${needId}`)?.status === "completed") continue;
       if (operations.operationStatus(`research-paused:${needId}`)?.status === "completed") {
-        // Still a waiter: a later real result must resume this post too.
-        this.wait(needId, post);
         paused.push(needId);
         continue;
       }
       this.request(needId, post.claims[i]!, a.gaps);
-      this.wait(needId, post);
       waiting.push(needId);
     }
     if (paused.length) return { kind: "paused", needIds: paused };
