@@ -69,7 +69,7 @@ export interface DurableConsumerConfig {
 
 export class ConsumerConflictError extends Error {
   constructor() {
-    super("existing consumer has a different filter; refusing to modify it");
+    super("existing consumer has a different filter or ack policy; refusing to modify it");
     this.name = "ConsumerConflictError";
   }
 }
@@ -93,7 +93,14 @@ export async function provisionDurableConsumer(
     if (!(error instanceof Error) || !/not found/i.test(error.message)) throw error;
   }
   if (existing) {
-    if (existing.config.filter_subject !== config.filterSubject) throw new ConsumerConflictError();
+    // The worker acknowledges each message only after durable state; any other
+    // ack policy would let unprocessed messages be treated as handled.
+    if (
+      existing.config.filter_subject !== config.filterSubject ||
+      existing.config.ack_policy !== AckPolicy.Explicit
+    ) {
+      throw new ConsumerConflictError();
+    }
     return "unchanged";
   }
   await jsm.consumers.add(config.stream, {

@@ -509,6 +509,34 @@ describe.skipIf(!natsUrl)("CollectionWorker with JetStream", () => {
       ]);
       expect(outcomes).toEqual(["already-collected", "already-collected"]);
       expect(collected).toBe(0);
+      // A pre-aborted consume returns at once without taking deliveries.
+      const done = new AbortController();
+      done.abort();
+      await nats.consume(
+        stream,
+        "collector",
+        async () => {
+          throw new Error("must not be called");
+        },
+        done.signal,
+      );
+
+      // An existing consumer with a weaker ack policy is refused, not reused.
+      const jsmCheck = await nats.manager();
+      const { AckPolicy } = await import("@nats-io/jetstream");
+      await jsmCheck.consumers.add(stream, {
+        durable_name: "ack-all",
+        filter_subject: discoverySubject,
+        ack_policy: AckPolicy.All,
+      });
+      await expect(
+        provisionDurableConsumer(nats, {
+          stream,
+          name: "ack-all",
+          filterSubject: discoverySubject,
+        }),
+      ).rejects.toThrow("ack policy");
+
       // The pending handoff recorded by the crashed attempt is dispatched exactly once.
       const jsm = await nats.manager();
       const info = await jsm.streams.info(stream, { subjects_filter: readySubject });

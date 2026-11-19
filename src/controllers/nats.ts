@@ -232,6 +232,7 @@ export class NatsController {
     handler: (message: DeliveredMessage) => Promise<void>,
     signal: AbortSignal,
   ): Promise<void> {
+    if (signal.aborted) return;
     const js = jetstream(this.requireConnection());
     let consumer;
     try {
@@ -239,7 +240,13 @@ export class NatsController {
     } catch {
       throw new NatsPublishError("no-stream", false);
     }
+    if (signal.aborted) return;
     const messages = await consumer.consume({ max_messages: 1 });
+    // The signal may have aborted while the subscription was being set up.
+    if (signal.aborted) {
+      await messages.close().catch(() => undefined);
+      return;
+    }
     const stop = () => void messages.stop();
     signal.addEventListener("abort", stop, { once: true });
     try {
