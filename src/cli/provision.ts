@@ -72,6 +72,10 @@ async function main(): Promise<number> {
       filterSubject: TEXT_READY_SUBJECT,
     });
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
+    // "unchanged" can mean a backing index without its alias: confirm the
+    // alias itself answers before reporting success.
+    await es.search(c.STEELE_FULLTEXT_INDEX, { match_all: {} }, { size: 1 });
+    report.fulltextAlias = "verified";
     console.log(JSON.stringify({ event: "provision", ok: true, ...report }));
     return 0;
   } catch (error) {

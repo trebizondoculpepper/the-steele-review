@@ -76,6 +76,8 @@ async function main(): Promise<number> {
       ),
   });
   const abort = new AbortController();
+  const publicationHost = new URL(c.STEELE_PUBLICATION_URL).hostname;
+  let retry: ReturnType<typeof setInterval> | undefined;
   process.once("SIGTERM", () => abort.abort());
   process.once("SIGINT", () => abort.abort());
   try {
@@ -84,10 +86,18 @@ async function main(): Promise<number> {
     await worker.dispatchPending(abort.signal);
     // Retry failed handoffs on a timer too, so a text-ready event left
     // pending is not stuck until the next discovery arrives.
-    const retry = setInterval(() => {
-      worker.dispatchPending(abort.signal).catch(() => undefined);
+    let dispatching = false;
+    retry = setInterval(() => {
+      // One pass at a time, so passes never publish the same events twice.
+      if (dispatching || abort.signal.aborted) return;
+      dispatching = true;
+      worker
+        .dispatchPending(abort.signal)
+        .catch(() => undefined)
+        .finally(() => {
+          dispatching = false;
+        });
     }, c.STEELE_COLLECT_DISPATCH_INTERVAL_MS ?? 30_000);
-    abort.signal.addEventListener("abort", () => clearInterval(retry), { once: true });
     console.log(JSON.stringify({ event: "collection", state: "consuming" }));
     await nats.consume(
       c.STEELE_COLLECT_STREAM,
@@ -98,12 +108,20 @@ async function main(): Promise<number> {
         // publication its own collector consumer, so this only signals
         // misconfiguration, and the warning makes it visible.
         let publicationId: string | undefined;
+        let host: string | undefined;
         try {
-          publicationId = parseDiscoveryEvent(new TextDecoder().decode(m.data)).data?.publicationId;
+          const data = parseDiscoveryEvent(new TextDecoder().decode(m.data)).data;
+          publicationId = data?.publicationId;
+          host = data?.url ? new URL(data.url).hostname : undefined;
         } catch {
           publicationId = undefined; // malformed: the worker terminates it
         }
-        if (publicationId !== undefined && publicationId !== c.STEELE_PUBLICATION_ID) {
+        // Both the ID and the post URL's host must be this publication's, or
+        // text fetched from here would be recorded against another source.
+        if (
+          publicationId !== undefined &&
+          (publicationId !== c.STEELE_PUBLICATION_ID || host !== publicationHost)
+        ) {
           console.error(
             JSON.stringify({ event: "collection", outcome: "other-publication", publicationId }),
           );
@@ -119,6 +137,7 @@ async function main(): Promise<number> {
     console.error(JSON.stringify({ event: "collection", state: "failed" }));
     return 1;
   } finally {
+    if (retry) clearInterval(retry);
     abort.abort();
     await nats.close();
     operations.close();
