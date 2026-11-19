@@ -313,8 +313,10 @@ const StoredThemeRecordSchema = z
  * consistently. Re-indexing the same artifact yields the same version.
  */
 export function themeIndexVersion(extractedAt: string, artifactSha256: string): number {
-  const tieBreak = Number.parseInt(artifactSha256.slice(0, 3), 16); // 0..4095
-  return Date.parse(extractedAt) * 4096 + tieBreak;
+  // 1024 keeps versions within Number.MAX_SAFE_INTEGER for timestamps far
+  // beyond any realistic extraction date.
+  const tieBreak = Number.parseInt(artifactSha256.slice(0, 3), 16) % 1024; // 0..1023
+  return Date.parse(extractedAt) * 1024 + tieBreak;
 }
 
 export const THEME_INDEX_V1 = "steele-source-themes-v1";
