@@ -162,8 +162,28 @@ export class RevisionAttemptStore {
     }
     if (committed) {
       const record = AttemptRecordSchema.parse(JSON.parse(await artifacts.read(committed)));
-      this.complete(claimed.claim, record, committed);
-      return { kind: "already-recorded", record, artifact: committed };
+      let stored: unknown;
+      try {
+        stored = this.complete(claimed.claim, record, committed);
+      } catch (error) {
+        if (error instanceof OperationStoreError && error.code === "not-owner")
+          return { kind: "busy" };
+        throw error;
+      }
+      // Another holder may have completed first: return whatever is durable.
+      const authoritative = (stored as { record?: ArtifactReference } | undefined)?.record;
+      if (!authoritative) return { kind: "failed", reason: "missing-record" };
+      const durable = {
+        repository: authoritative.repository,
+        commit: authoritative.commit,
+        path: authoritative.path,
+        sha256: shortHash(authoritative.hash),
+      };
+      const durableRecord =
+        durable.path === committed.path && durable.sha256 === committed.sha256
+          ? record
+          : AttemptRecordSchema.parse(JSON.parse(await artifacts.read(durable)));
+      return { kind: "already-recorded", record: durableRecord, artifact: durable };
     }
     return { kind: "claimed", claim: claimed.claim, ...(previous ? { previous } : {}) };
   }

@@ -183,6 +183,46 @@ describe("RevisionAttemptStore", () => {
     ).toEqual({ kind: "stale-owner" });
   });
 
+  it("returns the durable record when another holder completes during recovery", async () => {
+    const s = store();
+    const first = await s.begin({ post, briefHash: brief.hash, revision: 0, owner: "w1" });
+    if (first.kind !== "claimed") throw new Error(first.kind);
+    // w1 committed its record and stopped before completing.
+    await artifacts.write(
+      s.path(post, brief.hash, 0, first.claim.attempt),
+      `${JSON.stringify({ schemaVersion: 1, ...attempt(0) }, null, 2)}\n`,
+    );
+    clock += 2_000;
+    let raced = false;
+    const racing = {
+      ...artifacts,
+      lookup: artifacts.lookup.bind(artifacts),
+      write: artifacts.write.bind(artifacts),
+      read: async (ref: Parameters<typeof artifacts.read>[0]) => {
+        const text = await artifacts.read(ref);
+        if (!raced) {
+          raced = true;
+          // While w2 recovers, its lease lapses and w3 completes with its own record.
+          clock += 2_000;
+          const other = new RevisionAttemptStore({ artifacts, operations, leaseMs: 1_000 });
+          const w3 = await other.begin({ post, briefHash: brief.hash, revision: 0, owner: "w3" });
+          if (w3.kind !== "already-recorded") throw new Error(`w3 ${w3.kind}`);
+        }
+        return text;
+      },
+    };
+    const recovering = new RevisionAttemptStore({
+      artifacts: racing as unknown as typeof artifacts,
+      operations,
+      leaseMs: 1_000,
+    });
+    const r = await recovering.begin({ post, briefHash: brief.hash, revision: 0, owner: "w2" });
+    const status = operations.operationStatus(s.key(brief.hash, 0));
+    const durable = (status?.artifact as { record: { path: string } }).record.path;
+    if (r.kind === "already-recorded") expect(r.artifact.path).toBe(durable);
+    else expect(r.kind).toBe("busy");
+  });
+
   it("advances revisions in order and links each to its predecessor", async () => {
     const s = store();
     expect(await s.begin({ post, briefHash: brief.hash, revision: 1, owner: "w" })).toEqual({
