@@ -482,12 +482,21 @@ export class OperationStore {
   }
 
   /** Pending events due for (re)publication, oldest first. */
-  duePendingEvents(limit = 100): PendingEvent[] {
-    const rows = this.db
-      .prepare(
-        "SELECT event_id, operation_key, subject, payload, attempts FROM pending_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at, event_id LIMIT ?",
-      )
-      .all(this.now(), limit) as Array<{
+  duePendingEvents(limit = 100, subject?: string): PendingEvent[] {
+    // Filter by subject in SQL so other subjects' backlog cannot crowd out the limit.
+    const rows = (
+      subject === undefined
+        ? this.db
+            .prepare(
+              "SELECT event_id, operation_key, subject, payload, attempts FROM pending_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at, event_id LIMIT ?",
+            )
+            .all(this.now(), limit)
+        : this.db
+            .prepare(
+              "SELECT event_id, operation_key, subject, payload, attempts FROM pending_events WHERE status = 'pending' AND next_attempt_at <= ? AND subject = ? ORDER BY created_at, event_id LIMIT ?",
+            )
+            .all(this.now(), subject, limit)
+    ) as Array<{
       event_id: string;
       operation_key: string;
       subject: string;

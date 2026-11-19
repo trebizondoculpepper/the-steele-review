@@ -82,6 +82,8 @@ export interface ClaimWorkerConfig {
 
 interface StoredClaimSet {
   status: "complete" | "incomplete";
+  /** Source the claims were extracted from; recovery keeps this, not the redelivered event's. */
+  sourceArtifact: ArtifactReference;
   claims: unknown[];
   modelVersion: string;
   promptVersion: string;
@@ -256,7 +258,7 @@ export class ClaimExtractionWorker {
           postId: data.postId,
           ingestionReason: data.ingestionReason,
           claimsArtifact: toReference(artifact),
-          sourceArtifact: data.artifact,
+          sourceArtifact: stored.sourceArtifact,
           status: stored.status,
           claimCount: stored.claims.length,
           modelVersion: stored.modelVersion,
@@ -275,8 +277,7 @@ export class ClaimExtractionWorker {
   /** Publish pending handoff events; failures stay pending with the same ID. */
   async dispatchPending(limit = 100): Promise<number> {
     let sent = 0;
-    for (const p of this.config.operations.duePendingEvents(limit)) {
-      if (p.subject !== CLAIMS_EXTRACTED_SUBJECT) continue;
+    for (const p of this.config.operations.duePendingEvents(limit, CLAIMS_EXTRACTED_SUBJECT)) {
       try {
         await this.config.publisher.publish(p.subject, new TextEncoder().encode(p.payload), {
           msgId: p.eventId,

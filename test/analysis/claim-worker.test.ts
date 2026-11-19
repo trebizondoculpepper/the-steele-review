@@ -258,6 +258,42 @@ describe("ClaimExtractionWorker", () => {
     expect(published[0]!.msgId).toBe(pending!.eventId);
   });
 
+  it("dispatches its own pending events even behind another subject's backlog", async () => {
+    for (let i = 0; i < 3; i++) {
+      operations.recordPermanentFailure(`other:${i}`, "x");
+      const c = operations.claim(`other-op:${i}`, "o", 1_000);
+      if (c.kind === "claimed") {
+        operations.complete(c.claim, {}, [
+          { eventId: `other-${i}`, subject: "steele.v1.other", payload: "{}" },
+        ]);
+      }
+    }
+    const { worker, published } = setup([goodClaims], 1);
+    await worker.handle(await message());
+    expect(await worker.dispatchPending(2)).toBe(1);
+    expect(published.map((p) => p.subject)).toEqual([CLAIMS_EXTRACTED_SUBJECT]);
+  });
+
+  it("keeps the committed claim set's source reference when recovering", async () => {
+    const { worker, published } = setup([goodClaims]);
+    await worker.handle(await message());
+    const originalSource = JSON.parse(published[0]!.body).data.sourceArtifact;
+    const key = (
+      operations as unknown as { db: { prepare(s: string): { all(): Array<{ key: string }> } } }
+    ).db
+      .prepare("SELECT key FROM operations WHERE key LIKE 'claims:%'")
+      .all()[0]!.key;
+    (operations as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
+      .prepare("UPDATE operations SET status = 'failed' WHERE key = ?")
+      .run(key);
+    const again = setup([]);
+    // Redelivered event points at a different archive copy of the same record.
+    await again.worker.handle(
+      await message(record(), "substack/example-pub/a-post/elsewhere.json"),
+    );
+    expect(JSON.parse(again.published[0]!.body).data.sourceArtifact).toEqual(originalSource);
+  });
+
   it("records incomplete sources without extracting", async () => {
     const { worker, calls } = setup([goodClaims]);
     const m = await message(record(false));
