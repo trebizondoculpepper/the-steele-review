@@ -134,18 +134,22 @@ export async function announcePost(input: {
   const claim = input.operations.claim(key, input.owner, 60_000, 3);
   let newlyRecorded = false;
   if (claim.kind === "busy") return { status: "busy" };
+  const event = () =>
+    createPostAnalysedEvent(data, { id: eventId, now: input.now ?? (() => new Date()) });
   if (claim.kind === "exhausted") {
-    // Interrupted attempts left no completion record; reporting a pending
-    // event would claim a durable handoff that does not exist.
-    return { status: "exhausted", eventId };
+    // Interrupted attempts left no completion record, but both results are
+    // still valid: record the handoff with the state controller's atomic,
+    // claim-free reconciliation so the saved analysis is never stranded.
+    if (input.operations.pendingEventStatus(eventId) === undefined) {
+      input.operations.reconcileCompleted(key, { eventId }, [
+        { eventId, subject: POST_ANALYSED_SUBJECT, payload: JSON.stringify(event().toJSON()) },
+      ]);
+      newlyRecorded = true;
+    }
   }
   if (claim.kind === "claimed") {
-    const event = createPostAnalysedEvent(data, {
-      id: eventId,
-      now: input.now ?? (() => new Date()),
-    });
     input.operations.complete(claim.claim, { eventId }, [
-      { eventId, subject: POST_ANALYSED_SUBJECT, payload: JSON.stringify(event.toJSON()) },
+      { eventId, subject: POST_ANALYSED_SUBJECT, payload: JSON.stringify(event().toJSON()) },
     ]);
     newlyRecorded = true;
   }

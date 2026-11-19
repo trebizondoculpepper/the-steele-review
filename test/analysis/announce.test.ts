@@ -141,7 +141,7 @@ describe("announcePost", { timeout: 60_000 }, () => {
     expect(await publishRecordedEvent(operations, "no-such-event", publisher())).toBe("missing");
   });
 
-  it("reports an exhausted completion attempt instead of a phantom pending event", async () => {
+  it("recovers the handoff after interrupted attempts exhausted the claim", async () => {
     const refs = await analyse();
     const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
     const key = `analysed:${post.publicationId}/${post.postId}:${eventId}`;
@@ -151,9 +151,17 @@ describe("announcePost", { timeout: 60_000 }, () => {
       if (claim.kind !== "claimed") throw new Error(`unexpected ${claim.kind}`);
       operations.fail(claim.claim, "interrupted", true);
     }
+    // Both results are still valid, so the handoff is recorded atomically.
     const out = await run(refs);
-    expect(out).toEqual({ status: "exhausted", eventId });
-    expect(operations.pendingEvent(eventId)).toBeUndefined();
+    expect(out).toMatchObject({
+      status: "recorded",
+      eventId,
+      newlyRecorded: true,
+      delivery: "pending",
+    });
+    expect(operations.pendingEventStatus(eventId)).toBe("pending");
+    // A repeat does not record it twice.
+    expect(await run(refs)).toMatchObject({ status: "recorded", newlyRecorded: false });
   });
 
   it("publishes the recorded event even when a backlog fills the due page", async () => {
