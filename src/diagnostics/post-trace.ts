@@ -107,6 +107,9 @@ export interface SearchVersionProbe {
   fulltextSourceVersion(publicationId: string, postId: string): Promise<string | null>;
 }
 
+/** A saved logical reference: full commit, then a repository-relative path. Anything else is never echoed. */
+const LOGICAL_REF = /^[0-9a-f]{40}(?:[0-9a-f]{24})?:theme-proposals\/[A-Za-z0-9._/-]{1,500}$/;
+
 const logical = (r: ArtifactRef) => `${r.commit.slice(0, 12)}:${r.path}`;
 
 function summarise(op: OperationInspection): OperationSummary {
@@ -249,6 +252,9 @@ export async function tracePost(input: {
   let themes: PostTrace["themes"] = { state: "not-configured" };
   let claims: PostTrace["claims"] = { state: "not-configured" };
   if (input.content) {
+    // Themes and claims are inspected independently: a theme read failure
+    // must not hide claim results, and vice versa.
+    let themeRefs = new Map<string, ArtifactRef>();
     try {
       const t = await readResults(
         input.content,
@@ -272,8 +278,11 @@ export async function tracePost(input: {
               unreadable: t.unreadable,
               truncated: t.truncated,
             };
-      const themeRefs = new Map(t.items.map(({ ref }) => [`${ref.commit}:${ref.path}`, ref]));
-
+      themeRefs = new Map(t.items.map(({ ref }) => [`${ref.commit}:${ref.path}`, ref]));
+    } catch {
+      themes = { state: "unavailable" };
+    }
+    try {
       const c = await readResults(
         input.content,
         `claim-extractions/${post.publicationId}/${post.postId}`,
@@ -296,14 +305,16 @@ export async function tracePost(input: {
             // inspection bound or unreadable: show the recorded reference.
             ...(linked
               ? { linkedThemeResult: logical(linked) }
-              : value.themeResult
+              : value.themeResult && LOGICAL_REF.test(value.themeResult)
                 ? {
                     linkedThemeResult: value.themeResult.replace(
                       /^([0-9a-f]{12})[0-9a-f]*:/,
                       "$1:",
                     ),
                   }
-                : {}),
+                : value.themeResult
+                  ? { linkedThemeResult: "invalid-reference" }
+                  : {}),
             model: value.extraction.modelVersion,
             prompt: value.extraction.promptVersion,
             accepted: value.schemaVersion === 2 ? value.claims.length : 0,
@@ -315,7 +326,6 @@ export async function tracePost(input: {
         claims = { state: "recorded", results, unreadable: c.unreadable, truncated: c.truncated };
       }
     } catch {
-      themes = themes.state === "not-configured" ? { state: "unavailable" } : themes;
       claims = { state: "unavailable" };
     }
   }

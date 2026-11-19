@@ -258,4 +258,34 @@ describe("tracePost", () => {
       "ffffffffffff:theme-proposals/pub/p/missing.json",
     );
   });
+  it("inspects claims even when theme reads fail, and never echoes a malformed saved link", async () => {
+    await content.write(
+      "claim-extractions/pub/p/c.json",
+      JSON.stringify({
+        schemaVersion: 2,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        themeResult: `/etc/${SENTINEL}`,
+        claims: [],
+        candidates: [],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const flaky = {
+      list: (prefix: string, limit: number) =>
+        prefix.startsWith("theme-proposals")
+          ? Promise.reject(new Error("boom"))
+          : content.list(prefix, limit),
+      lookup: content.lookup.bind(content),
+      read: content.read.bind(content),
+    };
+    const trace = await tracePost({ post, content: flaky });
+    expect(trace.themes).toEqual({ state: "unavailable" });
+    expect(trace.claims.state).toBe("recorded");
+    if (trace.claims.state === "recorded")
+      expect(trace.claims.results[0].linkedThemeResult).toBe("invalid-reference");
+    expect(JSON.stringify(trace)).not.toContain(SENTINEL);
+  });
 });
