@@ -75,6 +75,12 @@ export interface CollectionWorkerConfig {
   maxAttempts?: number;
   /** Delay before a retryable failure is redelivered. */
   retryDelayMs?: number;
+  /**
+   * Maximum interval between lease renewals and broker heartbeats. Keep it
+   * below a third of the consumer's ack wait (default 60 s for the default
+   * 5-minute ack wait).
+   */
+  heartbeatMs?: number;
   onOutcome?: (outcome: WorkerOutcome, item?: SubstackItem) => void;
 }
 
@@ -83,10 +89,12 @@ const encoder = new TextEncoder();
 export class CollectionWorker {
   private readonly leaseMs: number;
   private readonly retryDelayMs: number;
+  private readonly heartbeatMs: number;
 
   constructor(private readonly config: CollectionWorkerConfig) {
     this.leaseMs = config.leaseMs ?? 30 * 60 * 1000;
     this.retryDelayMs = config.retryDelayMs ?? 60_000;
+    this.heartbeatMs = config.heartbeatMs ?? 60_000;
   }
 
   /** Text-ready events derived from the record actually committed for the artifact. */
@@ -248,11 +256,15 @@ export class CollectionWorker {
           ingestionReason: reason,
           text: [acquired.articleText, t.text].filter(Boolean).join("\n\n"),
           complete: t.complete,
-          supplied: t.timestamped
-            ? {
-                transcript: t.segments.map((s) => ({ start: s.start!, end: s.end!, text: s.text })),
-              }
-            : {},
+          // Keep every segment, with whatever timings the provider supplied;
+          // a partly timed transcript must not lose its available timestamps.
+          supplied: {
+            transcript: t.segments.map((s) => ({
+              ...(typeof s.start === "number" ? { start: s.start } : {}),
+              ...(typeof s.end === "number" ? { end: s.end } : {}),
+              text: s.text,
+            })),
+          },
           provenance: {
             ...acquired.provenance,
             method,
@@ -315,7 +327,8 @@ export class CollectionWorker {
           lost.abort();
         }
       },
-      Math.max(1_000, Math.floor(this.leaseMs / 3)),
+      // Beat well inside both the claim lease and the broker ack deadline.
+      Math.max(1_000, Math.min(Math.floor(this.leaseMs / 3), this.heartbeatMs)),
     );
     timer.unref?.();
     return {

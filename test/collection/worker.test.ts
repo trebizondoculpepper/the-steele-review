@@ -341,6 +341,71 @@ describe("CollectionWorker", () => {
     expect(m.naks).toHaveLength(1);
   });
 
+  it("keeps the available timings of a partly timed machine transcript", async () => {
+    const transcriber: TranscriberPort = {
+      transcribe: async () => ({
+        transcript: {
+          text: "First. Second.",
+          segments: [{ text: "First.", start: 0, end: 1.5 }, { text: "Second." }],
+          timestamped: false,
+          provider: "fake",
+          model: "fake-1",
+          mediaKind: "audio",
+          complete: true,
+          machineGenerated: true,
+        },
+        cleanup: async () => {},
+      }),
+    };
+    const { worker, published } = setup({
+      transcriber,
+      collect: () => ({
+        kind: "transcription-required",
+        item,
+        media: { kind: "audio", url: "https://media.test/a.mp3" },
+        provenance: { sourceUrl: item.url, acquiredAt: provenance.acquiredAt },
+      }),
+    });
+    expect(await worker.handle(message())).toBe("collected");
+    const ref = parseTextReadyEvent(published[0]!.body).data!.artifact;
+    const stored = JSON.parse(
+      await artifacts.read({
+        repository: ref.repository,
+        commit: ref.commit,
+        path: ref.path,
+        sha256: ref.hash.slice(7),
+      }),
+    );
+    expect(stored.supplied.transcript).toEqual([
+      { start: 0, end: 1.5, text: "First." },
+      { text: "Second." },
+    ]);
+  });
+
+  it("sends broker heartbeats within the configured interval even with a long lease", async () => {
+    let working = 0;
+    let release: () => void = () => {};
+    const slow = setup({
+      collect: async () => {
+        await new Promise<void>((r) => (release = r));
+        return textResult();
+      },
+    });
+    Object.assign(slow.worker as unknown as { leaseMs: number; heartbeatMs: number }, {
+      leaseMs: 30 * 60 * 1000,
+      heartbeatMs: 1_000,
+    });
+    const m = message();
+    m.working = () => {
+      working++;
+    };
+    const pending = slow.worker.handle(m);
+    await new Promise((r) => setTimeout(r, 1_300));
+    expect(working).toBeGreaterThan(0);
+    release();
+    await pending;
+  }, 10_000);
+
   it("keeps cancelled transcription retryable", async () => {
     const transcriber: TranscriberPort = {
       transcribe: async () => {

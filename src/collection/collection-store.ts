@@ -32,7 +32,14 @@ import type {
  * rejects unknown ones.
  */
 
-const SegmentSchema = z.object({ start: z.number(), end: z.number(), text: z.string() });
+/** Transcript segment; times are present only when the source supplied them. */
+const SegmentSchema = z
+  .object({
+    start: z.number().nonnegative().optional(),
+    end: z.number().nonnegative().optional(),
+    text: z.string(),
+  })
+  .strict();
 
 /** Retained collection record: text and provenance, never media. */
 export const CollectionRecordSchema = z
