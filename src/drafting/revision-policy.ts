@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { VerificationIssue, VerificationReport } from "./verify.js";
 
@@ -57,7 +58,9 @@ export type RevisionDecision =
     };
 
 export class InvalidRevisionInputError extends Error {
-  constructor(readonly reason: "invalid-config" | "invalid-count" | "stale-report") {
+  constructor(
+    readonly reason: "invalid-config" | "invalid-count" | "stale-report" | "draft-text-mismatch",
+  ) {
     super(`invalid revision input: ${reason}`);
     this.name = "InvalidRevisionInputError";
   }
@@ -76,6 +79,13 @@ export function decideRevision(
     input.revisionCount > maxRevisions
   ) {
     throw new InvalidRevisionInputError("invalid-count");
+  }
+  // The supplied text must be the draft its hash names, so an approval can
+  // never carry over to edited text that kept an old hash.
+  if (
+    `sha256:${createHash("sha256").update(input.draft.markdown).digest("hex")}` !== input.draft.hash
+  ) {
+    throw new InvalidRevisionInputError("draft-text-mismatch");
   }
   // The report must be about exactly this draft and this evidence.
   if (

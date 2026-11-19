@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 import {
   InvalidRevisionInputError,
@@ -7,16 +8,18 @@ import {
 
 const h = (c: string) => `sha256:${c.repeat(64)}`;
 const markdown = "Original post: https://pub.substack.com/p/p\n\nUncertainty: medium.\n";
+const textHash = (t: string) => `sha256:${createHash("sha256").update(t).digest("hex")}`;
+const D = textHash(markdown);
 const input = (
   over: Partial<RevisionInput> = {},
   report: Partial<RevisionInput["report"]> = {},
 ): RevisionInput => ({
   revisionCount: 0,
-  draft: { hash: h("d"), markdown },
+  draft: { hash: D, markdown },
   brief: { hash: h("b") },
   report: {
     verdict: "approve",
-    draft: { path: "drafts/pub/p/d.md", commit: "c".repeat(40), hash: h("d") },
+    draft: { path: "drafts/pub/p/d.md", commit: "c".repeat(40), hash: D },
     brief: { path: "briefs/pub/p/b.json", commit: "c".repeat(40), hash: h("b") },
     issues: [],
     ...report,
@@ -34,7 +37,7 @@ describe("decideRevision", () => {
   it("approves the exact draft on an initial pass", () => {
     expect(decideRevision(input())).toEqual({
       action: "approve",
-      draftHash: h("d"),
+      draftHash: D,
       briefHash: h("b"),
     });
   });
@@ -101,6 +104,12 @@ describe("decideRevision", () => {
       InvalidRevisionInputError,
     );
     expect(() => decideRevision(input({ brief: { hash: h("f") } }))).toThrow("stale-report");
+  });
+
+  it("refuses edited text that kept the approved draft's hash", () => {
+    expect(() =>
+      decideRevision(input({ draft: { hash: D, markdown: `${markdown}Edited.\n` } })),
+    ).toThrow("draft-text-mismatch");
   });
 
   it("does not approve when an approving report still lists issues", () => {
