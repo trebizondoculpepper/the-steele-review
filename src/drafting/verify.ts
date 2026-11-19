@@ -121,25 +121,32 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
   }
   // Each criticised claim heading must be a brief claim, with its exact
   // passage from the monitored post quoted beneath it.
-  const claimsByStatement = new Map(brief.claims.map((c) => [c.statement, c]));
+  // One statement can occur in several claims with different passages.
+  const passagesByStatement = new Map<string, string[]>();
+  for (const c of brief.claims) {
+    passagesByStatement.set(c.statement, [
+      ...(passagesByStatement.get(c.statement) ?? []),
+      c.passage.replace(/\r\n/g, "\n"),
+    ]);
+  }
   {
     const all = markdown.split("\n");
     for (let i = 0; i < all.length; i++) {
       const h = all[i]!.match(/^### "(.*)"$/);
       if (!h) continue;
-      const claim = claimsByStatement.get(h[1]!);
+      const passages = passagesByStatement.get(h[1]!);
       const quoted: string[] = [];
       let j = i + 1;
       while (j < all.length && all[j] === "") j++;
       for (; j < all.length && /^>/.test(all[j]!); j++) quoted.push(all[j]!.replace(/^> ?/, ""));
-      if (!claim) {
+      if (!passages) {
         issues.push({
           source: "deterministic",
           passage: all[i]!,
           problem: "This heading names a claim that is not in the brief.",
           requiredChange: "Criticise only claims from the brief, using their exact statements.",
         });
-      } else if (quoted.join("\n") !== claim.passage.replace(/\r\n/g, "\n")) {
+      } else if (!passages.includes(quoted.join("\n"))) {
         issues.push({
           source: "deterministic",
           passage: all[i]!,
@@ -268,6 +275,7 @@ export async function verifyDraft(input: {
           citationIds: c.citationIds,
           limitations: c.limitations,
           gaps: c.gaps,
+          unresolved: c.unresolved,
         })),
         citations: brief.citations.map((c) => ({
           citationId: c.citationId,
@@ -524,12 +532,35 @@ export class VerificationWorker {
       return { kind: "retry", reason: "busy" };
     }
     if (claimed.kind === "exhausted") {
+      const path = `verifications/${d.publicationId}/${d.postId}/${id}.json`;
+      // A final attempt may have committed its report before stopping:
+      // finish from that report, whatever its verdict.
+      let committed: ArtifactRef | undefined;
+      try {
+        committed = await artifacts.lookup(path);
+      } catch {
+        message.nak(retryDelay);
+        return { kind: "retry", reason: "lookup-failed" };
+      }
+      if (committed) {
+        let existing: VerificationReport;
+        try {
+          existing = JSON.parse(await artifacts.read(committed)) as VerificationReport;
+        } catch {
+          message.nak(retryDelay);
+          return { kind: "retry", reason: "report-read-failed" };
+        }
+        operations.reconcileCompleted(key, { report: committed.path, verdict: existing.verdict }, [
+          verifiedEvent(d, event.id, existing, committed),
+        ]);
+        await message.ack();
+        return { kind: "verified", verdict: existing.verdict, report: committed };
+      }
       if (claimed.errorCode !== "verify:inconclusive") {
         await message.ack();
         return { kind: "failed", reason: "exhausted" };
       }
       // Repeatedly inconclusive: conclude with an explicit skip, never silence.
-      const path = `verifications/${d.publicationId}/${d.postId}/${id}.json`;
       const report: VerificationReport = {
         schemaVersion: VERIFICATION_SCHEMA_VERSION,
         verdict: "skip",
@@ -553,9 +584,7 @@ export class VerificationWorker {
       };
       let reportRef: ArtifactRef;
       try {
-        reportRef =
-          (await artifacts.lookup(path)) ??
-          (await artifacts.write(path, `${JSON.stringify(report, null, 2)}\n`));
+        reportRef = await artifacts.write(path, `${JSON.stringify(report, null, 2)}\n`);
       } catch {
         message.nak(retryDelay);
         return { kind: "retry", reason: "commit-failed" };

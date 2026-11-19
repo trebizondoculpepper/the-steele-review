@@ -290,6 +290,17 @@ describe("verifyDraft", () => {
     ]);
   });
 
+  it("accepts either passage for a statement that occurs in two claims", () => {
+    const twice = {
+      ...brief,
+      claims: [
+        brief.claims[0]!,
+        { ...brief.claims[0]!, claimId: h("7"), passage: "A second occurrence." },
+      ],
+    };
+    expect(checkDraftReferences(markdown, twice)).toEqual([]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -573,6 +584,58 @@ describe("VerificationWorker", () => {
     expect(
       JSON.parse(operations.duePendingEvents(10, DRAFT_VERIFIED_SUBJECT)[0]!.payload).data.verdict,
     ).toBe("skip");
+  });
+
+  it("finishes from a report committed by the final attempt instead of skipping", async () => {
+    const first = new VerificationWorker({
+      artifacts,
+      verifier: verifier([{ verdict: "approve", issues: [] }]).p,
+      operations,
+      owner: "v",
+    });
+    const done = await first.handle(message(draftReady()));
+    if (done.kind !== "verified") throw new Error("not verified");
+    // The final attempt committed its report, then failed before completing.
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare(
+      "UPDATE operations SET status = 'failed', error_code = 'verify:inconclusive' WHERE key LIKE 'verify:%'",
+    ).run();
+    db.prepare("DELETE FROM pending_events").run();
+    const again = new VerificationWorker({
+      artifacts,
+      verifier: verifier([]).p,
+      operations,
+      owner: "v",
+    });
+    expect(await again.handle(message(draftReady()))).toMatchObject({
+      kind: "verified",
+      verdict: "approve",
+      report: { sha256: done.report.sha256 },
+    });
+  });
+
+  it("gives the verifier the brief's unresolved research findings", async () => {
+    const withUnresolved = {
+      ...brief,
+      claims: [
+        {
+          ...brief.claims[0]!,
+          unresolved: [{ entryId: "towers", statement: "Long-term effects", reason: "No study." }],
+        },
+      ],
+    };
+    const text = `${JSON.stringify(withUnresolved, null, 2)}\n`;
+    const ref = await artifacts.write("briefs/pub/p/u.json", text);
+    const { p, calls } = verifier([{ verdict: "approve", issues: [] }]);
+    await verifyDraft({
+      markdown,
+      draft: draftRef,
+      briefText: text,
+      briefRef: ref,
+      metadata: { ...metadata, brief: reference(ref) },
+      verifier: p,
+    });
+    expect(calls[0]).toContain("Long-term effects");
   });
 
   it("keeps work pending when the verifier is unavailable", async () => {
