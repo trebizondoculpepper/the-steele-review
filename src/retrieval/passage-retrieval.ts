@@ -337,17 +337,15 @@ export class PassageRetriever {
             filter: {
               bool: {
                 filter,
-                ...(query.excludePostIds?.length && query.publicationId
+                ...(query.excludePostIds?.length
                   ? {
-                      must_not: [
-                        {
-                          terms: {
-                            sourceId: query.excludePostIds.map(
-                              (id) => `substack/${query.publicationId}/${id}`,
-                            ),
-                          },
-                        },
-                      ],
+                      // With a publication, exclude the exact source IDs; without one,
+                      // exclude the post in any publication.
+                      must_not: query.excludePostIds.map((id) =>
+                        query.publicationId
+                          ? { term: { sourceId: `substack/${query.publicationId}/${id}` } }
+                          : { wildcard: { sourceId: { value: `substack/*/${id}` } } },
+                      ),
                     }
                   : {}),
               },

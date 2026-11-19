@@ -316,6 +316,11 @@ describe.skipIf(!esUrl)("PassageRetriever with Elasticsearch", () => {
         publicationId: "pub-a",
       });
       expect(earlier.passages.map((p) => p.postId)).toEqual(["meters"]);
+      const anyPublication = await retriever.retrieve({
+        text: "towers",
+        excludePostIds: ["towers"],
+      });
+      expect(anyPublication.passages.some((p) => p.postId === "towers")).toBe(false);
     } finally {
       for (const alias of [fulltext, store.indexName]) {
         await admin.indices.delete({ index: `${alias}-000001` }).catch(() => undefined);
