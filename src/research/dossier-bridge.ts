@@ -146,6 +146,28 @@ function toDossierCitation(link: DossierCitationLink): DossierCitation {
   };
 }
 
+function sameArtifact(a: ArtifactReference | undefined, b: ArtifactReference | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash
+  );
+}
+
+/** Full provenance equality, not just the fields the citation ID covers. */
+function sameProvenance(a: EvidenceSource, b: EvidenceSource): boolean {
+  return (
+    a.kind === b.kind &&
+    a.url === b.url &&
+    a.title === b.title &&
+    a.publisher === b.publisher &&
+    a.publishedAt === b.publishedAt &&
+    a.retrievedAt === b.retrievedAt &&
+    a.lastCheckedAt === b.lastCheckedAt &&
+    a.passage === b.passage &&
+    sameArtifact(a.artifact, b.artifact)
+  );
+}
+
 /**
  * Project committed research references into dossier coverage.
  *
@@ -227,10 +249,14 @@ export function buildDossierProjection(input: DossierProjectionInput): DossierPr
         });
         const existing = citationById.get(citationId);
         if (existing) {
-          if (citationTraceKey(existing) !== citationTraceKey({ ...reference, evidence })) {
+          // The ID covers entry, revision, URL and passage only. Reusing it for
+          // the same source version is fine, but the rest of the provenance
+          // must agree: silently keeping one set of dates would misattribute
+          // the evidence.
+          if (!sameProvenance(existing.evidence, evidence)) {
             throw new DossierBridgeError(
               "citation-mismatch",
-              `citation ${citationId} resolves to different evidence`,
+              `citation ${citationId} resolves to conflicting evidence provenance`,
             );
           }
         } else {
@@ -404,6 +430,23 @@ export function researchCandidates(
       entryId: link.entryId,
       revision: link.revision,
     });
+  }
+  const revisionsByEntry = new Map<string, number[]>();
+  for (const { entryId, revision } of groups.values()) {
+    const revisions = revisionsByEntry.get(entryId) ?? [];
+    revisions.push(revision);
+    revisionsByEntry.set(entryId, revisions);
+  }
+  for (const [entryId, revisions] of revisionsByEntry) {
+    if (revisions.length > 1) {
+      // One assessment run holds one state per entry: research candidates are
+      // keyed by entry ID, so two revisions would collide. Re-project against
+      // the revision to assess rather than guessing which one is current.
+      throw new DossierBridgeError(
+        "duplicate-entry",
+        `dossier cites revisions ${revisions.sort((a, b) => a - b).join(", ")} of ${entryId}; assess one revision`,
+      );
+    }
   }
 
   return [...groups.entries()]

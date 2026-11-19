@@ -186,6 +186,60 @@ describe("buildDossierProjection", () => {
     expect(second!.citations).toEqual(first!.citations);
   });
 
+  it("rejects the same source version with conflicting provenance", () => {
+    const later: EvidenceSource = { ...external, lastCheckedAt: "2026-03-01T00:00:00Z" };
+    expect(() =>
+      projection({
+        references: [
+          reference({
+            entry: entry({
+              addressedClaims: [
+                {
+                  claimId: claimANormalised,
+                  statement: "The synthetic council raised fees by 3%.",
+                  finding: "supported",
+                  evidence: [external],
+                },
+                {
+                  claimId: claimANormalised,
+                  statement: "A synthetic second wording of the same claim.",
+                  finding: "supported",
+                  evidence: [later],
+                },
+              ],
+            }),
+          }),
+        ],
+      }),
+    ).toThrow(/conflicting evidence provenance/);
+  });
+
+  it("deduplicates identical evidence cited by two claims", () => {
+    const built = projection({
+      references: [
+        reference({
+          entry: entry({
+            addressedClaims: [
+              {
+                claimId: claimANormalised,
+                statement: "The synthetic council raised fees by 3%.",
+                finding: "supported",
+                evidence: [external],
+              },
+              {
+                claimId: claimANormalised,
+                statement: "A synthetic second wording of the same claim.",
+                finding: "contradicted",
+                evidence: [external],
+              },
+            ],
+          }),
+        }),
+      ],
+    });
+    expect(built.metadata.citations).toHaveLength(1);
+  });
+
   it("rejects an unmapped claim, duplicate occurrence and malformed IDs", () => {
     expect(() =>
       projection({ links: [{ occurrenceClaimId: claimA, normalisedClaimId: claimB }] }),
@@ -361,6 +415,32 @@ describe("researchCandidates", () => {
     });
     expect(candidates[0]!.explanation.isEvidence).toBe(false);
     expect(candidates[0]!.limitations).toEqual(["Only synthetic sources were consulted."]);
+  });
+
+  it("refuses to assess an entry cited at more than one revision", () => {
+    const second = reference({
+      revision: 2,
+      entry: entry({
+        addressedClaims: [
+          {
+            claimId: claimANormalised,
+            statement: "The synthetic council raised fees by 3%.",
+            finding: "supported",
+            evidence: [external],
+          },
+        ],
+      }),
+    });
+    const built = projection({ references: [reference(), second] });
+    expect(built.metadata.citations).toHaveLength(2);
+    const resolved = resolveDossier({
+      metadata: built.metadata,
+      citations: built.citations,
+      links: built.links,
+    });
+    expect(() => researchCandidates(resolved, [reference(), second])).toThrow(
+      /cites revisions 1, 2 of research-synthetic; assess one revision/,
+    );
   });
 
   it("keeps a missing research reference explicit", () => {
