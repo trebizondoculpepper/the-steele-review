@@ -259,6 +259,28 @@ describe("replayArchiveToIndex", () => {
   });
 });
 
+describe("replay-index CLI", () => {
+  it("rejects a malformed Elasticsearch URL without echoing it", async () => {
+    const { main } = await import("../../src/cli/replay-index.js");
+    const saved = { ...process.env };
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (m: string) => void errors.push(m);
+    try {
+      Object.assign(process.env, {
+        ELASTICSEARCH_URL: "http://user:secret@host:99999999",
+        STEELE_ARCHIVE_PATH: join(dir, "archive"),
+        STEELE_ARCHIVE_REPOSITORY: "test-archive",
+      });
+      expect(await main(["--publication", "example-pub", "--limit", "1"])).toBe(2);
+      expect(errors.join("\n")).not.toContain("secret");
+    } finally {
+      console.error = original;
+      process.env = saved;
+    }
+  });
+});
+
 describe("GitArtifactStore.list", () => {
   it("lists stored paths under a prefix, bounded and sorted", async () => {
     await archive(record("b"), record("a"));

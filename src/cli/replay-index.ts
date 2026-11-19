@@ -67,10 +67,14 @@ export async function main(argv: string[]): Promise<number> {
     repoPath: env.STEELE_ARCHIVE_PATH,
     repository: env.STEELE_ARCHIVE_REPOSITORY,
   });
-  const es = new ElasticsearchController(
-    env.ELASTICSEARCH_URL,
-    env.ELASTICSEARCH_API_KEY || undefined,
-  );
+  let es: ElasticsearchController;
+  try {
+    es = new ElasticsearchController(env.ELASTICSEARCH_URL, env.ELASTICSEARCH_API_KEY || undefined);
+  } catch {
+    // Never echo the configured URL: it may carry credentials.
+    console.error("replay-index: ELASTICSEARCH_URL is not a valid URL");
+    return 2;
+  }
   try {
     const report = await replayArchiveToIndex({
       selection,
