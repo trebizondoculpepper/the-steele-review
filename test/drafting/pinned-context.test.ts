@@ -212,6 +212,7 @@ describe("pinned source and theme context", () => {
     });
     expect(verified.kind).toBe("report");
     expect(verifier.calls[0]).toContain(BEYOND);
+    expect(verifier.calls[0]).toContain("5G health concerns"); // verifier sees the same themes
     if (verified.kind === "report") expect(verified.report.contextRef).toBe(context.contextRef);
 
     // Stale or missing context cannot be substituted at verification.
