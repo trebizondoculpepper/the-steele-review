@@ -297,6 +297,33 @@ export class GitArtifactStore {
     }
   }
 
+  /**
+   * Paths of artifacts currently stored under a directory prefix on the
+   * branch, sorted, at most `limit` (read-only; never writes).
+   */
+  async list(prefix: string, limit: number): Promise<string[]> {
+    assertArtifactPath(prefix);
+    const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
+    const head = await this.head();
+    if (!head) return [];
+    let stdout: string;
+    try {
+      ({ stdout } = await this.run([
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "--full-tree",
+        head,
+        "--",
+        `${prefix}/`,
+      ]));
+    } catch {
+      throw new ArtifactStoreError("git-failed");
+    }
+    return stdout.split("\0").filter(Boolean).sort().slice(0, bound);
+  }
+
   /** Read the exact referenced version and verify its hash. */
   async read(ref: ArtifactRef): Promise<string> {
     const valid = ArtifactRefSchema.parse(ref);
