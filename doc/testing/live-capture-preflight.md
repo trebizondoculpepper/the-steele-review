@@ -4,13 +4,13 @@ This runbook covers discovery → collection → private text archive → Elasti
 
 ## Deployment prerequisites
 
-The source inspection for this runbook used main at `e4bb40f`. Check these gaps against the revision being deployed; a merged library component alone is not a runnable service.
+The source inspection for this runbook used main at `53eb42a`. Verify the entry points and dependencies in the actual deployed revision; a merged library component alone is not a runnable service.
 
-- `CollectionWorker` exists in `src/collection/worker.ts`, but this revision has no collection CLI under `src/cli/`. A composition entry point must instantiate the controllers, consume discovery deliveries, call `handle`, and arrange periodic/startup `dispatchPending` calls so an unsent outbox can drain without another discovery event. It must close resources on shutdown and avoid overlapping collection work in the initial trial.
+- The collector entry point is `dist/cli/collect-worker.js`. It composes the controllers, consumes discovery deliveries and retries pending handoffs periodically. Start it explicitly; it is distinct from the default probe.
 - The standard Docker image starts `dist/main.js`, the connectivity probe. Starting that image does not start collection or indexing.
-- `GitArtifactStore` executes Git, but the runtime Docker stage does not install Git. Supply it in the application image, verify it as the runtime user, and initialise the private archive through `GitArtifactStore.initialise()`. Host Git installation alone is insufficient.
+- The runtime image installs Git for `GitArtifactStore`. Verify it as the runtime user and initialise the private archive through `GitArtifactStore.initialise()`. Host Git installation alone is insufficient.
 - The standard image's HTTP health check targets the probe. A worker command override needs a suitable worker health policy; it must not inherit a probe-only health check and appear unhealthy solely because it has no HTTP server.
-- Mount durable archive storage and state storage with permissions for the runtime user. Keep SQLite private to its in-process state controller; do not share a database file between independent worker containers. Independent processes need separate controller-owned state files. Indexing needs read access to the same committed archive and matching logical repository name.
+- Mount durable archive storage and state storage with permissions for the runtime user. Keep SQLite access private to the state-controller implementation. If processes share one file, verify ownership fencing and transactional coordination through that controller; workers must never access SQL or the file directly. Indexing needs read access to the same committed archive and matching logical repository name.
 - If transcription is needed, supply and verify the selected provider and its runtime dependencies. Prefer source transcripts, then audio-only transcription. Temporary media must be bounded and cleaned up; do not claim the transcription path passed when only article text was tested.
 
 Workers must use the Git artifact controller, never shell out to Git themselves. Initialisation and inspection tooling must also use that boundary rather than introducing another implementation of archive Git operations.
@@ -25,9 +25,10 @@ Workers must use the Git artifact controller, never shell out to Git themselves.
 
 ## Existing commands
 
-These commands run inside an appropriately configured application runtime after building. They do not replace the missing collection entry point:
+These commands run inside an appropriately configured application runtime after building. Start each as its own configured process:
 
 ```sh
+node --enable-source-maps dist/cli/collect-worker.js
 node --enable-source-maps dist/cli/index-worker.js
 node --enable-source-maps dist/cli/backfill.js --help
 ```
