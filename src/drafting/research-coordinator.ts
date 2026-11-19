@@ -121,7 +121,10 @@ export class ResearchCoordinator {
       // recorded after this point will find the waiter and resume the post;
       // one recorded before it is seen by the check below. Either way no
       // post can be left waiting on research that already finished.
-      this.wait(needId, post);
+      if (!this.wait(needId, post)) {
+        inFlight.push(needId);
+        continue;
+      }
       // saved / unresolved / failed are settled; failed leaves an evidence gap.
       if (operations.operationStatus(`research-result:${needId}`)?.status === "completed") {
         settled.push(i);
@@ -134,8 +137,8 @@ export class ResearchCoordinator {
       if (!this.request(needId, post.claims[i]!, a.gaps)) inFlight.push(needId);
       else waiting.push(needId);
     }
-    // A request another attempt claimed but has not yet recorded may never
-    // be sent; come back once its lease ends rather than wait forever.
+    // A request or waiter another attempt claimed but has not yet recorded
+    // may never be completed; come back once its lease ends.
     if (inFlight.length) return { kind: "retry", reason: "request-in-flight" };
     if (paused.length) return { kind: "paused", needIds: paused };
     if (waiting.length) return { kind: "waiting", needIds: waiting };
@@ -246,10 +249,16 @@ export class ResearchCoordinator {
     return true;
   }
 
-  /** Remember that a post waits on a need, so completion can resume it. */
-  private wait(needId: string, post: CoordinatorPost): void {
+  /**
+   * Remember that a post waits on a need, so completion can resume it.
+   * False while another attempt holds the registration unfinished.
+   */
+  private wait(needId: string, post: CoordinatorPost): boolean {
     const key = `research-waiter:${needId}:${createHash("sha256").update(postKey(post.source)).digest("hex")}`;
-    const claimed = this.config.operations.claim(key, this.config.owner, 60_000, 5);
-    if (claimed.kind === "claimed") this.config.operations.complete(claimed.claim, post, []);
+    const claimed = this.config.operations.claim(key, this.config.owner, 60_000, 1_000);
+    if (claimed.kind === "completed") return true;
+    if (claimed.kind !== "claimed") return false;
+    this.config.operations.complete(claimed.claim, post, []);
+    return true;
   }
 }

@@ -308,6 +308,23 @@ describe("ResearchCoordinator", () => {
     expect(requests()).toHaveLength(1);
   });
 
+  it("retries while an interrupted waiter registration is unrecorded", async () => {
+    const c = coordinator(keeper(new Set()).k);
+    const p1 = post("p1", [TOWERS]);
+    await c.advance(p1);
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    // Another attempt claimed a second post's registration and stopped.
+    const p2 = post("p2", [TOWERS]);
+    const { createHash } = await import("node:crypto");
+    const postHash = createHash("sha256").update(`pub/p2@${p2.source.sourceVersion}`).digest("hex");
+    operations.claim(`research-waiter:${researchNeedId(TOWERS)}:${postHash}`, "crashed", 60_000);
+    expect(await c.advance(p2)).toEqual({ kind: "retry", reason: "request-in-flight" });
+    db.prepare(
+      "UPDATE operations SET lease_expires_at = 0 WHERE key LIKE 'research-waiter:%'",
+    ).run();
+    expect(await c.advance(p2)).toMatchObject({ kind: "waiting" });
+  });
+
   it("retries when the research keeper fails, without requesting anything", async () => {
     const c = coordinator(keeper(new Set(), true).k);
     expect(await c.advance(post("p1", [TOWERS]))).toEqual({
