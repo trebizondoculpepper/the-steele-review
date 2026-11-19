@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
+import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { EarlierPassage } from "../retrieval/earlier-coverage.js";
 import type { Claim } from "./claim.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
@@ -65,6 +66,11 @@ export interface Citation {
   publishedAt: string;
   url?: string;
   quote: string;
+  /** Immutable archive reference of the cited source. */
+  artifact: ArtifactReference;
+  /** Exact offsets of the quote within the archived source text. */
+  start: number;
+  end: number;
 }
 
 export interface ComparisonFinding {
@@ -201,12 +207,16 @@ export class HistoricalComparator {
         const source = byId.get(e.passageId);
         if (!source || !source.text.includes(e.quote))
           return rejected.push({ index, reason: "invalid-citation" });
+        const offset = source.start + source.text.indexOf(e.quote);
         citations.push({
           passageId: source.passageId,
           postId: source.postId,
           publishedAt: source.publishedAt,
           ...(source.url ? { url: source.url } : {}),
           quote: e.quote,
+          artifact: source.artifact,
+          start: offset,
+          end: offset + e.quote.length,
         });
       }
       const currentQuote = f.currentQuote ?? claim.passage;
@@ -257,12 +267,34 @@ export async function compareAndStore(input: {
   | { status: "busy" | "exhausted" }
   | { status: "failed"; reason: string }
 > {
-  const key = `compare:${input.claim.id}:${input.modelVersion}:${input.comparator.promptVersion}`;
+  // Post identity is part of the key: identical claim text in two posts is two comparisons.
+  const key = `compare:${input.post.publicationId}/${input.post.postId}:${input.claim.id}:${input.modelVersion}:${input.comparator.promptVersion}`;
   const id = createHash("sha256").update(key).digest("hex").slice(0, 32);
   const path = `comparisons/${input.post.publicationId}/${input.post.postId}/${id}.json`;
   const claimed = input.operations.claim(key, input.owner, 15 * 60_000, 3);
   if (claimed.kind === "busy") return { status: "busy" };
-  if (claimed.kind === "exhausted") return { status: "exhausted" };
+  if (claimed.kind === "exhausted") {
+    // A final attempt may have committed its result and stopped before
+    // completing: finish from that artifact instead of abandoning it.
+    let committed: ArtifactRef | undefined;
+    try {
+      committed = await input.artifacts.lookup(path);
+    } catch {
+      return { status: "failed", reason: "lookup-failed" };
+    }
+    if (!committed) return { status: "exhausted" };
+    input.operations.reconcileCompleted(
+      key,
+      { path: committed.path, commit: committed.commit },
+      [],
+    );
+    return {
+      status: "stored",
+      result: JSON.parse(await input.artifacts.read(committed)) as ComparisonResult,
+      artifact: committed,
+      reused: true,
+    };
+  }
   if (claimed.kind === "completed") {
     const artifact = (await input.artifacts.lookup(path))!;
     return {

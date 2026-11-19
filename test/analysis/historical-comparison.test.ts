@@ -101,6 +101,10 @@ describe("HistoricalComparator", () => {
       explanation: { generatedBy: "fake/compare-1", isEvidence: false },
     });
     expect(second!.kind).toBe("repetition");
+    // Citations carry the immutable archive reference and exact quote offsets.
+    const cite = first!.earlier[0]!;
+    expect(cite.artifact).toEqual(artifact);
+    expect(earlier[0]!.text.slice(cite.start, cite.end)).toBe(cite.quote);
   });
 
   it("rejects a contradiction without both quotes and a rationale", async () => {
@@ -195,6 +199,48 @@ describe("compareAndStore", () => {
     if (first.status === "stored") {
       expect(JSON.parse(await artifacts.read(first.artifact)).findings[0].kind).toBe("repetition");
     }
+  });
+
+  it("keeps comparisons for identical claims in different posts separate", async () => {
+    const { p, calls } = provider([json([repetition]), json([repetition])]);
+    const comparator = new HistoricalComparator(p);
+    const base = {
+      comparator,
+      modelVersion: p.modelVersion,
+      claim,
+      earlier,
+      artifacts,
+      operations,
+      owner: "w",
+    };
+    await compareAndStore({ ...base, post: { publicationId: "pub", postId: "mar" } });
+    const other = await compareAndStore({ ...base, post: { publicationId: "pub", postId: "apr" } });
+    expect(other).toMatchObject({ status: "stored", reused: false });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("reconciles a committed result when the operation is exhausted", async () => {
+    const { p } = provider([json([repetition])]);
+    const comparator = new HistoricalComparator(p);
+    const args = {
+      comparator,
+      modelVersion: p.modelVersion,
+      claim,
+      post: { publicationId: "pub", postId: "mar" },
+      earlier,
+      artifacts,
+      operations,
+      owner: "w",
+    };
+    const first = await compareAndStore(args);
+    const db = (
+      operations as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }
+    ).db;
+    db.prepare("UPDATE operations SET status = 'failed' WHERE key LIKE 'compare:%'").run();
+    const again = await compareAndStore(args);
+    expect(again).toMatchObject({ status: "stored", reused: true });
+    if (first.status === "stored" && again.status === "stored")
+      expect(again.artifact).toEqual(first.artifact);
   });
 
   it("stores nothing when the comparison fails", async () => {
