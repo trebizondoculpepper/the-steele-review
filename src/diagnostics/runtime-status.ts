@@ -21,10 +21,7 @@ import { Worker } from "node:worker_threads";
 import type { ElasticsearchConnection, NatsConnection } from "../config/credentials.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { NatsController } from "../controllers/nats.js";
-import type {
-  OperationInspection,
-  OperationStatusCount,
-} from "../controllers/operation-store.js";
+import type { OperationInspection, OperationStatusCount } from "../controllers/operation-store.js";
 
 export const RUNTIME_STATUS_SCHEMA_VERSION = 1;
 

@@ -24,7 +24,9 @@ const data = {
   counts: { themeProposals: 1, acceptedClaims: 1, candidates: 0, rejected: 0 },
 };
 const valid = () =>
-  JSON.parse(JSON.stringify(createPostAnalysedEvent(data, { id: "e1", now: () => new Date(0) }).toJSON()));
+  JSON.parse(
+    JSON.stringify(createPostAnalysedEvent(data, { id: "e1", now: () => new Date(0) }).toJSON()),
+  );
 
 describe("parsePostAnalysedEvent", () => {
   it("round-trips a valid event", () => {

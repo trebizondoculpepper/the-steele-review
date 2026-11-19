@@ -15,7 +15,7 @@
  * Configuration (environment):
  *   STEELE_PUBLICATION_ID
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository (read only)
- *   STEELE_ANALYSIS_STATE_PATH                       analysis outbox (never the collector's state file)
+ *   STEELE_STATE_PATH                       the configured state-controller outbox
  *   NATS_URL, NATS_TOKEN[_FILE]                      only with --publish
  *
  * Exit: 0 recorded with delivery sent (or pending when --publish was not
@@ -37,7 +37,7 @@ const EnvSchema = z.object({
   STEELE_PUBLICATION_ID: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
-  STEELE_ANALYSIS_STATE_PATH: z.string().min(1),
+  STEELE_STATE_PATH: z.string().min(1),
 });
 
 async function main(argv: string[]): Promise<number> {
@@ -93,7 +93,7 @@ async function main(argv: string[]): Promise<number> {
     repoPath: c.STEELE_CONTENT_PATH,
     repository: c.STEELE_CONTENT_REPOSITORY,
   });
-  const operations = new OperationStore({ path: c.STEELE_ANALYSIS_STATE_PATH });
+  const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
   try {
     // Choose the claim result: the one given, or the post's single v2 result.
     const paths = claimPath

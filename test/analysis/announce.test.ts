@@ -172,9 +172,9 @@ describe("announcePost", { timeout: 60_000 }, () => {
     const refs = await analyse();
     const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
     expect(await run(refs)).toMatchObject({ status: "recorded", delivery: "pending" });
-    expect(operations.duePendingEvents(1_000, POST_ANALYSED_SUBJECT).map((e) => e.eventId)).not.toContain(
-      eventId,
-    );
+    expect(
+      operations.duePendingEvents(1_000, POST_ANALYSED_SUBJECT).map((e) => e.eventId),
+    ).not.toContain(eventId);
     const pub = publisher();
     expect(await publishRecordedEvent(operations, eventId, pub)).toBe("sent");
     expect(pub.sent.map((s) => s.msgId)).toEqual([eventId]);
