@@ -98,12 +98,19 @@ export class RevisionAttemptStore {
     return `revision-attempt:${shortHash(briefHash)}:${revision}`;
   }
 
+  /**
+   * Record path for one claim attempt of an attempt. Each holder writes its
+   * own path, so a stale holder's late commit can never collide with or
+   * overwrite the current holder's record; only the fenced completion
+   * decides which record is authoritative.
+   */
   path(
     post: { publicationId: string; postId: string },
     briefHash: string,
     revision: number,
+    claimAttempt: number,
   ): string {
-    return `revisions/${post.publicationId}/${post.postId}/${shortHash(briefHash)}/${revision}.json`;
+    return `revisions/${post.publicationId}/${post.postId}/${shortHash(briefHash)}/${revision}/${claimAttempt}.json`;
   }
 
   /**
@@ -147,11 +154,12 @@ export class RevisionAttemptStore {
         artifact,
       };
     }
-    // A previous holder may have committed the record and stopped before
-    // completing: offer it for reuse rather than redoing the work.
-    const committed = await artifacts.lookup(
-      this.path(input.post, input.briefHash, input.revision),
-    );
+    // A previous holder may have committed its record and stopped before
+    // completing: reuse the latest such record rather than redoing the work.
+    let committed: ArtifactRef | undefined;
+    for (let a = claimed.claim.attempt - 1; a >= 1 && !committed; a--) {
+      committed = await artifacts.lookup(this.path(input.post, input.briefHash, input.revision, a));
+    }
     if (committed) {
       const record = AttemptRecordSchema.parse(JSON.parse(await artifacts.read(committed)));
       this.complete(claimed.claim, record, committed);
@@ -181,7 +189,7 @@ export class RevisionAttemptStore {
         return { kind: "stale-owner" };
       throw error;
     }
-    const path = this.path(record, record.brief.hash, record.revision);
+    const path = this.path(record, record.brief.hash, record.revision, claim.attempt);
     const content = `${JSON.stringify(record, null, 2)}\n`;
     let artifact: ArtifactRef;
     let reused = false;

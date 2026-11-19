@@ -59,7 +59,7 @@ describe("RevisionAttemptStore", () => {
     expect(done).toMatchObject({
       kind: "recorded",
       reused: false,
-      artifact: { path: `revisions/pub/p/${"b".repeat(64)}/0.json` },
+      artifact: { path: `revisions/pub/p/${"b".repeat(64)}/0/1.json` },
     });
     if (done.kind !== "recorded") return;
     const saved = JSON.parse(await artifacts.read(done.artifact));
@@ -93,7 +93,7 @@ describe("RevisionAttemptStore", () => {
     if (begun.kind !== "claimed") throw new Error(begun.kind);
     // The worker committed the record, then stopped before completing.
     await artifacts.write(
-      s.path(post, brief.hash, 0),
+      s.path(post, brief.hash, 0, 1),
       `${JSON.stringify({ schemaVersion: 1, ...attempt(0) }, null, 2)}\n`,
     );
     clock += 2_000;
@@ -118,7 +118,7 @@ describe("RevisionAttemptStore", () => {
     const begun = await s.begin({ post, briefHash: brief.hash, revision: 0, owner: "w" });
     if (begun.kind !== "claimed") throw new Error(begun.kind);
     await artifacts.write(
-      s.path(post, brief.hash, 0),
+      s.path(post, brief.hash, 0, 1),
       `${JSON.stringify({ schemaVersion: 1, ...attempt(0) }, null, 2)}\n`,
     );
     const other = attempt(0, { decision: { action: "skip", reason: "revisions-exhausted" } });
@@ -126,6 +126,25 @@ describe("RevisionAttemptStore", () => {
       kind: "failed",
       reason: "conflicting-record",
       retryable: false,
+    });
+  });
+
+  it("keeps a stale holder's late commit from blocking the current holder", async () => {
+    const s = store();
+    const stale = await s.begin({ post, briefHash: brief.hash, revision: 0, owner: "w1" });
+    if (stale.kind !== "claimed") throw new Error(stale.kind);
+    clock += 2_000;
+    const current = await s.begin({ post, briefHash: brief.hash, revision: 0, owner: "w2" });
+    if (current.kind !== "claimed") throw new Error(current.kind);
+    // The stale holder's slow write lands after the takeover, at its own path.
+    await artifacts.write(
+      s.path(post, brief.hash, 0, stale.claim.attempt),
+      `${JSON.stringify({ schemaVersion: 1, ...attempt(0, { decision: { action: "skip", reason: "x" } }) }, null, 2)}\n`,
+    );
+    const done = await s.finish(current.claim, attempt(0));
+    expect(done).toMatchObject({
+      kind: "recorded",
+      artifact: { path: s.path(post, brief.hash, 0, current.claim.attempt) },
     });
   });
 
