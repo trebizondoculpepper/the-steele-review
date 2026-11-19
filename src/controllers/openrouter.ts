@@ -28,7 +28,10 @@ export type ModelProviderErrorCode =
   | "timeout"
   | "cancelled";
 
+// Credit exhaustion is retryable: work must stay pending until credit is
+// restored, never be recorded as a permanent failure.
 const RETRYABLE: ReadonlySet<ModelProviderErrorCode> = new Set([
+  "credit-exhausted",
   "rate-limited",
   "unavailable",
   "bad-response",
@@ -106,7 +109,12 @@ export class OpenRouterProvider implements ExtractionModelProvider {
   constructor(private readonly config: OpenRouterConfig) {
     if (!config.apiKey) throw new ModelProviderError("unauthorised");
     const model = ModelName.parse(config.model);
-    const base = new URL(config.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL);
+    let base: URL;
+    try {
+      base = new URL(config.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL);
+    } catch {
+      throw new Error("model provider base URL is invalid");
+    }
     if (base.protocol !== "https:" || base.username || base.password) {
       throw new Error("model provider base URL must be https without user info");
     }

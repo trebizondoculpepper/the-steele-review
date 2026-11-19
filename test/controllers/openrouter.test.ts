@@ -67,13 +67,13 @@ describe("OpenRouterProvider", () => {
     ]);
   });
 
-  it("maps HTTP failures to distinct codes, with credit exhaustion not retryable", async () => {
+  it("maps HTTP failures to distinct codes, with credit exhaustion kept resumable", async () => {
     expect(codeForStatus(402)).toBe("credit-exhausted");
     expect(codeForStatus(401)).toBe("unauthorised");
     expect(codeForStatus(429)).toBe("rate-limited");
     expect(codeForStatus(503)).toBe("unavailable");
     for (const [status, code, retryable] of [
-      [402, "credit-exhausted", false],
+      [402, "credit-exhausted", true],
       [429, "rate-limited", true],
       [500, "unavailable", true],
     ] as const) {
@@ -109,6 +109,12 @@ describe("OpenRouterProvider", () => {
     });
     expect((await failure(p.complete(req, ac.signal))).code).toBe("cancelled");
     expect((await failure(p.complete(req, new AbortController().signal))).code).toBe("unavailable");
+  });
+
+  it("refuses a malformed base URL without echoing it", () => {
+    expect(
+      () => new OpenRouterProvider({ apiKey: KEY, model: "m", baseUrl: `https://u:${KEY}@[bad` }),
+    ).toThrow(/^model provider base URL is invalid$/);
   });
 
   it("refuses a non-https base URL", () => {
