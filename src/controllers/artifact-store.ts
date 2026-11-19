@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -312,22 +312,58 @@ export class GitArtifactStore {
     }
     const head = await this.head();
     if (!head) return [];
-    let stdout: string;
-    try {
-      ({ stdout } = await this.run([
-        "ls-tree",
-        "-r",
-        "-z",
-        "--name-only",
-        "--full-tree",
-        head,
-        "--",
-        `${prefix}/`,
-      ]));
-    } catch {
+    // Streamed and stopped at the bound, so a large archive is never
+    // buffered whole. Git lists tree entries in path order.
+    const paths = await new Promise<string[]>((resolve, reject) => {
+      const found: string[] = [];
+      let pending = "";
+      let done = false;
+      const child = spawn(
+        this.git,
+        [
+          "-C",
+          this.config.repoPath,
+          "ls-tree",
+          "-r",
+          "-z",
+          "--name-only",
+          "--full-tree",
+          head,
+          "--",
+          `${prefix}/`,
+        ],
+        {
+          env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1" },
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      const finish = (error?: Error) => {
+        if (done) return;
+        done = true;
+        if (error) reject(error);
+        else resolve(found);
+      };
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        if (done) return;
+        const parts = (pending + chunk).split("\0");
+        pending = parts.pop() ?? "";
+        for (const part of parts) {
+          if (part) found.push(part);
+          if (found.length >= bound) {
+            child.kill();
+            return finish();
+          }
+        }
+      });
+      child.on("error", (error) => finish(error));
+      child.on("close", (code) =>
+        code === 0 ? finish() : finish(new Error(`git exited ${code}`)),
+      );
+    }).catch(() => {
       throw new ArtifactStoreError("git-failed");
-    }
-    return stdout.split("\0").filter(Boolean).sort().slice(0, bound);
+    });
+    return paths.sort();
   }
 
   /** Read the exact referenced version and verify its hash. */
