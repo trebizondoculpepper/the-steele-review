@@ -75,6 +75,16 @@ export const DraftingBriefSchema = z
             citationIds: z.array(z.string()).min(1),
             limitations: z.array(z.string()),
             gaps: z.array(z.string()),
+            /** Research findings the applicable entries left unresolved, with their reasons. */
+            unresolved: z.array(
+              z
+                .object({
+                  entryId: z.string(),
+                  statement: z.string(),
+                  reason: z.string().optional(),
+                })
+                .strict(),
+            ),
           })
           .strict(),
       )
@@ -200,6 +210,15 @@ export function selectBriefEvidence(input: BriefInput): BriefSelection {
       citationIds: ids,
       limitations,
       gaps: a.gaps,
+      unresolved: a.assessments
+        .filter((x) => x.applicability !== "not-applicable")
+        .flatMap((x) =>
+          x.unresolved.map((u) => ({
+            entryId: x.entryId,
+            statement: u.statement,
+            ...(u.reason ? { reason: u.reason } : {}),
+          })),
+        ),
     });
   }
   // Missing material evidence for every claim is a gap, not a brief.

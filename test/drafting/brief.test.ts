@@ -143,6 +143,21 @@ describe("selectBriefEvidence", () => {
     expect(r.brief.source).toEqual(source);
   });
 
+  it("carries unresolved research findings from applicable entries", () => {
+    const a = assessment(towers.id, ["https://example.org/a"]);
+    a.assessments[0]!.unresolved = [
+      { statement: "Long-term exposure effects", reason: "No long-term study found." },
+    ];
+    const r = selectBriefEvidence(input({ assessments: [a] }));
+    expect(r.kind === "brief" && r.brief.claims[0]!.unresolved).toEqual([
+      {
+        entryId: "towers",
+        statement: "Long-term exposure effects",
+        reason: "No long-term study found.",
+      },
+    ]);
+  });
+
   it("does not need historical findings, but keeps them when supplied", () => {
     const without = selectBriefEvidence(input());
     const withHistory = selectBriefEvidence(input({ comparisons: [history(towers.id)] }));
