@@ -214,6 +214,32 @@ describe("OccurrenceIndexer", () => {
     expect(docs.size).toBe(2);
   });
 
+  it("rejects a mismatched identity without failing the shared operation", async () => {
+    const { port, docs } = index();
+    const bad = await scenario();
+    const body = JSON.parse(new TextDecoder().decode(bad.data));
+    body.data.postId = "other-post";
+    body.subject = "substack/example-pub/other-post";
+    bad.data = new TextEncoder().encode(JSON.stringify(body));
+    expect(await indexer(port).handle(bad)).toEqual({
+      kind: "failed",
+      reason: "identity-mismatch",
+    });
+    expect((await indexer(port).handle(await scenario([], "claims/valid.json"))).kind).toBe(
+      "indexed",
+    );
+    expect(docs.size).toBe(2);
+  });
+
+  it("terminates events with an invalid envelope", async () => {
+    for (const change of [{ specversion: "0.3" }, { source: "" }, { subject: "substack/x/y" }]) {
+      const m = await scenario([], `claims/env-${Object.keys(change)[0]}.json`);
+      const body = { ...JSON.parse(new TextDecoder().decode(m.data)), ...change };
+      m.data = new TextEncoder().encode(JSON.stringify(body));
+      expect(await indexer(index().port).handle(m)).toEqual({ kind: "invalid-event" });
+    }
+  });
+
   it("terminates malformed events", async () => {
     const m = await scenario();
     m.data = new TextEncoder().encode("{}");

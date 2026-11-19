@@ -56,11 +56,19 @@ const ClaimSetSchema = z.looseObject({
   sourceArtifact: z.unknown(),
 });
 
-const EventSchema = z.looseObject({
-  type: z.literal(CLAIMS_EXTRACTED_EVENT_TYPE_V1),
-  id: z.string().min(1),
-  data: ClaimsExtractedDataSchema,
-});
+const EventSchema = z
+  .looseObject({
+    specversion: z.literal("1.0"),
+    id: z.string().min(1).max(200),
+    source: z.string().min(1).max(500),
+    type: z.literal(CLAIMS_EXTRACTED_EVENT_TYPE_V1),
+    subject: z.string().min(1).max(500),
+    datacontenttype: z.literal("application/json").optional(),
+    data: ClaimsExtractedDataSchema,
+  })
+  .refine((e) => e.subject === `substack/${e.data.publicationId}/${e.data.postId}`, {
+    message: "subject does not match the post",
+  });
 
 export class OccurrenceIndexer {
   constructor(private readonly config: OccurrenceIndexerConfig) {}
@@ -75,6 +83,37 @@ export class OccurrenceIndexer {
       return { kind: "invalid-event" };
     }
     const data = event.data;
+    const retryDelay = this.config.retryDelayMs ?? 30_000;
+    // Read and check identity before touching the shared operation, so a
+    // malformed delivery can never fail the work for a valid one.
+    let claimSet;
+    let record;
+    try {
+      claimSet = ClaimSetSchema.parse(
+        JSON.parse(await this.config.artifacts.read(toArchiveRef(data.claimsArtifact))),
+      );
+      record = CollectionRecordSchema.parse(
+        JSON.parse(await this.config.artifacts.read(toArchiveRef(data.sourceArtifact))),
+      );
+    } catch (error) {
+      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
+        message.nak(retryDelay);
+        return { kind: "retry", reason: "archive-read-failed" };
+      }
+      operations.recordPermanentFailure(`occ-invalid:${event.id}`, "unreadable-artifact");
+      await message.ack();
+      return { kind: "failed", reason: "unreadable-artifact" };
+    }
+    if (
+      record.item.publicationId !== data.publicationId ||
+      record.item.postId !== data.postId ||
+      JSON.stringify(claimSet.sourceArtifact) !== JSON.stringify(data.sourceArtifact)
+    ) {
+      operations.recordPermanentFailure(`occ-invalid:${event.id}`, "identity-mismatch");
+      await message.ack();
+      return { kind: "failed", reason: "identity-mismatch" };
+    }
+
     const key = `occ-index:${data.claimsArtifact.hash}`;
     const claimed = operations.claim(key, this.config.owner, 10 * 60_000, 10);
     if (claimed.kind === "completed") {
@@ -90,32 +129,6 @@ export class OccurrenceIndexer {
       return { kind: "failed", reason: "exhausted" };
     }
     const claim = claimed.claim;
-    const retryDelay = this.config.retryDelayMs ?? 30_000;
-
-    let claimSet;
-    let record;
-    try {
-      claimSet = ClaimSetSchema.parse(
-        JSON.parse(await this.config.artifacts.read(toArchiveRef(data.claimsArtifact))),
-      );
-      record = CollectionRecordSchema.parse(
-        JSON.parse(await this.config.artifacts.read(toArchiveRef(data.sourceArtifact))),
-      );
-    } catch (error) {
-      const transient = error instanceof ArtifactStoreError && error.code === "git-failed";
-      operations.fail(claim, transient ? "archive-read-failed" : "unreadable-artifact", transient);
-      if (transient) {
-        message.nak(retryDelay);
-        return { kind: "retry", reason: "archive-read-failed" };
-      }
-      await message.ack();
-      return { kind: "failed", reason: "unreadable-artifact" };
-    }
-    if (record.item.publicationId !== data.publicationId || record.item.postId !== data.postId) {
-      operations.fail(claim, "identity-mismatch", false);
-      await message.ack();
-      return { kind: "failed", reason: "identity-mismatch" };
-    }
 
     const source = {
       text: record.text,
