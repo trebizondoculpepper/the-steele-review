@@ -199,6 +199,8 @@ describe("OperationStore", () => {
     expect(() => store.yieldClaim({ key: "op-progress", owner: "w", attempt: 1 })).toThrow(
       "not-owner",
     );
+    // Attempt numbers keep increasing, so an old handle can never match a newer claim.
+    expect(held(store.claim("op-progress", "w", 1_000, 2)).attempt).toBe(11);
   });
 
   it("rejects invalid claim input", () => {
