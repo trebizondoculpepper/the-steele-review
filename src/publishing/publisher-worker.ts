@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
 import {
   OperationStoreError,
@@ -36,6 +36,13 @@ import { reconcileUncertainPublication } from "./reconcile.js";
  * second draft or publication. Backfill stays disabled unless enabled.
  */
 
+const refOf = (r: ArtifactRef) => ({
+  repository: r.repository,
+  commit: r.commit,
+  path: r.path,
+  hash: `sha256:${r.sha256}`,
+});
+
 export const ARTICLE_PUBLISHED_SUBJECT = "steele.v1.article.published";
 export const ARTICLE_PUBLISHED_EVENT_TYPE_V1 = "org.steele.article.published.v1";
 
@@ -47,7 +54,7 @@ export type PublisherOutcome =
   | { kind: "failed"; reason: string };
 
 export interface PublisherWorkerConfig {
-  artifacts: Pick<GitArtifactStore, "read">;
+  artifacts: Pick<GitArtifactStore, "read" | "write" | "lookup">;
   operations: OperationStore;
   destination: PublicationDestination;
   /** Logical destination name used in publication keys. */
@@ -100,11 +107,20 @@ export class PublisherWorker {
     if (state?.status === "published" && state.receipt) {
       // A crash between confirmation and completion leaves the handoff
       // unrecorded: record it now, before acknowledging.
+      let artifact: ArtifactRef;
+      try {
+        artifact = await this.receiptArtifact(request, state.receipt);
+      } catch {
+        message.nak(Math.min(retryDelay, 30_000));
+        return { kind: "deferred", reason: "retry" };
+      }
       if (operations.operationStatus(request.key)?.status !== "completed") {
         try {
-          operations.reconcileCompleted(request.key, state.receipt, [
-            this.publishedEvent(request, state.receipt),
-          ]);
+          operations.reconcileCompleted(
+            request.key,
+            { ...state.receipt, artifact: refOf(artifact) },
+            [this.publishedEvent(request, state.receipt, artifact)],
+          );
         } catch (error) {
           // The confirming worker still holds its lease: come back later.
           if (error instanceof OperationStoreError && error.code === "busy") {
@@ -173,6 +189,13 @@ export class PublisherWorker {
         ...(signal ? { signal } : {}),
       });
       if (reconciled.status === "published" || reconciled.status === "already-published") {
+        try {
+          await this.receiptArtifact(request, reconciled.receipt);
+        } catch {
+          // Confirmed in state; the next delivery records the receipt artifact.
+          message.nak(Math.min(retryDelay, 30_000));
+          return { kind: "deferred", reason: "retry" };
+        }
         await message.ack();
         return { kind: "published", receipt: reconciled.receipt };
       }
@@ -363,9 +386,44 @@ export class PublisherWorker {
     receipt: PublicationReceipt,
   ): Promise<PublisherOutcome> {
     this.config.operations.confirmPublished(claim, receipt);
-    this.config.operations.complete(claim, receipt, [this.publishedEvent(request, receipt)]);
+    let artifact: ArtifactRef;
+    try {
+      artifact = await this.receiptArtifact(request, receipt);
+    } catch {
+      // Publication is confirmed in state; the next delivery records the receipt.
+      this.config.operations.fail(claim, "publish:receipt-commit-failed", true);
+      message.nak(Math.min(this.config.retryDelayMs ?? 60_000, 30_000));
+      return { kind: "deferred", reason: "retry" };
+    }
+    this.config.operations.complete(claim, { ...receipt, artifact: refOf(artifact) }, [
+      this.publishedEvent(request, receipt, artifact),
+    ]);
     await message.ack();
     return { kind: "published", receipt };
+  }
+
+  /**
+   * The versioned receipt record for a publication, written once per
+   * publication key and reused thereafter (idempotent across retries).
+   */
+  private async receiptArtifact(
+    request: PublishRequest,
+    receipt: PublicationReceipt,
+  ): Promise<ArtifactRef> {
+    const path = `publications/${request.publicationId}/${request.postId}/${createHash("sha256").update(request.key).digest("hex")}.json`;
+    const existing = await this.config.artifacts.lookup(path);
+    if (existing) return existing;
+    const record = {
+      schemaVersion: 1,
+      destination: request.destination,
+      publicationId: request.publicationId,
+      postId: request.postId,
+      ingestionReason: request.ingestionReason,
+      draft: request.draft,
+      report: request.report,
+      receipt,
+    };
+    return this.config.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
   }
 
   /** True when an earlier attempt began creating a draft with no recorded outcome. */
@@ -422,7 +480,11 @@ export class PublisherWorker {
     return latest ? Math.max(0, latest + min - now) : 0;
   }
 
-  private publishedEvent(request: PublishRequest, receipt: PublicationReceipt): PendingEventInput {
+  private publishedEvent(
+    request: PublishRequest,
+    receipt: PublicationReceipt,
+    artifact?: ArtifactRef,
+  ): PendingEventInput {
     const event = new CloudEvent({
       specversion: "1.0",
       id: randomUUID(),
@@ -440,6 +502,7 @@ export class PublisherWorker {
         url: receipt.url,
         publishedAt: receipt.publishedAt,
         ...(receipt.destinationPostId ? { destinationPostId: receipt.destinationPostId } : {}),
+        ...(artifact ? { receiptArtifact: refOf(artifact) } : {}),
       },
     });
     return {

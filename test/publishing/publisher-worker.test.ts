@@ -133,6 +133,8 @@ describe("PublisherWorker smoke test", () => {
     expect(client.drafts.size).toBe(1);
     expect([...client.drafts.values()][0]!.emailed).toBe(false);
     expect(published()).toHaveLength(1);
+    const handoff = JSON.parse(published()[0]!.payload).data;
+    expect(handoff.receiptArtifact.path).toMatch(/^publications\/pub\/p1\/[0-9a-f]{64}\.json$/);
     const again = message(event);
     expect(await worker().handle(again)).toMatchObject({ kind: "already-published" });
     expect(again.acks).toBe(1);
@@ -188,7 +190,7 @@ describe("PublisherWorker smoke test", () => {
     const event = await approved("p1");
     const key = `publish:example-destination:drafts:${event.data.draft.commit}:${event.data.draft.path}`;
     // A worker confirmed publication, then stopped before completing.
-    const held = operations.claim(key, "crashed", 50);
+    const held = operations.claim(key, "crashed", 1_500);
     if (held.kind !== "claimed") throw new Error("claim");
     operations.recordPublicationIntent(held.claim, {
       hash: event.data.draft.hash,
@@ -202,8 +204,20 @@ describe("PublisherWorker smoke test", () => {
     });
     // While the confirming worker's lease is live, the duplicate defers.
     expect(await worker().handle(message(event))).toEqual({ kind: "deferred", reason: "busy" });
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setTimeout(r, 1_600));
     expect(await worker().handle(message(event))).toMatchObject({ kind: "already-published" });
+    // The receipt is recorded as a versioned artifact, and the handoff names it.
+    const handoff = JSON.parse(published()[0]!.payload).data;
+    const record = JSON.parse(
+      await artifacts.read({
+        ...handoff.receiptArtifact,
+        sha256: handoff.receiptArtifact.hash.replace("sha256:", ""),
+      }),
+    );
+    expect(record).toMatchObject({
+      receipt: { destinationPostId: "999" },
+      draft: { path: event.data.draft.path },
+    });
     expect(published()).toHaveLength(1);
   });
 
