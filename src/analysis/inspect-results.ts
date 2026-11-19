@@ -43,6 +43,8 @@ export interface InspectionReport {
     versions?: { model: string; prompt: string; schema: number };
     proposals?: InspectedTheme[];
     rejected?: Array<{ reason: string; stage: string; title?: string }>;
+    counts?: { proposals: number; rejected: number };
+    truncated?: boolean;
   }>;
   claimResults: Array<{
     ref: string;
@@ -54,13 +56,17 @@ export interface InspectionReport {
     sourceVersionMismatch?: boolean;
     versions?: { model: string; prompt: string };
     accepted?: InspectedClaim[];
+    /** Schema-v1 claims: never certified as accepted under the current contract. */
+    legacy?: InspectedClaim[];
     candidates?: Array<InspectedClaim & { reasons: string[] }>;
     rejected?: Array<{ reason: string; stage?: string; statement?: string }>;
-    counts?: { accepted: number; candidates: number; rejected: number };
+    counts?: { accepted: number; candidates: number; rejected: number; legacy?: number };
     truncated?: boolean;
   }>;
   /** True when nothing has been saved for this post (distinct from an empty result). */
   notFound: boolean;
+  /** True when more saved result files exist than were read. */
+  resultsTruncated: boolean;
 }
 
 const logical = (ref: ArtifactRef) => `${ref.commit.slice(0, 12)}:${ref.path}`;
@@ -112,18 +118,32 @@ function claimView(
   };
 }
 
-async function readAll(store: Pick<GitArtifactStore, "list" | "lookup" | "read">, prefix: string) {
-  const out: Array<{ ref: ArtifactRef; text?: string }> = [];
-  for (const path of await store.list(prefix, 200)) {
-    const ref = await store.lookup(path);
-    if (!ref) continue;
-    try {
-      out.push({ ref, text: await store.read(ref) });
-    } catch {
-      out.push({ ref });
+/** Upper bound on saved result files read per post and kind. */
+export const MAX_RESULT_FILES = 2_000;
+const PAGE = 200;
+
+/** Read every saved result under a prefix, page by page, up to a stated bound. */
+async function readAll(
+  store: Pick<GitArtifactStore, "list" | "lookup" | "read">,
+  prefix: string,
+): Promise<{ items: Array<{ ref: ArtifactRef; text?: string }>; truncated: boolean }> {
+  const items: Array<{ ref: ArtifactRef; text?: string }> = [];
+  let after: string | undefined;
+  for (;;) {
+    const page = await store.list(prefix, PAGE, after);
+    for (const path of page) {
+      if (items.length >= MAX_RESULT_FILES) return { items, truncated: true };
+      const ref = await store.lookup(path);
+      if (!ref) continue;
+      try {
+        items.push({ ref, text: await store.read(ref) });
+      } catch {
+        items.push({ ref });
+      }
     }
+    if (page.length < PAGE) return { items, truncated: false };
+    after = page[page.length - 1];
   }
-  return out;
 }
 
 export async function inspectPost(
@@ -141,14 +161,18 @@ export async function inspectPost(
     themeResults: [],
     claimResults: [],
     notFound: false,
+    resultsTruncated: false,
   };
 
+  const themeFiles = await readAll(content, `theme-proposals/${post.publicationId}/${post.postId}`);
+  const claimFiles = await readAll(
+    content,
+    `claim-extractions/${post.publicationId}/${post.postId}`,
+  );
+  report.resultsTruncated = themeFiles.truncated || claimFiles.truncated;
   const titles = new Map<string, string>();
   const themeSourceVersions = new Map<string, string>();
-  for (const { ref, text } of await readAll(
-    content,
-    `theme-proposals/${post.publicationId}/${post.postId}`,
-  )) {
+  for (const { ref, text } of themeFiles.items) {
     if (text === undefined) {
       report.themeResults.push({ ref: logical(ref), status: "unreadable" });
       continue;
@@ -171,23 +195,22 @@ export async function inspectPost(
         prompt: result.extraction.promptVersion,
         schema: result.extraction.schemaVersion,
       },
-      proposals: result.proposals.map((p) => ({
+      proposals: result.proposals.slice(0, limit).map((p) => ({
         id: p.id,
         title: p.title,
         ...(p.description ? { description: p.description } : {}),
       })),
-      rejected: result.rejected.map((r) => ({
+      rejected: result.rejected.slice(0, limit).map((r) => ({
         reason: r.reason,
         stage: r.stage,
         ...(r.candidate.fields.title ? { title: r.candidate.fields.title } : {}),
       })),
+      counts: { proposals: result.proposals.length, rejected: result.rejected.length },
+      truncated: result.proposals.length > limit || result.rejected.length > limit,
     });
   }
 
-  for (const { ref, text } of await readAll(
-    content,
-    `claim-extractions/${post.publicationId}/${post.postId}`,
-  )) {
+  for (const { ref, text } of claimFiles.items) {
     let record: ClaimExtractionRecord;
     try {
       if (text === undefined) throw new Error("unreadable");
@@ -199,7 +222,12 @@ export async function inspectPost(
     const linkedVersion = record.themeResult
       ? themeSourceVersions.get(record.themeResult)
       : undefined;
-    const accepted = record.claims.map((c) => claimView(c, titles));
+    // Schema v1 accepted every grounded claim (including unclassified ones);
+    // show those as legacy, never as accepted under the current contract.
+    const isLegacy = record.schemaVersion === 1;
+    const viewed = record.claims.map((c) => claimView(c, titles));
+    const accepted = isLegacy ? [] : viewed;
+    const legacy = isLegacy ? viewed : [];
     const candidates = (record.candidates ?? []).map((c) => ({
       ...claimView(c, titles),
       reasons: c.reasons,
@@ -209,8 +237,7 @@ export async function inspectPost(
       ...(r.stage ? { stage: r.stage } : {}),
       ...(r.candidate?.fields.statement ? { statement: r.candidate.fields.statement } : {}),
     }));
-    const truncated =
-      accepted.length > limit || candidates.length > limit || rejected.length > limit;
+    const truncated = [accepted, legacy, candidates, rejected].some((l) => l.length > limit);
     report.claimResults.push({
       ref: logical(ref),
       status: "ok",
@@ -224,12 +251,14 @@ export async function inspectPost(
         : {}),
       versions: { model: record.extraction.modelVersion, prompt: record.extraction.promptVersion },
       accepted: accepted.slice(0, limit),
+      ...(isLegacy ? { legacy: legacy.slice(0, limit) } : {}),
       candidates: candidates.slice(0, limit),
       rejected: rejected.slice(0, limit),
       counts: {
         accepted: accepted.length,
         candidates: candidates.length,
         rejected: rejected.length,
+        ...(isLegacy ? { legacy: legacy.length } : {}),
       },
       truncated,
     });
@@ -252,6 +281,11 @@ export function renderInspection(r: InspectionReport): string {
       lines.push(`  - ${p.title}${p.description ? ` — ${p.description}` : ""}  [${p.id}]`);
     for (const x of t.rejected!)
       lines.push(`  ✗ ${x.reason} (${x.stage})${x.title ? `: ${x.title}` : ""}`);
+    if (t.truncated) {
+      lines.push(
+        `  … showing ${t.proposals!.length} of ${t.counts!.proposals} themes and ${t.rejected!.length} of ${t.counts!.rejected} rejections; rerun with a larger --limit`,
+      );
+    }
   }
   for (const c of r.claimResults) {
     lines.push("", `Claim result ${c.ref} [${c.status}]`);
@@ -268,11 +302,18 @@ export function renderInspection(r: InspectionReport): string {
       return [
         `    ${x.statement}`,
         `      themes: ${themes}`,
-        `      "${x.quotation}" [${x.location.start},${x.location.end}) · ${when} · ${who}`,
+        `      "${x.quotation}" [${x.location.start},${x.location.end})${
+          x.location.transcriptSeconds
+            ? ` · audio ${x.location.transcriptSeconds[0]}s–${x.location.transcriptSeconds[1]}s`
+            : ""
+        } · ${when} · ${who}`,
       ];
     };
     if (c.accepted!.length) lines.push("  Accepted:");
     for (const x of c.accepted!) lines.push(...show(x));
+    if (c.legacy?.length)
+      lines.push("  Legacy v1 claims (not certified under the current contract):");
+    for (const x of c.legacy ?? []) lines.push(...show(x));
     if (c.candidates!.length) lines.push("  Candidates (need refinement):");
     for (const x of c.candidates!) lines.push(...show(x), `      reasons: ${x.reasons.join(", ")}`);
     if (c.rejected!.length) lines.push("  Rejected:");
@@ -282,5 +323,6 @@ export function renderInspection(r: InspectionReport): string {
       );
     if (c.truncated) lines.push(`  … truncated; rerun with a larger --limit`);
   }
+  if (r.resultsTruncated) lines.push("", "More saved results exist than were read.");
   return lines.join("\n");
 }

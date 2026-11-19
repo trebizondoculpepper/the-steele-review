@@ -168,6 +168,73 @@ describe("inspectPost", () => {
     ).toBe(true);
   });
 
+  it("applies the limit to theme lists, keeps v1 claims as legacy and shows transcript time", async () => {
+    await content.write(
+      "theme-proposals/pub/post/many.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        post: { sourceType: "substack", ...post },
+        sourceVersion: sourceVersionFor(TEXT),
+        artifact,
+        proposals: [
+          { id: `theme-${"1".repeat(24)}`, title: "A" },
+          { id: `theme-${"2".repeat(24)}`, title: "B" },
+        ],
+        rejected: [],
+        catalogueContext: null,
+        extraction: {
+          schemaVersion: 1,
+          modelVersion: "m",
+          promptVersion: "p",
+          proposedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    );
+    await content.write(
+      "claim-extractions/pub/post/legacy.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        claims: [
+          {
+            claim: { statement: "Old unclassified claim" },
+            occurrence: {
+              passage: "q",
+              span: { start: 0, end: 1 },
+              transcriptTime: { startSeconds: 12, endSeconds: 15 },
+            },
+            kind: "assertion",
+            themeIds: [],
+            classification: "unclassified",
+          },
+        ],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const r = await inspectPost(content, post, { limit: 1 });
+    const themes = r.themeResults.find((t) => t.ref.endsWith("many.json"))!;
+    expect(themes.proposals).toHaveLength(1);
+    expect(themes).toMatchObject({ counts: { proposals: 2, rejected: 0 }, truncated: true });
+    const legacy = r.claimResults.find((c) => c.ref.endsWith("legacy.json"))!;
+    expect(legacy.accepted).toEqual([]);
+    expect(legacy.legacy?.[0].statement).toBe("Old unclassified claim");
+    const text = renderInspection(r);
+    expect(text).toContain("Legacy v1 claims");
+    expect(text).toContain("audio 12s–15s");
+    expect(text).toContain("showing 1 of 2 themes");
+  });
+
+  it("reads saved results beyond one listing page", async () => {
+    for (let i = 0; i < 205; i++)
+      await content.write(`claim-extractions/pub/post/x${String(i).padStart(3, "0")}.json`, "{}");
+    const r = await inspectPost(content, post);
+    expect(r.claimResults).toHaveLength(205);
+    expect(r.resultsTruncated).toBe(false);
+  }, 120_000);
+
   it("reports unreadable results instead of hiding them", async () => {
     await content.write("claim-extractions/pub/post/broken.json", "{not json");
     const r = await inspectPost(content, post);
