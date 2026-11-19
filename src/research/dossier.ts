@@ -19,7 +19,7 @@ import {
 
 export const DOSSIER_SCHEMA_VERSION = 1;
 
-const ThemeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/, "theme ID must be a lower-case slug");
+const ThemeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/, "theme ID must be a lower-case slug");
 const IsoDate = z.iso.datetime({ offset: true }).or(z.iso.date());
 
 export const DossierCitationSchema = z

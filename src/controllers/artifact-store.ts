@@ -86,8 +86,11 @@ export function assertArtifactPath(path: string): string {
  */
 export const REVISABLE_PREFIXES: readonly string[] = ["dossier/", "catalogue/"];
 
+/** Normalised claim records (claims/claim-<hex>.json) evolve as occurrences accumulate. */
+const REVISABLE_CLAIM_RECORD = /^claims\/claim-[0-9a-f]{32}\.json$/;
+
 export function isRevisablePath(path: string): boolean {
-  return REVISABLE_PREFIXES.some((p) => path.startsWith(p));
+  return REVISABLE_PREFIXES.some((p) => path.startsWith(p)) || REVISABLE_CLAIM_RECORD.test(path);
 }
 
 export function sha256(content: string): string {
