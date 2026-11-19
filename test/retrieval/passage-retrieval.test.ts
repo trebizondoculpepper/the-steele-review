@@ -307,6 +307,24 @@ describe.skipIf(!esUrl)("PassageRetriever with Elasticsearch", () => {
       expect(dated.passages.map((p) => p.postId)).toEqual(["meters"]);
 
       expect((await retriever.retrieve({ text: "towers", limit: 1 })).passages).toHaveLength(1);
+
+      // Strict upper bound and post exclusion are applied inside both searches.
+      const earlier = await retriever.retrieve({
+        text: "towers meters fees",
+        before: "2026-03-10T00:00:00Z",
+        excludePostIds: ["towers"],
+        publicationId: "pub-a",
+      });
+      expect(earlier.passages.map((p) => p.postId)).toEqual(["meters"]);
+      // Every fixture post is dated, so an undated-only search finds nothing.
+      expect((await retriever.retrieve({ text: "towers", undatedOnly: true })).passages).toEqual(
+        [],
+      );
+      const anyPublication = await retriever.retrieve({
+        text: "towers",
+        excludePostIds: ["towers"],
+      });
+      expect(anyPublication.passages.some((p) => p.postId === "towers")).toBe(false);
     } finally {
       for (const alias of [fulltext, store.indexName]) {
         await admin.indices.delete({ index: `${alias}-000001` }).catch(() => undefined);

@@ -42,6 +42,12 @@ export interface RetrievalQuery {
   /** Inclusive publication-date bounds (ISO 8601). */
   from?: string;
   to?: string;
+  /** Exclusive upper bound: only posts published strictly before this time. */
+  before?: string;
+  /** Posts to leave out entirely, e.g. the source post of a claim. */
+  excludePostIds?: string[];
+  /** Only posts without a publication date (ignores date bounds). */
+  undatedOnly?: boolean;
   limit?: number;
 }
 
@@ -99,6 +105,9 @@ const QuerySchema = z.object({
   publicationId: z.string().min(1).optional(),
   from: z.iso.datetime({ offset: true }).optional(),
   to: z.iso.datetime({ offset: true }).optional(),
+  before: z.iso.datetime({ offset: true }).optional(),
+  excludePostIds: z.array(z.string().min(1)).max(50).optional(),
+  undatedOnly: z.boolean().optional(),
   limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
 });
 
@@ -227,12 +236,17 @@ export class PassageRetriever {
   private filters(query: z.infer<typeof QuerySchema>, dateField: string, publicationField: string) {
     const filter: unknown[] = [];
     if (query.publicationId) filter.push({ term: { [publicationField]: query.publicationId } });
-    if (query.from || query.to) {
+    if (query.undatedOnly) {
+      filter.push({ bool: { must_not: [{ exists: { field: dateField } }] } });
+      return filter;
+    }
+    if (query.from || query.to || query.before) {
       filter.push({
         range: {
           [dateField]: {
             ...(query.from ? { gte: query.from } : {}),
             ...(query.to ? { lte: query.to } : {}),
+            ...(query.before ? { lt: query.before } : {}),
           },
         },
       });
@@ -250,6 +264,9 @@ export class PassageRetriever {
         bool: {
           must: [{ multi_match: { query: query.text, fields: ["title^2", "text"] } }],
           filter: this.filters(query, "publishedAt", "publicationId"),
+          ...(query.excludePostIds?.length
+            ? { must_not: [{ terms: { postId: query.excludePostIds } }] }
+            : {}),
         },
       },
       { size },
@@ -322,7 +339,26 @@ export class PassageRetriever {
       field: PASSAGE_VECTOR_FIELD,
       queryVector: vector,
       k,
-      ...(filter.length ? { filter: { bool: { filter } } } : {}),
+      ...(filter.length || query.excludePostIds?.length
+        ? {
+            filter: {
+              bool: {
+                filter,
+                ...(query.excludePostIds?.length
+                  ? {
+                      // With a publication, exclude the exact source IDs; without one,
+                      // exclude the post in any publication.
+                      must_not: query.excludePostIds.map((id) =>
+                        query.publicationId
+                          ? { term: { sourceId: `substack/${query.publicationId}/${id}` } }
+                          : { wildcard: { sourceId: { value: `substack/*/${id}` } } },
+                      ),
+                    }
+                  : {}),
+              },
+            },
+          }
+        : {}),
       excludeFields: [PASSAGE_VECTOR_FIELD],
     });
     const out: RetrievedPassage[] = [];
