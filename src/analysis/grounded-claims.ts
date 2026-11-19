@@ -182,6 +182,9 @@ export const ClaimRecordSchema = z
             postId: z.string(),
             kind: AssertionKindSchema,
             extraction: z.string(),
+            /** Exact source passage and speaker kind, so comparisons see context. */
+            passage: z.string().max(4000).optional(),
+            speakerKind: z.string().optional(),
             /**
              * Every extraction (commit:path) that produced this occurrence, oldest
              * first, so theme IDs accumulated from different results stay traceable
@@ -192,6 +195,31 @@ export const ClaimRecordSchema = z
           .strict(),
       )
       .max(100_000),
+    /**
+     * Set when this claim was found equivalent to an earlier one (#145): the
+     * earlier record is canonical and holds all occurrences and research
+     * links; this record stays readable as a redirect.
+     */
+    canonical: z
+      .string()
+      .regex(/^claim-[0-9a-f]{32}$/)
+      .optional(),
+    /** Claims merged into this canonical record, with the comparison evidence. */
+    equivalences: z
+      .array(
+        z
+          .object({
+            record: z.string(),
+            statement: z.string(),
+            reason: z.string(),
+            modelVersion: z.string(),
+            promptVersion: z.string(),
+            decidedAt: z.string(),
+          })
+          .strict(),
+      )
+      .max(10_000)
+      .optional(),
   })
   .strict();
 export type ClaimRecord = z.infer<typeof ClaimRecordSchema>;
@@ -529,7 +557,7 @@ export async function extractGroundedClaims(input: {
   };
 }
 
-async function upsertClaimRecord(
+export async function upsertClaimRecord(
   artifacts: GitArtifactStore,
   id: string,
   items: ClaimExtractionRecord["claims"],
@@ -550,6 +578,11 @@ async function upsertClaimRecord(
           themeIds: [],
           occurrences: [],
         };
+    // A redirected claim's occurrences belong to its canonical record.
+    if (current.canonical && current.canonical !== id) {
+      await upsertClaimRecord(artifacts, current.canonical, items, post, extractionRef);
+      return;
+    }
     const known = new Set(current.occurrences.map((o) => o.occurrenceId));
     const added = items.filter((c) => !known.has((c.occurrence as ClaimOccurrence).occurrenceId));
     // An occurrence re-extracted under a newer extraction (for example against
@@ -587,6 +620,8 @@ async function upsertClaimRecord(
           ...post,
           kind: c.kind,
           extraction: extractionRef,
+          passage: (c.occurrence as ClaimOccurrence).passage.slice(0, 4000),
+          speakerKind: (c.occurrence as ClaimOccurrence).speaker.kind,
         })),
       ],
     };
