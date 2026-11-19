@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -51,6 +51,8 @@ export interface ProviderResult {
 export interface TranscriptionProvider {
   readonly name: string;
   readonly model: string;
+  /** Maximum additional on-disk conversion/output scratch per job. */
+  readonly maxScratchBytes?: number;
   transcribe(
     input: { path: string; kind: MediaKind; durationSeconds?: number },
     signal: AbortSignal,
@@ -177,8 +179,13 @@ export class TranscriptionAdapter {
       timeoutMs: options.timeoutMs ?? 60 * 60 * 1000,
       retentionMs: options.retentionMs ?? 24 * 60 * 60 * 1000,
     });
-    if (this.config.maxBytes > this.config.maxWorkspaceBytes) {
-      throw new RangeError("maxBytes must not exceed maxWorkspaceBytes");
+    const scratch = options.provider.maxScratchBytes ?? 0;
+    if (
+      !Number.isSafeInteger(scratch) ||
+      scratch < 0 ||
+      this.config.maxBytes + scratch > this.config.maxWorkspaceBytes
+    ) {
+      throw new RangeError("download and provider scratch must fit maxWorkspaceBytes");
     }
     this.hosts = new Set(this.config.allowedHosts.map((h) => h.toLowerCase()));
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -270,12 +277,16 @@ export class TranscriptionAdapter {
     } catch {
       throw reason();
     }
-    const foreign = await this.foreignBytes();
-    if (foreign + this.reservedBytes + this.config.maxBytes > this.config.maxWorkspaceBytes) {
+    const foreign = await this.foreignBytes().catch(() => {
+      this.releaseSlot();
+      throw new TranscriptionError("workspace-full", true);
+    });
+    const reservationBytes = this.config.maxBytes + (this.options.provider.maxScratchBytes ?? 0);
+    if (foreign + this.reservedBytes + reservationBytes > this.config.maxWorkspaceBytes) {
       this.releaseSlot();
       throw new TranscriptionError("workspace-full", true);
     }
-    this.reservedBytes += this.config.maxBytes;
+    this.reservedBytes += reservationBytes;
     const jobName = `job-${randomUUID()}`;
     const jobDir = join(this.config.workspaceDir, jobName);
     // The concurrency slot covers download and transcription only; the disk
@@ -300,7 +311,7 @@ export class TranscriptionAdapter {
       released = true;
       this.ownJobs.delete(jobName);
       this.activeJobs.delete(jobName);
-      this.reservedBytes -= this.config.maxBytes;
+      this.reservedBytes -= reservationBytes;
     };
     this.ownJobs.set(jobName, release);
     this.activeJobs.add(jobName);
@@ -439,18 +450,33 @@ export class TranscriptionAdapter {
     let entries: string[];
     try {
       entries = await readdir(this.config.workspaceDir);
-    } catch {
-      return 0;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
     }
+    const bytes = async (path: string, depth = 0): Promise<number> => {
+      if (depth > 8) throw new TranscriptionError("workspace-full", true);
+      try {
+        const info = await lstat(path);
+        if (info.isSymbolicLink()) throw new TranscriptionError("workspace-full", true);
+        if (info.isFile()) return info.size;
+        if (!info.isDirectory()) throw new TranscriptionError("workspace-full", true);
+        let total = 0;
+        for (const file of await readdir(path)) {
+          total += await bytes(join(path, file), depth + 1);
+          if (total >= this.config.maxWorkspaceBytes) break;
+        }
+        return total;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+        throw error;
+      }
+    };
     let total = 0;
     for (const entry of entries) {
       if (!entry.startsWith("job-") || this.ownJobs.has(entry)) continue;
-      const dir = join(this.config.workspaceDir, entry);
-      try {
-        for (const file of await readdir(dir)) total += (await stat(join(dir, file))).size;
-      } catch {
-        // Removed concurrently; nothing to count.
-      }
+      total += await bytes(join(this.config.workspaceDir, entry));
+      if (total >= this.config.maxWorkspaceBytes) break;
     }
     return total;
   }

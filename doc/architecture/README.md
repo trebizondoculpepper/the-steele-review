@@ -25,3 +25,4 @@ See the [implementation preparation brief](11-implementation-brief.md) for the t
 See [failure handling](12-failure-handling.md) for retry ownership, error classification and JetStream delivery limits.
 
 The [milestone sequence](13-milestones.md) is the current acceptance scope. See [search indices and claim timelines](14-search-indices-and-timeline.md) for content, claims, research and passage boundaries. Technical investigations live in [doc/research](../research/README.md).
+See the [manual research and drafting demo](15-manual-research-demo.md) for the agreed three-post acceptance slice, epic hierarchy and small delivery contracts.
