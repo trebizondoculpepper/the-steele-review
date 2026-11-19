@@ -139,6 +139,27 @@ async function readOperation(
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
 
+class StageTimeout extends Error {}
+
+/**
+ * Bound a repository read. Git reads take no abort signal, so a stalled one
+ * is abandoned (the stage reports unavailable) and the CLI exits explicitly
+ * afterwards rather than waiting for it.
+ */
+async function bounded<T>(work: Promise<T>, ms = DEFAULT_CHECK_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StageTimeout()), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function readResults<T>(
   store: Store,
   prefix: string,
@@ -148,16 +169,18 @@ async function readResults<T>(
   unreadable: number;
   truncated: boolean;
 }> {
-  const paths = await store.list(prefix, MAX_RESULTS_PER_STAGE + 1);
+  const paths = await bounded(store.list(prefix, MAX_RESULTS_PER_STAGE + 1));
   const truncated = paths.length > MAX_RESULTS_PER_STAGE;
   const items: Array<{ ref: ArtifactRef; value: T }> = [];
   let unreadable = 0;
   for (const path of paths.slice(0, MAX_RESULTS_PER_STAGE)) {
     try {
-      const ref = await store.lookup(path);
+      const ref = await bounded(store.lookup(path));
       if (!ref) continue;
-      items.push({ ref, value: parse(await store.read(ref)) });
-    } catch {
+      items.push({ ref, value: parse(await bounded(store.read(ref))) });
+    } catch (error) {
+      // A stalled repository makes the whole stage unavailable, not "unreadable items".
+      if (error instanceof StageTimeout) throw error;
       unreadable++;
     }
   }
@@ -183,11 +206,14 @@ export async function tracePost(input: {
     try {
       // lookup() treats an unreadable repository as "no branch yet"; list()
       // fails instead, so probe it first to tell broken storage from absence.
-      await input.archive.list("substack", 1);
-      const ref = await input.archive.lookup(collectionArtifactPath(post));
+      const archiveStore = input.archive;
+      await bounded(archiveStore.list("substack", 1));
+      const ref = await bounded(archiveStore.lookup(collectionArtifactPath(post)));
       if (!ref) archive = { state: "not-recorded" };
       else {
-        const record = CollectionRecordSchema.parse(JSON.parse(await input.archive.read(ref)));
+        const record = CollectionRecordSchema.parse(
+          JSON.parse(await bounded(archiveStore.read(ref))),
+        );
         currentVersion = sourceVersionFor(record.text);
         archive = {
           state: "recorded",
@@ -209,7 +235,7 @@ export async function tracePost(input: {
   let index: PostTrace["index"] = { state: "not-configured" };
   if (input.search) {
     try {
-      const v = await input.search.fulltextSourceVersion(post.publicationId, post.postId);
+      const v = await bounded(input.search.fulltextSourceVersion(post.publicationId, post.postId));
       index =
         v === null
           ? { state: "not-recorded" }

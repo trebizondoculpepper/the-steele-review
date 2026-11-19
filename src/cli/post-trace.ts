@@ -89,4 +89,6 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-process.exitCode = await main(process.argv.slice(2));
+// Exit explicitly: a stalled repository read was abandoned after its
+// deadline, and its child process must not keep the command alive.
+process.exit(await main(process.argv.slice(2)));

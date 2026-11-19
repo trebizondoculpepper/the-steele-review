@@ -227,4 +227,15 @@ describe("tracePost", () => {
     expect(renderPostTrace(trace)).toContain("freshness unknown");
     expect(traceIncomplete(trace)).toBe(false);
   });
+  it("bounds stalled archive and content reads", async () => {
+    const stalled = {
+      list: () => new Promise<string[]>(() => {}),
+      lookup: () => new Promise<undefined>(() => {}),
+      read: () => new Promise<string>(() => {}),
+    };
+    const trace = await tracePost({ post, archive: stalled, content: stalled });
+    expect(trace.capture.archive).toEqual({ state: "unavailable" });
+    expect(trace.themes).toEqual({ state: "unavailable" });
+    expect(trace.claims).toEqual({ state: "unavailable" });
+  }, 30_000);
 });
