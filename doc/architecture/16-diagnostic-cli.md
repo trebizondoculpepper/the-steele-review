@@ -8,7 +8,7 @@ When troubleshooting requires an awkward manual inspection, add a reusable diagn
 
 These command names are proposed interfaces, not claims of implemented entry points. Each implementation must document its actual invocation and configuration requirements.
 
-- `status`: bounded read-only service checks and operation counts. Preserve partial results when a dependency fails.
+- `status`: bounded read-only service checks and operation counts. Preserve partial results when a dependency fails. Implemented as `npm run status -- [--json]` (`node dist/cli/status.js`), configured by the optional `STEELE_STATE_PATH`, `NATS_URL`/`NATS_TOKEN` and `ELASTICSEARCH_URL`/`ELASTICSEARCH_API_KEY` variables. It reports the state, broker and search checks independently with a bounded timeout, and no output field carries configuration.
 - `operation <operation-key>`: recorded state, attempts, sanitized failure code, lease expiry, logical artifact references and pending-event counts.
 - `post <publication-id> <post-id>`: recorded stage observations for a source, including version mismatches and missing or unavailable observations.
 

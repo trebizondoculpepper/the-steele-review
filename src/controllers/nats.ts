@@ -156,8 +156,13 @@ export class NatsController {
     private readonly token?: string,
   ) {}
 
-  /** Read-only connectivity probe; opens and closes its own connection. */
-  async check(): Promise<void> {
+  /**
+   * Read-only connectivity probe; opens and closes its own connection.
+   * Aborting closes the socket, so a broker that accepts a connection and then
+   * stops answering cannot keep a diagnostic invocation alive past its budget.
+   */
+  async check(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new NatsPublishError("cancelled", false);
     const connection = await connect({
       servers: this.servers,
       token: this.token,
@@ -165,10 +170,13 @@ export class NatsController {
       reconnect: false,
       name: "steele-connectivity",
     });
+    const close = () => connection.close().catch(() => undefined);
+    signal?.addEventListener("abort", close, { once: true });
     try {
       await connection.flush();
     } finally {
-      await connection.close();
+      signal?.removeEventListener("abort", close);
+      await close();
     }
   }
 
