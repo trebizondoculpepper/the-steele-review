@@ -176,9 +176,16 @@ describe("extractAndStoreThemes", () => {
 
   function index() {
     const docs = new Map<string, Record<string, unknown>>();
+    const versions = new Map<string, number>();
     const port: ThemeIndexPort = {
-      indexDocument: async (name, id, doc) => {
-        docs.set(`${name}/${id}`, doc as Record<string, unknown>);
+      indexDocument: async (name, id, doc, options) => {
+        const key = `${name}/${id}`;
+        const current = versions.get(key);
+        if (options?.version !== undefined && current !== undefined && options.version <= current) {
+          throw Object.assign(new Error("conflict"), { category: "stale-version" });
+        }
+        if (options?.version !== undefined) versions.set(key, options.version);
+        docs.set(key, doc as Record<string, unknown>);
       },
     };
     return { port, docs };
@@ -258,6 +265,38 @@ describe("extractAndStoreThemes", () => {
       });
     }
     expect(second).toMatchObject({ reused: true });
+  });
+
+  it("does not let an older extraction's late indexing replace newer themes", async () => {
+    const { port, docs } = index();
+    const textB = `${TEXT} New paragraph about synthetic meters.`;
+    const sourceB = { ...source, text: textB, sourceVersion: sourceVersionFor(textB) };
+    const older = provider([json([surveillance])]);
+    const newer = provider([json([consent])]);
+    // Version B is extracted and indexed first, then version A's delayed run indexes.
+    await extractAndStoreThemes({
+      extractor: new ThemeExtractor({
+        provider: newer.p,
+        now: () => new Date("2026-05-02T00:00:00Z"),
+      }),
+      artifacts,
+      index: port,
+      post,
+      source: sourceB,
+    });
+    await extractAndStoreThemes({
+      extractor: new ThemeExtractor({
+        provider: older.p,
+        now: () => new Date("2026-05-01T00:00:00Z"),
+      }),
+      artifacts,
+      index: port,
+      post,
+      source,
+    });
+    expect(docs.get(`${THEME_INDEX_V1}/substack:example-pub:a-post`)!.labels).toEqual([
+      "democratic consent",
+    ]);
   });
 
   it("stores nothing when extraction fails", async () => {

@@ -342,7 +342,12 @@ export const THEME_INDEX_MAPPING = {
 } as const;
 
 export interface ThemeIndexPort {
-  indexDocument(index: string, id: string, document: unknown): Promise<unknown>;
+  indexDocument(
+    index: string,
+    id: string,
+    document: unknown,
+    options?: { version?: number },
+  ): Promise<unknown>;
 }
 
 export interface PostIdentity {
@@ -431,7 +436,7 @@ export async function extractAndStoreThemes(input: {
     artifact = await input.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
   }
   const sourceId = `substack:${input.post.publicationId}:${input.post.postId}`;
-  await input.index.indexDocument(input.indexName ?? THEME_INDEX_V1, sourceId, {
+  const document = {
     sourceId,
     publicationId: input.post.publicationId,
     postId: input.post.postId,
@@ -448,6 +453,15 @@ export async function extractAndStoreThemes(input: {
     modelVersion: themeSet.extraction.modelVersion,
     promptVersion: themeSet.extraction.promptVersion,
     extractedAt: themeSet.extraction.extractedAt,
-  });
+  };
+  // Version index writes by extraction time: a delayed retry of an older
+  // extraction is rejected as stale instead of replacing newer themes.
+  try {
+    await input.index.indexDocument(input.indexName ?? THEME_INDEX_V1, sourceId, document, {
+      version: Date.parse(themeSet.extraction.extractedAt),
+    });
+  } catch (error) {
+    if ((error as { category?: string }).category !== "stale-version") throw error;
+  }
   return { status: "stored", themeSet, artifact, reused, incomplete, rejected };
 }
