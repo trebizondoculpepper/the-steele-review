@@ -7,7 +7,7 @@
  * Configuration (environment):
  *   NATS_URL, NATS_TOKEN?             broker
  *   STEELE_PUBLICATION_URL            public HTTPS publication base URL
- *   STEELE_PUBLICATION_ID             the publication this worker collects; others are terminated
+ *   STEELE_PUBLICATION_ID             the publication this worker collects; others are handed back
  *   STEELE_ARCHIVE_PATH               local path of the private artifact repository
  *   STEELE_ARCHIVE_REPOSITORY         logical archive name recorded in references
  *   STEELE_STATE_PATH                 absolute path of the SQLite state file
@@ -93,8 +93,10 @@ async function main(): Promise<number> {
       c.STEELE_COLLECT_STREAM,
       c.STEELE_COLLECT_CONSUMER,
       async (m) => {
-        // One collector serves one publication: a discovery for any other
-        // publication is not this worker's to collect.
+        // One collector serves one publication. A discovery for any other
+        // publication is handed back, never discarded: deployments give each
+        // publication its own collector consumer, so this only signals
+        // misconfiguration, and the warning makes it visible.
         let publicationId: string | undefined;
         try {
           publicationId = parseDiscoveryEvent(new TextDecoder().decode(m.data)).data?.publicationId;
@@ -102,10 +104,10 @@ async function main(): Promise<number> {
           publicationId = undefined; // malformed: the worker terminates it
         }
         if (publicationId !== undefined && publicationId !== c.STEELE_PUBLICATION_ID) {
-          console.log(
+          console.error(
             JSON.stringify({ event: "collection", outcome: "other-publication", publicationId }),
           );
-          m.term();
+          m.nak(10 * 60_000);
           return;
         }
         await worker.handle(m, abort.signal);
