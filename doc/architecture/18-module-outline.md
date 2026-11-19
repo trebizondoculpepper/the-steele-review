@@ -46,6 +46,12 @@ The dossier can include primary records, research syntheses, media coverage, and
 
 If Sonar errors or times out before returning a report, record the failure and notify the librarian immediately, without an automatic retry. The librarian continues with the material already in the dossier and records the gap in the writer’s brief.
 
+### Manual subject research command
+
+The [manual CLI](https://github.com/trebizondoculpepper/the-steele-review/issues/218) submits a subject and optional question or brief through the researcher job interface. A manual request has its own versioned input identity. Extraction-derived requests retain their exact post, analysis and claim references.
+
+The operator can create a subject research dossier or attach the saved result to an explicitly selected dossier using a controlled revision. Earlier evidence and provenance stay available. The command reports the job outcome and exact artifact references, and can run without the librarian, broker or writer. The first acceptance run uses fixtures to demonstrate both creation and attachment.
+
 ### Research request and writer handoff
 
 Include every accepted, source-grounded claim in the research handoff, with its saved claim reference, transcript passage and location, and proposed themes. Each request identifies the evidence question or gap and points to relevant material already in the corpus. The researcher can group related claims into shared searches. Keep each claim linked to the resulting evidence so the librarian can assess it individually.
