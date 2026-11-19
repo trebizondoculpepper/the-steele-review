@@ -85,6 +85,11 @@ describe("theme catalogue", () => {
     void ids2;
     expect(themeSlug("Chemtrails & 5G!")).toBe("chemtrails-and-5g");
     expect(themeSlug("Dépopulation")).toBe("depopulation");
+    const long = await catalogue.register([
+      { name: "one two three four five six seven", definition: "a", aliases: [], origin: "seed" },
+      { name: "one two three four five six eight", definition: "b", aliases: [], origin: "seed" },
+    ]);
+    expect(long.ids[0]).not.toBe(long.ids[1]);
     expect(themeSlug("人口削減")).toMatch(/^theme-[0-9a-f]{12}$/);
 
     // An uncertain proposal with a colliding name stays separate, idempotently.

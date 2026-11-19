@@ -98,9 +98,26 @@ export function themeSlug(name: string): string {
   return `theme-${createHash("sha256").update(normalised).digest("hex").slice(0, 12)}`;
 }
 
+/**
+ * Full-length name normalisation for identity matching: like the display
+ * label normaliser but never truncated, so names differing only after the
+ * sixth word or 60th character stay distinct.
+ */
+export function identityName(name: string): string {
+  return name
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .map((w) => w.replace(/^-+|-+$/g, ""))
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** Normalised names and aliases of a theme, for exact (never fuzzy) reuse. */
 function namesOf(t: Pick<CatalogueTheme, "name" | "aliases">): string[] {
-  return [t.name, ...t.aliases].map(normaliseThemeLabel).filter(Boolean);
+  return [t.name, ...t.aliases].map(identityName).filter(Boolean);
 }
 
 export class ThemeCatalogueStore {
@@ -416,7 +433,7 @@ export async function detectThemes(input: {
     const proposed: ThemeDetection["proposed"] = [];
     const seenNames = new Set<string>();
     output.proposed.forEach((p, index) => {
-      const name = normaliseThemeLabel(p.name);
+      const name = identityName(p.name);
       if (!name || !themeSlug(p.name))
         return rejected.push({ kind: "proposed", index, reason: "invalid-name" });
       if (seenNames.has(name))
