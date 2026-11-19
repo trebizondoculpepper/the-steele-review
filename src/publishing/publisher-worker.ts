@@ -187,7 +187,7 @@ export class PublisherWorker {
       return { kind: "deferred", reason: "uncertain" };
     }
 
-    const wait = this.rateLimitWait();
+    const wait = this.rateLimitWait(request.key);
     if (wait > 0) {
       message.nak(wait);
       return { kind: "deferred", reason: "rate-limited" };
@@ -393,6 +393,16 @@ export class PublisherWorker {
         // Another article's uncertain outcome may already be a publication
         // whose time is unknown: admit nothing new until read-back settles it.
         if (pub?.status === "uncertain" && op.key !== exceptKey) unsettled = true;
+        // So may an interrupted attempt that saved a draft and may have
+        // published before stopping (not a settled or permanent failure).
+        if (
+          pub?.status === "draft-saved" &&
+          op.key !== exceptKey &&
+          op.status !== "completed" &&
+          !op.exhausted
+        ) {
+          unsettled = true;
+        }
       }
       after = page[page.length - 1]!.key;
     }

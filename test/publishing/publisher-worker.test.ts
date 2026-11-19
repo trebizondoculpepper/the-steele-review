@@ -315,6 +315,34 @@ describe("PublisherWorker smoke test", () => {
     expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
   });
 
+  it("holds other articles while an interrupted publish may already be live", async () => {
+    const w = worker({ minIntervalMs: 60 * 60_000 });
+    const a = await approved("p1");
+    const key = `publish:example-destination:drafts:${a.data.draft.commit}:${a.data.draft.path}`;
+    const dest = new SubstackDestinationController(client);
+    const held = operations.claim(key, "crashed", 1);
+    if (held.kind !== "claimed") throw new Error("claim");
+    operations.recordPublicationIntent(held.claim, { hash: a.data.draft.hash, ref: a.data.draft });
+    const { draftId } = await dest.createDraft({
+      title: "t",
+      bodyMarkdown: "b",
+      sourceUrl: "https://pub.substack.com/p/p1",
+    });
+    operations.saveDestinationDraft(held.claim, draftId);
+    await dest.publish(draftId); // live, but the process stopped before confirming
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+    // A's own retry reads it back and confirms; B then waits for the interval.
+    expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+  });
+
   it("applies the frequency limit between publications", async () => {
     const w = worker({ minIntervalMs: 60 * 60_000 });
     expect(await w.handle(message(await approved("p1")))).toMatchObject({ kind: "published" });
