@@ -178,6 +178,12 @@ describe("draftFromBrief", () => {
             citationIds: ["E2"],
             uncertainty: "low",
           },
+          {
+            claimId: towers.id,
+            explanation: "Undeclared [E2] in prose.",
+            citationIds: ["E1"],
+            uncertainty: "low",
+          },
           good.errors[0],
         ],
       },
@@ -189,6 +195,7 @@ describe("draftFromBrief", () => {
         { index: 0, reason: "evidence-gap-claim" },
         { index: 1, reason: "unknown-claim" },
         { index: 2, reason: "citation-not-for-claim" },
+        { index: 3, reason: "citation-not-for-claim" },
       ],
     });
     if (r.kind === "drafted") expect(r.markdown).not.toContain("Invented support");
