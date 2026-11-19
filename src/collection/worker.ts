@@ -173,7 +173,16 @@ export class CollectionWorker {
       // An earlier attempt may have committed the artifact and crashed before
       // recording completion: finish with that durable record rather than
       // fetching the source again.
-      const committed = await this.config.store.existing(item).catch(() => undefined);
+      let committed: Awaited<ReturnType<CollectionStore["existing"]>>;
+      try {
+        committed = await this.config.store.existing(item);
+      } catch {
+        // A lookup failure is not proof of absence: refetching could replace
+        // the committed record. Release the claim and retry later.
+        this.config.store.fail(claim, "archive-lookup-failed", true);
+        message.nak(this.retryDelayMs);
+        return { result: "retry", item };
+      }
       if (committed) {
         try {
           await this.config.store.commit(claim, committed.record, (artifact) =>

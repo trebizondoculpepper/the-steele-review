@@ -246,6 +246,17 @@ describe("CollectionWorker", () => {
     });
   });
 
+  it("retries instead of refetching when the archive lookup fails", async () => {
+    const { worker, store, collectCalls } = setup({});
+    store.existing = async () => {
+      throw new Error("git read failed");
+    };
+    const m = message();
+    expect(await worker.handle(m)).toBe("retry");
+    expect(m.naks).toHaveLength(1);
+    expect(collectCalls()).toBe(0);
+  });
+
   it("records unavailable content visibly and does not retry it", async () => {
     const { worker, operations } = setup({
       collect: () => ({ kind: "unavailable", item, reason: "restricted" }),
