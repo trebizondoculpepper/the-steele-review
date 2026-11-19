@@ -1,5 +1,7 @@
 import { lookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { Readable } from "node:stream";
 import { z } from "zod";
 import { readCredential, type CredentialSource } from "../config/credentials.js";
 import {
@@ -28,7 +30,7 @@ export type WebAdapterErrorCode =
   | "bad-response"
   | "too-large"
   | "not-public"
-  | "too-many-redirects"
+  | "redirected"
   | "unsupported-content"
   | "not-found"
   | "timeout"
@@ -199,8 +201,14 @@ export function kagiFromEnv(
 export interface PageFetcherConfig {
   timeoutMs?: number;
   maxBytes?: number;
-  maxRedirects?: number;
-  fetch?: typeof fetch;
+  /**
+   * Transport override for tests. The default transport resolves the host
+   * itself and connects only to the validated public addresses.
+   */
+  fetch?: (
+    url: string,
+    init: { headers: Record<string, string>; signal: AbortSignal },
+  ) => Promise<Response>;
   /** Resolves a hostname to its addresses; injectable for tests. */
   resolve?: (hostname: string) => Promise<string[]>;
   userAgent?: string;
@@ -210,77 +218,125 @@ const defaultResolve = async (hostname: string) =>
   (await lookup(hostname, { all: true, verbatim: true })).map((a) => a.address);
 
 /** True when an IP literal is publicly routable by the same rules as URLs. */
-function isPublicAddress(address: string): boolean {
+export function isPublicAddress(address: string): boolean {
   const host = isIP(address) === 6 ? `[${address}]` : address;
   return isPublicHttpsUrl(`https://${host}/`);
 }
 
 /**
- * Fetch one public HTTPS page as plain text. Every hop, including redirects,
- * must be a public HTTPS URL whose hostname resolves only to public
- * addresses. HTML is converted to text with link destinations kept; plain
- * text is returned as is; anything else is refused.
+ * GET over node:https whose DNS lookup is the validation itself: the socket
+ * can only connect to an address that was checked as public in the same
+ * lookup, so a second resolution cannot rebind the host to a private address.
+ */
+function pinnedTransport(resolve: (hostname: string) => Promise<string[]>) {
+  return (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) =>
+    new Promise<Response>((resolveResponse, reject) => {
+      const pinnedLookup = (
+        hostname: string,
+        options: { all?: boolean },
+        callback: (
+          err: Error | null,
+          address: string | Array<{ address: string; family: number }>,
+          family?: number,
+        ) => void,
+      ) => {
+        resolve(hostname).then(
+          (addresses) => {
+            const ok = addresses.filter(isPublicAddress);
+            if (ok.length === 0 || ok.length !== addresses.length) {
+              return callback(new WebAdapterError("not-public"), "", 4);
+            }
+            const entries = ok.map((address) => ({ address, family: isIP(address) }));
+            if (options.all) callback(null, entries);
+            else callback(null, entries[0].address, entries[0].family);
+          },
+          (err: Error) => callback(err, "", 4),
+        );
+      };
+      const req = httpsRequest(url, {
+        method: "GET",
+        headers: init.headers,
+        signal: init.signal,
+        lookup: pinnedLookup as never,
+      });
+      req.on("response", (res) => {
+        const headers = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (typeof v === "string") headers.set(k, v);
+          else if (Array.isArray(v)) headers.set(k, v.join(", "));
+        }
+        const status = res.statusCode ?? 502;
+        const body =
+          status === 204 || status === 304
+            ? null
+            : (Readable.toWeb(res) as ReadableStream<Uint8Array>);
+        resolveResponse(new Response(body, { status, headers }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+}
+
+/**
+ * Fetch one public HTTPS page as plain text. The URL must be public HTTPS and
+ * its host must resolve only to public addresses; the default transport
+ * connects to exactly those addresses. Redirects are refused rather than
+ * followed: gap research cites the URL it requested, so the text must come
+ * from that URL. HTML is converted to text with link destinations kept;
+ * plain text is returned as is; anything else is refused.
  */
 export class PublicPageFetcher implements PageFetcher {
   private readonly timeoutMs: number;
   private readonly maxBytes: number;
-  private readonly maxRedirects: number;
-  private readonly fetchImpl: typeof fetch;
   private readonly resolve: (hostname: string) => Promise<string[]>;
+  private readonly transport: NonNullable<PageFetcherConfig["fetch"]>;
 
   constructor(private readonly config: PageFetcherConfig = {}) {
     this.timeoutMs = config.timeoutMs ?? 20_000;
     this.maxBytes = config.maxBytes ?? 3 * 1024 * 1024;
-    this.maxRedirects = config.maxRedirects ?? 3;
-    this.fetchImpl = config.fetch ?? fetch;
     this.resolve = config.resolve ?? defaultResolve;
+    this.transport = config.fetch ?? pinnedTransport(this.resolve);
   }
 
   async fetch(url: string, signal: AbortSignal): Promise<FetchedPage> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = AbortSignal.any([signal, timeout]);
-    let current = url;
-    for (let hop = 0; ; hop++) {
-      await this.assertPublic(current);
-      let response: Response;
-      try {
-        response = await this.fetchImpl(current, {
-          headers: {
-            accept: "text/html,text/plain;q=0.9",
-            "user-agent": this.config.userAgent ?? "steele-review-research/1",
-          },
-          signal: combined,
-          redirect: "manual",
-        });
-      } catch {
-        throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
-      }
-      if (response.status >= 300 && response.status < 400) {
-        await response.body?.cancel().catch(() => undefined);
-        const location = response.headers.get("location");
-        if (!location || hop >= this.maxRedirects) throw new WebAdapterError("too-many-redirects");
-        current = new URL(location, current).toString();
-        continue;
-      }
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new WebAdapterError(statusCode(response.status), response.status);
-      }
-      const type = (response.headers.get("content-type") ?? "").toLowerCase();
-      const html = type.includes("html");
-      if (!html && !type.startsWith("text/plain")) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new WebAdapterError("unsupported-content");
-      }
-      let body: string;
-      try {
-        body = await readBounded(response, this.maxBytes);
-      } catch (error) {
-        if (error instanceof WebAdapterError) throw error;
-        throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
-      }
-      return html ? pageFromHtml(current, body) : { url: current, title: current, text: body };
+    await this.assertPublic(url);
+    let response: Response;
+    try {
+      response = await this.transport(url, {
+        headers: {
+          accept: "text/html,text/plain;q=0.9",
+          "user-agent": this.config.userAgent ?? "steele-review-research/1",
+        },
+        signal: combined,
+      });
+    } catch (error) {
+      if (error instanceof WebAdapterError) throw error;
+      throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
     }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError("redirected", response.status);
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError(statusCode(response.status), response.status);
+    }
+    const type = (response.headers.get("content-type") ?? "").toLowerCase();
+    const html = type.includes("html");
+    if (!html && !type.startsWith("text/plain")) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError("unsupported-content");
+    }
+    let body: string;
+    try {
+      body = await readBounded(response, this.maxBytes);
+    } catch (error) {
+      if (error instanceof WebAdapterError) throw error;
+      throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
+    }
+    return html ? pageFromHtml(url, body) : { url, title: url, text: body };
   }
 
   private async assertPublic(url: string): Promise<void> {

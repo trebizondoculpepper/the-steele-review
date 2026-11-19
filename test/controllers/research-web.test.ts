@@ -90,11 +90,11 @@ describe("PublicPageFetcher", () => {
     <body><nav>menu</nav><p>Aerosols <a href="https://src.example/p">study</a>.</p></body></html>`;
   const fetcher = (responses: Record<string, () => Response>, dns: Record<string, string[]> = {}) =>
     new PublicPageFetcher({
-      fetch: (async (url: string) => {
-        const r = responses[String(url)];
+      fetch: async (url: string) => {
+        const r = responses[url];
         if (!r) throw new TypeError("no route");
         return r();
-      }) as typeof fetch,
+      },
       resolve: async (h) => dns[h] ?? ["93.184.216.34"],
     });
 
@@ -115,37 +115,39 @@ describe("PublicPageFetcher", () => {
     expect(page.text).not.toContain("menu");
   });
 
-  it("follows public redirects but refuses private targets at any hop", async () => {
+  it("refuses redirects and private hosts so cited text comes from the requested URL", async () => {
     const f = fetcher(
       {
         "https://a.example/": () =>
           new Response(null, { status: 302, headers: { location: "https://b.example/" } }),
-        "https://b.example/": () =>
-          new Response("plain", { headers: { "content-type": "text/plain" } }),
-        "https://c.example/": () =>
-          new Response(null, { status: 301, headers: { location: "https://127.0.0.1/" } }),
       },
-      { "rebind.example": ["192.168.1.5"] },
+      { "rebind.example": ["192.168.1.5"], "mixed.example": ["93.184.216.34", "10.0.0.2"] },
     );
-    expect((await f.fetch("https://a.example/", live())).url).toBe("https://b.example/");
-    expect((await failure(f.fetch("https://c.example/", live()))).code).toBe("not-public");
+    expect((await failure(f.fetch("https://a.example/", live()))).code).toBe("redirected");
     expect((await failure(f.fetch("https://rebind.example/", live()))).code).toBe("not-public");
+    expect((await failure(f.fetch("https://mixed.example/", live()))).code).toBe("not-public");
+    expect((await failure(f.fetch("https://127.0.0.1/", live()))).code).toBe("not-public");
     expect((await failure(f.fetch("http://a.example/", live()))).code).toBe("not-public");
   });
 
-  it("bounds redirects, size and content type", async () => {
-    const loop = fetcher({
-      "https://l.example/": () =>
-        new Response(null, { status: 302, headers: { location: "https://l.example/" } }),
+  it("pins the default transport to addresses validated at connect time", async () => {
+    // First resolution (pre-check) is public; the connect-time resolution
+    // rebinds to loopback and must be refused before any socket opens.
+    let calls = 0;
+    const f = new PublicPageFetcher({
+      timeoutMs: 5_000,
+      resolve: async () => (calls++ === 0 ? ["93.184.216.34"] : ["127.0.0.1"]),
     });
-    expect((await failure(loop.fetch("https://l.example/", live()))).code).toBe(
-      "too-many-redirects",
-    );
+    expect((await failure(f.fetch("https://rebinding.example/", live()))).code).toBe("not-public");
+    expect(calls).toBe(2);
+  });
+
+  it("bounds size and content type", async () => {
     const big = new PublicPageFetcher({
       maxBytes: 10,
       resolve: async () => ["93.184.216.34"],
-      fetch: (async () =>
-        new Response("x".repeat(100), { headers: { "content-type": "text/plain" } })) as never,
+      fetch: async () =>
+        new Response("x".repeat(100), { headers: { "content-type": "text/plain" } }),
     });
     expect((await failure(big.fetch("https://big.example/", live()))).code).toBe("too-large");
     const pdf = fetcher({
