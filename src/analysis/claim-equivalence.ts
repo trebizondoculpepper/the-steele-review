@@ -278,16 +278,35 @@ async function copyOccurrences(
     try {
       await revise(artifacts, target, (t) => {
         if (t.canonical) throw new TargetRedirected();
+        const byId = new Map(source.record.occurrences.map((o) => [o.occurrenceId, o]));
         const known = new Set(t.occurrences.map((o) => o.occurrenceId));
         const added = source.record.occurrences.filter((o) => !known.has(o.occurrenceId));
+        // A re-extraction with a reworded summary produces a different claim
+        // record but the same occurrence identity (post, source version and
+        // span). Keep one occurrence, but merge both extraction histories so
+        // every accumulated theme link stays traceable to the extraction that
+        // supplied it; dropping the source occurrence would lose that evidence.
+        const merged = t.occurrences.map((o) => {
+          const other = byId.get(o.occurrenceId);
+          if (!other) return o;
+          const before = o.extractions ?? [o.extraction];
+          const extractions = [
+            ...new Set([...before, ...(other.extractions ?? [other.extraction])]),
+          ].slice(-100);
+          const unchanged =
+            extractions.length === before.length &&
+            extractions.every((ref, index) => ref === before[index]);
+          return unchanged ? o : { ...o, extractions };
+        });
+        const refreshed = merged.some((o, index) => o !== t.occurrences[index]);
         const themeIds = [...new Set([...t.themeIds, ...source.record.themeIds])].sort();
         const already = (t.equivalences ?? []).some((e) => e.record === from);
-        if (added.length === 0 && already && themeIds.length === t.themeIds.length)
+        if (added.length === 0 && !refreshed && already && themeIds.length === t.themeIds.length)
           return undefined;
         return {
           ...t,
           themeIds,
-          occurrences: [...t.occurrences, ...added],
+          occurrences: [...merged, ...added],
           equivalences: already
             ? t.equivalences
             : [
@@ -312,15 +331,28 @@ async function copyOccurrences(
   throw new Error("redirect chain too long");
 }
 
-/** Follow redirects to the current canonical record (bounded). */
+/** Guard against a corrupted or self-referential chain, never a silent stop. */
+const MAX_REDIRECT_HOPS = 1_000;
+
+/**
+ * Follow redirects to the current canonical record.
+ *
+ * The walk always reaches the end of the chain and fails loudly on a cycle or
+ * an implausible length: returning an intermediate record would let recovery
+ * compare a pending merge against the wrong target and silently skip its
+ * occurrences.
+ */
 async function canonicalOf(artifacts: GitArtifactStore, id: string): Promise<string> {
   let current = id;
-  for (let hops = 0; hops < 20; hops++) {
+  const seen = new Set<string>([id]);
+  for (let hops = 0; ; hops++) {
     const next = (await readRecord(artifacts, current))?.record.canonical;
     if (!next || next === current) return current;
+    if (seen.has(next)) throw new Error("claim redirect cycle");
+    if (hops >= MAX_REDIRECT_HOPS) throw new Error("redirect chain too long");
+    seen.add(next);
     current = next;
   }
-  return current;
 }
 
 export async function resolveClaimEquivalence(input: {
