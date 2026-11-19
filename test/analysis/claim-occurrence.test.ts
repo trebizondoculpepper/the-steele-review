@@ -83,6 +83,17 @@ describe("createClaimOccurrence", () => {
     ).toThrow("does not occur");
   });
 
+  it("requires the speaker name as a whole word, not inside a longer one", () => {
+    const claim = claimFor(QUOTED);
+    expect(() =>
+      createClaimOccurrence({
+        claim,
+        source,
+        speaker: { kind: "quoted", name: "Ex", evidence: { start: 0, end: QUOTED.length } },
+      }),
+    ).toThrow("does not occur");
+  });
+
   it("never names a speaker from publication ownership alone", () => {
     const claim = claimFor(VOICE);
     expect(() =>

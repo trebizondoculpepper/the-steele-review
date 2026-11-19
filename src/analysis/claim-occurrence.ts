@@ -162,6 +162,15 @@ export interface OccurrenceSource extends ClaimSource {
   }>;
 }
 
+/** True when `name` occurs in `text` not embedded in a longer word or number. */
+function containsWholeMention(text: string, name: string): boolean {
+  const isWord = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    if (!isWord(text[at - 1]) && !isWord(text[at + name.length])) return true;
+  }
+  return false;
+}
+
 function assertSpeakerEvidence(speaker: Speaker, text: string): void {
   if (speaker.name === undefined) return;
   if (speaker.kind === "author-voice" || speaker.kind === "unknown") {
@@ -171,7 +180,7 @@ function assertSpeakerEvidence(speaker: Speaker, text: string): void {
   if (!evidence || evidence.end <= evidence.start || evidence.end > text.length) {
     throw new InvalidClaimOccurrenceError("a speaker name needs an attribution span in the source");
   }
-  if (!text.slice(evidence.start, evidence.end).includes(speaker.name)) {
+  if (!containsWholeMention(text.slice(evidence.start, evidence.end), speaker.name)) {
     throw new InvalidClaimOccurrenceError("speaker name does not occur in the attribution span");
   }
 }
