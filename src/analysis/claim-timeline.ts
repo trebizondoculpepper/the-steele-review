@@ -46,7 +46,9 @@ export const TimelineFilterSchema = z
   .refine((f) => [f.groupingKey, f.claimId, f.statement, f.theme].some(Boolean), {
     message: "a claim, grouping, statement or theme is required",
   })
-  .refine((f) => !f.from || !f.to || f.from <= f.to, { message: "from must not be after to" });
+  .refine((f) => !f.from || !f.to || Date.parse(f.from) <= Date.parse(f.to), {
+    message: "from must not be after to",
+  });
 export type TimelineFilter = z.input<typeof TimelineFilterSchema>;
 
 export interface OccurrenceSearchPort {
@@ -135,7 +137,8 @@ export async function queryClaimTimeline(
 
   const buckets = new Map<string, { occurrences: number; posts: Set<string> }>();
   for (const o of dated) {
-    const key = o.sourcePublishedAt!.slice(0, f.bucket === "year" ? 4 : 7);
+    // Buckets are UTC regardless of the stored offset.
+    const key = new Date(o.sourcePublishedAt!).toISOString().slice(0, f.bucket === "year" ? 4 : 7);
     const b = buckets.get(key) ?? { occurrences: 0, posts: new Set<string>() };
     b.occurrences++;
     b.posts.add(postKey(o));

@@ -143,6 +143,17 @@ describe("queryClaimTimeline", () => {
     ).rejects.toThrow();
   });
 
+  it("compares bounds as instants and buckets in UTC", async () => {
+    const { port } = fake([occ({ post: "late", publishedAt: "2026-01-31T23:30:00-02:00" })]);
+    // 10:00+05:00 is 05:00Z, before 06:00Z, though the strings sort the other way.
+    const t = await queryClaimTimeline(port, {
+      statement: STATEMENT,
+      from: "2026-01-01T10:00:00+05:00",
+      to: "2026-01-01T06:00:00Z",
+    });
+    expect(t.buckets).toEqual([{ bucket: "2026-02", occurrences: 1, distinctPosts: 1 }]);
+  });
+
   it("skips documents that do not match the occurrence contract", async () => {
     const t = await queryClaimTimeline(fake([fixtures[0], { bogus: true }]).port, {
       statement: STATEMENT,
