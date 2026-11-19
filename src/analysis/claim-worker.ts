@@ -80,6 +80,13 @@ export interface ClaimWorkerConfig {
   retryDelayMs?: number;
 }
 
+interface StoredClaimSet {
+  status: "complete" | "incomplete";
+  claims: unknown[];
+  modelVersion: string;
+  promptVersion: string;
+}
+
 const short = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 const toReference = (ref: ArtifactRef): ArtifactReference => ({
@@ -131,7 +138,9 @@ export class ClaimExtractionWorker {
     }
 
     const sourceVersion = sourceVersionFor(record.text);
-    const key = `claims:${sourceVersion}:${this.config.modelVersion}:${this.config.promptVersion}`;
+    // Post identity is part of the key: identical text in two posts is two operations.
+    const key = `claims:${data.publicationId}/${data.postId}:${sourceVersion}:${this.config.modelVersion}:${this.config.promptVersion}`;
+    const path = `claims/${data.publicationId}/${data.postId}/${sourceVersion.slice(7, 39)}-${short(`${this.config.modelVersion}\n${this.config.promptVersion}`)}.json`;
     if (!record.complete) {
       this.config.operations.recordPermanentFailure(key, "incomplete-source");
       await message.ack();
@@ -154,6 +163,18 @@ export class ClaimExtractionWorker {
       return "busy";
     }
     if (claimed.kind === "exhausted") {
+      // The final attempt may have committed the claim set and crashed before
+      // completing: finish from that artifact instead of abandoning it.
+      const committed = await this.config.artifacts.lookup(path).catch(() => undefined);
+      if (committed) {
+        const stored = JSON.parse(await this.config.artifacts.read(committed)) as StoredClaimSet;
+        this.config.operations.reconcileCompleted(key, { claimsArtifact: toReference(committed) }, [
+          this.handoffFor(event.id, data, committed, stored),
+        ]);
+        await message.ack();
+        await this.dispatchPending();
+        return "already-extracted";
+      }
       await message.ack();
       return "exhausted";
     }
@@ -183,7 +204,6 @@ export class ClaimExtractionWorker {
       promptVersion: result.promptVersion,
       claims: result.claims,
     };
-    const path = `claims/${data.publicationId}/${data.postId}/${sourceVersion.slice(7, 39)}-${short(`${result.modelVersion}\n${result.promptVersion}`)}.json`;
     let artifact: ArtifactRef;
     let stored = claimSet;
     try {
@@ -203,6 +223,24 @@ export class ClaimExtractionWorker {
       stored = JSON.parse(await this.config.artifacts.read(existing)) as typeof claimSet;
     }
 
+    const pending = this.handoffFor(event.id, data, artifact, stored);
+    this.config.operations.complete(claim, { claimsArtifact: toReference(artifact) }, [pending]);
+    await message.ack();
+    await this.dispatchPending();
+    return "extracted";
+  }
+
+  private handoffFor(
+    causationId: string,
+    data: {
+      publicationId: string;
+      postId: string;
+      ingestionReason: ClaimsExtractedData["ingestionReason"];
+      artifact: ArtifactReference;
+    },
+    artifact: ArtifactRef,
+    stored: StoredClaimSet,
+  ): PendingEventInput {
     const handoff = new CloudEvent<ClaimsExtractedData>(
       {
         specversion: "1.0",
@@ -212,7 +250,7 @@ export class ClaimExtractionWorker {
         time: new Date().toISOString(),
         subject: `substack/${data.publicationId}/${data.postId}`,
         datacontenttype: "application/json",
-        causationid: event.id,
+        causationid: causationId,
         data: ClaimsExtractedDataSchema.parse({
           publicationId: data.publicationId,
           postId: data.postId,
@@ -227,15 +265,11 @@ export class ClaimExtractionWorker {
       },
       true,
     );
-    const pending: PendingEventInput = {
+    return {
       eventId: handoff.id,
       subject: CLAIMS_EXTRACTED_SUBJECT,
       payload: JSON.stringify(handoff.toJSON()),
     };
-    this.config.operations.complete(claim, { claimsArtifact: toReference(artifact) }, [pending]);
-    await message.ack();
-    await this.dispatchPending();
-    return "extracted";
   }
 
   /** Publish pending handoff events; failures stay pending with the same ID. */

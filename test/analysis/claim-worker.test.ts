@@ -163,6 +163,65 @@ describe("ClaimExtractionWorker", () => {
     expect(published).toHaveLength(1);
   });
 
+  it("extracts identical text in two different posts separately", async () => {
+    const { worker, calls, published } = setup([goodClaims, goodClaims]);
+    expect(await worker.handle(await message())).toBe("extracted");
+    const otherPost = {
+      ...record(),
+      item: { ...item, postId: "b-post", url: "https://example-pub.substack.com/p/b-post" },
+    };
+    const ref = await artifacts.write(
+      "substack/example-pub/b-post/collected.json",
+      `${JSON.stringify(otherPost)}\n`,
+    );
+    const event = createTextReadyEvent({
+      publicationId: "example-pub",
+      postId: "b-post",
+      url: "https://example-pub.substack.com/p/b-post",
+      ingestionReason: "live",
+      artifact: {
+        repository: ref.repository,
+        commit: ref.commit,
+        path: ref.path,
+        hash: `sha256:${ref.sha256}`,
+      },
+      acquisitionMethod: "supplied-transcript",
+      complete: true,
+    });
+    const m = await message();
+    m.data = new TextEncoder().encode(JSON.stringify(event.toJSON()));
+    expect(await worker.handle(m)).toBe("extracted");
+    expect(calls).toHaveLength(2);
+    expect(published.map((p) => JSON.parse(p.body).data.postId)).toEqual(["a-post", "b-post"]);
+  });
+
+  it("finishes from a claim set committed by a final attempt that crashed", async () => {
+    // First run commits and completes; then simulate the crash by marking the
+    // operation exhausted without completion and running again.
+    const { worker, published } = setup([goodClaims]);
+    expect(await worker.handle(await message())).toBe("extracted");
+    const [first] = published.splice(0);
+    const key = [
+      ...(
+        operations as unknown as { db: { prepare(s: string): { all(): Array<{ key: string }> } } }
+      ).db
+        .prepare("SELECT key FROM operations WHERE key LIKE 'claims:%'")
+        .all(),
+    ][0]!.key;
+    (operations as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
+      .prepare("UPDATE operations SET status = 'failed', artifact = NULL WHERE key = ?")
+      .run(key);
+    const again = setup([]);
+    const m = await message(record(), "substack/example-pub/a-post/again.json");
+    expect(await again.worker.handle(m)).toBe("already-extracted");
+    expect(m.acks).toBe(1);
+    expect(operations.claim(key, "x", 1_000).kind).toBe("completed");
+    expect(again.calls).toHaveLength(0);
+    expect(JSON.parse(again.published[0]!.body).data.claimsArtifact).toEqual(
+      JSON.parse(first!.body).data.claimsArtifact,
+    );
+  });
+
   it("stores schema-rejected claims as an explicit incomplete result", async () => {
     const invented = JSON.stringify({
       claims: [
