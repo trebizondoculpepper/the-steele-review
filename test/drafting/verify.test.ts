@@ -241,6 +241,13 @@ describe("verifyDraft", () => {
     expect(checkDraftReferences(md, crlf)).toEqual([]);
   });
 
+  it("reports a malformed source entry instead of skipping it", () => {
+    const http = markdown.replace("https://example.org/survey", "http://example.org/survey");
+    expect(checkDraftReferences(http, brief).map((i) => i.problem)).toEqual([
+      "This source entry is malformed and cannot be checked against the brief.",
+    ]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -391,6 +398,35 @@ describe("VerificationWorker", () => {
     });
     expect(again.calls).toHaveLength(0);
     expect(operations.duePendingEvents(10, DRAFT_VERIFIED_SUBJECT)).toHaveLength(1);
+  });
+
+  it("rejects stale metadata before claiming the verification", async () => {
+    const worker = new VerificationWorker({
+      artifacts,
+      verifier: verifier([]).p,
+      operations,
+      owner: "v",
+    });
+    const staleMeta = await artifacts.write(
+      "drafts/pub/p/stale.json",
+      `${JSON.stringify({ ...metadata, draftHash: h("9") }, null, 2)}\n`,
+    );
+    const event = {
+      ...draftReady(),
+      data: { ...draftReady().data, metadata: reference(staleMeta) },
+    };
+    expect(await worker.handle(message(event))).toEqual({
+      kind: "failed",
+      reason: "draft-hash-mismatch",
+    });
+    // The genuine pairing is still verifiable.
+    const ok = new VerificationWorker({
+      artifacts,
+      verifier: verifier([{ verdict: "approve", issues: [] }]).p,
+      operations,
+      owner: "v",
+    });
+    expect(await ok.handle(message(draftReady()))).toMatchObject({ kind: "verified" });
   });
 
   it("rejects an event whose post differs from the draft and brief", async () => {

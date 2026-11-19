@@ -116,8 +116,18 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
   // Source list lines: "- [E1] Title ...: https://url" followed by quoted passage lines.
   const lines = markdown.split("\n");
   for (let i = 0; i < lines.length; i++) {
+    if (!/^- \[E[0-9]+\]/.test(lines[i]!)) continue;
     const m = lines[i]!.match(/^- \[(E[0-9]+)\] .*: (https:\/\/\S+)$/);
-    if (!m) continue;
+    if (!m) {
+      // A source entry that cannot be checked is an issue, never skipped.
+      issues.push({
+        source: "deterministic",
+        passage: lines[i]!,
+        problem: "This source entry is malformed and cannot be checked against the brief.",
+        requiredChange: "List the source as the template does: ID, title, dates and its HTTPS URL.",
+      });
+      continue;
+    }
     const c = citations.get(m[1]!);
     if (!c) continue; // already reported above
     if (c.evidence.url !== m[2]) {
@@ -378,6 +388,13 @@ export class VerificationWorker {
       return { kind: "failed", reason: "unreadable-artifact" };
     }
 
+    // The metadata must describe exactly this draft; checked before any
+    // shared operation is claimed, so a stale pairing cannot consume it.
+    if (metadata.draftHash !== d.draft.hash) {
+      operations.recordPermanentFailure(`verify-invalid:${event.id}`, "draft-hash-mismatch");
+      await message.ack();
+      return { kind: "failed", reason: "draft-hash-mismatch" };
+    }
     // The event, the draft metadata and the brief must all name the same post.
     let briefSource: { publicationId: string; postId: string } | undefined;
     try {
