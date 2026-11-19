@@ -34,7 +34,14 @@ export type WebAdapterErrorCode =
   | "timeout"
   | "cancelled";
 
-const RETRYABLE = new Set<WebAdapterErrorCode>(["rate-limited", "unavailable", "timeout"]);
+// Credit exhaustion is retryable: research must stay pending until credit is
+// restored, never be recorded as a permanent failure.
+const RETRYABLE = new Set<WebAdapterErrorCode>([
+  "credit-exhausted",
+  "rate-limited",
+  "unavailable",
+  "timeout",
+]);
 
 export class WebAdapterError extends Error {
   readonly retryable: boolean;
@@ -118,7 +125,11 @@ export class KagiSearchProvider implements SearchProvider {
 
   constructor(private readonly config: KagiConfig) {
     if (!config.apiKey) throw new WebAdapterError("unauthorised");
-    this.endpoint = new URL(config.endpoint ?? DEFAULT_KAGI_SEARCH_URL);
+    try {
+      this.endpoint = new URL(config.endpoint ?? DEFAULT_KAGI_SEARCH_URL);
+    } catch {
+      throw new Error("search endpoint is invalid");
+    }
     if (this.endpoint.protocol !== "https:") throw new Error("search endpoint must be https");
     this.limit = z
       .number()

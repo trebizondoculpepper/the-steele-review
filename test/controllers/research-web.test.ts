@@ -63,7 +63,7 @@ describe("KagiSearchProvider", () => {
 
   it("distinguishes credit exhaustion and auth from retryable failures", async () => {
     for (const [status, code, retryable] of [
-      [402, "credit-exhausted", false],
+      [402, "credit-exhausted", true],
       [401, "unauthorised", false],
       [429, "rate-limited", true],
       [502, "unavailable", true],
