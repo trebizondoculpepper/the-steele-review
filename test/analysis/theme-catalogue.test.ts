@@ -10,7 +10,7 @@ import {
   themeSlug,
 } from "../../src/analysis/theme-catalogue.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
-import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import { ArtifactStoreError, GitArtifactStore } from "../../src/controllers/artifact-store.js";
 
 const TEXT =
   "They are spraying the skies again. Weather modification tools have been around for a long time. Also the bins were late.";
@@ -279,6 +279,23 @@ describe("detectThemes", () => {
       "passage-absent",
       "unknown-possible-match",
     ]);
+  });
+
+  it("retries a lost compare-and-swap when persisting a detection", async () => {
+    let failures = 1;
+    const write = content.write.bind(content);
+    content.write = async (path: string, text: string) => {
+      if (failures-- > 0) throw new ArtifactStoreError("concurrent-update");
+      return write(path, text);
+    };
+    const out = await detectThemes({
+      provider: model('{"existing":[],"proposed":[]}'),
+      catalogue,
+      artifacts: content,
+      post: { ...post, postId: "racy" },
+      source,
+    });
+    expect(out.status).toBe("detected");
   });
 
   it("reports malformed output after bounded attempts and stores nothing", async () => {

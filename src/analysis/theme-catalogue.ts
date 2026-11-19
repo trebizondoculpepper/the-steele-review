@@ -539,15 +539,25 @@ export async function detectThemes(input: {
         detectedAt: (input.now ?? (() => new Date()))().toISOString(),
       },
     });
-    // Persist before announcing or registering any theme.
-    try {
-      detectionRef = await input.artifacts.write(path, `${JSON.stringify(detection, null, 2)}\n`);
-    } catch (error) {
-      if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict")
-        throw error;
-      detectionRef = await input.artifacts.lookup(path);
-      if (!detectionRef) throw error;
-      detection = ThemeDetectionSchema.parse(JSON.parse(await input.artifacts.read(detectionRef)));
+    // Persist before announcing or registering any theme. A lost
+    // compare-and-swap (another process moved the branch) is retried; a
+    // concurrent run that stored this same detection path first wins.
+    const content = `${JSON.stringify(detection, null, 2)}\n`;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        detectionRef = await input.artifacts.write(path, content);
+        break;
+      } catch (error) {
+        const code = error instanceof ArtifactStoreError ? error.code : undefined;
+        if (code === "concurrent-update" && attempt < 5) continue;
+        if (code !== "immutable-conflict") throw error;
+        detectionRef = await input.artifacts.lookup(path);
+        if (!detectionRef) throw error;
+        detection = ThemeDetectionSchema.parse(
+          JSON.parse(await input.artifacts.read(detectionRef)),
+        );
+        break;
+      }
     }
   }
 
