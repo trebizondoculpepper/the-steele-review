@@ -269,6 +269,28 @@ describe("ResearchCoordinator", () => {
     });
   });
 
+  it("re-assesses a claim whose research finished after its first assessment", async () => {
+    const corpus = new Set<string>();
+    const needId = researchNeedId(TOWERS);
+    const base = keeper(corpus).k;
+    let first = true;
+    // Research completes, and the corpus updates, right after the first assessment.
+    const racing: ResearchKeeper = {
+      async assess(claim, signal) {
+        const r = await base.assess(claim, signal);
+        if (first) {
+          first = false;
+          corpus.add(TOWERS);
+          operations.reconcileCompleted(`research-result:${needId}`, { outcome: "saved" }, []);
+        }
+        return r;
+      },
+    };
+    const r = await coordinator(racing).advance(post("p1", [TOWERS]));
+    expect(r).toMatchObject({ kind: "brief", result: { kind: "saved" } });
+    expect(JSON.parse(briefs()[0]!.payload).data).toMatchObject({ claims: 1, evidenceGaps: 0 });
+  });
+
   it("retries when the research keeper fails, without requesting anything", async () => {
     const c = coordinator(keeper(new Set(), true).k);
     expect(await c.advance(post("p1", [TOWERS]))).toEqual({

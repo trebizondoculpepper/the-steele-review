@@ -111,6 +111,7 @@ export class ResearchCoordinator {
 
     const waiting: string[] = [];
     const paused: string[] = [];
+    const settled: number[] = [];
     for (const [i, a] of assessments.entries()) {
       // The corpus already covers this claim.
       if (a.gaps.length === 0) continue;
@@ -121,7 +122,10 @@ export class ResearchCoordinator {
       // post can be left waiting on research that already finished.
       this.wait(needId, post);
       // saved / unresolved / failed are settled; failed leaves an evidence gap.
-      if (operations.operationStatus(`research-result:${needId}`)?.status === "completed") continue;
+      if (operations.operationStatus(`research-result:${needId}`)?.status === "completed") {
+        settled.push(i);
+        continue;
+      }
       if (operations.operationStatus(`research-paused:${needId}`)?.status === "completed") {
         paused.push(needId);
         continue;
@@ -132,7 +136,14 @@ export class ResearchCoordinator {
     if (paused.length) return { kind: "paused", needIds: paused };
     if (waiting.length) return { kind: "waiting", needIds: waiting };
 
-    // Every need is settled: assessments above already read the updated corpus.
+    // Every need is settled. Research may have finished after a claim was
+    // assessed above, so settled claims are assessed again against the
+    // corpus as it stands now.
+    for (const i of settled) {
+      const fresh = await this.config.keeper.assess(post.claims[i]!, signal);
+      if (fresh.status === "failed") return { kind: "retry", reason: `keeper:${fresh.reason}` };
+      assessments[i] = fresh;
+    }
     const result = await saveDraftingBrief({
       brief: {
         source: post.source,
