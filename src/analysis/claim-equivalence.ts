@@ -199,6 +199,13 @@ export async function mergeClaimRecords(
   // Never overwrite an existing redirect: if `from` already points elsewhere,
   // the two canonical records are themselves equivalent, so merge them (by
   // the same smaller-ID rule) instead of replacing the earlier redirect.
+  // Durable journal entry first: recovery scans merge sources only, never
+  // the whole claim collection, so no pending copy is missed at any size.
+  try {
+    await artifacts.write(`claim-merges/${from}.json`, `${JSON.stringify({ from })}\n`);
+  } catch (error) {
+    if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict") throw error;
+  }
   let existing: string | undefined;
   await revise(artifacts, from, (r) => {
     if (r.canonical === into) return undefined;
@@ -221,22 +228,22 @@ export async function mergeClaimRecords(
 }
 
 /**
- * Complete merges into `id` that were interrupted after the redirect: copy
- * occurrences from every record redirecting here (idempotent). Bounded scan.
+ * Complete merges into `id` that were interrupted after the redirect. Every
+ * merge journals its source under `claim-merges/` before redirecting, so this
+ * reads only merge sources (not every claim record) and copies, idempotently,
+ * from each whose redirect chain ends at `id`, directly or transitively.
  */
 export async function completePendingMerges(
   artifacts: GitArtifactStore,
   id: string,
 ): Promise<number> {
-  const paths = (await artifacts.list("claims", MAX_SCANNED_RECORDS)).filter((p) =>
-    RECORD_PATH.test(p),
-  );
+  const journal = await artifacts.list("claim-merges", 100_000);
   let completed = 0;
-  for (const path of paths) {
-    const other = path.slice("claims/".length, -".json".length);
-    if (other === id) continue;
+  for (const path of journal) {
+    const match = /^claim-merges\/(claim-[0-9a-f]{32})\.json$/.exec(path);
+    if (!match || match[1] === id) continue;
+    const other = match[1];
     const found = await readRecord(artifacts, other);
-    // Direct or transitive: C→B→A leaves C's occurrences pending for A too.
     if (!found?.record.canonical) continue;
     if ((await canonicalOf(artifacts, other)) !== id) continue;
     await copyOccurrences(artifacts, other, id, {

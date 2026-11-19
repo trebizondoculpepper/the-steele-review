@@ -190,6 +190,7 @@ describe("resolveClaimEquivalence", () => {
       await post("p1", "Weather modification has been around for decades."),
       await post("p2", "Weather modification tools have existed for many decades."),
     ].sort();
+    await content.write(`claim-merges/${b}.json`, JSON.stringify({ from: b })); // journalled, as a real merge does
     const ref = (await content.lookup(`claims/${b}.json`))!;
     await content.revise(
       `claims/${b}.json`,
@@ -207,6 +208,7 @@ describe("resolveClaimEquivalence", () => {
       await post("p3", "Weather modification has existed for decades now."),
     ].sort();
     // C→B interrupted after its redirect; then B→A completes.
+    await content.write(`claim-merges/${c}.json`, JSON.stringify({ from: c })); // journalled, as a real merge does
     const ref = (await content.lookup(`claims/${c}.json`))!;
     await content.revise(
       `claims/${c}.json`,
