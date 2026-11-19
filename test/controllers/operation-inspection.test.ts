@@ -65,7 +65,10 @@ describe("OperationInspector", () => {
     ]);
 
     let info = openInspector(path).inspect("op-done");
-    expect(info).toMatchObject({ status: "completed", artifact });
+    expect(info).toMatchObject({
+      status: "completed",
+      artifact: { kind: "reference", ...artifact },
+    });
     expect(info?.pendingEvents).toEqual({ pending: 1, sent: 0 });
 
     store.markEventSent("event-1");
@@ -171,19 +174,43 @@ describe("read-only open", () => {
 });
 
 describe("logicalArtifact", () => {
-  it("accepts a bare reference or a nested one", () => {
-    expect(logicalArtifact(artifact)).toEqual(artifact);
-    expect(logicalArtifact({ artifact })).toEqual(artifact);
-    expect(logicalArtifact({ ref: artifact, receipt: { url: "https://example.org/x" } })).toEqual(
-      artifact,
-    );
+  it("normalises the reference shapes the stage writers store", () => {
+    expect(logicalArtifact(artifact)).toEqual({ kind: "reference", ...artifact });
+    expect(logicalArtifact({ artifact })).toEqual({ kind: "reference", ...artifact });
+    expect(logicalArtifact({ ref: artifact })).toEqual({ kind: "reference", ...artifact });
+
+    // CollectionStore records a bare ArtifactRef: sha256 without a scheme.
+    const stored = {
+      repository: artifact.repository,
+      commit: artifact.commit,
+      path: artifact.path,
+      sha256: artifact.hash.replace(/^sha256:/, ""),
+    };
+    expect(logicalArtifact(stored)).toEqual({ kind: "reference", ...artifact });
+    // ClaimWorker records it under claimsArtifact.
+    expect(logicalArtifact({ claimsArtifact: stored })).toEqual({ kind: "reference", ...artifact });
+  });
+
+  it("reports the partial references brief and verification writers record", () => {
+    expect(logicalArtifact({ commit: artifact.commit, path: artifact.path })).toEqual({
+      kind: "partial",
+      commit: artifact.commit,
+      path: artifact.path,
+    });
+    // Verification stores { report: path, verdict }; only the path is exposed.
+    expect(logicalArtifact({ report: artifact.path, verdict: "pass" })).toEqual({
+      kind: "partial",
+      path: artifact.path,
+    });
   });
 
   it("rejects everything else, including payloads and credentials", () => {
     expect(logicalArtifact(null)).toBeUndefined();
     expect(logicalArtifact("artifact")).toBeUndefined();
     expect(logicalArtifact({ url: "https://example.org/x" })).toBeUndefined();
+    expect(logicalArtifact({ indexed: 3, skipped: 1 })).toBeUndefined();
     expect(logicalArtifact({ ...artifact, token: "secret" })).toBeUndefined();
     expect(logicalArtifact({ artifact: { ...artifact, path: "/absolute/path" } })).toBeUndefined();
+    expect(logicalArtifact({ report: artifact.path, token: "secret" })).toBeUndefined();
   });
 });

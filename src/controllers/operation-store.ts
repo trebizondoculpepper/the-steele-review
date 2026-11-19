@@ -871,8 +871,8 @@ export interface OperationInspection {
   errorCode?: string;
   /** Lease expiry as an ISO 8601 timestamp, when a lease is held. */
   leaseExpiresAt?: string;
-  /** Logical completion artifact reference, when the stored value is one. */
-  artifact?: ArtifactReference;
+  /** Logical completion artifact evidence, when a known writer recorded one. */
+  artifact?: OperationArtifact;
   pendingEvents: { pending: number; sent: number };
 }
 
@@ -895,34 +895,100 @@ interface InspectionRow {
 }
 
 /**
- * Pure logical reference from a stored completion artifact, or undefined.
+ * Logical completion evidence recorded by the existing stage writers.
  *
- * Callers store different completion shapes (`{ receipt }`, `{ artifact }`,
- * a bare reference), so look in the known positions and accept only a value
- * that validates as an immutable artifact reference. Never return the raw
- * value: an unrecognised artifact may carry tokens or payload.
+ * Writers store different shapes: the collection store a bare `ArtifactRef`
+ * (`sha256` without a scheme), the claim worker `{ claimsArtifact }`, the
+ * publisher `{ artifact }`, and the brief/verification stages only a partial
+ * `{ path, commit }`. Normalise the recognised forms and never return any
+ * other field: an unrecognised artifact may carry tokens or payload.
  */
-export function logicalArtifact(value: unknown): ArtifactReference | undefined {
-  if (value === null || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  for (const candidate of [value, record.artifact, record.ref]) {
-    const parsed = ArtifactReferenceSchema.safeParse(candidate);
-    if (parsed.success) return parsed.data;
+export type OperationArtifact =
+  | {
+      kind: "reference";
+      repository: string;
+      commit: string;
+      path: string;
+      hash: string;
+    }
+  | { kind: "partial"; commit?: string; path?: string };
+
+/** Raw `ArtifactRef` as stored by the collection controller (`sha256` bare). */
+const StoredRefSchema = z
+  .object({
+    repository: z.string().min(1).max(200),
+    commit: z.string().regex(/^[0-9a-f]{40}$/),
+    path: z.string().min(1).max(1024),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
+/** Fields a partial writer may record; nothing else is exposed. */
+const PartialSchema = z
+  .object({
+    commit: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
+    path: z.string().min(1).max(1024).optional(),
+  })
+  .strict();
+
+const PathOnlySchema = z.string().min(1).max(1024);
+
+/** True when the object carries no key outside the allowlist. */
+function onlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(record).every((key) => allowed.includes(key));
+}
+
+function asReference(value: unknown): OperationArtifact | undefined {
+  const full = ArtifactReferenceSchema.safeParse(value);
+  if (full.success) return { kind: "reference", ...full.data };
+  const stored = StoredRefSchema.safeParse(value);
+  if (stored.success) {
+    const { repository, commit, path, sha256 } = stored.data;
+    return { kind: "reference", repository, commit, path, hash: `sha256:${sha256}` };
   }
   return undefined;
 }
 
-/**
- * Read-only inspection of an existing operation store (#171).
- *
- * Opened directly with `readOnly`, without the store's constructor, so it
- * never creates a missing database, never migrates, never changes journal
- * settings and never writes. A missing, non-file, unversioned or newer-schema
- * database reports `unavailable` instead of being created or repaired.
- *
- * Only the owning controller may touch SQLite; other components consume this
- * narrow typed interface.
- */
+/** Recognise a completion artifact without returning unlisted fields. */
+export function logicalArtifact(value: unknown): OperationArtifact | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+
+  const direct = asReference(value);
+  if (direct) return direct;
+  for (const key of ["artifact", "ref", "claimsArtifact"] as const) {
+    const nested = asReference(record[key]);
+    if (nested) return nested;
+  }
+
+  // Brief and historical-comparison writers record { path, commit }.
+  if (onlyKeys(record, ["commit", "path"])) {
+    const partial = PartialSchema.safeParse({
+      ...(record.commit === undefined ? {} : { commit: record.commit }),
+      ...(record.path === undefined ? {} : { path: record.path }),
+    });
+    if (partial.success && (partial.data.commit || partial.data.path)) {
+      const { commit, path } = partial.data;
+      return {
+        kind: "partial",
+        ...(commit === undefined ? {} : { commit }),
+        ...(path === undefined ? {} : { path }),
+      };
+    }
+  }
+
+  // Verification records { report: <path>, verdict }; expose the path only.
+  if (onlyKeys(record, ["report", "verdict"])) {
+    const path = PathOnlySchema.safeParse(record.report);
+    if (path.success) return { kind: "partial", path: path.data };
+  }
+
+  return undefined;
+}
+
 export class OperationInspector {
   private constructor(private readonly db: DatabaseSync) {}
 
@@ -995,7 +1061,7 @@ export class OperationInspector {
       .all(key) as Array<{ status: string; count: number }>;
     const pending = counts.find((entry) => entry.status === "pending")?.count ?? 0;
     const sent = counts.find((entry) => entry.status === "sent")?.count ?? 0;
-    let artifact: ArtifactReference | undefined;
+    let artifact: OperationArtifact | undefined;
     if (row.artifact !== null) {
       try {
         artifact = logicalArtifact(JSON.parse(row.artifact));
