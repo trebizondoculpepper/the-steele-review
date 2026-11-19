@@ -206,13 +206,19 @@ export class ElasticsearchController {
   async search(
     index: string,
     query: unknown,
-    options: { size?: number; timeoutMs?: number } = {},
+    options: { size?: number; timeoutMs?: number; sort?: unknown } = {},
   ): Promise<SearchHit[]> {
     const size = Math.max(1, Math.min(options.size ?? 10, MAX_SEARCH_RESULTS));
     const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
     try {
       const response = await this.client.search(
-        { index, query, size, _source: true },
+        {
+          index,
+          query,
+          size,
+          _source: true,
+          ...(options.sort ? { sort: options.sort as never } : {}),
+        },
         { requestTimeout: timeoutMs, maxRetries: 0 },
       );
       return response.hits.hits.map((hit) => ({
