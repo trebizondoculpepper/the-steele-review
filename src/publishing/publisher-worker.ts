@@ -94,6 +94,22 @@ export class PublisherWorker {
     // Publication state first: published, uncertain or running.
     const state = operations.publicationState(request.key);
     if (state?.status === "published" && state.receipt) {
+      // A crash between confirmation and completion leaves the handoff
+      // unrecorded: record it now, before acknowledging.
+      if (operations.operationStatus(request.key)?.status !== "completed") {
+        try {
+          operations.reconcileCompleted(request.key, state.receipt, [
+            this.publishedEvent(request, state.receipt),
+          ]);
+        } catch (error) {
+          // The confirming worker still holds its lease: come back later.
+          if (error instanceof OperationStoreError && error.code === "busy") {
+            message.nak(Math.min(this.config.retryDelayMs ?? 60_000, 30_000));
+            return { kind: "deferred", reason: "busy" };
+          }
+          throw error;
+        }
+      }
       await message.ack();
       return { kind: "already-published", receipt: state.receipt };
     }
@@ -168,12 +184,37 @@ export class PublisherWorker {
       return { kind: "rejected", reason: checked.reason };
     }
     let draftId: string | undefined = knownDraftId;
+    let creating = false;
     try {
       const state = operations.recordPublicationIntent(claim, {
         hash: request.draft.hash,
         ref: request.draft,
       });
-      draftId ??= state.destinationDraftId;
+      if (!draftId && state.destinationDraftId) {
+        draftId = state.destinationDraftId;
+        // An earlier attempt may have published before stopping: read the
+        // saved draft back instead of publishing it again blindly.
+        const status = await destination.getStatus(draftId, signal);
+        if (status.state === "published") {
+          return this.confirm(message, request, claim, {
+            url: status.url,
+            publishedAt: status.publishedAt,
+            destinationPostId: status.draftId,
+          });
+        }
+        if (status.state === "not-found") {
+          operations.fail(claim, "publish:draft-missing", false);
+          await message.ack();
+          return { kind: "failed", reason: "draft-missing" };
+        }
+      }
+      if (!draftId && this.creationMayHaveHappened(request.key)) {
+        // An earlier attempt started creating a draft and its outcome was
+        // never recorded: a draft may exist that cannot be found by ID.
+        operations.fail(claim, "publish:uncertain-creation", false);
+        await message.ack();
+        return { kind: "failed", reason: "uncertain-creation" };
+      }
       if (!draftId) {
         const sourceUrl = checked.markdown.match(/^Original post: (https:\/\/\S+)$/m)?.[1];
         if (!sourceUrl) {
@@ -181,6 +222,14 @@ export class PublisherWorker {
           await message.ack();
           return { kind: "rejected", reason: "missing-source-link" };
         }
+        // Durable marker before the side effect, so a restart knows creation
+        // may have happened.
+        operations.reconcileCompleted(
+          `publish-create:${request.key}:${claim.attempt}`,
+          { started: true },
+          [],
+        );
+        creating = true;
         const created = await destination.createDraft(
           {
             title:
@@ -192,21 +241,26 @@ export class PublisherWorker {
         );
         draftId = created.draftId;
         operations.saveDestinationDraft(claim, draftId);
+        creating = false;
       }
       const published = await destination.publish(draftId, {
         sendEmail: false,
         ...(signal ? { signal } : {}),
       });
-      const receipt: PublicationReceipt = {
+      return await this.confirm(message, request, claim, {
         url: published.url,
         publishedAt: published.publishedAt,
         destinationPostId: published.draftId,
-      };
-      operations.confirmPublished(claim, receipt);
-      operations.complete(claim, receipt, [this.publishedEvent(request, receipt)]);
-      await message.ack();
-      return { kind: "published", receipt };
+      });
     } catch (error) {
+      // A creation that definitely did not happen clears its marker's meaning.
+      if (creating && error instanceof DestinationError && error.category !== "uncertain") {
+        operations.reconcileCompleted(
+          `publish-create-none:${request.key}:${claim.attempt}`,
+          {},
+          [],
+        );
+      }
       if (error instanceof DestinationError && error.category === "uncertain" && !draftId) {
         // Creation has no idempotency key: a draft may or may not exist, and
         // it cannot be read back by ID. An operator resolves it; no blind retry.
@@ -238,6 +292,31 @@ export class PublisherWorker {
     }
   }
 
+  private async confirm(
+    message: DeliveredMessage,
+    request: PublishRequest,
+    claim: OperationClaim,
+    receipt: PublicationReceipt,
+  ): Promise<PublisherOutcome> {
+    this.config.operations.confirmPublished(claim, receipt);
+    this.config.operations.complete(claim, receipt, [this.publishedEvent(request, receipt)]);
+    await message.ack();
+    return { kind: "published", receipt };
+  }
+
+  /** True when an earlier attempt began creating a draft with no recorded outcome. */
+  private creationMayHaveHappened(key: string): boolean {
+    const { operations } = this.config;
+    for (const marker of operations.listOperations(`publish-create:${key}:`, 1_000)) {
+      const attempt = marker.key.slice(`publish-create:${key}:`.length);
+      if (
+        operations.operationStatus(`publish-create-none:${key}:${attempt}`)?.status !== "completed"
+      )
+        return true;
+    }
+    return false;
+  }
+
   /** Time until the frequency limit allows another publication, from durable receipts. */
   private rateLimitWait(): number {
     const min = this.config.minIntervalMs ?? 0;
@@ -252,10 +331,11 @@ export class PublisherWorker {
       );
       if (page.length === 0) break;
       for (const op of page) {
+        // Receipts live in the publication state, whichever path confirmed them.
         const at = Date.parse(
-          (op.artifact as { publishedAt?: string } | undefined)?.publishedAt ?? "",
+          this.config.operations.publicationState(op.key)?.receipt?.publishedAt ?? "",
         );
-        if (op.status === "completed" && at > latest) latest = at;
+        if (at > latest) latest = at;
       }
       after = page[page.length - 1]!.key;
     }

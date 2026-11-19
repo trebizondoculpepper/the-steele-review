@@ -179,6 +179,98 @@ describe("PublisherWorker smoke test", () => {
     expect(published()).toHaveLength(1);
   });
 
+  it("records a missing handoff when publication was confirmed but not completed", async () => {
+    const event = await approved("p1");
+    const key = `publish:example-destination:drafts:${event.data.draft.commit}:${event.data.draft.path}`;
+    // A worker confirmed publication, then stopped before completing.
+    const held = operations.claim(key, "crashed", 50);
+    if (held.kind !== "claimed") throw new Error("claim");
+    operations.recordPublicationIntent(held.claim, {
+      hash: event.data.draft.hash,
+      ref: event.data.draft,
+    });
+    operations.saveDestinationDraft(held.claim, "999");
+    operations.confirmPublished(held.claim, {
+      url: "https://destination.example/p/x",
+      publishedAt: "2026-11-01T00:00:00Z",
+      destinationPostId: "999",
+    });
+    // While the confirming worker's lease is live, the duplicate defers.
+    expect(await worker().handle(message(event))).toEqual({ kind: "deferred", reason: "busy" });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(await worker().handle(message(event))).toMatchObject({ kind: "already-published" });
+    expect(published()).toHaveLength(1);
+  });
+
+  it("reads back a saved draft after an interrupted publish instead of publishing again", async () => {
+    const event = await approved("p1");
+    const key = `publish:example-destination:drafts:${event.data.draft.commit}:${event.data.draft.path}`;
+    const dest = new SubstackDestinationController(client);
+    const held = operations.claim(key, "crashed", 1);
+    if (held.kind !== "claimed") throw new Error("claim");
+    operations.recordPublicationIntent(held.claim, {
+      hash: event.data.draft.hash,
+      ref: event.data.draft,
+    });
+    const { draftId } = await dest.createDraft({
+      title: "t",
+      bodyMarkdown: "b",
+      sourceUrl: "https://pub.substack.com/p/p1",
+    });
+    operations.saveDestinationDraft(held.claim, draftId);
+    await dest.publish(draftId); // published, then the process stopped
+    await new Promise((r) => setTimeout(r, 5));
+    let publishes = 0;
+    const counting = new SubstackDestinationController({
+      createDraft: (d) => client.createDraft(d),
+      getDraft: (id) => client.getDraft(id),
+      publishDraft: (id, o) => {
+        publishes++;
+        return client.publishDraft(id, o);
+      },
+    });
+    expect(await worker({ destination: counting }).handle(message(event))).toMatchObject({
+      kind: "published",
+    });
+    expect(publishes).toBe(0);
+    expect(client.drafts.size).toBe(1);
+  });
+
+  it("treats an interrupted draft creation as uncertain after a restart", async () => {
+    const event = await approved("p1");
+    const key = `publish:example-destination:drafts:${event.data.draft.commit}:${event.data.draft.path}`;
+    const held = operations.claim(key, "crashed", 1);
+    if (held.kind !== "claimed") throw new Error("claim");
+    operations.recordPublicationIntent(held.claim, {
+      hash: event.data.draft.hash,
+      ref: event.data.draft,
+    });
+    // The marker was written, creation began, and the process stopped.
+    operations.reconcileCompleted(
+      `publish-create:${key}:${held.claim.attempt}`,
+      { started: true },
+      [],
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await worker().handle(message(event))).toEqual({
+      kind: "failed",
+      reason: "uncertain-creation",
+    });
+    expect(client.drafts.size).toBe(0);
+  });
+
+  it("counts reconciled publications in the frequency limit", async () => {
+    const w = worker({ minIntervalMs: 60 * 60_000 });
+    const first = await approved("p1");
+    client.inject("publishDraft", "lost-response");
+    expect(await w.handle(message(first))).toEqual({ kind: "deferred", reason: "uncertain" });
+    expect(await w.handle(message(first))).toMatchObject({ kind: "published" });
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+  });
+
   it("applies the frequency limit between publications", async () => {
     const w = worker({ minIntervalMs: 60 * 60_000 });
     expect(await w.handle(message(await approved("p1")))).toMatchObject({ kind: "published" });
