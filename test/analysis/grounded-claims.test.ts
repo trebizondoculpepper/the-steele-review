@@ -207,7 +207,7 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: "grounded-claims-v1",
+      promptVersion: "grounded-claims-v2",
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
