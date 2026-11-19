@@ -186,4 +186,45 @@ describe("tracePost", () => {
     expect(trace.capture.archive).toEqual({ state: "not-recorded" });
     expect(traceIncomplete(trace)).toBe(true);
   });
+  it("bounds a stalled state read and reports it unavailable", async () => {
+    const trace = await tracePost({ post, state: { readOperation: () => new Promise(() => {}) } });
+    expect(trace.capture.operation).toEqual({ state: "unavailable" });
+  }, 20_000);
+
+  it("reports a broken archive as unavailable, not empty", async () => {
+    const broken = new GitArtifactStore({
+      repoPath: join(dir, "not-a-repo"),
+      repository: "archive",
+    });
+    await mkdir(join(dir, "not-a-repo"));
+    const trace = await tracePost({ post, archive: broken });
+    expect(trace.capture.archive).toEqual({ state: "unavailable" });
+  });
+
+  it("marks freshness unknown when no current capture is readable, and counts content-only finds", async () => {
+    await proposeThemes({
+      provider: model('{"themes":[{"title":"5G"}]}'),
+      artifacts: content,
+      post,
+      source: {
+        text: TEXT,
+        sourceVersion: sourceVersionFor(TEXT),
+        artifact: {
+          repository: "archive",
+          commit: "a".repeat(40),
+          path: "x",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+      },
+    });
+    const trace = await tracePost({
+      post,
+      content,
+      search: { fulltextSourceVersion: async () => sourceVersionFor(TEXT) },
+    });
+    expect(trace.themes.state === "recorded" && trace.themes.results[0].stale).toBeNull();
+    expect(trace.index).toMatchObject({ current: null });
+    expect(renderPostTrace(trace)).toContain("freshness unknown");
+    expect(traceIncomplete(trace)).toBe(false);
+  });
 });

@@ -8,7 +8,12 @@ import {
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationInspection } from "../controllers/operation-store.js";
-import type { OperationProbe } from "./runtime-status.js";
+import {
+  DEFAULT_CHECK_TIMEOUT_MS,
+  TIMED_OUT,
+  withDeadline,
+  type OperationProbe,
+} from "./runtime-status.js";
 
 /**
  * Per-post diagnostic trace (#174): recorded observations for one source,
@@ -54,14 +59,15 @@ export interface PostTrace {
         }
       | Unread;
   };
-  index: { state: "recorded"; sourceVersion: string; current: boolean } | Unread;
+  /** `current` is null when no current capture version is known. */
+  index: { state: "recorded"; sourceVersion: string; current: boolean | null } | Unread;
   themes:
     | {
         state: "recorded";
         results: Array<{
           ref: string;
           sourceVersion: string;
-          stale: boolean;
+          stale: boolean | null;
           model: string;
           prompt: string;
           proposals: number;
@@ -78,7 +84,7 @@ export interface PostTrace {
           ref: string;
           schemaVersion: number;
           sourceVersion: string;
-          stale: boolean;
+          stale: boolean | null;
           linkedThemeResult?: string;
           model: string;
           prompt: string;
@@ -119,7 +125,12 @@ async function readOperation(
 ): Promise<({ state: "recorded" } & OperationSummary) | Unread> {
   if (!state) return { state: "not-configured" };
   try {
-    const op = await state.readOperation(key);
+    // Bounded and abortable: a stalled store reports unavailable, never hangs.
+    const op = await withDeadline(
+      (signal) => state.readOperation(key, signal),
+      DEFAULT_CHECK_TIMEOUT_MS,
+    );
+    if (op === TIMED_OUT) return { state: "unavailable" };
     return op ? { state: "recorded", ...summarise(op) } : { state: "not-recorded" };
   } catch {
     return { state: "unavailable" };
@@ -170,6 +181,9 @@ export async function tracePost(input: {
   let currentVersion: string | undefined;
   if (input.archive) {
     try {
+      // lookup() treats an unreadable repository as "no branch yet"; list()
+      // fails instead, so probe it first to tell broken storage from absence.
+      await input.archive.list("substack", 1);
       const ref = await input.archive.lookup(collectionArtifactPath(post));
       if (!ref) archive = { state: "not-recorded" };
       else {
@@ -187,7 +201,9 @@ export async function tracePost(input: {
       archive = { state: "unavailable" };
     }
   }
-  const stale = (v: string) => currentVersion !== undefined && v !== currentVersion;
+  // Unknown when no current capture version could be read: never "current".
+  const stale = (v: string): boolean | null =>
+    currentVersion === undefined ? null : v !== currentVersion;
 
   // Full-text index: only the version is projected.
   let index: PostTrace["index"] = { state: "not-configured" };
@@ -197,7 +213,7 @@ export async function tracePost(input: {
       index =
         v === null
           ? { state: "not-recorded" }
-          : { state: "recorded", sourceVersion: v, current: !stale(v) };
+          : { state: "recorded", sourceVersion: v, current: stale(v) === null ? null : !stale(v) };
     } catch {
       index = { state: "unavailable" };
     }
@@ -282,17 +298,16 @@ export async function tracePost(input: {
   };
 }
 
-/** True when any configured source could not be read, or nothing exists for the post. */
+/**
+ * True when the inspection was partial (a configured source unavailable or
+ * some results unreadable) or found no record of the post in any source.
+ */
 export function traceIncomplete(t: PostTrace): boolean {
-  const states = [
-    t.capture.operation.state,
-    t.capture.archive.state,
-    t.index.state,
-    t.themes.state,
-    t.claims.state,
-  ];
-  if (states.includes("unavailable")) return true;
-  return t.capture.operation.state !== "recorded" && t.capture.archive.state !== "recorded";
+  const stages = [t.capture.operation, t.capture.archive, t.index, t.themes, t.claims];
+  if (stages.some((x) => x.state === "unavailable")) return true;
+  if (t.themes.state === "recorded" && t.themes.unreadable > 0) return true;
+  if (t.claims.state === "recorded" && t.claims.unreadable > 0) return true;
+  return !stages.some((x) => x.state === "recorded");
 }
 
 export function renderPostTrace(t: PostTrace): string {
@@ -310,7 +325,7 @@ export function renderPostTrace(t: PostTrace): string {
     }`,
     `Full-text index: ${
       t.index.state === "recorded"
-        ? `${t.index.sourceVersion.slice(0, 19)}${t.index.current ? "" : " (STALE)"}`
+        ? `${t.index.sourceVersion.slice(0, 19)}${t.index.current === null ? " (freshness unknown)" : t.index.current ? "" : " (STALE)"}`
         : t.index.state
     }`,
   ];
@@ -318,7 +333,7 @@ export function renderPostTrace(t: PostTrace): string {
     lines.push("Theme results:");
     for (const r of t.themes.results)
       lines.push(
-        `  ${r.ref}${r.stale ? " (STALE source version)" : ""} · ${r.prompt} · ${r.proposals} proposals, ${r.rejected} rejected`,
+        `  ${r.ref}${r.stale === null ? " (freshness unknown)" : r.stale ? " (STALE source version)" : ""} · ${r.prompt} · ${r.proposals} proposals, ${r.rejected} rejected`,
       );
     if (t.themes.unreadable) lines.push(`  ${t.themes.unreadable} unreadable`);
     if (t.themes.truncated) lines.push(`  … more than ${MAX_RESULTS_PER_STAGE}; truncated`);
@@ -327,7 +342,7 @@ export function renderPostTrace(t: PostTrace): string {
     lines.push("Claim results:");
     for (const r of t.claims.results) {
       lines.push(
-        `  ${r.ref}${r.stale ? " (STALE source version)" : ""} · v${r.schemaVersion} ${r.prompt} · accepted ${r.accepted}, candidates ${r.candidates}, rejected ${r.rejected}`,
+        `  ${r.ref}${r.stale === null ? " (freshness unknown)" : r.stale ? " (STALE source version)" : ""} · v${r.schemaVersion} ${r.prompt} · accepted ${r.accepted}, candidates ${r.candidates}, rejected ${r.rejected}`,
         `    themes: ${r.linkedThemeResult ?? "not linked"} · announcement: ${op(r.announcement)}`,
       );
     }
