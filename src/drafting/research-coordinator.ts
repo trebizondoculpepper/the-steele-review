@@ -107,6 +107,8 @@ export class ResearchCoordinator {
       // saved / unresolved / failed are settled; failed leaves an evidence gap.
       if (operations.operationStatus(`research-result:${needId}`)?.status === "completed") continue;
       if (operations.operationStatus(`research-paused:${needId}`)?.status === "completed") {
+        // Still a waiter: a later real result must resume this post too.
+        this.wait(needId, post);
         paused.push(needId);
         continue;
       }
@@ -141,25 +143,44 @@ export class ResearchCoordinator {
     const event = ResearchCompletedSchema.parse(input);
     const { operations } = this.config;
     const resultKey = `research-result:${event.needId}`;
-    // A real result is final; repeats of it (or a late pause) change nothing.
-    if (operations.operationStatus(resultKey)?.status === "completed") return { kind: "duplicate" };
+    const result = operations.operationStatus(resultKey);
     const artifact = { outcome: event.outcome, ...(event.reason ? { reason: event.reason } : {}) };
     if (event.outcome === "paused") {
-      // Recorded separately so a later real result can supersede it.
+      // A real result is final; a pause is recorded separately so a later
+      // result can supersede it.
       const pausedKey = `research-paused:${event.needId}`;
-      if (operations.operationStatus(pausedKey)?.status === "completed")
+      if (
+        result?.status === "completed" ||
+        operations.operationStatus(pausedKey)?.status === "completed"
+      ) {
         return { kind: "duplicate" };
+      }
       operations.reconcileCompleted(pausedKey, artifact, []);
       return { kind: "recorded", advanced: [] };
     }
-    operations.reconcileCompleted(resultKey, artifact, []);
+    if (result?.status !== "completed") operations.reconcileCompleted(resultKey, artifact, []);
 
+    // Resume every waiter not yet resumed, page by page. Each waiter is
+    // marked resumed only after its advance reached a durable outcome, so a
+    // repeated completion event finishes any fan-out an interrupted run left.
     const advanced: Array<{ post: string; outcome: CoordinatorOutcome }> = [];
-    for (const waiter of operations.listOperations(`research-waiter:${event.needId}:`, 1_000)) {
-      const post = waiter.artifact as CoordinatorPost | undefined;
-      if (!post) continue;
-      advanced.push({ post: postKey(post.source), outcome: await this.advance(post, signal) });
+    const prefix = `research-waiter:${event.needId}:`;
+    let after: string | undefined;
+    for (;;) {
+      const page = operations.listOperations(prefix, 200, after);
+      if (page.length === 0) break;
+      for (const waiter of page) {
+        const post = waiter.artifact as CoordinatorPost | undefined;
+        const resumedKey = `research-resumed:${waiter.key.slice("research-waiter:".length)}`;
+        if (!post || operations.operationStatus(resumedKey)?.status === "completed") continue;
+        const outcome = await this.advance(post, signal);
+        if (outcome.kind !== "retry")
+          operations.reconcileCompleted(resumedKey, { outcome: outcome.kind }, []);
+        advanced.push({ post: postKey(post.source), outcome });
+      }
+      after = page[page.length - 1]!.key;
     }
+    if (result?.status === "completed" && advanced.length === 0) return { kind: "duplicate" };
     return { kind: "recorded", advanced };
   }
 

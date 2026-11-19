@@ -249,16 +249,21 @@ export class OperationStore {
     return row ? toStatus(key, row) : undefined;
   }
 
-  /** Read-only views of operations whose key starts with `prefix`, oldest key first, bounded. */
-  listOperations(prefix: string, limit = 100): OperationStatus[] {
+  /**
+   * Read-only views of operations whose key starts with `prefix`, in key
+   * order, bounded. Pass the last key seen as `after` to read the next page.
+   */
+  listOperations(prefix: string, limit = 100, after?: string): OperationStatus[] {
     if (!prefix) throw new OperationStoreError("invalid-input");
     const bound = Math.max(1, Math.min(Math.trunc(limit), 1_000));
     // Range scan rather than LIKE, so `%` and `_` in keys match literally.
     const rows = this.db
       .prepare(
-        "SELECT key, status, owner, lease_expires_at, attempts, max_attempts, artifact, error_code FROM operations WHERE key >= ? AND key < ? ORDER BY key LIMIT ?",
+        "SELECT key, status, owner, lease_expires_at, attempts, max_attempts, artifact, error_code FROM operations WHERE key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?",
       )
-      .all(prefix, `${prefix}\uffff`, bound) as unknown as Array<OperationRow & { key: string }>;
+      .all(prefix, `${prefix}\uffff`, after ?? "", bound) as unknown as Array<
+      OperationRow & { key: string }
+    >;
     return rows.map((r) => toStatus(r.key, r));
   }
 

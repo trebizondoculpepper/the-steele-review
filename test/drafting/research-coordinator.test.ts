@@ -202,6 +202,44 @@ describe("ResearchCoordinator", () => {
     expect(brief).toMatchObject({ claims: 1, evidenceGaps: 1 });
   });
 
+  it("registers posts that arrive while research is paused, and resumes them later", async () => {
+    const corpus = new Set<string>();
+    const c = coordinator(keeper(corpus).k);
+    await c.advance(post("p1", [TOWERS]));
+    await c.onResearchCompleted({ needId: researchNeedId(TOWERS), outcome: "paused" });
+    expect(await c.advance(post("p2", [TOWERS]))).toMatchObject({ kind: "paused" });
+    corpus.add(TOWERS);
+    const done = await c.onResearchCompleted({ needId: researchNeedId(TOWERS), outcome: "saved" });
+    expect(done.kind === "recorded" && done.advanced.map((a) => a.post).sort()).toEqual([
+      expect.stringContaining("pub/p1@"),
+      expect.stringContaining("pub/p2@"),
+    ]);
+  });
+
+  it("finishes an interrupted fan-out when the completion event is redelivered", async () => {
+    const corpus = new Set<string>();
+    const c = coordinator(keeper(corpus).k);
+    await c.advance(post("p1", [TOWERS]));
+    corpus.add(TOWERS);
+    // The result was recorded, then the process stopped before resuming waiters.
+    operations.reconcileCompleted(
+      `research-result:${researchNeedId(TOWERS)}`,
+      { outcome: "saved" },
+      [],
+    );
+    const redelivered = await c.onResearchCompleted({
+      needId: researchNeedId(TOWERS),
+      outcome: "saved",
+    });
+    expect(redelivered).toMatchObject({
+      kind: "recorded",
+      advanced: [{ outcome: { kind: "brief" } }],
+    });
+    expect(
+      await c.onResearchCompleted({ needId: researchNeedId(TOWERS), outcome: "saved" }),
+    ).toEqual({ kind: "duplicate" });
+  });
+
   it("retries when the research keeper fails, without requesting anything", async () => {
     const c = coordinator(keeper(new Set(), true).k);
     expect(await c.advance(post("p1", [TOWERS]))).toEqual({
@@ -237,5 +275,8 @@ describe("OperationStore read-only views", () => {
     expect(operations.operationStatus("missing")).toBeUndefined();
     expect(operations.listOperations("ns:").map((o) => o.key)).toEqual(["ns:a", "ns:b"]);
     expect(operations.listOperations("ns_").map((o) => o.key)).toEqual([]);
+    expect(operations.listOperations("ns:", 1).map((o) => o.key)).toEqual(["ns:a"]);
+    expect(operations.listOperations("ns:", 1, "ns:a").map((o) => o.key)).toEqual(["ns:b"]);
+    expect(operations.listOperations("ns:", 1, "ns:b")).toEqual([]);
   });
 });
