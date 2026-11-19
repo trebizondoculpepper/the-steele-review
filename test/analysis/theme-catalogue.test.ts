@@ -82,7 +82,23 @@ describe("theme catalogue", () => {
     expect(a.ids).toEqual(b.ids);
     const ids2 = (await catalogue.load()).catalogue.themes.map((t) => t.id);
     expect(ids2).toEqual(["geoengineering", "smart-meters"]);
+    void ids2;
     expect(themeSlug("Chemtrails & 5G!")).toBe("chemtrails-and-5g");
+    expect(themeSlug("Dépopulation")).toBe("depopulation");
+    expect(themeSlug("人口削減")).toMatch(/^theme-[0-9a-f]{12}$/);
+
+    // An uncertain proposal with a colliding name stays separate, idempotently.
+    const unsure = {
+      name: "Geoengineering",
+      definition: "maybe",
+      aliases: [],
+      origin: "detected" as const,
+      possibleMatchOf: "geoengineering",
+    };
+    const u1 = await catalogue.register([unsure]);
+    const u2 = await catalogue.register([unsure]);
+    expect(u1.ids[0]).not.toBe("geoengineering");
+    expect(u2.ids).toEqual(u1.ids);
   });
 });
 

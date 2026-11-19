@@ -78,9 +78,24 @@ export interface StoredCatalogue {
 
 const serialise = (c: Catalogue) => `${JSON.stringify(CatalogueSchema.parse(c), null, 2)}\n`;
 
-/** Slug from a theme name: normalised label with spaces as hyphens. */
+/**
+ * Stable ASCII slug ID from a theme name: accents folded, anything outside
+ * [a-z0-9-] dropped. A name with no ASCII letters or digits gets a
+ * deterministic hash-based ID, so every name yields a valid ID.
+ */
 export function themeSlug(name: string): string {
-  return normaliseThemeLabel(name).replace(/\s+/g, "-").slice(0, 80).replace(/-+$/, "");
+  const slug = normaliseThemeLabel(name)
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .replace(/-+$/, "");
+  if (slug) return slug;
+  const normalised = normaliseThemeLabel(name);
+  if (!normalised) return "";
+  return `theme-${createHash("sha256").update(normalised).digest("hex").slice(0, 12)}`;
 }
 
 /** Normalised names and aliases of a theme, for exact (never fuzzy) reuse. */
@@ -120,7 +135,16 @@ export class ThemeCatalogueStore {
       for (const p of proposals) {
         const valid = CatalogueThemeSchema.omit({ id: true }).parse(p);
         const names = new Set(namesOf(valid));
-        const same = themes.find((t) => namesOf(t).some((n) => names.has(n)));
+        // An explicitly uncertain proposal never merges into the theme it
+        // might match: it reuses only an identity recorded with the same
+        // uncertainty (i.e. its own earlier registration).
+        const same = themes.find(
+          (t) =>
+            namesOf(t).some((n) => names.has(n)) &&
+            (valid.possibleMatchOf === undefined
+              ? t.possibleMatchOf === undefined
+              : t.possibleMatchOf === valid.possibleMatchOf),
+        );
         if (same) {
           ids.push(same.id);
           continue;
