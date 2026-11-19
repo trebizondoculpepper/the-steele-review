@@ -916,9 +916,9 @@ export type OperationArtifact =
 /** Raw `ArtifactRef` as stored by the collection controller (`sha256` bare). */
 const StoredRefSchema = z
   .object({
-    repository: z.string().min(1).max(200),
-    commit: z.string().regex(/^[0-9a-f]{40}$/),
-    path: z.string().min(1).max(1024),
+    repository: ArtifactReferenceSchema.shape.repository,
+    commit: ArtifactReferenceSchema.shape.commit,
+    path: ArtifactReferenceSchema.shape.path,
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
@@ -926,15 +926,12 @@ const StoredRefSchema = z
 /** Fields a partial writer may record; nothing else is exposed. */
 const PartialSchema = z
   .object({
-    commit: z
-      .string()
-      .regex(/^[0-9a-f]{40}$/)
-      .optional(),
-    path: z.string().min(1).max(1024).optional(),
+    commit: ArtifactReferenceSchema.shape.commit.optional(),
+    path: ArtifactReferenceSchema.shape.path.optional(),
   })
   .strict();
 
-const PathOnlySchema = z.string().min(1).max(1024);
+const PathOnlySchema = ArtifactReferenceSchema.shape.path;
 
 /** True when the object carries no key outside the allowlist. */
 function onlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -946,8 +943,17 @@ function asReference(value: unknown): OperationArtifact | undefined {
   if (full.success) return { kind: "reference", ...full.data };
   const stored = StoredRefSchema.safeParse(value);
   if (stored.success) {
+    // Re-validate as a logical reference: the repository is a logical name and
+    // the path is relative, so a legacy absolute path, private URL or parent
+    // traversal cannot reach diagnostics.
     const { repository, commit, path, sha256 } = stored.data;
-    return { kind: "reference", repository, commit, path, hash: `sha256:${sha256}` };
+    const normalised = ArtifactReferenceSchema.safeParse({
+      repository,
+      commit,
+      path,
+      hash: `sha256:${sha256}`,
+    });
+    if (normalised.success) return { kind: "reference", ...normalised.data };
   }
   return undefined;
 }

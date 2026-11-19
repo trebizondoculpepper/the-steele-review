@@ -65,10 +65,7 @@ describe("OperationInspector", () => {
     ]);
 
     let info = openInspector(path).inspect("op-done");
-    expect(info).toMatchObject({
-      status: "completed",
-      artifact: { kind: "reference", ...artifact },
-    });
+    expect(info).toMatchObject({ status: "completed", artifact });
     expect(info?.pendingEvents).toEqual({ pending: 1, sent: 0 });
 
     store.markEventSent("event-1");
@@ -204,7 +201,7 @@ describe("logicalArtifact", () => {
     });
   });
 
-  it("rejects everything else, including payloads and credentials", () => {
+  it("rejects everything else, including payloads, credentials and private paths", () => {
     expect(logicalArtifact(null)).toBeUndefined();
     expect(logicalArtifact("artifact")).toBeUndefined();
     expect(logicalArtifact({ url: "https://example.org/x" })).toBeUndefined();
@@ -212,5 +209,24 @@ describe("logicalArtifact", () => {
     expect(logicalArtifact({ ...artifact, token: "secret" })).toBeUndefined();
     expect(logicalArtifact({ artifact: { ...artifact, path: "/absolute/path" } })).toBeUndefined();
     expect(logicalArtifact({ report: artifact.path, token: "secret" })).toBeUndefined();
+
+    // A legacy stored reference with the right field names is still rejected
+    // when its values are private or physical.
+    const stored = {
+      repository: artifact.repository,
+      commit: artifact.commit,
+      path: artifact.path,
+      sha256: artifact.hash.replace(/^sha256:/, ""),
+    };
+    expect(logicalArtifact({ ...stored, path: "/Users/private/records.json" })).toBeUndefined();
+    expect(
+      logicalArtifact({ ...stored, repository: "https://internal.example/archive" }),
+    ).toBeUndefined();
+    expect(
+      logicalArtifact({ commit: artifact.commit, path: "/Users/private/records.json" }),
+    ).toBeUndefined();
+    expect(
+      logicalArtifact({ report: "/Users/private/report.json", verdict: "pass" }),
+    ).toBeUndefined();
   });
 });
