@@ -273,6 +273,9 @@ export class CollectionWorker {
             transcriptLanguage: t.language,
             machineGenerated: true,
             mediaKind: t.mediaKind,
+            // Keep the provider's own quality signal with the archived text.
+            ...(t.confidence !== undefined ? { transcriptionConfidence: t.confidence } : {}),
+            transcriptionComplete: t.complete,
           },
         };
       } else if (acquired.kind === "unavailable") {
