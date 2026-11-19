@@ -66,6 +66,8 @@ export interface TranscriptCandidate {
   provider: string;
   model: string;
   mediaKind: MediaKind;
+  /** The media candidate actually transcribed (source URL as given), for provenance. */
+  mediaUrl: string;
   confidence?: number;
   complete: boolean;
   /** Always true: machine text, not verified quotation. */
@@ -362,6 +364,7 @@ export class TranscriptionAdapter {
           provider: this.options.provider.name,
           model: this.options.provider.model,
           mediaKind: candidate.kind,
+          mediaUrl: candidate.url,
           confidence: result.confidence,
           complete: result.complete ?? false,
           machineGenerated: true,
