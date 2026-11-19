@@ -53,3 +53,15 @@ Acquisition prefers existing source transcripts, otherwise temporary audio for t
 Use a private Git repository on the persistent artifact volume to version text, provenance, evidence briefs, drafts and verification results as Markdown/JSON. Keep it separate from the public application code repository. One archive-writing component serialises commits; stages reference exact commit IDs and paths. Verification approval also identifies the draft content hash so changed content cannot inherit approval. SQLite remains the store for operation claims, retry state, pending handoffs and publication status; Git is not a task queue. Never commit temporary media or credentials.
 
 No backup/restore implementation or disaster-recovery system is required for this proof of concept. Consider that work only after the end-to-end experiment succeeds. Ordinary retry correctness and duplicate-publication prevention remain in scope.
+
+## Git controller boundary
+
+All application Git operations belong behind a typed service/controller. The existing `GitArtifactStore` is the archive-facing controller: consumers ask to initialise, save, look up, list or read artifacts and receive typed results. Callers must not construct Git commands, parse Git output or invoke subprocesses. Keep repository plumbing and process execution inside this boundary, including operational archive inspection tools. Ordinary developer Git commands are outside the application boundary.
+
+PDB's `GitService` and `GitHubService` provide a reference pattern: a composition root supplies shared typed services, feature code requests capabilities, and an internal transport owns command execution and output interpretation. Reuse the pattern rather than importing PDB's unrelated issue-management workflows or adding a GitHub dependency to local artifact storage.
+
+### Remediation scope
+
+Inspection of the application source at `e4bb40f` found Git process execution confined to `src/controllers/artifact-store.ts`; there is no identified scattered-command change to revert. Preserve that implementation and its immutable artifact semantics. Remove any proposed runbook or entry-point workaround that would introduce direct archive Git commands outside it. Add missing archive capabilities to the typed controller, with focused controller tests, instead of teaching each worker Git.
+
+If extracting a lower-level typed Git service becomes necessary, keep it private to the artifact controller, inject its transport for tests, and preserve hash verification, atomic reference updates and existing failure categories. Do not replace the archive with PDB's read-only checkout API: archive writes require additional capabilities. Treat any future bypass as a blocking architectural finding.
