@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import { ThemeCatalogueStore } from "../../src/analysis/theme-catalogue.js";
 import {
+  DEFAULT_THEME_PROPOSAL_PROMPT,
   IncompatibleThemeResultError,
   parseThemeProposalResult,
   proposalId,
@@ -54,6 +55,38 @@ function model(
   };
 }
 
+describe("broad-topic prompt (#168)", () => {
+  it("asks for established researchable topics without treating notability as truth", () => {
+    const text = DEFAULT_THEME_PROPOSAL_PROMPT.instructions;
+    expect(DEFAULT_THEME_PROPOSAL_PROMPT.version).toBe("theme-proposals-v2");
+    expect(text).toMatch(/encyclopedia/);
+    expect(text).toMatch(/not evidence that anything is true/);
+    expect(text).toMatch(/Do not invent or cite article URLs/);
+    expect(text).toMatch(/unusual individual assertion/);
+  });
+
+  it("does not reuse a result saved under the previous prompt version", async () => {
+    const v1 = { version: "theme-proposals-v1", instructions: "old" };
+    await proposeThemes({
+      provider: model("fake/a", '{"themes":[{"title":"Old"}]}'),
+      prompt: v1,
+      artifacts: content,
+      post,
+      source,
+    });
+    // Established topic plus an unusual individual assertion: one broad theme.
+    const fresh = await proposeThemes({
+      provider: model("fake/a", '{"themes":[{"title":"Chemtrail conspiracy theory"}]}'),
+      artifacts: content,
+      post,
+      source,
+    });
+    if (fresh.status !== "proposed") throw new Error(fresh.status);
+    expect(fresh.reused).toBe(false);
+    expect(fresh.result.proposals.map((p) => p.title)).toEqual(["Chemtrail conspiracy theory"]);
+  });
+});
+
 describe("proposeThemes", () => {
   it("accepts title-only and described proposals with no quotation, ignoring legacy quote fields", async () => {
     const out = await proposeThemes({
@@ -87,7 +120,7 @@ describe("proposeThemes", () => {
     expect(out.result.extraction).toMatchObject({
       schemaVersion: 1,
       modelVersion: "fake/a",
-      promptVersion: "theme-proposals-v1",
+      promptVersion: "theme-proposals-v2",
     });
   });
 
