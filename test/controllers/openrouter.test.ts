@@ -60,9 +60,13 @@ describe("OpenRouterProvider", () => {
       { role: "system", content: "sys" },
       { role: "user", content: "usr" },
     ]);
-    expect(body.max_tokens).toBeGreaterThan(0);
+    expect(body.max_tokens).toBe(Math.ceil(1000 / 3));
+    await p
+      .complete({ ...req, maxOutputChars: 200_000 }, new AbortController().signal)
+      .catch(() => undefined);
+    expect(JSON.parse(String(calls[1].init.body)).max_tokens).toBe(8192);
     expect((calls[0].init.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY}`);
-    expect(usage).toEqual([
+    expect(usage.slice(0, 1)).toEqual([
       { model: "vendor/m", promptTokens: 10, completionTokens: 3, cost: 0.0001 },
     ]);
   });

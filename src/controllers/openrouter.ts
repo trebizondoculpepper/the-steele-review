@@ -67,6 +67,8 @@ export interface OpenRouterConfig {
   /** Upper bound on the raw HTTP response body. */
   maxResponseBytes?: number;
   temperature?: number;
+  /** Hard cap on requested output tokens, independent of the character limit (default 8192). */
+  maxOutputTokens?: number;
   fetch?: typeof fetch;
   onUsage?: (usage: ModelUsage) => void;
 }
@@ -137,7 +139,13 @@ export class OpenRouterProvider implements ExtractionModelProvider {
         { role: "system", content: request.system },
         { role: "user", content: request.user },
       ],
-      max_tokens: Math.max(1, Math.ceil(request.maxOutputChars / CHARS_PER_TOKEN)),
+      max_tokens: Math.max(
+        1,
+        Math.min(
+          this.config.maxOutputTokens ?? 8_192,
+          Math.ceil(request.maxOutputChars / CHARS_PER_TOKEN),
+        ),
+      ),
       temperature: this.config.temperature ?? 0,
       usage: { include: true },
     };
