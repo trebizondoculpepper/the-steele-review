@@ -1,3 +1,4 @@
+import { contextForModel, contextMatchesBrief, type PinnedContext } from "./pinned-context.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -44,6 +45,17 @@ export const DEFAULT_VERIFY_PROMPT: ExtractionPrompt = {
   ].join("\n"),
 };
 
+/** Verifier prompt when pinned whole-post context is supplied (#164). */
+export const DEFAULT_VERIFY_CONTEXT_PROMPT: ExtractionPrompt = {
+  version: "draft-verifier-context-v1",
+  instructions: [
+    "You are the verifier, not the writer. Check whether every statement in the draft is supported by the supplied brief, its evidence passages and, for the summary only, the supplied original post. The related-themes section may use the supplied themes.",
+    "The summary must fairly represent originalPost. Factual corrections must be supported by the cited research; the original post is the monitored source and never confirms its own statements.",
+    "Do not use outside knowledge and do not research. Overstated certainty, dropped qualifications, misattributed evidence, an unfair summary, or claims the evidence does not support are issues.",
+    'For each issue, quote the exact draft passage, explain the problem and state the required change. Respond with JSON only: {"verdict":"approve"|"redraft","issues":[{"passage","problem","requiredChange"}]}.',
+  ].join("\n"),
+};
+
 const ModelVerdictSchema = z
   .object({
     verdict: z.enum(["approve", "redraft"]),
@@ -80,11 +92,16 @@ export interface VerificationReport {
   maxAttempts: number;
   verifier?: { modelVersion: string; promptVersion: string };
   rejectedIssues: number;
+  /** Pinned context the verdict was reached with (#164); must match the draft's. */
+  contextRef?: string;
 }
 
 export type VerifyOutcome =
   | { kind: "report"; report: VerificationReport }
-  | { kind: "invalid"; reason: "draft-hash-mismatch" | "brief-hash-mismatch" | "invalid-brief" }
+  | {
+      kind: "invalid";
+      reason: "draft-hash-mismatch" | "brief-hash-mismatch" | "invalid-brief" | "context-mismatch";
+    }
   | { kind: "pending"; reason: "verifier-unavailable" | "malformed-output" };
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -208,7 +225,9 @@ export async function verifyDraft(input: {
   draft: ArtifactRef;
   briefText: string;
   briefRef: ArtifactRef;
-  metadata: Pick<DraftMetadata, "draftHash" | "brief">;
+  metadata: Pick<DraftMetadata, "draftHash" | "brief" | "contextRef">;
+  /** The same pinned context the draft was written with (#164). */
+  context?: PinnedContext;
   verifier: ExtractionModelProvider;
   prompt?: ExtractionPrompt;
   attempt?: number;
@@ -235,7 +254,16 @@ export async function verifyDraft(input: {
   } catch {
     return { kind: "invalid", reason: "invalid-brief" };
   }
-  const prompt = input.prompt ?? DEFAULT_VERIFY_PROMPT;
+  // The verifier must see exactly the context the draft was written with:
+  // no context substituted, dropped or added after the fact.
+  if (
+    (input.context?.contextRef ?? undefined) !== (input.metadata.contextRef ?? undefined) ||
+    (input.context && !contextMatchesBrief(input.context, brief))
+  ) {
+    return { kind: "invalid", reason: "context-mismatch" };
+  }
+  const prompt =
+    input.prompt ?? (input.context ? DEFAULT_VERIFY_CONTEXT_PROMPT : DEFAULT_VERIFY_PROMPT);
   const attempt = Math.max(1, input.attempt ?? 1);
   const maxAttempts = Math.max(1, Math.min(input.maxAttempts ?? 3, 10));
   const base = {
@@ -244,6 +272,7 @@ export async function verifyDraft(input: {
     brief: refOf(input.briefRef),
     attempt,
     maxAttempts,
+    ...(input.context ? { contextRef: input.context.contextRef } : {}),
   } as const;
   const conclude = (
     issues: VerificationIssue[],
@@ -284,6 +313,7 @@ export async function verifyDraft(input: {
         })),
         evidenceGaps: brief.evidenceGaps.map((g) => g.statement),
       },
+      ...(input.context ? contextForModel(input.context) : {}),
     }),
     boundary,
   ].join("\n");
