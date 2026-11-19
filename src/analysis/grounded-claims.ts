@@ -118,6 +118,8 @@ export const ClaimExtractionRecordSchema = z
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     sourceVersion: z.string(),
     themeIds: z.array(z.string()),
+    /** Exact theme result (commit:path) the theme IDs belong to. */
+    themeResult: z.string().optional(),
     /** Catalogue IDs too long to link from an occurrence; never truncated. */
     skippedThemeIds: z.array(z.string()).optional(),
     claims: z.array(ExtractedClaimSchema),
@@ -229,6 +231,8 @@ export async function extractGroundedClaims(input: {
   indexName?: string;
   source: OccurrenceSource;
   themes: Array<Pick<CatalogueTheme, "id" | "name" | "definition">>;
+  /** Reference (commit:path) to the theme result the themes come from. */
+  themeResult?: string;
   maxAttempts?: number;
   maxSourceChars?: number;
   maxResponseChars?: number;
@@ -394,6 +398,7 @@ export async function extractGroundedClaims(input: {
       post,
       sourceVersion: source.sourceVersion,
       themeIds: [...themeIds],
+      ...(input.themeResult ? { themeResult: input.themeResult } : {}),
       ...(skippedThemeIds.length > 0 ? { skippedThemeIds } : {}),
       claims,
       rejected: detailed,
