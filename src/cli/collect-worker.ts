@@ -16,10 +16,11 @@
  *   STEELE_COLLECT_RETRY_DELAY_MS?    redelivery delay after a retryable failure
  *   STEELE_COLLECT_DISPATCH_INTERVAL_MS?  pending handoff retry interval (default 30 s)
  *
- * No transcription provider is configured here: posts that need
- * transcription are recorded visibly as transcription-unavailable.
+ * Optional CPU-only transcription is selected with STEELE_TRANSCRIPTION_PROVIDER.
+ * Disabled by default; see doc/testing/local-whisper.md for configuration.
  * Output is one JSON line per outcome; no URLs with credentials are printed.
  */
+import { configuredTranscription } from "../config/transcription.js";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { hostname } from "node:os";
 import { z } from "zod";
@@ -59,6 +60,14 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  let transcriber;
+  try {
+    transcriber = await configuredTranscription();
+  } catch {
+    console.error("collect-worker: local transcription setup failed");
+    return 2;
+  }
+
   const artifacts = new GitArtifactStore({
     repoPath: c.STEELE_ARCHIVE_PATH,
     repository: c.STEELE_ARCHIVE_REPOSITORY,
@@ -71,6 +80,7 @@ async function main(): Promise<number> {
     operations,
     collector: new SubstackContentCollector({ publicationUrl: c.STEELE_PUBLICATION_URL }),
     publisher: nats,
+    ...(transcriber ? { transcriber } : {}),
     owner: `collect-worker:${hostname()}:${process.pid}`,
     ...(c.STEELE_COLLECT_RETRY_DELAY_MS ? { retryDelayMs: c.STEELE_COLLECT_RETRY_DELAY_MS } : {}),
     onOutcome: (outcome, item) =>
