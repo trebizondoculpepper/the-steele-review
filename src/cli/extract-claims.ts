@@ -48,6 +48,10 @@ const EnvSchema = z.object({
 const USAGE = "Usage: extract-claims --post-id <slug>";
 
 async function main(argv: string[]): Promise<number> {
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    console.log(USAGE);
+    return 0;
+  }
   if (argv.length !== 2 || argv[0] !== "--post-id" || !/^[a-z0-9][a-z0-9-]{0,299}$/.test(argv[1])) {
     console.error(USAGE);
     return 2;
@@ -72,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
       await es.addMappingFields(CLAIM_OCCURRENCE_INDEX_V1, CLAIM_OCCURRENCE_MAPPING_ADDITIONS);
     }
   } catch (error) {
+    await es?.close().catch(() => undefined);
     console.error(`extract-claims: ${describeSetupError(error)}`);
     return 2;
   }
@@ -160,6 +165,10 @@ async function main(argv: string[]): Promise<number> {
       usage,
     });
     return 0;
+  } catch (error) {
+    // Name the failure only: Git and search errors can carry paths or output.
+    report({ outcome: "failed", error: error instanceof Error ? error.name : "error" });
+    return 1;
   } finally {
     await es?.close();
   }

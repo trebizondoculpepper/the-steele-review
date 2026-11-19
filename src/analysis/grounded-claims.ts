@@ -8,6 +8,7 @@ import {
 import { createClaim, ClaimTypeSchema, DateMentionSchema, type Claim } from "./claim.js";
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
+  ClaimOccurrenceSchema,
   createClaimOccurrence,
   type ClaimOccurrence,
   type OccurrenceSource,
@@ -302,12 +303,22 @@ export async function extractGroundedClaims(input: {
           },
           source,
         );
-        occurrence = createClaimOccurrence({
+        const built = createClaimOccurrence({
           claim,
           source,
           speaker,
           themes: linked,
           assertionKind: m.kind,
+        });
+        // Group occurrences by the same strict key as claim records, so
+        // operators and signs keep distinct claims apart in the index too.
+        occurrence = ClaimOccurrenceSchema.parse({
+          ...built,
+          grouping: {
+            key: claimIdentityKey(claim.statement),
+            method: "normalised-text",
+            version: "2",
+          },
         });
       } catch {
         return rejected.push({ index, reason: "invalid-claim" });
