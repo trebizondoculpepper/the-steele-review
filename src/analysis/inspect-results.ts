@@ -1,6 +1,19 @@
+import { z } from "zod";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ClaimExtractionRecordSchema, type ClaimExtractionRecord } from "./grounded-claims.js";
 import { parseThemeProposalResult, type ThemeProposalResult } from "./theme-proposals.js";
+
+/**
+ * True when some saved result could not be read, parsed or resolved, or more
+ * results exist than were read: the report is partial.
+ */
+export function isPartial(r: InspectionReport): boolean {
+  return (
+    r.resultsTruncated ||
+    r.themeResults.some((t) => t.status !== "ok") ||
+    r.claimResults.some((c) => c.status !== "ok")
+  );
+}
 
 /**
  * Private inspection of saved theme and claim results for one post (#187).
@@ -82,33 +95,48 @@ const logical = (ref: ArtifactRef) =>
     ? `unresolved:${ref.path}`
     : `${ref.commit.slice(0, 12)}:${ref.path}`;
 
-interface OccurrenceView {
-  passage?: string;
-  span?: { start: number; end: number };
-  transcriptTime?: { startSeconds: number; endSeconds: number };
-  sourcePublishedAt?: string;
-  speaker?: { kind?: string; name?: string };
-}
+// Saved claim and occurrence payloads are typed `unknown` in the record
+// schema; validate the projected fields so malformed data degrades to
+// "unknown"/empty rather than crashing or rendering misleading values.
+const Span = z.object({ start: z.number().int(), end: z.number().int() });
+const ClaimView = z.object({
+  statement: z.string().optional().catch(undefined),
+  passage: z.string().optional().catch(undefined),
+  span: Span.optional().catch(undefined),
+});
+const OccurrenceView = z.object({
+  passage: z.string().optional().catch(undefined),
+  span: Span.optional().catch(undefined),
+  transcriptTime: z
+    .object({ startSeconds: z.number(), endSeconds: z.number() })
+    .optional()
+    .catch(undefined),
+  sourcePublishedAt: z.string().optional().catch(undefined),
+  speaker: z
+    .object({
+      kind: z.string().optional().catch(undefined),
+      name: z.string().optional().catch(undefined),
+    })
+    .optional()
+    .catch(undefined),
+});
+const asObject = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 
 function claimView(
   item: { claim: unknown; occurrence: unknown; kind: string; themeIds: string[] },
-  titles: Map<string, string>,
+  titles: ReadonlyMap<string, string>,
 ): InspectedClaim {
-  const claim = (item.claim ?? {}) as {
-    statement?: string;
-    passage?: string;
-    span?: { start: number; end: number };
-  };
-  const occ = (item.occurrence ?? {}) as OccurrenceView;
+  const claim = ClaimView.parse(asObject(item.claim));
+  const occ = OccurrenceView.parse(asObject(item.occurrence));
   const span = occ.span ?? claim.span ?? { start: -1, end: -1 };
   return {
-    statement: String(claim.statement ?? ""),
+    statement: claim.statement ?? "",
     kind: item.kind,
     themes: item.themeIds.map((id) => ({
       id,
       ...(titles.has(id) ? { title: titles.get(id) } : {}),
     })),
-    quotation: String(occ.passage ?? claim.passage ?? ""),
+    quotation: occ.passage ?? claim.passage ?? "",
     location: {
       start: span.start,
       end: span.end,
@@ -123,7 +151,7 @@ function claimView(
     },
     ...(occ.sourcePublishedAt ? { sourcePublishedAt: occ.sourcePublishedAt } : {}),
     speaker: {
-      kind: String(occ.speaker?.kind ?? "unknown"),
+      kind: occ.speaker?.kind ?? "unknown",
       ...(occ.speaker?.name ? { name: occ.speaker.name } : {}),
     },
   };
@@ -189,7 +217,10 @@ export async function inspectPost(
     `claim-extractions/${post.publicationId}/${post.postId}`,
   );
   report.resultsTruncated = themeFiles.truncated || claimFiles.truncated;
-  const titles = new Map<string, string>();
+  // Titles are resolved per theme result: proposal IDs are derived from
+  // normalised titles, so different saved wordings can share an ID across
+  // model or prompt versions. Each claim result uses its own linked result.
+  const titlesByResult = new Map<string, Map<string, string>>();
   const themeSourceVersions = new Map<string, string>();
   for (const { ref, text } of themeFiles.items) {
     if (text === undefined) {
@@ -203,7 +234,10 @@ export async function inspectPost(
       report.themeResults.push({ ref: logical(ref), status: "incompatible" });
       continue;
     }
-    for (const p of result.proposals) titles.set(p.id, p.title);
+    titlesByResult.set(
+      `${ref.commit}:${ref.path}`,
+      new Map(result.proposals.map((p) => [p.id, p.title])),
+    );
     themeSourceVersions.set(`${ref.commit}:${ref.path}`, result.sourceVersion);
     report.themeResults.push({
       ref: logical(ref),
@@ -244,6 +278,8 @@ export async function inspectPost(
     // Schema v1 accepted every grounded claim (including unclassified ones);
     // show those as legacy, never as accepted under the current contract.
     const isLegacy = record.schemaVersion === 1;
+    const titles =
+      (record.themeResult && titlesByResult.get(record.themeResult)) || new Map<string, string>();
     const viewed = record.claims.map((c) => claimView(c, titles));
     const accepted = isLegacy ? [] : viewed;
     const legacy = isLegacy ? viewed : [];

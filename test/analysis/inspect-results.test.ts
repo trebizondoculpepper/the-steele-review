@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import { extractGroundedClaims } from "../../src/analysis/grounded-claims.js";
-import { inspectPost, renderInspection } from "../../src/analysis/inspect-results.js";
+import { inspectPost, isPartial, renderInspection } from "../../src/analysis/inspect-results.js";
 import { proposeThemes } from "../../src/analysis/theme-proposals.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
@@ -251,6 +251,79 @@ describe("inspectPost", () => {
       ref: expect.stringMatching(/^unresolved:theme-proposals\//),
     });
     expect(r.claimResults[0].status).toBe("ok");
+  });
+
+  it("validates projected claim fields from malformed saved data", async () => {
+    await content.write(
+      "claim-extractions/pub/post/odd.json",
+      JSON.stringify({
+        schemaVersion: 2,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        claims: [
+          {
+            claim: { statement: 42, span: "nope" },
+            occurrence: {
+              sourcePublishedAt: 12345,
+              speaker: { kind: 7 },
+              transcriptTime: { startSeconds: "x" },
+            },
+            kind: "assertion",
+            themeIds: [],
+            classification: "themed",
+          },
+        ],
+        candidates: [],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const r = await inspectPost(content, post);
+    const claim = r.claimResults[0].accepted![0];
+    expect(claim).toMatchObject({
+      statement: "",
+      quotation: "",
+      speaker: { kind: "unknown" },
+      location: { start: -1, end: -1 },
+    });
+    expect(claim.sourcePublishedAt).toBeUndefined();
+    expect(claim.location.transcriptSeconds).toBeUndefined();
+    expect(() => renderInspection(r)).not.toThrow();
+  });
+
+  it("resolves theme titles from the claim result's own linked theme result", async () => {
+    await analyse();
+    const id = (await inspectPost(content, post)).themeResults[0].proposals![0].id;
+    // A second saved theme result that reuses the same ID with different wording.
+    await content.write(
+      "theme-proposals/pub/post/zz-other.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        post: { sourceType: "substack", ...post },
+        sourceVersion: sourceVersionFor(TEXT),
+        artifact,
+        proposals: [{ id, title: "GEOENGINEERING!" }],
+        rejected: [],
+        catalogueContext: null,
+        extraction: {
+          schemaVersion: 1,
+          modelVersion: "other",
+          promptVersion: "p",
+          proposedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    );
+    const r = await inspectPost(content, post);
+    const accepted = r.claimResults.find((c) => c.status === "ok")!.accepted![0];
+    expect(accepted.themes[0].title).toBe("Geoengineering");
+  });
+
+  it("marks a report partial when any saved result is unreadable", async () => {
+    await analyse();
+    expect(isPartial(await inspectPost(content, post))).toBe(false);
+    await content.write("claim-extractions/pub/post/broken.json", "{not json");
+    expect(isPartial(await inspectPost(content, post))).toBe(true);
   });
 
   it("reports unreadable results instead of hiding them", async () => {
