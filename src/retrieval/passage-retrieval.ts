@@ -102,14 +102,22 @@ const QuerySchema = z.object({
   limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
 });
 
-const terms = (text: string) => [
-  ...new Set(
-    text
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((t) => t.length > 2),
-  ),
-];
+/**
+ * Query terms for passage selection. Short identifiers such as "AI", "UK" or
+ * "5G" are kept; single characters are dropped unless they are all there is.
+ */
+const terms = (text: string) => {
+  const all = [
+    ...new Set(
+      text
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter(Boolean),
+    ),
+  ];
+  const meaningful = all.filter((t) => t.length >= 2);
+  return meaningful.length > 0 ? meaningful : all;
+};
 
 export class PassageRetriever {
   private readonly fulltextIndex: string;
@@ -163,11 +171,51 @@ export class PassageRetriever {
     const passages = [...fused.values()]
       .sort((a, b) => b.signals.fused - a.signals.fused || a.passageId.localeCompare(b.passageId))
       .slice(0, limit);
+    await this.enrichFromFulltext(passages);
     return {
       mode: semanticUnavailable ? "keyword-only" : "hybrid",
       ...(semanticUnavailable ? { semanticUnavailable } : {}),
       passages,
     };
+  }
+
+  /**
+   * Semantic-only results come from vector documents, which do not carry the
+   * post's canonical URL or title: fill them from the full-text document for
+   * the same post. Best effort; a lookup failure leaves them absent.
+   */
+  private async enrichFromFulltext(passages: RetrievedPassage[]): Promise<void> {
+    const missing = passages.filter((p) => p.url === undefined);
+    if (missing.length === 0) return;
+    const ids = [...new Set(missing.map((p) => `substack:${p.publicationId}:${p.postId}`))];
+    let hits: SearchHit[];
+    try {
+      hits = await this.config.index.search(
+        this.fulltextIndex,
+        { ids: { values: ids } },
+        { size: ids.length },
+      );
+    } catch {
+      return;
+    }
+    const byPost = new Map<string, { url: string; title: string; publishedAt?: string }>();
+    for (const hit of hits) {
+      const doc = FulltextDocumentSchema.safeParse(hit.source);
+      if (doc.success) {
+        byPost.set(`${doc.data.publicationId}/${doc.data.postId}`, {
+          url: doc.data.url,
+          title: doc.data.title,
+          ...(doc.data.publishedAt ? { publishedAt: doc.data.publishedAt } : {}),
+        });
+      }
+    }
+    for (const p of missing) {
+      const meta = byPost.get(`${p.publicationId}/${p.postId}`);
+      if (!meta) continue;
+      p.url = meta.url;
+      p.title = meta.title;
+      if (p.publishedAt === undefined && meta.publishedAt) p.publishedAt = meta.publishedAt;
+    }
   }
 
   private filters(query: z.infer<typeof QuerySchema>, dateField: string, publicationField: string) {

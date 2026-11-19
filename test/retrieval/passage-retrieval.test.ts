@@ -168,6 +168,34 @@ describe("PassageRetriever (fake index)", () => {
     expect(result.passages.length).toBeGreaterThan(0);
   });
 
+  it("selects passages using short query terms such as 5G", async () => {
+    const shortDoc = createFulltextDocument(
+      {
+        item: {
+          publicationId: "pub-c",
+          postId: "short",
+          url: "https://pub-c.substack.com/p/short",
+          title: "short",
+        },
+        text: "Nothing relevant in this opening sentence at all. The 5G masts went up last week in town.",
+        acquisitionOrigin: "transcript",
+        artifact: artifact(4),
+        sourceRetrievedAt: "2026-04-01T00:00:00Z",
+      },
+      () => new Date("2026-04-02T00:00:00Z"),
+    );
+    const port: RetrievalIndexPort = {
+      search: async () => [{ id: "s", score: 1, source: shortDoc }],
+      knnSearch: async () => [],
+    };
+    const [top] = (
+      await new PassageRetriever({ index: port, chunking: { ...CHUNKING, maxChars: 50 } }).retrieve(
+        { text: "5G" },
+      )
+    ).passages;
+    expect(top!.text).toContain("5G");
+  });
+
   it("validates the query and bounds the limit", async () => {
     const port: RetrievalIndexPort = { search: async () => [], knnSearch: async () => [] };
     const retriever = new PassageRetriever({ index: port });
@@ -235,6 +263,10 @@ describe.skipIf(!esUrl)("PassageRetriever with Elasticsearch", () => {
         const post = POSTS.find((x) => x.postId === p.postId)!;
         expect(post.text.slice(p.start, p.end)).toBe(p.text);
       }
+
+      // Every result, including semantic-only ones, carries its canonical URL.
+      for (const p of all.passages)
+        expect(p.url).toBe(`https://${p.publicationId}.substack.com/p/${p.postId}`);
 
       const pubA = await retriever.retrieve({ text: "towers", publicationId: "pub-a" });
       expect(pubA.passages.every((p) => p.publicationId === "pub-a")).toBe(true);
