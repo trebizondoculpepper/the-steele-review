@@ -297,8 +297,19 @@ describe("record versions (#182)", () => {
     expect(candidateReasons("speculation", ["geoengineering"], "The heat may be man-made")).toEqual(
       [],
     );
-    expect(candidateReasons("assertion", ["geoengineering"], "It is poison")).toEqual([
+    expect(candidateReasons("assertion", ["geoengineering"], "They are poisoning us")).toEqual([
       "unclear-referent",
     ]);
+    // Impersonal and demonstrative constructions are self-contained.
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "It is illegal to modify weather for hostile purposes",
+      ),
+    ).toEqual([]);
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "This treaty bans weather warfare"),
+    ).toEqual([]);
   });
 });

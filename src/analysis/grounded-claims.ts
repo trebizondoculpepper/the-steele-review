@@ -208,13 +208,17 @@ export function claimRejectionStage(reason: string): RejectionStage {
   return "grounding"; // unknown theme, passage or speaker evidence not found
 }
 
-const LEADING_PRONOUN = /^(?:they|them|it|this|that|these|those|he|she|we|you)\b/i;
+// Only personal pronouns standing for unnamed actors are flagged. "It",
+// "this" and "that" also open impersonal or self-contained constructions
+// ("It is illegal to…", "This treaty bans…"), so they are left to the prompt
+// and source inspection rather than rejected structurally.
+const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
 
 /**
  * Structural acceptance checks. Semantic self-containment also relies on the
  * prompt and on source inspection (#184); this catches the clear cases:
  * no theme link, a question, or a statement that opens with an unresolved
- * pronoun ("They are spraying us") instead of naming its subject.
+ * personal pronoun ("They are spraying us") instead of naming its subject.
  */
 export function candidateReasons(
   kind: z.infer<typeof AssertionKindSchema>,
