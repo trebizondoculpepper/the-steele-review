@@ -338,6 +338,21 @@ describe("extractAndStoreThemes", () => {
     }
   });
 
+  it("orders distinct extractions that share a millisecond deterministically", async () => {
+    const { themeIndexVersion } = await import("../../src/analysis/theme-extraction.js");
+    const at = "2026-05-01T00:00:00.000Z";
+    const a = themeIndexVersion(at, "aaa" + "0".repeat(61));
+    const b = themeIndexVersion(at, "bbb" + "0".repeat(61));
+    expect(a).not.toBe(b);
+    expect(themeIndexVersion(at, "aaa" + "1".repeat(61))).toBe(a);
+    expect(themeIndexVersion("2026-05-01T00:00:00.001Z", "000" + "0".repeat(61))).toBeGreaterThan(
+      Math.max(a, b),
+    );
+    expect(
+      Number.isSafeInteger(themeIndexVersion("2099-12-31T23:59:59.999Z", "f".repeat(64))),
+    ).toBe(true);
+  });
+
   it("stores nothing when extraction fails", async () => {
     const { p } = provider([new Error("down"), new Error("down")]);
     const { port, docs } = index();

@@ -306,6 +306,17 @@ const StoredThemeRecordSchema = z
   })
   .strict();
 
+/**
+ * External version for a theme document: extraction time in milliseconds,
+ * with a deterministic tie-breaker from the theme artifact's hash so two
+ * distinct extractions finishing in the same millisecond still order
+ * consistently. Re-indexing the same artifact yields the same version.
+ */
+export function themeIndexVersion(extractedAt: string, artifactSha256: string): number {
+  const tieBreak = Number.parseInt(artifactSha256.slice(0, 3), 16); // 0..4095
+  return Date.parse(extractedAt) * 4096 + tieBreak;
+}
+
 export const THEME_INDEX_V1 = "steele-source-themes-v1";
 
 /** Explicit strict mapping for the derived theme index. */
@@ -474,7 +485,7 @@ export async function extractAndStoreThemes(input: {
   // extraction is rejected as stale instead of replacing newer themes.
   try {
     await input.index.indexDocument(input.indexName ?? THEME_INDEX_V1, sourceId, document, {
-      version: Date.parse(themeSet.extraction.extractedAt),
+      version: themeIndexVersion(themeSet.extraction.extractedAt, artifact.sha256),
     });
   } catch (error) {
     if ((error as { category?: string }).category !== "stale-version") throw error;
