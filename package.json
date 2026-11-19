@@ -15,7 +15,9 @@
     "backfill": "node --enable-source-maps dist/cli/backfill.js",
     "index-worker": "node --enable-source-maps dist/cli/index-worker.js",
     "claim-timeline": "node --enable-source-maps dist/cli/claim-timeline.js",
-    "replay-index": "node --enable-source-maps dist/cli/replay-index.js"
+    "replay-index": "node --enable-source-maps dist/cli/replay-index.js",
+    "collect-worker": "node --enable-source-maps dist/cli/collect-worker.js",
+    "provision": "node --enable-source-maps dist/cli/provision.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
