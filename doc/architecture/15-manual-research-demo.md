@@ -85,6 +85,7 @@ For the Whisper proof of concept, the owner accepts representative manual audio 
 | [#162](https://github.com/trebizondoculpepper/the-steele-review/issues/162) | Dossier/structured-evidence bridge                         | S    |
 | [#163](https://github.com/trebizondoculpepper/the-steele-review/issues/163) | Bounded alternative query planning                         | S    |
 | [#164](https://github.com/trebizondoculpepper/the-steele-review/issues/164) | Shared pinned source/theme context for writer and verifier | M    |
+| [#166](https://github.com/trebizondoculpepper/the-steele-review/issues/166) | Remove automatic age-only evidence expiry                  | S    |
 
 These estimates assume reuse of delivered controllers and schemas. The parent XL estimate is an aggregate programme roll-up, not an unsplit implementation job. The audit identifies actual missing capabilities; new large work must be split into separately estimated S/M tickets. Native issue dependencies specify sequencing and allow dossier work to proceed alongside extraction after the audit.
 
@@ -97,3 +98,5 @@ The source-understanding, research and drafting parent epics are tracking umbrel
 The original audit is [recorded here](../findings/manual-demo-audit.md). Its three posts are a selected sample; proposed equivalence between their assertions remains a hypothesis to check in full context. Never merge claims solely to meet the acceptance checklist. Use a clearly labelled fixture where real material does not establish a suitable demonstration case.
 
 The [manual stage handoff map](../testing/manual-stage-handoffs.md) records inspected controller interfaces, identity/citation conversions, all-gap outcomes and a focused fixture matrix. Preparation tasks #162–#164 close identified integration gaps without adding automatic coordination.
+
+The corpus-reuse path also depends on policy correction #166: retained research must not silently expire after one year. Claim-specific freshness gaps and evidence dates remain visible.
