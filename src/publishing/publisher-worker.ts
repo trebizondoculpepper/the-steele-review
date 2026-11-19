@@ -393,10 +393,11 @@ export class PublisherWorker {
         // Another article's uncertain outcome may already be a publication
         // whose time is unknown: admit nothing new until read-back settles it.
         if (pub?.status === "uncertain" && op.key !== exceptKey) unsettled = true;
-        // So may an interrupted attempt that saved a draft and may have
+        // So may an interrupted attempt that saved a draft, or a draft read
+        // back as unpublished that is being republished, and may have
         // published before stopping (not a settled or permanent failure).
         if (
-          pub?.status === "draft-saved" &&
+          (pub?.status === "draft-saved" || pub?.status === "unpublished") &&
           op.key !== exceptKey &&
           op.status !== "completed" &&
           !op.exhausted

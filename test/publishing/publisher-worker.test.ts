@@ -343,6 +343,31 @@ describe("PublisherWorker smoke test", () => {
     });
   });
 
+  it("holds other articles while a republished draft's outcome is unrecorded", async () => {
+    const w = worker({ minIntervalMs: 60 * 60_000 });
+    const a = await approved("p1");
+    const key = `publish:example-destination:drafts:${a.data.draft.commit}:${a.data.draft.path}`;
+    client.inject("publishDraft", "outage");
+    expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "uncertain" });
+    // Read-back finds A unpublished; its republish then stops before recording anything.
+    const { reconcileUncertainPublication } = await import("../../src/publishing/reconcile.js");
+    const r = await reconcileUncertainPublication({
+      operations,
+      destination: new SubstackDestinationController(client),
+      key,
+      owner: "crashed",
+      leaseMs: 1,
+      sleep: async () => {},
+    });
+    expect(r.status).toBe("unpublished");
+    await new Promise((res) => setTimeout(res, 5));
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+    expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
+  });
+
   it("applies the frequency limit between publications", async () => {
     const w = worker({ minIntervalMs: 60 * 60_000 });
     expect(await w.handle(message(await approved("p1")))).toMatchObject({ kind: "published" });
