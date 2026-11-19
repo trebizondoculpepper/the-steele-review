@@ -253,7 +253,13 @@ export async function draftFromBrief(input: {
       return void rejected.push({ index, reason: "evidence-gap-claim" });
     if (!claim) return void rejected.push({ index, reason: "unknown-claim" });
     if (seen.has(e.claimId)) return void rejected.push({ index, reason: "duplicate-claim" });
-    if (e.citationIds.some((id) => !claim.citationIds.includes(id))) {
+    // References written into the prose count too: each must be declared
+    // for this item and belong to this claim.
+    const inProse = [...e.explanation.matchAll(/\[(E[0-9]+)\]/g)].map((m) => m[1]!);
+    if (
+      e.citationIds.some((id) => !claim.citationIds.includes(id)) ||
+      inProse.some((id) => !e.citationIds.includes(id))
+    ) {
       return void rejected.push({ index, reason: "citation-not-for-claim" });
     }
     seen.add(e.claimId);
