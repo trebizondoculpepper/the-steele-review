@@ -11,7 +11,7 @@ import {
 import type { DeliveredMessage } from "../controllers/nats.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { DraftingBriefSchema, type DraftingBrief } from "./brief.js";
-import { parseDraftReadyEvent, type DraftMetadata } from "./draft.js";
+import { parseDraftReadyEvent, renderSourceEntry, type DraftMetadata } from "./draft.js";
 
 /**
  * Draft verification (#43): checks an exact draft against its exact brief.
@@ -130,12 +130,14 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
     }
     const c = citations.get(m[1]!);
     if (!c) continue; // already reported above
-    if (c.evidence.url !== m[2]) {
+    // The whole entry (title, publisher, dates and URL) must be the brief's.
+    const expected = renderSourceEntry(c);
+    if (lines[i] !== expected) {
       issues.push({
         source: "deterministic",
         passage: lines[i]!,
-        problem: `The URL listed for ${m[1]} differs from the brief's evidence.`,
-        requiredChange: `List ${m[1]} with ${c.evidence.url}.`,
+        problem: `The source entry for ${m[1]} differs from the brief's evidence (title, publisher, dates or URL).`,
+        requiredChange: `List ${m[1]} as: ${expected}`,
       });
     }
     const quoted: string[] = [];
@@ -447,7 +449,14 @@ export class VerificationWorker {
       return { kind: "retry", reason: "lookup-failed" };
     }
     if (reportRef) {
-      report = JSON.parse(await artifacts.read(reportRef)) as VerificationReport;
+      try {
+        report = JSON.parse(await artifacts.read(reportRef)) as VerificationReport;
+      } catch {
+        // Release the claim so the recovery can be retried.
+        operations.fail(claimed.claim, "verify:report-read-failed", true);
+        message.nak(retryDelay);
+        return { kind: "retry", reason: "report-read-failed" };
+      }
     } else {
       const outcome = await verifyDraft({
         markdown,

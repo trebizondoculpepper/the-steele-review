@@ -248,6 +248,13 @@ describe("verifyDraft", () => {
     ]);
   });
 
+  it("flags a source entry whose dates or publisher differ from the brief", () => {
+    const redated = markdown.replace("retrieved 2026-10-01", "retrieved 2020-01-01");
+    expect(checkDraftReferences(redated, brief).map((i) => i.problem)).toEqual([
+      "The source entry for E1 differs from the brief's evidence (title, publisher, dates or URL).",
+    ]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -398,6 +405,36 @@ describe("VerificationWorker", () => {
     });
     expect(again.calls).toHaveLength(0);
     expect(operations.duePendingEvents(10, DRAFT_VERIFIED_SUBJECT)).toHaveLength(1);
+  });
+
+  it("retries when a committed report cannot be read during recovery", async () => {
+    const first = verifier([{ verdict: "approve", issues: [] }]);
+    await new VerificationWorker({ artifacts, verifier: first.p, operations, owner: "v" }).handle(
+      message(draftReady()),
+    );
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare("UPDATE operations SET status = 'released' WHERE key LIKE 'verify:%'").run();
+    const flaky = {
+      ...artifacts,
+      list: artifacts.list.bind(artifacts),
+      lookup: artifacts.lookup.bind(artifacts),
+      write: artifacts.write.bind(artifacts),
+      read: async (ref: ArtifactRef) => {
+        if (ref.path.startsWith("verifications/")) throw new Error("archive down");
+        return artifacts.read(ref);
+      },
+    };
+    const worker = new VerificationWorker({
+      artifacts: flaky as unknown as typeof artifacts,
+      verifier: verifier([]).p,
+      operations,
+      owner: "v",
+      retryDelayMs: 0,
+    });
+    expect(await worker.handle(message(draftReady()))).toEqual({
+      kind: "retry",
+      reason: "report-read-failed",
+    });
   });
 
   it("rejects stale metadata before claiming the verification", async () => {
