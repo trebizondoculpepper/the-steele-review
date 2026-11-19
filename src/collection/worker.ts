@@ -1,7 +1,11 @@
 import type { SubstackItem } from "../content/substack-item.js";
 import type { ArtifactRef } from "../controllers/artifact-store.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
-import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
+import type {
+  OperationClaim,
+  OperationStore,
+  PendingEventInput,
+} from "../controllers/operation-store.js";
 import type { CollectionResult } from "../controllers/substack/collect.js";
 import { parseDiscoveryEvent, type IngestionReason } from "../events/discovery-event.js";
 import { TEXT_READY_SUBJECT, createTextReadyEvent } from "../events/text-ready-event.js";
@@ -154,131 +158,170 @@ export class CollectionWorker {
       return { result: "exhausted", item };
     }
     const claim = claimResult.claim;
-
-    // An earlier attempt may have committed the artifact and crashed before
-    // recording completion: finish with that durable record rather than
-    // fetching the source again.
-    const committed = await this.config.store.existing(item).catch(() => undefined);
-    if (committed) {
-      try {
-        await this.config.store.commit(claim, committed.record, (artifact) =>
-          this.eventsFor(causationId)(artifact, committed.record),
-        );
-      } catch {
-        message.nak(this.retryDelayMs);
-        return { result: "retry", item };
-      }
-      await message.ack();
-      await this.dispatchPending(signal);
-      return { result: "already-collected", item };
-    }
-
-    let acquired: CollectionResult;
+    // Keep the claim and the broker delivery alive while acquisition runs, so a
+    // slow transcription is never claimed twice; losing the lease aborts work.
+    const keep = this.keepAlive(claim, message, signal);
     try {
-      acquired = await this.config.collector.collect(item, signal);
-    } catch {
-      acquired = { kind: "transient-failure", item, reason: "collector error" };
-    }
-
-    let record: CollectionRecord;
-    let job: TranscriptionJob | undefined;
-    let method = "";
-    if (acquired.kind === "text") {
-      method = acquired.provenance.method;
-      record = {
-        item,
-        ingestionReason: reason,
-        text: acquired.text,
-        complete: acquired.complete,
-        supplied: {
-          ...(acquired.supplied.articleHtml ? { articleHtml: acquired.supplied.articleHtml } : {}),
-          ...(acquired.supplied.transcript ? { transcript: acquired.supplied.transcript } : {}),
-          ...(acquired.supplied.transcriptDocument
-            ? { transcriptDocument: acquired.supplied.transcriptDocument }
-            : {}),
-        },
-        provenance: { ...acquired.provenance },
-      };
-    } else if (acquired.kind === "transcription-required") {
-      if (!this.config.transcriber || acquired.media.kind !== "audio") {
-        // No provider configured, or only a video upload without a fetchable URL:
-        // record a visible, non-retryable outcome rather than blocking other posts.
-        this.config.store.fail(claim, "transcription-unavailable", false);
-        await message.ack();
-        return { result: "transcription-unavailable", item };
-      }
-      try {
-        job = await this.config.transcriber.transcribe(
-          [
-            {
-              kind: "audio",
-              url: acquired.media.url,
-              durationSeconds: acquired.media.durationSeconds,
-            },
-          ],
-          signal,
-        );
-      } catch (error) {
-        const retryable = (error as { retryable?: boolean }).retryable === true;
-        this.config.store.fail(claim, "transcription-failed", retryable);
-        if (retryable) {
+      // An earlier attempt may have committed the artifact and crashed before
+      // recording completion: finish with that durable record rather than
+      // fetching the source again.
+      const committed = await this.config.store.existing(item).catch(() => undefined);
+      if (committed) {
+        try {
+          await this.config.store.commit(claim, committed.record, (artifact) =>
+            this.eventsFor(causationId)(artifact, committed.record),
+          );
+        } catch {
           message.nak(this.retryDelayMs);
           return { result: "retry", item };
         }
         await message.ack();
-        return { result: "transcription-unavailable", item };
+        await this.dispatchPending(signal);
+        return { result: "already-collected", item };
       }
-      method = "machine-transcript";
-      const t = job.transcript;
-      record = {
-        item,
-        ingestionReason: reason,
-        text: [acquired.articleText, t.text].filter(Boolean).join("\n\n"),
-        complete: t.complete,
-        supplied: t.timestamped
-          ? { transcript: t.segments.map((s) => ({ start: s.start!, end: s.end!, text: s.text })) }
-          : {},
-        provenance: {
-          ...acquired.provenance,
-          method,
-          transcriptionProvider: t.provider,
-          transcriptionModel: t.model,
-          transcriptLanguage: t.language,
-          machineGenerated: true,
-          mediaKind: t.mediaKind,
-        },
-      };
-    } else if (acquired.kind === "unavailable") {
-      this.config.store.fail(claim, `unavailable:${acquired.reason}`, false);
-      await message.ack();
-      return { result: "unavailable", item };
-    } else {
-      this.config.store.fail(claim, "transient-failure", true);
-      message.nak(this.retryDelayMs);
-      return { result: "retry", item };
-    }
 
-    try {
-      await this.config.store.commit(claim, record, (artifact) =>
-        this.eventsFor(causationId)(artifact, record),
-      );
-    } catch {
-      // Nothing was recorded as complete; temporary media is released and the
-      // input is redelivered later.
-      await job?.cleanup().catch(() => undefined);
+      let acquired: CollectionResult;
       try {
-        this.config.store.fail(claim, "commit-failed", true);
+        acquired = await this.config.collector.collect(item, keep.signal);
       } catch {
-        // Lease lost; the next owner retries.
+        acquired = { kind: "transient-failure", item, reason: "collector error" };
       }
-      message.nak(this.retryDelayMs);
-      return { result: "retry", item };
+
+      let record: CollectionRecord;
+      let job: TranscriptionJob | undefined;
+      let method = "";
+      if (acquired.kind === "text") {
+        method = acquired.provenance.method;
+        record = {
+          item,
+          ingestionReason: reason,
+          text: acquired.text,
+          complete: acquired.complete,
+          supplied: {
+            ...(acquired.supplied.articleHtml
+              ? { articleHtml: acquired.supplied.articleHtml }
+              : {}),
+            ...(acquired.supplied.transcript ? { transcript: acquired.supplied.transcript } : {}),
+            ...(acquired.supplied.transcriptDocument
+              ? { transcriptDocument: acquired.supplied.transcriptDocument }
+              : {}),
+          },
+          provenance: { ...acquired.provenance },
+        };
+      } else if (acquired.kind === "transcription-required") {
+        if (!this.config.transcriber || acquired.media.kind !== "audio") {
+          // No provider configured, or only a video upload without a fetchable URL:
+          // record a visible, non-retryable outcome rather than blocking other posts.
+          this.config.store.fail(claim, "transcription-unavailable", false);
+          await message.ack();
+          return { result: "transcription-unavailable", item };
+        }
+        try {
+          job = await this.config.transcriber.transcribe(
+            [
+              {
+                kind: "audio",
+                url: acquired.media.url,
+                durationSeconds: acquired.media.durationSeconds,
+              },
+            ],
+            keep.signal,
+          );
+        } catch (error) {
+          // Cancellation and a lost lease are not verdicts on the content: retry later.
+          const retryable =
+            (error as { retryable?: boolean }).retryable === true ||
+            (error as { reason?: string }).reason === "cancelled" ||
+            keep.signal.aborted;
+          this.config.store.fail(claim, "transcription-failed", retryable);
+          if (retryable) {
+            message.nak(this.retryDelayMs);
+            return { result: "retry", item };
+          }
+          await message.ack();
+          return { result: "transcription-unavailable", item };
+        }
+        method = "machine-transcript";
+        const t = job.transcript;
+        record = {
+          item,
+          ingestionReason: reason,
+          text: [acquired.articleText, t.text].filter(Boolean).join("\n\n"),
+          complete: t.complete,
+          supplied: t.timestamped
+            ? {
+                transcript: t.segments.map((s) => ({ start: s.start!, end: s.end!, text: s.text })),
+              }
+            : {},
+          provenance: {
+            ...acquired.provenance,
+            method,
+            transcriptionProvider: t.provider,
+            transcriptionModel: t.model,
+            transcriptLanguage: t.language,
+            machineGenerated: true,
+            mediaKind: t.mediaKind,
+          },
+        };
+      } else if (acquired.kind === "unavailable") {
+        this.config.store.fail(claim, `unavailable:${acquired.reason}`, false);
+        await message.ack();
+        return { result: "unavailable", item };
+      } else {
+        this.config.store.fail(claim, "transient-failure", true);
+        message.nak(this.retryDelayMs);
+        return { result: "retry", item };
+      }
+
+      try {
+        await this.config.store.commit(claim, record, (artifact) =>
+          this.eventsFor(causationId)(artifact, record),
+        );
+      } catch {
+        // Nothing was recorded as complete; temporary media is released and the
+        // input is redelivered later.
+        await job?.cleanup().catch(() => undefined);
+        try {
+          this.config.store.fail(claim, "commit-failed", true);
+        } catch {
+          // Lease lost; the next owner retries.
+        }
+        message.nak(this.retryDelayMs);
+        return { result: "retry", item };
+      }
+      // Durable: media can go, then acknowledge, then hand off.
+      await job?.cleanup().catch(() => undefined);
+      await message.ack();
+      await this.dispatchPending(signal);
+      return { result: "collected", item };
+    } finally {
+      keep.stop();
     }
-    // Durable: media can go, then acknowledge, then hand off.
-    await job?.cleanup().catch(() => undefined);
-    await message.ack();
-    await this.dispatchPending(signal);
-    return { result: "collected", item };
+  }
+
+  /** Renew the lease and extend the ack deadline periodically until stopped. */
+  private keepAlive(
+    claim: OperationClaim,
+    message: DeliveredMessage,
+    outer?: AbortSignal,
+  ): { signal: AbortSignal; stop: () => void } {
+    const lost = new AbortController();
+    const timer = setInterval(
+      () => {
+        try {
+          this.config.operations.renew(claim, this.leaseMs);
+          message.working();
+        } catch {
+          lost.abort();
+        }
+      },
+      Math.max(1_000, Math.floor(this.leaseMs / 3)),
+    );
+    timer.unref?.();
+    return {
+      signal: outer ? AbortSignal.any([outer, lost.signal]) : lost.signal,
+      stop: () => clearInterval(timer),
+    };
   }
 
   /**

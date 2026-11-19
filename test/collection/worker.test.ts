@@ -341,6 +341,51 @@ describe("CollectionWorker", () => {
     expect(m.naks).toHaveLength(1);
   });
 
+  it("keeps cancelled transcription retryable", async () => {
+    const transcriber: TranscriberPort = {
+      transcribe: async () => {
+        throw Object.assign(new Error("cancelled"), { reason: "cancelled", retryable: false });
+      },
+    };
+    const { worker, operations } = setup({
+      transcriber,
+      collect: () => ({
+        kind: "transcription-required",
+        item,
+        media: { kind: "audio", url: "https://media.test/a.mp3" },
+        provenance: { sourceUrl: item.url, acquiredAt: provenance.acquiredAt },
+      }),
+    });
+    const m = message();
+    expect(await worker.handle(m)).toBe("retry");
+    expect(m.naks).toHaveLength(1);
+    expect(operations.claim(collectionKey(item), "next", 1_000).kind).toBe("claimed");
+  });
+
+  it("renews the lease during slow acquisition so another worker cannot claim the post", async () => {
+    let working = 0;
+    let release: () => void = () => {};
+    const slow = setup({
+      owner: "worker-slow",
+      collect: async () => {
+        await new Promise<void>((r) => (release = r));
+        return textResult();
+      },
+    });
+    (slow.worker as unknown as { leaseMs: number }).leaseMs = 1_500;
+    const m = message();
+    m.working = () => {
+      working++;
+    };
+    const pending = slow.worker.handle(m);
+    await new Promise((r) => setTimeout(r, 2_500)); // longer than the original lease
+    const other = setup({ owner: "worker-other" });
+    expect(other.operations.claim(collectionKey(item), "worker-other", 1_000).kind).toBe("busy");
+    expect(working).toBeGreaterThan(0);
+    release();
+    expect(await pending).toBe("collected");
+  }, 10_000);
+
   it("keeps the handoff pending when publishing fails, then retries with the same event ID", async () => {
     const { worker, operations, published } = setup({ publishFails: 1 });
     const m = message();
