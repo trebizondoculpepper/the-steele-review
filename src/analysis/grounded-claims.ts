@@ -53,8 +53,9 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  */
 
 export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
-  version: "grounded-claims-v1",
+  version: "grounded-claims-v2",
   instructions: [
+    'claimType must be factual, opinion, prediction or ambiguous. speaker.kind must be author-voice, quoted, unknown or uncertain. Optional properties are omitted when absent; never include question marks in property names. Use JSON arrays for qualifiers, entities, dates and themeIds. A valid empty result is {"claims":[]}.',
     "Extract the specific claims the source text makes that a reader might want to check or respond to. Do not judge whether they are true.",
     "For each claim copy the shortest passage that states it exactly as written, character for character; if that passage occurs more than once, set `occurrence` to its 1-based position.",
     "`statement` restates the claim as the source asserts it, keeping qualifiers, quantities and negation. List hedging and scope words in `qualifiers` and stated dates in `dates` ({text, value?}).",
