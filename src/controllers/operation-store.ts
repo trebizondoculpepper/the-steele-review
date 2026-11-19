@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
@@ -1015,18 +1015,21 @@ export class OperationInspector {
     if (!Number.isInteger(busy) || busy < 0 || busy > 60_000) {
       return { status: "unavailable" };
     }
-    // A WAL sidecar means a writer is live or frames are uncheckpointed. The
-    // quiescent-immutable strategy below cannot read that state safely, so
-    // report unavailable rather than lock, modify or guess.
-    if (existsSync(`${path}-wal`)) return { status: "unavailable" };
     let db: DatabaseSync | undefined;
     try {
       if (!statSync(path).isFile()) return { status: "unavailable" };
+      // SQLite writes the WAL beside the resolved database file, so a symlinked
+      // path must be followed before looking for the sidecar or opening it.
+      const resolved = realpathSync(path);
+      // A WAL sidecar means a writer is live or frames are uncheckpointed. The
+      // quiescent-immutable strategy below cannot read that state safely, so
+      // report unavailable rather than lock, modify or guess.
+      if (existsSync(`${resolved}-wal`)) return { status: "unavailable" };
       // `immutable=1` reads without locking or creating `-wal`/`-shm`
       // sidecars, which a plain read-only connection would create.
       // A file URL encodes `?` and `#` in a path, which encodeURI would leave
       // ambiguous; the query parameter then selects immutable mode.
-      const fileUrl = pathToFileURL(path);
+      const fileUrl = pathToFileURL(resolved);
       fileUrl.searchParams.set("immutable", "1");
       db = new DatabaseSync(fileUrl.href, { readOnly: true, timeout: busy });
       const { user_version: version } = db.prepare("PRAGMA user_version").get() as {

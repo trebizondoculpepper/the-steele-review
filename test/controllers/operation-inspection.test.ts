@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,6 +175,22 @@ describe("read-only open", () => {
     expect(readdirSync(dir).filter((f) => f.includes("?draft#1"))).toEqual([
       "operations?draft#1.db",
     ]);
+  });
+
+  it("resolves a symlinked database before checking for WAL sidecars", () => {
+    const dir = directory();
+    const target = join(dir, "target.db");
+    const link = join(dir, "linked.db");
+    const store = new OperationStore({ path: target, now: () => NOW });
+    store.claim("op-link", "worker", 60_000);
+    store.close();
+    symlinkSync(target, link);
+
+    const info = openInspector(link).inspect("op-link");
+    expect(info?.key).toBe("op-link");
+
+    writeFileSync(`${target}-wal`, "");
+    expect(OperationInspector.open(link)).toEqual({ status: "unavailable" });
   });
 
   it("refuses a database whose schema is newer than this build", () => {
