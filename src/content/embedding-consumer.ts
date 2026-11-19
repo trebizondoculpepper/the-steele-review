@@ -249,15 +249,31 @@ export function transcriptTimingsFor(record: CollectionRecord): {
 } {
   const segments = record.supplied.transcript;
   if (!segments?.length) return {};
+  // The collector stores article text, then the transcript: alignment is
+  // restricted to that trailing transcript span so article words never match.
+  // Same join as the collector's transcriptText.
+  const transcript = segments
+    .map((s) => s.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  if (!transcript || !record.text.endsWith(transcript)) return {};
+  const base = record.text.length - transcript.length;
   const timings: TranscriptTiming[] = [];
   let cursor = 0;
   for (const s of segments) {
-    if (s.start === undefined || s.end === undefined || s.end < s.start || !s.text.trim()) continue;
-    const at = record.text.indexOf(s.text.trim(), cursor);
+    const text = s.text.trim();
+    if (!text) continue;
+    const at = transcript.indexOf(text, cursor);
     if (at === -1) continue;
-    const end = at + s.text.trim().length;
-    timings.push({ start: at, end, startSeconds: s.start, endSeconds: s.end });
-    cursor = end;
+    cursor = at + text.length;
+    // Zero-length or untimed segments are skipped: no timing is guessed.
+    if (s.start === undefined || s.end === undefined || s.end <= s.start) continue;
+    timings.push({
+      start: base + at,
+      end: base + cursor,
+      startSeconds: s.start,
+      endSeconds: s.end,
+    });
   }
   return timings.length ? { transcriptTimings: timings } : {};
 }

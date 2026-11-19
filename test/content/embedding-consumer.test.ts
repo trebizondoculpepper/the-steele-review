@@ -161,6 +161,21 @@ describe("transcriptTimingsFor", () => {
     );
     expect(t[1]).toMatchObject({ startSeconds: 9, endSeconds: 12 });
     expect(transcriptTimingsFor(record())).toEqual({});
+    // Article text before the transcript never matches, and zero-length segments are dropped.
+    const combined = {
+      ...record(),
+      text: `Officials denied it. ${TEXT}`,
+      supplied: {
+        transcript: [
+          { start: 0, end: 0, text: "The synthetic council raised fees by three percent." },
+          { text: "A synthetic critic said the fees would harm residents." },
+          { start: 9, end: 12, text: "Officials denied that any fee change had happened." },
+        ],
+      },
+    };
+    const c = transcriptTimingsFor(combined).transcriptTimings!;
+    expect(c).toHaveLength(1);
+    expect(c[0]!.start).toBe(combined.text.lastIndexOf("Officials denied that"));
   });
 });
 
