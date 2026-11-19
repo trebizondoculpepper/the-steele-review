@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
+import { z } from "zod";
 import { CollectionRecordSchema, type CollectionRecord } from "../collection/collection-store.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
 import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
@@ -36,6 +37,50 @@ import { DEFAULT_CHUNKING, chunkingKey, type ChunkingConfig } from "./passage-ve
 
 export const CONTENT_EMBEDDED_SUBJECT = "steele.v1.content.embedded";
 export const CONTENT_EMBEDDED_EVENT_TYPE_V1 = "org.steele.content.embedded.v1";
+export const CONTENT_EMBEDDED_DATASCHEMA_V1 = "urn:steele:schema:content-embedded:v1";
+export const EMBEDDING_WORKER_SOURCE = "urn:steele:embedding:worker";
+
+const Id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
+
+/** Versioned payload of the `content.embedded` handoff. */
+export const ContentEmbeddedDataSchema = z
+  .object({
+    publicationId: Id,
+    postId: Id,
+    sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    vectorSpace: z.string().min(1).max(500),
+    chunking: z.string().min(1).max(200),
+    indexName: z.string().min(1).max(255),
+    passages: z.number().int().min(1),
+    ingestionReason: z.enum(["live", "backfill", "reprocess"]),
+  })
+  .strict();
+export type ContentEmbeddedData = z.infer<typeof ContentEmbeddedDataSchema>;
+
+const ContentEmbeddedEnvelopeSchema = z
+  .object({
+    specversion: z.literal("1.0"),
+    id: z.string().min(1).max(200),
+    source: z.string().min(1).max(500),
+    type: z.literal(CONTENT_EMBEDDED_EVENT_TYPE_V1),
+    time: z.iso.datetime({ offset: true }),
+    subject: z.string().min(1).max(500),
+    datacontenttype: z.literal("application/json"),
+    dataschema: z.literal(CONTENT_EMBEDDED_DATASCHEMA_V1),
+    causationid: z.string().min(1).max(200).optional(),
+    data: ContentEmbeddedDataSchema,
+  })
+  .strict()
+  .refine((e) => e.subject === `substack/${e.data.publicationId}/${e.data.postId}`, {
+    message: "subject does not match the post",
+  });
+
+/** Parse and validate a serialised `content.embedded` event. */
+export function parseContentEmbeddedEvent(
+  input: string,
+): z.infer<typeof ContentEmbeddedEnvelopeSchema> {
+  return ContentEmbeddedEnvelopeSchema.parse(JSON.parse(input));
+}
 
 export type EmbeddingConsumerOutcome =
   | "embedded"
@@ -193,13 +238,14 @@ export class EmbeddingConsumer {
     const handoff = new CloudEvent({
       specversion: "1.0",
       id: randomUUID(),
-      source: "urn:steele:embedding:worker",
+      source: EMBEDDING_WORKER_SOURCE,
       type: CONTENT_EMBEDDED_EVENT_TYPE_V1,
       time: new Date().toISOString(),
       subject: sourceId,
       datacontenttype: "application/json",
+      dataschema: CONTENT_EMBEDDED_DATASCHEMA_V1,
       causationid: event.id,
-      data: {
+      data: ContentEmbeddedDataSchema.parse({
         publicationId: data.publicationId,
         postId: data.postId,
         sourceVersion,
@@ -208,13 +254,16 @@ export class EmbeddingConsumer {
         indexName: plan.indexName,
         passages: plan.jobs.length,
         ingestionReason: data.ingestionReason,
-      },
+      }),
     });
+    // The emitted envelope must satisfy the published contract.
+    const payload = JSON.stringify(handoff.toJSON());
+    parseContentEmbeddedEvent(payload);
     operations.complete(claim, { indexName: plan.indexName, passages: plan.jobs.length }, [
       {
         eventId: handoff.id,
         subject: CONTENT_EMBEDDED_SUBJECT,
-        payload: JSON.stringify(handoff.toJSON()),
+        payload,
       },
     ]);
     await message.ack();

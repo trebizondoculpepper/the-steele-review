@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CollectionRecord } from "../../src/collection/collection-store.js";
 import {
   CONTENT_EMBEDDED_SUBJECT,
+  CONTENT_EMBEDDED_DATASCHEMA_V1,
+  parseContentEmbeddedEvent,
   EmbeddingConsumer,
   transcriptTimingsFor,
   MAX_PASSAGE_TIMINGS,
@@ -127,6 +129,7 @@ function setup(
   const written: string[] = [];
   const vectors: VectorWriterPort = { write: async (p) => void written.push(p.id) };
   const published: string[] = [];
+  const payloads: string[] = [];
   const consumer = new EmbeddingConsumer({
     artifacts,
     embedder,
@@ -134,13 +137,18 @@ function setup(
     model,
     chunking: CHUNKING,
     operations,
-    publisher: { publish: async (s) => void published.push(s) },
+    publisher: {
+      publish: async (s, payload) => {
+        published.push(s);
+        payloads.push(new TextDecoder().decode(payload));
+      },
+    },
     owner: "embedder",
     maxJobs: options.maxJobs ?? 64,
     maxBatches: 1,
     retryDelayMs: 0,
   });
-  return { consumer, providerCalls, written, published, abort };
+  return { consumer, providerCalls, written, published, payloads, abort };
 }
 
 describe("transcriptTimingsFor", () => {
@@ -243,6 +251,12 @@ describe("EmbeddingConsumer", () => {
     expect(m.acks).toBe(1);
     expect(s.written.length).toBeGreaterThan(1);
     expect(s.published).toEqual([CONTENT_EMBEDDED_SUBJECT]);
+    const handoff = parseContentEmbeddedEvent(s.payloads[0]!);
+    expect(handoff).toMatchObject({
+      dataschema: CONTENT_EMBEDDED_DATASCHEMA_V1,
+      subject: "substack/example-pub/a-post",
+      data: { publicationId: "example-pub", postId: "a-post", ingestionReason: "backfill" },
+    });
   });
 
   it("treats a repeat event as already embedded without provider calls", async () => {
