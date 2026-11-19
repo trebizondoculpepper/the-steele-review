@@ -25,6 +25,7 @@ const ref = (c: string) => ({
 });
 const request = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1,
+  origin: "extraction",
   pass: 1,
   post: {
     publicationId: "pub",
@@ -178,5 +179,35 @@ describe("durable job lifecycle", () => {
     expect(second.jobId).not.toBe(first.jobId);
     const saved = JSON.parse(await artifacts.read(second.requestRef));
     expect(saved.previousJobId).toBe(first.jobId);
+  });
+});
+
+describe("manual subject requests (#218)", () => {
+  const manual = (over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1,
+    origin: "manual",
+    subject: "Chemtrail conspiracy theory",
+    brief: "Claims that aircraft deliberately spray chemicals.",
+    pass: 1,
+    claims: [],
+    corpusRefs: [],
+    ...over,
+  });
+
+  it("accepts a subject with an optional brief and gives it a stable identity", () => {
+    const a = researchJobId(manual());
+    expect(researchJobId(manual({ subject: "Chemtrail   conspiracy theory" }))).toBe(a);
+    expect(researchJobId(manual({ brief: "Different brief." }))).not.toBe(a);
+    expect(ResearchRequestSchema.parse(manual({ brief: undefined })).subject).toBe(
+      "Chemtrail conspiracy theory",
+    );
+  });
+
+  it("keeps manual and extraction requirements apart", () => {
+    expect(() => ResearchRequestSchema.parse(manual({ subject: undefined }))).toThrow();
+    expect(() => ResearchRequestSchema.parse(manual({ post: request().post }))).toThrow();
+    expect(() => ResearchRequestSchema.parse(request({ subject: "x" }))).toThrow();
+    expect(() => ResearchRequestSchema.parse(request({ claims: [] }))).toThrow();
+    expect(researchJobId(manual())).not.toBe(researchJobId(request()));
   });
 });

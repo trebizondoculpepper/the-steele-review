@@ -31,6 +31,16 @@ const JobId = z.string().regex(/^research-[0-9a-f]{32}$/);
 export const ResearchRequestSchema = z
   .object({
     schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
+    /**
+     * `extraction`: derived from a saved analysis, with exact post, analysis
+     * and claim references. `manual`: an operator's subject and optional brief
+     * (#218), with its own stable input identity.
+     */
+    origin: z.enum(["extraction", "manual"]),
+    /** Manual requests: the human-provided subject. */
+    subject: z.string().trim().min(1).max(300).optional(),
+    /** Manual requests: an optional brief explaining the narrative to research. */
+    brief: z.string().trim().min(1).max(8000).optional(),
     /** 1 for the first pass; a second pass names the job it follows. */
     pass: z.number().int().min(1).max(5),
     previousJobId: JobId.optional(),
@@ -56,8 +66,8 @@ export const ResearchRequestSchema = z
           .strict(),
       )
       .max(100),
-    /** The question or gap the research must resolve. */
-    question: z.string().trim().min(1).max(4000),
+    /** The question or gap the research must resolve (optional for a manual subject request). */
+    question: z.string().trim().min(1).max(4000).optional(),
     /** Existing corpus material the researcher should start from. */
     corpusRefs: z.array(Ref).max(100),
   })
@@ -68,6 +78,22 @@ export const ResearchRequestSchema = z
     }
     if (r.pass === 1 && r.previousJobId) {
       ctx.addIssue({ code: "custom", message: "a first pass has no previous job" });
+    }
+    if (r.origin === "extraction") {
+      if (!r.post || r.claims.length === 0 || !r.question) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "an extraction request needs exact post and analysis references, claims and a question",
+        });
+      }
+      if (r.subject || r.brief) {
+        ctx.addIssue({ code: "custom", message: "subject and brief are for manual requests" });
+      }
+    } else {
+      if (!r.subject) ctx.addIssue({ code: "custom", message: "a manual request needs a subject" });
+      if (r.post)
+        ctx.addIssue({ code: "custom", message: "a manual request has no post analysis" });
     }
   });
 export type ResearchRequest = z.infer<typeof ResearchRequestSchema>;
@@ -142,6 +168,9 @@ export function researchJobId(input: unknown): string {
   const r = ResearchRequestSchema.parse(input);
   const canonical = JSON.stringify({
     v: r.schemaVersion,
+    origin: r.origin,
+    subject: r.subject ? r.subject.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
+    brief: r.brief ? r.brief.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
     pass: r.pass,
     previous: r.previousJobId ?? null,
     post: r.post
@@ -156,7 +185,7 @@ export function researchJobId(input: unknown): string {
     claims: [...r.claims]
       .map((c) => [c.claimRecordId, c.statement, [...c.themeIds].sort()])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    question: r.question.normalize("NFKC").replace(/\s+/g, " ").trim(),
+    question: r.question ? r.question.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
     corpus: r.corpusRefs.map(refKey).sort((a, b) => a.join().localeCompare(b.join())),
   });
   return `research-${createHash("sha256").update(canonical).digest("hex").slice(0, 32)}`;
