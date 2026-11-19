@@ -75,6 +75,28 @@ export async function reconcileUncertainPublication(
   const state = operations.publicationState(key);
   if (!state) return { status: "not-reconcilable", reason: "no-publication" };
   if (state.status === "published" && state.receipt) {
+    // Finish a confirmation whose completion and handoff never committed.
+    let claimed;
+    try {
+      claimed = operations.claimForReconciliation(
+        key,
+        options.owner,
+        options.leaseMs ?? 10 * 60_000,
+      );
+    } catch (error) {
+      if (error instanceof OperationStoreError && error.code === "invalid-transition") {
+        return { status: "already-published", receipt: state.receipt };
+      }
+      throw error;
+    }
+    if (claimed.kind === "busy") return { status: "busy" };
+    if (claimed.kind === "claimed") {
+      operations.complete(
+        claimed.claim,
+        { receipt: state.receipt },
+        options.eventsFor?.(state.receipt) ?? [],
+      );
+    }
     return { status: "already-published", receipt: state.receipt };
   }
   if (!state.destinationDraftId) {

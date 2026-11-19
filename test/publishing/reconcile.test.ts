@@ -88,6 +88,30 @@ describe("reconcileUncertainPublication", () => {
     expect((await run(dest)).status).toBe("already-published");
   });
 
+  it("recovers the handoff after a crash between confirmation and completion", async () => {
+    const dest = destination();
+    await lostResponse(dest);
+    // Simulate the crash: confirmation committed, completion and events never did.
+    const claimed = ops.claimForReconciliation(KEY, "crashed", 1);
+    if (claimed.kind !== "claimed") throw new Error("expected claim");
+    ops.confirmPublished(claimed.claim, {
+      url: "https://destination.example/p/post-1000",
+      publishedAt: "2026-05-01T12:00:01.000Z",
+    });
+    clock += 2;
+    const outcome = await run(dest, {
+      eventsFor: () => [
+        { eventId: "published-1", subject: "steele.v1.article.published", payload: "{}" },
+      ],
+    });
+    expect(outcome.status).toBe("already-published");
+    expect(ops.duePendingEvents().map((e) => e.eventId)).toEqual(["published-1"]);
+    expect(ops.claim(KEY, "x", 1_000).kind).toBe("completed");
+    // Nothing more to do afterwards.
+    expect((await run(dest)).status).toBe("already-published");
+    expect(ops.duePendingEvents()).toHaveLength(1);
+  });
+
   it("records a known unpublished draft and hands the claim back for a safe retry", async () => {
     const dest = destination();
     const { draftId } = await lostResponse(dest, { publishHappened: false });
