@@ -158,7 +158,11 @@ export async function researchGaps(input: {
   reasoner: ExtractionModelProvider;
   store: Pick<ResearchStore, "latest" | "save">;
   /** Hosts of the monitored publication: their pages are `monitored`, never independent. */
-  monitoredHosts?: string[];
+  /**
+   * Required: without the monitored publication's identity, its own pages
+   * could be mistaken for independent support.
+   */
+  monitoredHosts: string[];
   limits?: GapResearchLimits;
   prompt?: ExtractionPrompt;
   now?: () => Date;
@@ -170,7 +174,8 @@ export async function researchGaps(input: {
   const timeoutMs = Math.max(100, Math.min(input.limits?.timeoutMs ?? 30_000, 300_000));
   const prompt = input.prompt ?? DEFAULT_GAP_RESEARCH_PROMPT;
   const now = (input.now ?? (() => new Date()))().toISOString();
-  const monitored = new Set((input.monitoredHosts ?? []).map(canonicalHost));
+  const monitored = new Set(input.monitoredHosts.map(canonicalHost).filter(Boolean));
+  if (monitored.size === 0) throw new Error("monitoredHosts must name the monitored publication");
 
   // Only the gaps are researched.
   const queries = [...new Set(input.gaps.map((g) => g.trim()).filter(Boolean))].slice(

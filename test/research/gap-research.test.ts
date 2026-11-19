@@ -259,6 +259,10 @@ describe("researchGaps", () => {
     expect(result.stored.entry.unresolvedGaps).toEqual(["Exampletown tower exposure measurements"]);
   });
 
+  it("requires the monitored publication's identity", async () => {
+    await expect(run({ monitoredHosts: [] })).rejects.toThrow("monitoredHosts");
+  });
+
   it("bounds queries and pages", async () => {
     const urls = Array.from({ length: 30 }, (_, i) => `https://example.org/p${i}`);
     const { s, queries } = search(
