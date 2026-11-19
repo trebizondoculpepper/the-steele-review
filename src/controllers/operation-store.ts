@@ -296,11 +296,12 @@ export class OperationStore {
       const now = this.now();
       const row = this.row(key);
       const publication = this.publicationRow(key);
-      if (
-        !row ||
-        !publication?.destination_draft_id ||
-        (publication.status !== "draft-saved" && publication.status !== "uncertain")
-      ) {
+      // Reconcilable: an unresolved outcome, or a confirmed publication whose
+      // operation never completed (crash between confirmation and handoff).
+      const unresolved =
+        publication?.status === "draft-saved" || publication?.status === "uncertain";
+      const confirmedButOpen = publication?.status === "published" && row?.status !== "completed";
+      if (!row || !publication?.destination_draft_id || (!unresolved && !confirmedButOpen)) {
         throw new OperationStoreError("invalid-transition");
       }
       if (row.status === "completed") {
