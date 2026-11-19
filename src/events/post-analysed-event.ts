@@ -40,6 +40,11 @@ export const PostAnalysedDataSchema = z
   .strict();
 export type PostAnalysedData = z.infer<typeof PostAnalysedDataSchema>;
 
+/** JSON Schema (draft 2020-12) for {@link PostAnalysedDataSchema}. */
+export function postAnalysedDataJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(PostAnalysedDataSchema) as Record<string, unknown>;
+}
+
 export function createPostAnalysedEvent(
   data: PostAnalysedData,
   deps: { id: string; now: () => Date },
@@ -64,8 +69,11 @@ export function createPostAnalysedEvent(
 const EnvelopeSchema = z.looseObject({
   specversion: z.literal("1.0"),
   id: z.string().min(1).max(200),
+  source: z.string().min(1).max(500),
   type: z.literal(POST_ANALYSED_EVENT_TYPE_V1),
   dataschema: z.literal(POST_ANALYSED_DATASCHEMA_V1),
+  datacontenttype: z.literal("application/json"),
+  time: z.iso.datetime({ offset: true }),
   subject: z.string().min(1),
 });
 

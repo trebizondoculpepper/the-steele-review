@@ -35,6 +35,11 @@ export type AnnounceOutcome =
       data: PostAnalysedData;
     }
   | {
+      /** Every attempt was interrupted before completion; nothing was recorded. */
+      status: "exhausted";
+      eventId: string;
+    }
+  | {
       status: "refused";
       reason:
         | "unreadable-theme-result"
@@ -69,7 +74,6 @@ export async function announcePost(input: {
   themeRef: ArtifactRef;
   claimRef: ArtifactRef;
   owner: string;
-  publisher?: EventPublisher;
   now?: () => Date;
 }): Promise<AnnounceOutcome> {
   let theme;
@@ -125,10 +129,16 @@ export async function announcePost(input: {
   const eventId = postAnalysedEventId(input.themeRef, input.claimRef);
   const key = `analysed:${input.post.publicationId}/${input.post.postId}:${eventId}`;
 
-  // Record durably first (the outbox), then publish separately.
+  // Record durably in the outbox. Publishing is a separate step, so a broker
+  // outage can never prevent the durable handoff from being saved.
   const claim = input.operations.claim(key, input.owner, 60_000, 3);
   let newlyRecorded = false;
   if (claim.kind === "busy") return { status: "busy" };
+  if (claim.kind === "exhausted") {
+    // Interrupted attempts left no completion record; reporting a pending
+    // event would claim a durable handoff that does not exist.
+    return { status: "exhausted", eventId };
+  }
   if (claim.kind === "claimed") {
     const event = createPostAnalysedEvent(data, {
       id: eventId,
@@ -140,19 +150,6 @@ export async function announcePost(input: {
     newlyRecorded = true;
   }
 
-  const pending = input.operations
-    .duePendingEvents(1_000, POST_ANALYSED_SUBJECT)
-    .find((e) => e.eventId === eventId);
-  if (pending && input.publisher) {
-    try {
-      await input.publisher.publish(pending.subject, new TextEncoder().encode(pending.payload), {
-        msgId: pending.eventId,
-      });
-      input.operations.markEventSent(pending.eventId);
-    } catch {
-      input.operations.markEventRetry(pending.eventId, 30_000);
-    }
-  }
   return {
     status: "recorded",
     eventId,
@@ -160,4 +157,32 @@ export async function announcePost(input: {
     delivery: input.operations.pendingEventStatus(eventId) === "sent" ? "sent" : "pending",
     data,
   };
+}
+
+export type PublishOutcome = "sent" | "pending" | "missing";
+
+/**
+ * Publish the event recorded under `eventId`, if it is still pending. Purely
+ * additive: a failed send leaves the event pending for a later run, and a
+ * missing ID publishes nothing. The row is looked up by ID, so an unrelated
+ * backlog can never crowd out the requested event.
+ */
+export async function publishRecordedEvent(
+  operations: OperationStore,
+  eventId: string,
+  publisher: EventPublisher,
+): Promise<PublishOutcome> {
+  if (operations.pendingEventStatus(eventId) === "sent") return "sent";
+  const pending = operations.pendingEvent(eventId);
+  if (!pending) return "missing";
+  try {
+    await publisher.publish(pending.subject, new TextEncoder().encode(pending.payload), {
+      msgId: pending.eventId,
+    });
+    operations.markEventSent(pending.eventId);
+    return "sent";
+  } catch {
+    operations.markEventRetry(pending.eventId, 30_000);
+    return "pending";
+  }
 }

@@ -695,7 +695,34 @@ export class OperationStore {
     }));
   }
 
-  /** Mark an event acknowledged by the broker. Idempotent. */
+  /**
+   * One recorded event by its stable ID, whatever its due time or position in
+   * the backlog, so callers never have to page the outbox to find it.
+   */
+  pendingEvent(eventId: string): PendingEvent | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT event_id, operation_key, subject, payload, attempts FROM pending_events WHERE event_id = ?",
+      )
+      .get(eventId) as
+      | {
+          event_id: string;
+          operation_key: string;
+          subject: string;
+          payload: string;
+          attempts: number;
+        }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      eventId: row.event_id,
+      operationKey: row.operation_key,
+      subject: row.subject,
+      payload: row.payload,
+      attempts: row.attempts,
+    };
+  }
+
   /** Delivery status of one recorded event, or undefined if none was recorded. */
   pendingEventStatus(eventId: string): "pending" | "sent" | undefined {
     const row = this.db

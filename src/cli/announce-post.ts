@@ -7,9 +7,10 @@
  * Picks the post's schema-v2 claim-extraction result (or the one given) and
  * the theme-proposal result it links to, validates they describe the same
  * post and source version, and records the event in the analysis state
- * outbox. With --publish it is then sent to the configured broker; without
- * it the event stays pending and is reported as such. Re-running is safe:
- * one input version yields one logical completion.
+ * outbox. With --publish the event is then sent to the configured broker;
+ * the record is written first, so a broker outage leaves a durable pending
+ * event rather than losing the handoff. Re-running is safe: one input
+ * version yields one logical completion.
  *
  * Configuration (environment):
  *   STEELE_PUBLICATION_ID
@@ -17,13 +18,15 @@
  *   STEELE_ANALYSIS_STATE_PATH                       analysis outbox (never the collector's state file)
  *   NATS_URL, NATS_TOKEN[_FILE]                      only with --publish
  *
- * Exit: 0 recorded (sent or pending); 1 refused, busy or unavailable; 2 usage/config.
+ * Exit: 0 recorded with delivery sent (or pending when --publish was not
+ * requested); 1 refused, busy, exhausted, or recorded but not published;
+ * 2 usage/config.
  */
 import { hostname } from "node:os";
 import { z } from "zod";
-import { announcePost } from "../analysis/announce.js";
+import { announcePost, publishRecordedEvent } from "../analysis/announce.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
-import { describeSetupError, natsConnection } from "../config/credentials.js";
+import { CredentialError, describeSetupError, natsConnection } from "../config/credentials.js";
 import { GitArtifactStore, type ArtifactRef } from "../controllers/artifact-store.js";
 import { NatsController } from "../controllers/nats.js";
 import { OperationStore } from "../controllers/operation-store.js";
@@ -77,15 +80,6 @@ async function main(argv: string[]): Promise<number> {
   }
   const c = env.data;
   let nats: NatsController | undefined;
-  if (publish) {
-    try {
-      const conn = natsConnection();
-      nats = new NatsController(conn.url, conn.token);
-    } catch (error) {
-      console.error(`announce-post: ${describeSetupError(error)}`);
-      return 2;
-    }
-  }
   const post = { publicationId: c.STEELE_PUBLICATION_ID, postId };
   const report = (fields: Record<string, unknown>) =>
     console.log(
@@ -132,7 +126,7 @@ async function main(argv: string[]): Promise<number> {
       report({ outcome: "theme-result-not-found" });
       return 1;
     }
-    if (nats) await nats.connect("steele-announce-post");
+    // Record first: the durable handoff must survive a broker outage.
     const outcome = await announcePost({
       content,
       operations,
@@ -140,22 +134,44 @@ async function main(argv: string[]): Promise<number> {
       themeRef,
       claimRef: chosen.ref,
       owner: `announce-post:${hostname()}:${process.pid}`,
-      ...(nats ? { publisher: nats } : {}),
     });
+    if (outcome.status === "exhausted") {
+      report({ outcome: "exhausted", eventId: outcome.eventId });
+      return 1;
+    }
     if (outcome.status !== "recorded") {
       report({ outcome: outcome.status === "busy" ? "busy" : outcome.reason });
       return 1;
+    }
+    let delivery = outcome.delivery;
+    let publishFailure: string | undefined;
+    if (publish && delivery === "pending") {
+      try {
+        const conn = natsConnection();
+        nats = new NatsController(conn.url, conn.token);
+        await nats.connect("steele-announce-post");
+        const published = await publishRecordedEvent(operations, outcome.eventId, nats);
+        // `missing` cannot occur for the ID just recorded; treat it as pending.
+        delivery = published === "sent" ? "sent" : "pending";
+        if (published === "missing") publishFailure = "event-missing";
+      } catch (error) {
+        // The event is already recorded; it stays pending for a later run.
+        publishFailure =
+          error instanceof CredentialError ? describeSetupError(error) : "broker-unavailable";
+        delivery = "pending";
+      }
     }
     report({
       outcome: "recorded",
       eventId: outcome.eventId,
       newlyRecorded: outcome.newlyRecorded,
-      delivery: outcome.delivery,
+      delivery,
+      ...(publishFailure ? { publishFailure } : {}),
       counts: outcome.data.counts,
       themeResult: `${themeRef.commit.slice(0, 12)}:${themeRef.path}`,
       claimResult: `${chosen.ref.commit.slice(0, 12)}:${chosen.ref.path}`,
     });
-    return 0;
+    return publishFailure ? 1 : 0;
   } catch (error) {
     report({ outcome: "failed", error: error instanceof Error ? error.name : "error" });
     return 1;

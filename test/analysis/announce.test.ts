@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { announcePost, postAnalysedEventId } from "../../src/analysis/announce.js";
+import {
+  announcePost,
+  postAnalysedEventId,
+  publishRecordedEvent,
+} from "../../src/analysis/announce.js";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import { extractGroundedClaims } from "../../src/analysis/grounded-claims.js";
 import { proposeThemes } from "../../src/analysis/theme-proposals.js";
@@ -106,13 +110,13 @@ describe("announcePost", { timeout: 60_000 }, () => {
     const pending = await run(refs);
     expect(pending).toMatchObject({ status: "recorded", newlyRecorded: true, delivery: "pending" });
 
-    // Restart after recording, before publication: the same event is sent later.
+    // Recording is separate from publication: a restart publishes the saved event.
     const pub = publisher();
-    const sent = await run(refs, { publisher: pub });
-    expect(sent).toMatchObject({ status: "recorded", newlyRecorded: false, delivery: "sent" });
+    const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
+    expect(await publishRecordedEvent(operations, eventId, pub)).toBe("sent");
     expect(pub.sent).toHaveLength(1);
     expect(pub.sent[0].subject).toBe(POST_ANALYSED_SUBJECT);
-    expect(pub.sent[0].msgId).toBe(postAnalysedEventId(refs.themeRef, refs.claimRef));
+    expect(pub.sent[0].msgId).toBe(eventId);
     const data = parsePostAnalysedEvent(pub.sent[0].payload);
     expect(data).toMatchObject({
       ...post,
@@ -122,17 +126,58 @@ describe("announcePost", { timeout: 60_000 }, () => {
     });
 
     // Identical rerun: one logical completion, nothing resent.
-    const again = await run(refs, { publisher: pub });
+    const again = await run(refs);
     expect(again).toMatchObject({ newlyRecorded: false, delivery: "sent" });
+    expect(await publishRecordedEvent(operations, eventId, pub)).toBe("sent");
     expect(pub.sent).toHaveLength(1);
   });
 
   it("keeps the event pending when publication fails", async () => {
     const refs = await analyse();
-    expect(await run(refs, { publisher: publisher(true) })).toMatchObject({ delivery: "pending" });
-    expect(operations.pendingEventStatus(postAnalysedEventId(refs.themeRef, refs.claimRef))).toBe(
-      "pending",
+    const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
+    expect(await run(refs)).toMatchObject({ delivery: "pending" });
+    expect(await publishRecordedEvent(operations, eventId, publisher(true))).toBe("pending");
+    expect(operations.pendingEventStatus(eventId)).toBe("pending");
+    expect(await publishRecordedEvent(operations, "no-such-event", publisher())).toBe("missing");
+  });
+
+  it("reports an exhausted completion attempt instead of a phantom pending event", async () => {
+    const refs = await analyse();
+    const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
+    const key = `analysed:${post.publicationId}/${post.postId}:${eventId}`;
+    // Three interrupted attempts leave no completion record.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const claim = operations.claim(key, `interrupted-${attempt}`, 60_000, 3);
+      if (claim.kind !== "claimed") throw new Error(`unexpected ${claim.kind}`);
+      operations.fail(claim.claim, "interrupted", true);
+    }
+    const out = await run(refs);
+    expect(out).toEqual({ status: "exhausted", eventId });
+    expect(operations.pendingEvent(eventId)).toBeUndefined();
+  });
+
+  it("publishes the recorded event even when a backlog fills the due page", async () => {
+    // 1,000 older due events fill the oldest-first page the old lookup used.
+    const backlog = operations.claim("announced:backlog", "test", 60_000);
+    if (backlog.kind !== "claimed") throw new Error("unexpected claim");
+    operations.complete(
+      backlog.claim,
+      { eventId: "backlog" },
+      Array.from({ length: 1_000 }, (_, n) => ({
+        eventId: `backlog-${n}`,
+        subject: POST_ANALYSED_SUBJECT,
+        payload: "{}",
+      })),
     );
+    const refs = await analyse();
+    const eventId = postAnalysedEventId(refs.themeRef, refs.claimRef);
+    expect(await run(refs)).toMatchObject({ status: "recorded", delivery: "pending" });
+    expect(operations.duePendingEvents(1_000, POST_ANALYSED_SUBJECT).map((e) => e.eventId)).not.toContain(
+      eventId,
+    );
+    const pub = publisher();
+    expect(await publishRecordedEvent(operations, eventId, pub)).toBe("sent");
+    expect(pub.sent.map((s) => s.msgId)).toEqual([eventId]);
   });
 
   it("completes a valid empty result", async () => {
