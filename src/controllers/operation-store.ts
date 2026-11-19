@@ -1,6 +1,8 @@
-import { DatabaseSync } from "node:sqlite";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
 
 /**
  * SQLite operation claims and pending event records for processing stages.
@@ -845,6 +847,175 @@ export class OperationStore {
   /** Read-only view of a publication's state. */
   publicationState(key: string): PublicationState | undefined {
     return this.toPublicationState(key);
+  }
+
+  close(): void {
+    if (this.db.isOpen) this.db.close();
+  }
+}
+
+/**
+ * Allowlisted snapshot of one operation, for diagnostics only (#171).
+ *
+ * Deliberately narrow: no owner, no raw payloads, no physical paths and no
+ * generic query surface. The completion artifact is shown only when the stored
+ * value is a valid immutable artifact reference; anything else stays hidden.
+ */
+export interface OperationInspection {
+  key: string;
+  status: OperationStatus["status"];
+  /** True when no further attempt will be granted. */
+  exhausted: boolean;
+  attempts: number;
+  maxAttempts: number;
+  errorCode?: string;
+  /** Lease expiry as an ISO 8601 timestamp, when a lease is held. */
+  leaseExpiresAt?: string;
+  /** Logical completion artifact reference, when the stored value is one. */
+  artifact?: ArtifactReference;
+  pendingEvents: { pending: number; sent: number };
+}
+
+export interface OperationStatusCount {
+  status: OperationStatus["status"];
+  count: number;
+}
+
+export type OperationInspectorOpenResult =
+  | { status: "available"; inspector: OperationInspector }
+  | { status: "unavailable" };
+
+interface InspectionRow {
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  artifact: string | null;
+  error_code: string | null;
+  lease_expires_at: number | null;
+}
+
+/**
+ * Pure logical reference from a stored completion artifact, or undefined.
+ *
+ * Callers store different completion shapes (`{ receipt }`, `{ artifact }`,
+ * a bare reference), so look in the known positions and accept only a value
+ * that validates as an immutable artifact reference. Never return the raw
+ * value: an unrecognised artifact may carry tokens or payload.
+ */
+export function logicalArtifact(value: unknown): ArtifactReference | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const candidate of [value, record.artifact, record.ref]) {
+    const parsed = ArtifactReferenceSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+  }
+  return undefined;
+}
+
+/**
+ * Read-only inspection of an existing operation store (#171).
+ *
+ * Opened directly with `readOnly`, without the store's constructor, so it
+ * never creates a missing database, never migrates, never changes journal
+ * settings and never writes. A missing, non-file, unversioned or newer-schema
+ * database reports `unavailable` instead of being created or repaired.
+ *
+ * Only the owning controller may touch SQLite; other components consume this
+ * narrow typed interface.
+ */
+export class OperationInspector {
+  private constructor(private readonly db: DatabaseSync) {}
+
+  static open(
+    path: string,
+    options: { busyTimeoutMs?: number } = {},
+  ): OperationInspectorOpenResult {
+    if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path)) {
+      return { status: "unavailable" };
+    }
+    const busy = options.busyTimeoutMs ?? 2_000;
+    if (!Number.isInteger(busy) || busy < 0 || busy > 60_000) {
+      return { status: "unavailable" };
+    }
+    let db: DatabaseSync | undefined;
+    try {
+      if (!statSync(path).isFile()) return { status: "unavailable" };
+      db = new DatabaseSync(path, { readOnly: true, timeout: busy });
+      const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      if (version < 1 || version > SCHEMA_VERSION) {
+        db.close();
+        return { status: "unavailable" };
+      }
+      const tables = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      if (!tables.has("operations") || !tables.has("pending_events")) {
+        db.close();
+        return { status: "unavailable" };
+      }
+      return { status: "available", inspector: new OperationInspector(db) };
+    } catch {
+      // A corrupt or unreadable database is unavailable, never a crash and
+      // never an excuse to repair it here.
+      if (db?.isOpen) db.close();
+      return { status: "unavailable" };
+    }
+  }
+
+  /** Counts by operation status, in status order. */
+  statusCounts(): OperationStatusCount[] {
+    const rows = this.db
+      .prepare("SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status")
+      .all() as Array<{ status: string; count: number }>;
+    return rows.map((row) => ({
+      status: row.status as OperationStatus["status"],
+      count: row.count,
+    }));
+  }
+
+  /** One operation by exact key, or undefined when the key is unknown. */
+  inspect(key: string): OperationInspection | undefined {
+    if (!Key.safeParse(key).success) return undefined;
+    const row = this.db
+      .prepare(
+        "SELECT status, attempts, max_attempts, artifact, error_code, lease_expires_at FROM operations WHERE key = ?",
+      )
+      .get(key) as InspectionRow | undefined;
+    if (!row) return undefined;
+    const counts = this.db
+      .prepare(
+        "SELECT status, COUNT(*) AS count FROM pending_events WHERE operation_key = ? GROUP BY status",
+      )
+      .all(key) as Array<{ status: string; count: number }>;
+    const pending = counts.find((entry) => entry.status === "pending")?.count ?? 0;
+    const sent = counts.find((entry) => entry.status === "sent")?.count ?? 0;
+    let artifact: ArtifactReference | undefined;
+    if (row.artifact !== null) {
+      try {
+        artifact = logicalArtifact(JSON.parse(row.artifact));
+      } catch {
+        artifact = undefined;
+      }
+    }
+    return {
+      key,
+      status: row.status as OperationStatus["status"],
+      exhausted: row.status === "failed",
+      attempts: row.attempts,
+      maxAttempts: row.max_attempts,
+      ...(row.error_code ? { errorCode: row.error_code } : {}),
+      ...(row.lease_expires_at === null
+        ? {}
+        : { leaseExpiresAt: new Date(row.lease_expires_at).toISOString() }),
+      ...(artifact ? { artifact } : {}),
+      pendingEvents: { pending, sent },
+    };
   }
 
   close(): void {
