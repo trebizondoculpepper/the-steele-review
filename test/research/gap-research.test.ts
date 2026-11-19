@@ -131,7 +131,7 @@ describe("researchGaps", () => {
         {
           kind: "external",
           url: "https://example.org/survey",
-          publishedAt: "2026-06-01T00:00:00Z",
+          publishedAt: "2026-06-01T00:00:00.000Z",
           retrievedAt: "2026-11-01T00:00:00.000Z",
           passage: "exposure near Exampletown towers far below safety limits",
         },
@@ -191,6 +191,49 @@ describe("researchGaps", () => {
     });
     const broken = await run({ search: s, fetcher: fetcher(["https://example.org/survey"]).f });
     expect(broken).toMatchObject({ kind: "saved", finding: "unresolved", fetchFailures: 1 });
+  });
+
+  it("never fetches internal destinations from search results", async () => {
+    const internal = [
+      "https://localhost/x",
+      "https://127.0.0.1/x",
+      "https://10.1.2.3/x",
+      "https://192.168.1.1/x",
+      "https://169.254.169.254/latest",
+      "https://[::1]/x",
+      "https://intranet/x",
+      "https://service.internal/x",
+      "https://user:pw@example.org/x",
+      "http://example.org/x",
+    ];
+    const { s } = search({ "Exampletown tower exposure measurements": internal });
+    const { f, fetched } = fetcher();
+    await run({ search: s, fetcher: f });
+    expect(fetched).toEqual([]);
+  });
+
+  it("normalises page dates and keeps unsettled gaps open", async () => {
+    pages["https://example.org/dated"] = {
+      url: "https://example.org/dated",
+      title: "Dated",
+      text: "Exposure stayed low according to the dated report.",
+      publishedAt: "Mon, 01 Jun 2026 12:00:00 GMT",
+    };
+    const { s } = search({
+      "Exampletown tower exposure measurements": ["https://example.org/dated"],
+    });
+    const { r } = reasoner({
+      finding: "unresolved",
+      explanation: "Only one dated report.",
+      evidence: [{ url: "https://example.org/dated", quote: "Exposure stayed low" }],
+      unresolvedReason: "One report is not enough.",
+    });
+    const result = await run({ search: s, reasoner: r });
+    if (result.kind !== "saved") throw new Error("not saved");
+    expect(result.stored.entry.addressedClaims[0]!.evidence[0]!.publishedAt).toBe(
+      "2026-06-01T12:00:00.000Z",
+    );
+    expect(result.stored.entry.unresolvedGaps).toEqual(["Exampletown tower exposure measurements"]);
   });
 
   it("bounds queries and pages", async () => {

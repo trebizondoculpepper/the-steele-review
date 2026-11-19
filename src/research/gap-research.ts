@@ -88,13 +88,42 @@ export type GapResearchOutcome =
       retryable: boolean;
     };
 
-const https = (u: string) => {
+/**
+ * Public HTTPS destinations only: search results are untrusted, so loopback,
+ * private, link-local and internal names are never handed to the fetcher.
+ */
+export function isPublicHttpsUrl(u: string): boolean {
+  let url: URL;
   try {
-    return new URL(u).protocol === "https:";
+    url = new URL(u);
   } catch {
     return false;
   }
-};
+  if (url.protocol !== "https:" || url.username || url.password) return false;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":")) return false;
+  if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/.test(host)) return false;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+  }
+  if (host.includes(":")) {
+    if (
+      host === "::1" ||
+      host === "::" ||
+      /^(fc|fd|fe8|fe9|fea|feb)/.test(host) ||
+      host.startsWith("::ffff:")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 async function withDeadline<T>(
   ms: number,
@@ -148,7 +177,7 @@ export async function researchGaps(input: {
         input.search.search(q, s),
       )) {
         if (urls.length >= maxPages) break;
-        if (https(r.url) && !urls.includes(r.url)) urls.push(r.url);
+        if (isPublicHttpsUrl(r.url) && !urls.includes(r.url)) urls.push(r.url);
       }
     } catch {
       searchFailures++;
@@ -223,8 +252,9 @@ export async function researchGaps(input: {
       url: page.url,
       title: page.title.slice(0, 500) || page.url,
       ...(page.publisher ? { publisher: page.publisher.slice(0, 200) } : {}),
+      // Normalised to ISO 8601 UTC, the format the research schema requires.
       ...(page.publishedAt && !Number.isNaN(Date.parse(page.publishedAt))
-        ? { publishedAt: page.publishedAt }
+        ? { publishedAt: new Date(page.publishedAt).toISOString() }
         : {}),
       retrievedAt: page.retrievedAt,
       lastCheckedAt: page.retrievedAt,
@@ -274,10 +304,14 @@ export async function researchGaps(input: {
     limitations: [
       ...new Set([...(previous?.limitations ?? []), ...(output?.limitations ?? [])]),
     ].slice(0, 20),
-    unresolvedGaps: (output?.remainingGaps ?? (finding === "unresolved" ? queries : [])).slice(
-      0,
-      20,
-    ),
+    // Gaps the run did not settle stay open: the model's list when it gives
+    // one, otherwise every researched gap whenever the finding is not settled.
+    unresolvedGaps: (output?.remainingGaps.length
+      ? output.remainingGaps
+      : finding === "unresolved" || finding === "unsupported"
+        ? queries
+        : []
+    ).slice(0, 20),
     provenance: {
       modelVersion: input.reasoner.modelVersion,
       promptVersion: prompt.version,
