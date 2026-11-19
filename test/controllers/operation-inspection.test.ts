@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -63,13 +63,19 @@ describe("OperationInspector", () => {
     store.complete(claim, { artifact }, [
       { eventId: "event-1", subject: "synthetic", payload: "{}" },
     ]);
+    store.close();
 
     let info = openInspector(path).inspect("op-done");
-    expect(info).toMatchObject({ status: "completed", artifact });
+    expect(info).toMatchObject({
+      status: "completed",
+      artifact: { kind: "reference", ...artifact },
+    });
     expect(info?.pendingEvents).toEqual({ pending: 1, sent: 0 });
 
-    store.markEventSent("event-1");
-    store.close();
+    // Marking an event sent needs a writer; inspection then sees a quiescent file.
+    const writer = storeAt(path);
+    writer.markEventSent("event-1");
+    writer.close();
     info = openInspector(path).inspect("op-done");
     expect(info?.pendingEvents).toEqual({ pending: 0, sent: 1 });
   });
@@ -104,6 +110,22 @@ describe("OperationInspector", () => {
     ]);
   });
 
+  it("reports exhaustion when the final attempt's lease has lapsed", () => {
+    const dir = directory();
+    const path = join(dir, "operations.db");
+    const store = storeAt(path);
+    store.claim("op-max", "worker", 100, 1);
+    store.close();
+
+    const opened = OperationInspector.open(path, { now: () => NOW + 1_000 });
+    expect(opened.status).toBe("available");
+    if (opened.status !== "available") return;
+    const info = opened.inspector.inspect("op-max");
+    // No later claim has marked it failed yet, but no attempt remains.
+    expect(info?.status).toBe("claimed");
+    expect(info?.exhausted).toBe(true);
+  });
+
   it("returns undefined for an unknown or malformed key", () => {
     const dir = directory();
     const path = join(dir, "operations.db");
@@ -121,6 +143,17 @@ describe("read-only open", () => {
     const path = join(dir, "absent.db");
     expect(OperationInspector.open(path)).toEqual({ status: "unavailable" });
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("stays unavailable while a WAL sidecar means a writer may be live", () => {
+    const dir = directory();
+    const path = join(dir, "operations.db");
+    const store = storeAt(path);
+    store.claim("op-wal", "worker", 60_000);
+    store.close();
+    writeFileSync(`${path}-wal`, "");
+    expect(OperationInspector.open(path)).toEqual({ status: "unavailable" });
+    expect(existsSync(`${path}-wal`)).toBe(true);
   });
 
   it("refuses a database whose schema is newer than this build", () => {
@@ -149,9 +182,10 @@ describe("read-only open", () => {
     store.close();
 
     const snapshot = () => {
-      const db = new DatabaseSync(path, { readOnly: true });
+      const db = new DatabaseSync(`file:${encodeURI(path)}?immutable=1`, { readOnly: true });
       const state = {
         bytes: createHash("sha256").update(readFileSync(path)).digest("hex"),
+        files: readdirSync(dir).sort(),
         userVersion: db.prepare("PRAGMA user_version").get(),
         journalMode: db.prepare("PRAGMA journal_mode").get(),
         schema: db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all(),

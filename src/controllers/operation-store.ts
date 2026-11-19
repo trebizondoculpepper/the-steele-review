@@ -892,6 +892,8 @@ interface InspectionRow {
   artifact: string | null;
   error_code: string | null;
   lease_expires_at: number | null;
+  pending_count: number | null;
+  sent_count: number | null;
 }
 
 /**
@@ -996,11 +998,14 @@ export function logicalArtifact(value: unknown): OperationArtifact | undefined {
 }
 
 export class OperationInspector {
-  private constructor(private readonly db: DatabaseSync) {}
+  private constructor(
+    private readonly db: DatabaseSync,
+    private readonly now: () => number,
+  ) {}
 
   static open(
     path: string,
-    options: { busyTimeoutMs?: number } = {},
+    options: { busyTimeoutMs?: number; now?: () => number } = {},
   ): OperationInspectorOpenResult {
     if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path)) {
       return { status: "unavailable" };
@@ -1009,10 +1014,19 @@ export class OperationInspector {
     if (!Number.isInteger(busy) || busy < 0 || busy > 60_000) {
       return { status: "unavailable" };
     }
+    // A WAL sidecar means a writer is live or frames are uncheckpointed. The
+    // quiescent-immutable strategy below cannot read that state safely, so
+    // report unavailable rather than lock, modify or guess.
+    if (existsSync(`${path}-wal`)) return { status: "unavailable" };
     let db: DatabaseSync | undefined;
     try {
       if (!statSync(path).isFile()) return { status: "unavailable" };
-      db = new DatabaseSync(path, { readOnly: true, timeout: busy });
+      // `immutable=1` reads without locking or creating `-wal`/`-shm`
+      // sidecars, which a plain read-only connection would create.
+      db = new DatabaseSync(`file:${encodeURI(path)}?immutable=1`, {
+        readOnly: true,
+        timeout: busy,
+      });
       const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
@@ -1031,7 +1045,10 @@ export class OperationInspector {
         db.close();
         return { status: "unavailable" };
       }
-      return { status: "available", inspector: new OperationInspector(db) };
+      return {
+        status: "available",
+        inspector: new OperationInspector(db, options.now ?? Date.now),
+      };
     } catch {
       // A corrupt or unreadable database is unavailable, never a crash and
       // never an excuse to repair it here.
@@ -1054,19 +1071,17 @@ export class OperationInspector {
   /** One operation by exact key, or undefined when the key is unknown. */
   inspect(key: string): OperationInspection | undefined {
     if (!Key.safeParse(key).success) return undefined;
+    // One statement, one snapshot: the operation row and its event counts
+    // cannot come from two different moments.
     const row = this.db
       .prepare(
-        "SELECT status, attempts, max_attempts, artifact, error_code, lease_expires_at FROM operations WHERE key = ?",
+        `SELECT o.status, o.attempts, o.max_attempts, o.artifact, o.error_code, o.lease_expires_at,
+                (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'pending') AS pending_count,
+                (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'sent') AS sent_count
+           FROM operations o WHERE o.key = ?`,
       )
       .get(key) as InspectionRow | undefined;
     if (!row) return undefined;
-    const counts = this.db
-      .prepare(
-        "SELECT status, COUNT(*) AS count FROM pending_events WHERE operation_key = ? GROUP BY status",
-      )
-      .all(key) as Array<{ status: string; count: number }>;
-    const pending = counts.find((entry) => entry.status === "pending")?.count ?? 0;
-    const sent = counts.find((entry) => entry.status === "sent")?.count ?? 0;
     let artifact: OperationArtifact | undefined;
     if (row.artifact !== null) {
       try {
@@ -1075,18 +1090,24 @@ export class OperationInspector {
         artifact = undefined;
       }
     }
+    const leaseExpiresAt = row.lease_expires_at;
+    const exhausted =
+      row.status === "failed" ||
+      (row.status === "claimed" &&
+        row.attempts >= row.max_attempts &&
+        (leaseExpiresAt === null || leaseExpiresAt <= this.now()));
     return {
       key,
       status: row.status as OperationStatus["status"],
-      exhausted: row.status === "failed",
+      exhausted,
       attempts: row.attempts,
       maxAttempts: row.max_attempts,
       ...(row.error_code ? { errorCode: row.error_code } : {}),
-      ...(row.lease_expires_at === null
+      ...(leaseExpiresAt === null
         ? {}
-        : { leaseExpiresAt: new Date(row.lease_expires_at).toISOString() }),
+        : { leaseExpiresAt: new Date(leaseExpiresAt).toISOString() }),
       ...(artifact ? { artifact } : {}),
-      pendingEvents: { pending, sent },
+      pendingEvents: { pending: row.pending_count ?? 0, sent: row.sent_count ?? 0 },
     };
   }
 
