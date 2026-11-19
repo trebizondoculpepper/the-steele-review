@@ -21,3 +21,5 @@ These documents capture the architecture discussion, not a claim that the system
 See [processing stages](10-processing-stages.md) for the agreed collection-through-publication flow and proof-of-concept boundaries.
 
 See the [implementation preparation brief](11-implementation-brief.md) for the ticket map, readiness and unresolved live-integration inputs.
+
+See the [manual research and drafting demo](15-manual-research-demo.md) for the agreed three-post acceptance slice, epic hierarchy and small delivery contracts.
