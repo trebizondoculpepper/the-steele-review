@@ -174,6 +174,21 @@ describe("OperationStore", () => {
     expect(store.claim("op-2", "w", 1_000)).toEqual({ kind: "exhausted", errorCode: "malformed" });
   });
 
+  it("records a permanent failure in one transaction regardless of claims", () => {
+    const store = open();
+    store.recordPermanentFailure("op-new", "malformed");
+    expect(store.claim("op-new", "w", 1_000)).toEqual({
+      kind: "exhausted",
+      errorCode: "malformed",
+    });
+    store.claim("op-held", "w", 60_000);
+    store.recordPermanentFailure("op-held", "gave-up");
+    expect(store.claim("op-held", "x", 1_000)).toEqual({ kind: "exhausted", errorCode: "gave-up" });
+    store.complete(held(store.claim("op-done", "w", 1_000)), artifact, []);
+    store.recordPermanentFailure("op-done", "late");
+    expect(store.claim("op-done", "x", 1_000).kind).toBe("completed");
+  });
+
   it("rejects invalid claim input", () => {
     const store = open();
     expect(() => store.claim("", "w", 1_000)).toThrow("invalid-input");

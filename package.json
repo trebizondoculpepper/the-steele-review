@@ -12,7 +12,8 @@
     "format": "vp fmt",
     "start": "node --env-file-if-exists=.env --enable-source-maps dist/main.js",
     "test": "vp test run test",
-    "backfill": "node --enable-source-maps dist/cli/backfill.js"
+    "backfill": "node --enable-source-maps dist/cli/backfill.js",
+    "index-worker": "node --enable-source-maps dist/cli/index-worker.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
