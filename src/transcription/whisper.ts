@@ -132,6 +132,8 @@ export class WhisperProvider implements TranscriptionProvider {
         "-y",
         "-protocol_whitelist",
         "file,pipe",
+        "-format_whitelist",
+        "mp3,wav,ogg,flac,aac,mov,matroska,webm",
         "-i",
         input.path,
         "-map",
