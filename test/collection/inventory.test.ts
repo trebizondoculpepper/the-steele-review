@@ -61,6 +61,18 @@ describe("listCapturedPosts", () => {
     expect(second.truncated).toBe(false);
   });
 
+  it("reports truncation at the scan budget and pages beyond it via the controller cursor", async () => {
+    for (const id of ["a", "b", "c", "d"]) await capture(id);
+    const first = await listCapturedPosts(archive, { scanLimit: 2, limit: 50 });
+    expect(first.posts.map((p) => p.postId)).toEqual(["a", "b"]);
+    expect(first).toMatchObject({ truncated: true, next: "pub/b" });
+    const second = await listCapturedPosts(archive, { scanLimit: 2, limit: 50, after: first.next });
+    expect(second.posts.map((p) => p.postId)).toEqual(["c", "d"]);
+    const third = await listCapturedPosts(archive, { scanLimit: 2, limit: 50, after: second.next });
+    expect(third.posts).toEqual([]);
+    expect(third.truncated).toBe(false);
+  });
+
   it("reports incomplete posts, filters them on request and filters by publication", async () => {
     await capture("done");
     await capture("partial", false);

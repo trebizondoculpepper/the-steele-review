@@ -37,13 +37,26 @@ export interface InventoryResult {
 
 export async function listCapturedPosts(
   archive: Pick<GitArtifactStore, "list" | "lookup" | "read">,
-  options: { publicationId?: string; limit?: number; after?: string; completeOnly?: boolean } = {},
+  options: {
+    publicationId?: string;
+    limit?: number;
+    after?: string;
+    completeOnly?: boolean;
+    /** Paths scanned per call; tests lower it. */
+    scanLimit?: number;
+  } = {},
 ): Promise<InventoryResult> {
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), MAX_INVENTORY_LIMIT));
   const prefix = options.publicationId ? `substack/${options.publicationId}` : "substack";
-  const paths = (await archive.list(prefix, MAX_SCAN))
-    .filter((p) => RECORD_PATH.test(p))
-    .filter((p) => !options.after || p > cursorPath(options.after));
+  // The cursor is applied by the controller, so pages beyond the scan budget
+  // stay reachable; a full scan window means more paths may exist.
+  const scanned = await archive.list(
+    prefix,
+    options.scanLimit ?? MAX_SCAN,
+    options.after ? cursorPath(options.after) : undefined,
+  );
+  const scanFull = scanned.length >= (options.scanLimit ?? MAX_SCAN);
+  const paths = scanned.filter((p) => RECORD_PATH.test(p));
   const posts: InventoryEntry[] = [];
   const malformed: InventoryResult["malformed"] = [];
   let last: string | undefined;
@@ -79,7 +92,7 @@ export async function listCapturedPosts(
       malformed.push({ publicationId, postId });
     }
   }
-  const truncated = index < paths.length;
+  const truncated = index < paths.length || (scanFull && last !== undefined);
   return { posts, malformed, truncated, ...(truncated && last ? { next: last } : {}) };
 }
 
