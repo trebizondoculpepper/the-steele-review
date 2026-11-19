@@ -209,17 +209,28 @@ export class RevisionAttemptStore {
       artifact = existing;
       reused = true;
     }
+    let stored: unknown;
     try {
-      this.complete(claim, record, artifact);
+      stored = this.complete(claim, record, artifact);
     } catch (error) {
       if (error instanceof OperationStoreError && error.code === "not-owner")
         return { kind: "stale-owner" };
       throw error;
     }
+    // A completion recorded by another holder is returned unchanged; only
+    // when the stored record is ours did this worker record the attempt.
+    const authoritative = (stored as { record?: ArtifactReference } | undefined)?.record;
+    if (
+      authoritative?.path !== artifact.path ||
+      authoritative?.hash !== `sha256:${artifact.sha256}`
+    ) {
+      return { kind: "stale-owner" };
+    }
     return { kind: "recorded", artifact, reused };
   }
 
-  private complete(claim: OperationClaim, record: AttemptRecord, artifact: ArtifactRef): void {
+  /** Complete the transition; returns the authoritative stored result. */
+  private complete(claim: OperationClaim, record: AttemptRecord, artifact: ArtifactRef): unknown {
     const event = new CloudEvent({
       specversion: "1.0",
       id: randomUUID(),
@@ -239,7 +250,7 @@ export class RevisionAttemptStore {
         record: refOf(artifact),
       },
     });
-    this.config.operations.complete(
+    return this.config.operations.complete(
       claim,
       { record: refOf(artifact), action: record.decision.action },
       [

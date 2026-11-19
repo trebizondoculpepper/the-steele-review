@@ -148,6 +148,41 @@ describe("RevisionAttemptStore", () => {
     });
   });
 
+  it("reports a stale owner when another holder completed while its write was in flight", async () => {
+    const s = store();
+    const a = await s.begin({ post, briefHash: brief.hash, revision: 0, owner: "a" });
+    if (a.kind !== "claimed") throw new Error(a.kind);
+    // A's lease is still valid at its fencing check, then B takes over and completes.
+    const slow = {
+      ...artifacts,
+      lookup: artifacts.lookup.bind(artifacts),
+      read: artifacts.read.bind(artifacts),
+      write: async (path: string, content: string) => {
+        clock += 2_000;
+        const b = await new RevisionAttemptStore({ artifacts, operations, leaseMs: 1_000 }).begin({
+          post,
+          briefHash: brief.hash,
+          revision: 0,
+          owner: "b",
+        });
+        if (b.kind === "claimed")
+          await new RevisionAttemptStore({ artifacts, operations, leaseMs: 1_000 }).finish(
+            b.claim,
+            attempt(0),
+          );
+        return artifacts.write(path, content);
+      },
+    };
+    const slowStore = new RevisionAttemptStore({
+      artifacts: slow as unknown as typeof artifacts,
+      operations,
+      leaseMs: 1_000,
+    });
+    expect(
+      await slowStore.finish(a.claim, attempt(0, { decision: { action: "skip", reason: "x" } })),
+    ).toEqual({ kind: "stale-owner" });
+  });
+
   it("advances revisions in order and links each to its predecessor", async () => {
     const s = store();
     expect(await s.begin({ post, briefHash: brief.hash, revision: 1, owner: "w" })).toEqual({
