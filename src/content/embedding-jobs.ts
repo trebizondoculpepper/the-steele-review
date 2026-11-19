@@ -12,7 +12,12 @@ import {
   passageVectorIndexName,
   type ChunkingConfig,
 } from "./passage-vectors.js";
-import { splitPassages, type Passage, type TranscriptTiming } from "./passages.js";
+import {
+  PASSAGE_SPLITTER_VERSION,
+  splitPassages,
+  type Passage,
+  type TranscriptTiming,
+} from "./passages.js";
 
 /**
  * Pure planning of passage embedding jobs (#30, first slice).
@@ -58,7 +63,9 @@ export interface EmbeddingPlan {
 }
 
 export class EmbeddingPlanError extends Error {
-  constructor(readonly reason: "too-many-passages" | "invalid-model") {
+  constructor(
+    readonly reason: "too-many-passages" | "invalid-model" | "unsupported-splitter-version",
+  ) {
     super(`embedding plan refused: ${reason}`);
     this.name = "EmbeddingPlanError";
   }
@@ -90,6 +97,11 @@ export function planEmbeddingJobs(input: {
   if (!parsedModel.success) throw new EmbeddingPlanError("invalid-model");
   const model = parsedModel.data;
   const chunking = input.chunking ?? DEFAULT_CHUNKING;
+  // Only the splitter this code runs can produce the passages a plan names;
+  // labelling them with another version would mix chunking generations.
+  if (chunking.splitterVersion !== PASSAGE_SPLITTER_VERSION) {
+    throw new EmbeddingPlanError("unsupported-splitter-version");
+  }
   const vectorSpace = vectorSpaceId(model);
   const key = chunkingKey(chunking);
   const base = {
