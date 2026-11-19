@@ -37,6 +37,7 @@ export const DEFAULT_EQUIVALENCE_PROMPT: ExtractionPrompt = {
     "Decide whether a new claim asserts the same thing as one of the candidate earlier claims.",
     "They are equivalent only if a correction of one would equally correct the other: the same subject, the same direction, matching quantities, dates, scope and qualifiers, and no difference in negation. Different wording alone does not matter.",
     "A shared topic, a related claim, a stronger or weaker version, or a negation is NOT equivalent.",
+    'Use the source passages, posts and speakers: claims that depend on context (who "we" or "our" refers to, which place or period) are only equivalent if that context matches.',
     "Do not judge whether either claim is true.",
     'Respond with JSON only: {"match": "<candidate id>" | null, "confidence": "high"|"medium"|"low", "reason": "<one or two sentences comparing them>"}.',
   ].join("\n"),
@@ -181,12 +182,29 @@ async function revise(
   }
 }
 
-/** Merge `from` into canonical `into`: occurrences first, then the redirect. */
+/**
+ * Merge `from` into canonical `into`. The redirect is saved first, so any
+ * occurrence extracted afterwards goes straight to the canonical record;
+ * then every occurrence the source holds is copied across. Both steps are
+ * idempotent, and a partially completed merge is finished by a rerun.
+ */
 export async function mergeClaimRecords(
   artifacts: GitArtifactStore,
   from: string,
   into: string,
   decision: EquivalenceDecision,
+): Promise<void> {
+  await revise(artifacts, from, (r) =>
+    r.canonical === into ? undefined : { ...r, canonical: into },
+  );
+  await copyOccurrences(artifacts, from, into, decision);
+}
+
+async function copyOccurrences(
+  artifacts: GitArtifactStore,
+  from: string,
+  into: string,
+  decision: Pick<EquivalenceDecision, "reason" | "modelVersion" | "promptVersion" | "decidedAt">,
 ): Promise<void> {
   const source = await readRecord(artifacts, from);
   if (!source) throw new Error("claim record missing");
@@ -216,9 +234,17 @@ export async function mergeClaimRecords(
           ],
     };
   });
-  await revise(artifacts, from, (r) =>
-    r.canonical === into ? undefined : { ...r, canonical: into },
-  );
+}
+
+/** Follow redirects to the current canonical record (bounded). */
+async function canonicalOf(artifacts: GitArtifactStore, id: string): Promise<string> {
+  let current = id;
+  for (let hops = 0; hops < 20; hops++) {
+    const next = (await readRecord(artifacts, current))?.record.canonical;
+    if (!next || next === current) return current;
+    current = next;
+  }
+  return current;
 }
 
 export async function resolveClaimEquivalence(input: {
@@ -234,8 +260,17 @@ export async function resolveClaimEquivalence(input: {
   const found = await readRecord(input.artifacts, input.recordId);
   if (!found) return { status: "failed", record: input.recordId, reason: "not-found" };
   const { record } = found;
-  if (record.canonical)
-    return { status: "already-merged", record: record.id, canonical: record.canonical };
+  if (record.canonical) {
+    // Finish a merge interrupted after its redirect (idempotent).
+    const canonical = await canonicalOf(input.artifacts, record.canonical);
+    await copyOccurrences(input.artifacts, record.id, canonical, {
+      reason: "merge completed after interruption",
+      modelVersion: input.provider.modelVersion,
+      promptVersion: prompt.version,
+      decidedAt: (input.now ?? (() => new Date()))().toISOString(),
+    });
+    return { status: "already-merged", record: record.id, canonical };
+  }
 
   const candidates = await candidateClaims(input.artifacts, record);
   if (candidates.length === 0) return { status: "separate", record: record.id, reused: false };
@@ -252,10 +287,18 @@ export async function resolveClaimEquivalence(input: {
   if (existing) {
     decision = DecisionSchema.parse(JSON.parse(await input.artifacts.read(existing)));
   } else {
-    const user = JSON.stringify({
-      newClaim: { id: record.id, statement: record.statement },
-      candidates: candidates.map((c) => ({ id: c.id, statement: c.statement })),
+    // Statements alone can hide context ("our revenue"): include the exact
+    // source passages, posts and speaker kinds for each side.
+    const context = (r: ClaimRecord) => ({
+      id: r.id,
+      statement: r.statement,
+      occurrences: r.occurrences.slice(0, 3).map((o) => ({
+        post: `${o.publicationId}/${o.postId}`,
+        speaker: o.speakerKind,
+        passage: o.passage,
+      })),
     });
+    const user = JSON.stringify({ newClaim: context(record), candidates: candidates.map(context) });
     let output: z.infer<typeof ModelOutputSchema> | undefined;
     let failure: "provider-failed" | "malformed-output" = "provider-failed";
     const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
@@ -304,15 +347,13 @@ export async function resolveClaimEquivalence(input: {
   }
 
   if (decision.match === null) return { status: "separate", record: record.id, decision, reused };
-  // The matched claim may itself have been merged since: follow redirects to
-  // the current canonical record, and never create a cycle.
-  let canonical = decision.match;
-  for (let hops = 0; hops < 20; hops++) {
-    const next = (await readRecord(input.artifacts, canonical))?.record.canonical;
-    if (!next) break;
-    canonical = next;
-  }
-  if (canonical === record.id) return { status: "separate", record: record.id, decision, reused };
-  await mergeClaimRecords(input.artifacts, record.id, canonical, decision);
+  // Resolve both sides to their current canonical records, then always merge
+  // the larger ID into the smaller. Concurrent reciprocal decisions (A→B and
+  // B→A) therefore agree on one direction and can never form a cycle.
+  const mine = await canonicalOf(input.artifacts, record.id);
+  const theirs = await canonicalOf(input.artifacts, decision.match);
+  if (mine === theirs) return { status: "already-merged", record: record.id, canonical: mine };
+  const [canonical, merged] = mine < theirs ? [mine, theirs] : [theirs, mine];
+  await mergeClaimRecords(input.artifacts, merged, canonical, decision);
   return { status: "merged", record: record.id, canonical, decision, reused };
 }

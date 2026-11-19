@@ -134,6 +134,9 @@ export const ClaimRecordSchema = z
             postId: z.string(),
             kind: AssertionKindSchema,
             extraction: z.string(),
+            /** Exact source passage and speaker kind, so comparisons see context. */
+            passage: z.string().max(4000).optional(),
+            speakerKind: z.string().optional(),
           })
           .strict(),
       )
@@ -463,6 +466,8 @@ export async function upsertClaimRecord(
           ...post,
           kind: c.kind,
           extraction: extractionRef,
+          passage: (c.occurrence as ClaimOccurrence).passage.slice(0, 4000),
+          speakerKind: (c.occurrence as ClaimOccurrence).speaker.kind,
         })),
       ],
     };

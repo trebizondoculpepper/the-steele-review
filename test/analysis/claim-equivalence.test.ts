@@ -94,28 +94,53 @@ describe("resolveClaimEquivalence", () => {
       artifacts: content,
       recordId: second,
     });
-    expect(out).toMatchObject({ status: "merged", canonical: first });
+    // Direction is deterministic (smaller ID is canonical) so concurrent
+    // reciprocal merges agree.
+    const [canonicalId, mergedId] = first < second ? [first, second] : [second, first];
+    expect(out).toMatchObject({ status: "merged", canonical: canonicalId });
 
-    const canonical = await read(first);
-    expect(canonical.occurrences.map((o) => o.postId)).toEqual(["p1", "p2"]);
-    expect(canonical.equivalences?.[0]).toMatchObject({
-      record: second,
-      reason: "Same claim, reworded.",
-    });
-    expect((await read(second)).canonical).toBe(first);
+    const canonical = await read(canonicalId);
+    expect(canonical.occurrences.map((o) => o.postId).sort()).toEqual(["p1", "p2"]);
+    expect(canonical.occurrences[0].passage).toBeTruthy();
+    expect(canonical.equivalences?.[0]).toMatchObject({ record: mergedId });
+    expect((await read(mergedId)).canonical).toBe(canonicalId);
 
-    // Rerun: no model call, no extra occurrences.
-    const again = await resolveClaimEquivalence({
+    for (const id of [first, second]) {
+      const again = await resolveClaimEquivalence({
+        provider: model(),
+        artifacts: content,
+        recordId: id,
+      });
+      expect(["already-merged", "separate"]).toContain(again.status);
+    }
+    expect((await read(canonicalId)).occurrences).toHaveLength(2);
+
+    await post("p3", "Weather modification tools have existed for many decades.");
+    expect((await read(canonicalId)).occurrences.map((o) => o.postId).sort()).toEqual([
+      "p1",
+      "p2",
+      "p3",
+    ]);
+  });
+
+  it("finishes a merge interrupted after the redirect was saved", async () => {
+    const first = await post("p1", "Weather modification has been around for decades.");
+    const second = await post("p2", "Weather modification tools have existed for many decades.");
+    const [canonicalId, mergedId] = first < second ? [first, second] : [second, first];
+    const ref = (await content.lookup(`claims/${mergedId}.json`))!;
+    const rec = await read(mergedId);
+    await content.revise(
+      `claims/${mergedId}.json`,
+      `${JSON.stringify({ ...rec, canonical: canonicalId }, null, 2)}\n`,
+      ref.sha256,
+    );
+    const out = await resolveClaimEquivalence({
       provider: model(),
       artifacts: content,
-      recordId: second,
+      recordId: mergedId,
     });
-    expect(again).toMatchObject({ status: "already-merged", canonical: first });
-    expect((await read(first)).occurrences).toHaveLength(2);
-
-    // A later occurrence of the reworded claim lands on the canonical record.
-    await post("p3", "Weather modification tools have existed for many decades.");
-    expect((await read(first)).occurrences.map((o) => o.postId)).toEqual(["p1", "p2", "p3"]);
+    expect(out).toMatchObject({ status: "already-merged", canonical: canonicalId });
+    expect((await read(canonicalId)).occurrences).toHaveLength(2);
   });
 
   it("keeps a negated or materially qualified claim separate", async () => {
