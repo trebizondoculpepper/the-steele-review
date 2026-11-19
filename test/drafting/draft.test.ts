@@ -13,7 +13,10 @@ import {
   type BriefInput,
 } from "../../src/drafting/brief.js";
 import {
+  DRAFT_READY_SUBJECT,
   DRAFT_TEMPLATE_VERSION,
+  parseDraftReadyEvent,
+  renderDraft,
   DraftingWorker,
   draftFromBrief,
   type DraftMetadata,
@@ -198,6 +201,15 @@ describe("draftFromBrief", () => {
     });
   });
 
+  it("keeps multi-line passages inside their block quotes", () => {
+    const multi: typeof brief = {
+      ...brief,
+      claims: [{ ...brief.claims[0]!, passage: "First line.\n\n## Not a heading\n- not a list" }],
+    };
+    const md = renderDraft(multi, { summary: "s", themes: [], errors: [good.errors[0]!] as never });
+    expect(md).toContain("> First line.\n>\n> ## Not a heading\n> - not a list");
+  });
+
   it("fails cleanly on malformed output and provider failure", async () => {
     expect(await draftFromBrief({ brief, provider: provider(["nope", "{}"]).p })).toEqual({
       kind: "failed",
@@ -280,6 +292,52 @@ describe("DraftingWorker", () => {
     expect(await artifacts.read(r.draft)).toContain("[E1]");
     expect(await worker.handle(await briefMessage())).toEqual({ kind: "already-drafted" });
     expect(calls).toHaveLength(1);
+  });
+
+  it("hands off a validated draft.ready pointer", async () => {
+    const worker = new DraftingWorker({
+      artifacts,
+      provider: provider([good]).p,
+      operations,
+      owner: "d",
+    });
+    const r = await worker.handle(await briefMessage());
+    if (r.kind !== "drafted") throw new Error("not drafted");
+    const [pending] = operations.duePendingEvents(10, DRAFT_READY_SUBJECT);
+    expect(parseDraftReadyEvent(pending!.payload).data).toMatchObject({
+      draft: { path: r.draft.path, commit: r.draft.commit },
+      metadata: { path: r.metadata.path },
+      ingestionReason: "live",
+    });
+  });
+
+  it("finishes from a committed draft without calling the model again", async () => {
+    const first = provider([good]);
+    const worker = new DraftingWorker({
+      artifacts,
+      provider: first.p,
+      operations,
+      owner: "d",
+      retryDelayMs: 0,
+    });
+    const done = await worker.handle(await briefMessage());
+    if (done.kind !== "drafted") throw new Error("not drafted");
+    // Simulate an attempt that committed the draft, then failed before completion.
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare(
+      "UPDATE operations SET status = 'released', attempts = 0 WHERE key LIKE 'draft:%'",
+    ).run();
+    const again = provider([]);
+    const retry = new DraftingWorker({
+      artifacts,
+      provider: again.p,
+      operations,
+      owner: "d",
+      retryDelayMs: 0,
+    });
+    const r = await retry.handle(await briefMessage());
+    expect(r).toMatchObject({ kind: "drafted", draft: { sha256: done.draft.sha256 } });
+    expect(again.calls).toHaveLength(0);
   });
 
   it("redelivers after a provider failure and records a no-support outcome without a draft", async () => {

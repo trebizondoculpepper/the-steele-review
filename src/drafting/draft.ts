@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { CloudEvent } from "cloudevents";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
@@ -30,6 +31,89 @@ import { DraftingBriefSchema, parseBriefReadyEvent, type DraftingBrief } from ".
 
 export const DRAFT_TEMPLATE_VERSION = "critique-template-v1";
 export const DRAFT_SCHEMA_VERSION = 1;
+export const DRAFT_READY_SUBJECT = "steele.v1.draft.ready";
+export const DRAFT_READY_EVENT_TYPE_V1 = "org.steele.draft.ready.v1";
+export const DRAFT_READY_DATASCHEMA_V1 = "urn:steele:schema:draft-ready:v1";
+
+const RefSchema = z
+  .object({
+    repository: z.string().min(1),
+    commit: z.string().regex(/^[0-9a-f]{40}$/),
+    path: z.string().min(1),
+    hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  })
+  .strict();
+
+/** Versioned payload of the `draft.ready` pointer for verification (#43). */
+export const DraftReadyDataSchema = z
+  .object({
+    publicationId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    postId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    ingestionReason: z.enum(["live", "backfill", "reprocess"]),
+    draft: RefSchema,
+    metadata: RefSchema,
+  })
+  .strict();
+export type DraftReadyData = z.infer<typeof DraftReadyDataSchema>;
+
+const DraftReadyEventSchema = z
+  .object({
+    specversion: z.literal("1.0"),
+    id: z.string().min(1).max(200),
+    source: z.string().min(1).max(500),
+    type: z.literal("org.steele.draft.ready.v1"),
+    time: z.iso.datetime({ offset: true }),
+    subject: z.string().min(1).max(500),
+    datacontenttype: z.literal("application/json"),
+    dataschema: z.literal("urn:steele:schema:draft-ready:v1"),
+    causationid: z.string().min(1).max(200).optional(),
+    data: DraftReadyDataSchema,
+  })
+  .strict()
+  .refine((e) => e.subject === `substack/${e.data.publicationId}/${e.data.postId}`, {
+    message: "subject does not match the post",
+  });
+
+/** Parse and validate a serialised `draft.ready` event. */
+export function parseDraftReadyEvent(input: string): z.infer<typeof DraftReadyEventSchema> {
+  return DraftReadyEventSchema.parse(JSON.parse(input));
+}
+
+const asReference = (r: ArtifactRef) => ({
+  repository: r.repository,
+  commit: r.commit,
+  path: r.path,
+  hash: `sha256:${r.sha256}`,
+});
+
+function draftReadyEvent(
+  brief: DraftingBrief,
+  draft: ArtifactRef,
+  metadata: ArtifactRef,
+  causationId: string,
+): { eventId: string; subject: string; payload: string } {
+  const event = new CloudEvent({
+    specversion: "1.0",
+    id: randomUUID(),
+    source: "urn:steele:drafting:worker",
+    type: DRAFT_READY_EVENT_TYPE_V1,
+    time: new Date().toISOString(),
+    subject: `substack/${brief.source.publicationId}/${brief.source.postId}`,
+    datacontenttype: "application/json",
+    dataschema: DRAFT_READY_DATASCHEMA_V1,
+    causationid: causationId,
+    data: DraftReadyDataSchema.parse({
+      publicationId: brief.source.publicationId,
+      postId: brief.source.postId,
+      ingestionReason: brief.source.ingestionReason,
+      draft: asReference(draft),
+      metadata: asReference(metadata),
+    }),
+  });
+  const payload = JSON.stringify(event.toJSON());
+  parseDraftReadyEvent(payload);
+  return { eventId: event.id, subject: DRAFT_READY_SUBJECT, payload };
+}
 
 export const DEFAULT_DRAFT_PROMPT: ExtractionPrompt = {
   version: "draft-critique-v1",
@@ -77,6 +161,8 @@ export interface DraftMetadata {
   citationIds: string[];
   evidenceGaps: number;
   rejected: DraftRejection[];
+  /** Set when the metadata was rebuilt from a draft committed by an interrupted attempt. */
+  recovered?: true;
 }
 
 export interface DraftRejection {
@@ -183,6 +269,13 @@ export async function draftFromBrief(input: {
   };
 }
 
+/** Block-quote every line, so multi-line passages stay inside the quote. */
+const quote = (text: string, indent: string) =>
+  text
+    .split(/\r?\n/)
+    .map((line) => `${indent}>${line ? ` ${line}` : ""}`)
+    .join("\n");
+
 const cite = (ids: string[]) => ids.map((id) => `[${id}]`).join("");
 
 /** Deterministic Markdown rendering of the template. */
@@ -208,7 +301,7 @@ export function renderDraft(brief: DraftingBrief, draft: ModelDraft): string {
       "",
       `### "${claim.statement}"`,
       "",
-      `> ${claim.passage}`,
+      quote(claim.passage, ""),
       "",
       `${e.explanation} ${cite(e.citationIds)}`,
       "",
@@ -242,7 +335,7 @@ export function renderDraft(brief: DraftingBrief, draft: ModelDraft): string {
     const date = c.evidence.publishedAt ? `, published ${c.evidence.publishedAt.slice(0, 10)}` : "";
     lines.push(
       `- [${c.citationId}] ${c.evidence.title}${c.evidence.publisher ? ` (${c.evidence.publisher})` : ""}${date}, retrieved ${c.evidence.retrievedAt.slice(0, 10)}: ${c.evidence.url}`,
-      `  > ${c.evidence.passage}`,
+      quote(c.evidence.passage, "  "),
     );
   }
   return `${lines.join("\n")}\n`;
@@ -325,28 +418,6 @@ export class DraftingWorker {
       return { kind: "failed", reason: "exhausted" };
     }
 
-    const outcome = await draftFromBrief({
-      brief,
-      provider,
-      prompt,
-      ...(signal ? { signal } : {}),
-    });
-    if (outcome.kind === "failed") {
-      operations.fail(claimed.claim, `draft:${outcome.reason}`, true);
-      message.nak(retryDelay);
-      return { kind: "retry", reason: outcome.reason };
-    }
-    if (outcome.kind === "no-supported-errors") {
-      // Reported, not invented: nothing supported to criticise.
-      operations.complete(
-        claimed.claim,
-        { outcome: "no-supported-errors", rejected: outcome.rejected },
-        [],
-      );
-      await message.ack();
-      return { kind: "no-supported-errors" };
-    }
-
     const write = async (path: string, content: string): Promise<ArtifactRef> => {
       try {
         return await artifacts.write(path, content);
@@ -360,30 +431,85 @@ export class DraftingWorker {
         return existing;
       }
     };
+    const metadataFor = (
+      draftRef: ArtifactRef,
+      citationIds: string[],
+      rejected: DraftRejection[],
+      recovered: boolean,
+    ): DraftMetadata => ({
+      schemaVersion: DRAFT_SCHEMA_VERSION,
+      brief: ref,
+      source: {
+        publicationId: brief.source.publicationId,
+        postId: brief.source.postId,
+        url: brief.source.url,
+        ingestionReason: brief.source.ingestionReason,
+      },
+      modelVersion: provider.modelVersion,
+      promptVersion: prompt.version,
+      templateVersion: DRAFT_TEMPLATE_VERSION,
+      draftHash: `sha256:${draftRef.sha256}`,
+      citationIds,
+      evidenceGaps: brief.evidenceGaps.length,
+      rejected,
+      ...(recovered ? { recovered: true } : {}),
+    });
+
     try {
-      const draftRef = await write(`${base}.md`, outcome.markdown);
-      const metadata: DraftMetadata = {
-        schemaVersion: DRAFT_SCHEMA_VERSION,
-        brief: ref,
-        source: {
-          publicationId: brief.source.publicationId,
-          postId: brief.source.postId,
-          url: brief.source.url,
-          ingestionReason: brief.source.ingestionReason,
-        },
-        modelVersion: provider.modelVersion,
-        promptVersion: prompt.version,
-        templateVersion: DRAFT_TEMPLATE_VERSION,
-        draftHash: `sha256:${draftRef.sha256}`,
-        citationIds: [...new Set(outcome.structure.errors.flatMap((e) => e.citationIds))],
-        evidenceGaps: brief.evidenceGaps.length,
-        rejected: outcome.rejected,
-      };
-      const metaRef = await write(`${base}.json`, `${JSON.stringify(metadata, null, 2)}\n`);
+      // A previous attempt may have committed the draft and stopped before
+      // its metadata or completion: finish from that draft rather than
+      // asking the model again, which could produce different text.
+      let draftRef = await artifacts.lookup(`${base}.md`);
+      let metadata: DraftMetadata;
+      if (draftRef) {
+        const markdown = await artifacts.read(draftRef);
+        const ids = [
+          ...new Set([...markdown.matchAll(/^- \[(E[1-9][0-9]*)\]/gm)].map((m) => m[1]!)),
+        ];
+        metadata = metadataFor(draftRef, ids, [], true);
+      } else {
+        const outcome = await draftFromBrief({
+          brief,
+          provider,
+          prompt,
+          ...(signal ? { signal } : {}),
+        });
+        if (outcome.kind === "failed") {
+          operations.fail(claimed.claim, `draft:${outcome.reason}`, true);
+          message.nak(retryDelay);
+          return { kind: "retry", reason: outcome.reason };
+        }
+        if (outcome.kind === "no-supported-errors") {
+          // Reported, not invented: nothing supported to criticise.
+          operations.complete(
+            claimed.claim,
+            { outcome: "no-supported-errors", rejected: outcome.rejected },
+            [],
+          );
+          await message.ack();
+          return { kind: "no-supported-errors" };
+        }
+        draftRef = await write(`${base}.md`, outcome.markdown);
+        metadata = metadataFor(
+          draftRef,
+          [...new Set(outcome.structure.errors.flatMap((e) => e.citationIds))],
+          outcome.rejected,
+          false,
+        );
+      }
+      // Metadata already committed for this draft is reused as it stands.
+      const committedMeta = await artifacts.lookup(`${base}.json`);
+      const metaRef =
+        committedMeta &&
+        draftRef &&
+        (JSON.parse(await artifacts.read(committedMeta)) as DraftMetadata).draftHash ===
+          metadata.draftHash
+          ? committedMeta
+          : await write(`${base}.json`, `${JSON.stringify(metadata, null, 2)}\n`);
       operations.complete(
         claimed.claim,
         { draft: draftRef.path, metadata: metaRef.path, commit: metaRef.commit },
-        [],
+        [draftReadyEvent(brief, draftRef, metaRef, event.id)],
       );
       await message.ack();
       return { kind: "drafted", draft: draftRef, metadata: metaRef };
