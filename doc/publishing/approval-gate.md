@@ -25,3 +25,27 @@ Typed rejections:
 - `archive-unavailable`: retryable.
 
 No Substack or state-store access happens in either step.
+
+# Publisher worker
+
+`PublisherWorker` (`src/publishing/publisher-worker.ts`) is the thin consumer of approved-artifact (`draft.verified`) events. It wires the gate above to the publication state (#67), the destination adapter (#45) and reconciliation (#68), and holds no state transitions of its own.
+
+## Sequence
+
+1. **Validate** the trusted approval (`parsePublishRequest`). Non-approvals and backfill are acknowledged without publishing; malformed input is terminated.
+2. **Pause switch:** while `paused()` is true, nothing is claimed or published and the message is redelivered.
+3. **Publication state:**
+   - Already published: returns the stored receipt.
+   - Uncertain: settled by read-back (`reconcileUncertainPublication`).
+4. **Frequency limit:** `minIntervalMs` between publications to the destination, computed from durable receipts.
+5. **Claim and check:** claim the publication key, then load and check the exact approved artifact (`verifyApprovedArtifact`).
+6. **Publish:** record intent, reuse the saved destination draft or create one, then publish with subscriber email off.
+7. **Confirm:** record the receipt and complete with an `org.steele.article.published.v1` handoff, then acknowledge.
+
+## Failures
+
+- **Lost publish response:** recorded as uncertain and settled by read-back on the next delivery, so there's no second draft or publication.
+- **Uncertain draft creation:** the destination has no idempotency key, so this is a visible permanent failure for an operator, not a blind retry.
+- **Other errors:** retryable destination errors redeliver; permanent ones are recorded and acknowledged.
+
+No live destination is configured here; tests use the controlled client.
