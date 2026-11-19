@@ -271,6 +271,29 @@ describe("PublisherWorker smoke test", () => {
     });
   });
 
+  it("admits one publication per destination at a time", async () => {
+    // Another worker holds the destination's admission.
+    operations.claim("publish-admission:example-destination", "other", 60_000);
+    const m = message(await approved("p1"));
+    expect(await worker().handle(m)).toEqual({ kind: "deferred", reason: "busy" });
+    expect(client.drafts.size).toBe(0);
+  });
+
+  it("applies the frequency limit before republishing a draft read back as unpublished", async () => {
+    const w = worker({ minIntervalMs: 60 * 60_000 });
+    const a = await approved("p1");
+    // A's publish fails ambiguously without publishing.
+    client.inject("publishDraft", "outage");
+    expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "uncertain" });
+    // B publishes meanwhile.
+    expect(await w.handle(message(await approved("p2")))).toMatchObject({ kind: "published" });
+    // A is read back as unpublished, but the limit now applies.
+    expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "rate-limited" });
+    clock = new Date(clock.getTime() + 61 * 60_000);
+    expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
+    expect(client.drafts.size).toBe(2);
+  });
+
   it("applies the frequency limit between publications", async () => {
     const w = worker({ minIntervalMs: 60 * 60_000 });
     expect(await w.handle(message(await approved("p1")))).toMatchObject({ kind: "published" });

@@ -113,7 +113,38 @@ export class PublisherWorker {
       await message.ack();
       return { kind: "already-published", receipt: state.receipt };
     }
-    if (state?.status === "uncertain") {
+    // One admission at a time per destination, so concurrent workers cannot
+    // both pass the frequency limit; released on every exit.
+    const admission = operations.claim(
+      `publish-admission:${this.config.destinationName}`,
+      this.config.owner,
+      this.config.leaseMs ?? 10 * 60_000,
+      1_000,
+    );
+    if (admission.kind !== "claimed") {
+      message.nak(Math.min(retryDelay, 5_000));
+      return { kind: "deferred", reason: "busy" };
+    }
+    try {
+      return await this.admitted(message, request, state?.status, signal);
+    } finally {
+      try {
+        operations.yieldClaim(admission.claim);
+      } catch {
+        // Lease already lapsed and taken over: nothing to release.
+      }
+    }
+  }
+
+  private async admitted(
+    message: DeliveredMessage,
+    request: PublishRequest,
+    status: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<PublisherOutcome> {
+    const { operations } = this.config;
+    const retryDelay = this.config.retryDelayMs ?? 60_000;
+    if (status === "uncertain") {
       const reconciled = await reconcileUncertainPublication({
         operations,
         destination: this.config.destination,
@@ -127,6 +158,14 @@ export class PublisherWorker {
         return { kind: "published", receipt: reconciled.receipt };
       }
       if (reconciled.status === "unpublished") {
+        // Read-back showed nothing was published: republishing is a new
+        // publication and must respect the frequency limit too.
+        const wait = this.rateLimitWait();
+        if (wait > 0) {
+          operations.yieldClaim(reconciled.claim);
+          message.nak(wait);
+          return { kind: "deferred", reason: "rate-limited" };
+        }
         return this.publish(message, request, reconciled.claim, reconciled.draftId, signal);
       }
       message.nak(retryDelay);
