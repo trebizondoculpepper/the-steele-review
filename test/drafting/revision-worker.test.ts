@@ -233,6 +233,56 @@ describe("RevisionWorker", () => {
     expect(verifier2.calls).toHaveLength(1);
   });
 
+  it("reuses a saved draft, with its metadata, when verification was unavailable", async () => {
+    const writer = fake("writer", [draftJson("medium")]);
+    const down = fake("verifier", [new Error("credit exhausted")]);
+    expect(await worker(writer.p, down.p).handle(await briefMessage())).toMatchObject({
+      kind: "pending",
+      reason: "verifier:verifier-unavailable",
+    });
+    const paths = await artifacts.list("drafts/pub/p/revisions", 50);
+    const metaPath = paths.find((p) => p.endsWith("/0.json"))!;
+    const meta = JSON.parse(await artifacts.read((await artifacts.lookup(metaPath))!));
+    expect(meta).toMatchObject({
+      modelVersion: "fake/writer",
+      promptVersion: "draft-critique-v1",
+      templateVersion: "critique-template-v1",
+      citationIds: ["E1"],
+    });
+    const writer2 = fake("writer", []);
+    const r = await worker(writer2.p, fake("verifier", [APPROVE]).p).handle(await briefMessage());
+    expect(r).toMatchObject({ kind: "approved", revision: 0 });
+    expect(writer2.calls).toHaveLength(0);
+  });
+
+  it("bounds inconclusive verifier answers and then records an explicit skip", async () => {
+    const writer = fake("writer", [draftJson("medium")]);
+    const verifier = fake("verifier", ["not json", "not json", "not json"]);
+    const w = new RevisionWorker({
+      artifacts,
+      operations,
+      writer: writer.p,
+      verifier: verifier.p,
+      owner: "rev",
+      retryDelayMs: 0,
+      maxInconclusive: 2,
+    });
+    expect(await w.handle(await briefMessage())).toMatchObject({
+      kind: "pending",
+      reason: "verifier:inconclusive",
+    });
+    expect(await w.handle(await briefMessage())).toMatchObject({
+      kind: "pending",
+      reason: "verifier:inconclusive",
+    });
+    expect(await w.handle(await briefMessage())).toMatchObject({
+      kind: "skipped",
+      reason: "verifier-inconclusive",
+    });
+    expect(decisions().map((d) => d.action)).toEqual(["skip"]);
+    expect(writer.calls).toHaveLength(1);
+  });
+
   it("answers a duplicate event from stored state with no model calls", async () => {
     await worker(fake("writer", [draftJson("medium")]).p, fake("verifier", [APPROVE]).p).handle(
       await briefMessage(),

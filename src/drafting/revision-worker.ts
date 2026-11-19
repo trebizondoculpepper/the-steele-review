@@ -10,7 +10,13 @@ import {
 import type { DeliveredMessage } from "../controllers/nats.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { DraftingBriefSchema, parseBriefReadyEvent, type DraftingBrief } from "./brief.js";
-import { DEFAULT_DRAFT_PROMPT, draftFromBrief, type DraftMetadata } from "./draft.js";
+import {
+  DEFAULT_DRAFT_PROMPT,
+  DRAFT_SCHEMA_VERSION,
+  DRAFT_TEMPLATE_VERSION,
+  draftFromBrief,
+  type DraftMetadata,
+} from "./draft.js";
 import { RevisionAttemptStore, type AttemptRecord } from "./revision-attempts.js";
 import { DEFAULT_MAX_REVISIONS, decideRevision } from "./revision-policy.js";
 import { DEFAULT_VERIFY_PROMPT, verifyDraft, type VerificationReport } from "./verify.js";
@@ -60,6 +66,8 @@ export class RevisionWorker {
       verifier: ExtractionModelProvider;
       owner: string;
       maxRevisions?: number;
+      /** Inconclusive verifier answers tolerated per revision before a skip. */
+      maxInconclusive?: number;
       retryDelayMs?: number;
     },
   ) {
@@ -135,6 +143,70 @@ export class RevisionWorker {
           maxRevisions,
           signal,
         );
+        if (step.kind === "inconclusive") {
+          // Count inconclusive answers for this revision on their own key, so
+          // they are bounded without touching the outage path.
+          const counter = operations.claim(
+            `revision-inconclusive:${briefHash.replace(/^sha256:/, "")}:${revision}`,
+            this.config.owner,
+            1,
+            this.config.maxInconclusive ?? 3,
+          );
+          if (counter.kind === "claimed") {
+            operations.fail(counter.claim, "inconclusive", true);
+            operations.yieldClaim(begun.claim);
+            message.nak(retryDelay);
+            return { kind: "pending", reason: "verifier:inconclusive" };
+          }
+          // Exhausted: record an explicit skip with a report that says why.
+          const reportContent = `${JSON.stringify(
+            {
+              schemaVersion: 1,
+              verdict: "skip",
+              draft: { path: step.draft.path, commit: step.draft.commit, hash: step.draft.hash },
+              brief: {
+                path: event.data.brief.path,
+                commit: event.data.brief.commit,
+                hash: briefHash,
+              },
+              issues: [
+                {
+                  source: "verifier",
+                  problem: "The verifier gave no usable verdict after repeated attempts.",
+                  requiredChange:
+                    "Review the draft by hand or verify it with another verifier configuration.",
+                },
+              ],
+              attempt: revision + 1,
+              maxAttempts: maxRevisions + 1,
+              rejectedIssues: 0,
+            },
+            null,
+            2,
+          )}\n`;
+          const reportPath = `${step.base}/${revision}.inconclusive.json`;
+          const reportRef =
+            (await artifacts.lookup(reportPath)) ??
+            (await artifacts.write(reportPath, reportContent));
+          const finished = await this.attempts.finish(begun.claim, {
+            ...post,
+            brief: event.data.brief,
+            revision,
+            draft: step.draft,
+            report: refOf(reportRef),
+            decision: { action: "skip", reason: "verifier-inconclusive" },
+            ...(previous ? { previous: previous.record.draft } : {}),
+          });
+          if (finished.kind !== "recorded") {
+            message.nak(Math.min(retryDelay, 30_000));
+            return {
+              kind: "pending",
+              reason: finished.kind === "stale-owner" ? "stale-owner" : finished.reason,
+            };
+          }
+          await message.ack();
+          return { kind: "skipped", revision, reason: "verifier-inconclusive" };
+        }
         if (step.kind !== "ready") {
           if (step.kind === "pending") {
             operations.yieldClaim(begun.claim);
@@ -189,6 +261,36 @@ export class RevisionWorker {
     return { kind: "skipped", revision: maxRevisions, reason: "revisions-exhausted" };
   }
 
+  /** Generation metadata for a revision draft (as the drafting worker records). */
+  private metadataJson(
+    brief: DraftingBrief,
+    briefRef: ArtifactRef,
+    draftRef: ArtifactRef,
+    citationIds: string[],
+    rejected: DraftMetadata["rejected"],
+    recovered: boolean,
+  ): string {
+    const metadata: DraftMetadata = {
+      schemaVersion: DRAFT_SCHEMA_VERSION,
+      brief: refOf(briefRef),
+      source: {
+        publicationId: brief.source.publicationId,
+        postId: brief.source.postId,
+        url: brief.source.url,
+        ingestionReason: brief.source.ingestionReason,
+      },
+      modelVersion: this.config.writer.modelVersion,
+      promptVersion: DEFAULT_DRAFT_PROMPT.version,
+      templateVersion: DRAFT_TEMPLATE_VERSION,
+      draftHash: `sha256:${draftRef.sha256}`,
+      citationIds,
+      evidenceGaps: brief.evidenceGaps.length,
+      rejected,
+      ...(recovered ? { recovered: true as const } : {}),
+    };
+    return `${JSON.stringify(metadata, null, 2)}\n`;
+  }
+
   /** One draft-verify-decide step for a claimed revision. */
   private async attempt(
     brief: DraftingBrief,
@@ -207,6 +309,7 @@ export class RevisionWorker {
         decision: AttemptRecord["decision"];
       }
     | { kind: "pending"; reason: string }
+    | { kind: "inconclusive"; draft: ArtifactReference; markdown: string; base: string }
     | { kind: "no-supported-errors" }
   > {
     const { artifacts } = this.config;
@@ -218,29 +321,57 @@ export class RevisionWorker {
             requiredChange: string;
           }>)
         : undefined;
-    const drafted = await draftFromBrief({
-      brief,
-      provider: this.config.writer,
-      prompt: DEFAULT_DRAFT_PROMPT,
-      ...(previous && feedback ? { revision: { previousDraft: previous.markdown, feedback } } : {}),
-      ...(signal ? { signal } : {}),
-    });
-    if (drafted.kind === "failed") return { kind: "pending", reason: `writer:${drafted.reason}` };
-    if (drafted.kind === "no-supported-errors") return { kind: "no-supported-errors" };
-
     const base = `drafts/${brief.source.publicationId}/${brief.source.postId}/revisions/${sha(briefText).slice(0, 16)}`;
     const write = async (path: string, content: string): Promise<ArtifactRef> =>
       (await artifacts.lookup(path)) ?? artifacts.write(path, content);
-    const draftRef = await write(
-      `${base}/${revision}-${sha(drafted.markdown)}.md`,
-      drafted.markdown,
-    );
+    const draftPath = `${base}/${revision}.md`;
+    const metaPath = `${base}/${revision}.json`;
+
+    // A draft saved by an earlier try of this revision (for example before
+    // the verifier became unavailable) is reused: the writer is not called again.
+    let draftRef = await artifacts.lookup(draftPath);
+    let markdown: string;
+    if (draftRef) {
+      markdown = await artifacts.read(draftRef);
+      if (!(await artifacts.lookup(metaPath))) {
+        const ids = [
+          ...new Set([...markdown.matchAll(/^- \[(E[1-9][0-9]*)\]/gm)].map((m) => m[1]!)),
+        ];
+        await write(metaPath, this.metadataJson(brief, briefRef, draftRef, ids, [], true));
+      }
+    } else {
+      const drafted = await draftFromBrief({
+        brief,
+        provider: this.config.writer,
+        prompt: DEFAULT_DRAFT_PROMPT,
+        ...(previous && feedback
+          ? { revision: { previousDraft: previous.markdown, feedback } }
+          : {}),
+        ...(signal ? { signal } : {}),
+      });
+      if (drafted.kind === "failed") return { kind: "pending", reason: `writer:${drafted.reason}` };
+      if (drafted.kind === "no-supported-errors") return { kind: "no-supported-errors" };
+      markdown = drafted.markdown;
+      draftRef = await write(draftPath, markdown);
+      // Generation metadata is persisted with every revision draft.
+      await write(
+        metaPath,
+        this.metadataJson(
+          brief,
+          briefRef,
+          draftRef,
+          [...new Set(drafted.structure.errors.flatMap((e) => e.citationIds))],
+          drafted.rejected,
+          false,
+        ),
+      );
+    }
     const metadata: Pick<DraftMetadata, "draftHash" | "brief"> = {
       draftHash: `sha256:${draftRef.sha256}`,
       brief: refOf(briefRef),
     };
     const verified = await verifyDraft({
-      markdown: drafted.markdown,
+      markdown,
       draft: draftRef,
       briefText,
       briefRef,
@@ -251,9 +382,11 @@ export class RevisionWorker {
       maxAttempts: maxRevisions + 1,
       ...(signal ? { signal } : {}),
     });
-    if (verified.kind === "pending")
-      return { kind: "pending", reason: `verifier:${verified.reason}` };
-    if (verified.kind === "invalid")
+    if (verified.kind === "pending" && verified.reason === "malformed-output") {
+      // Answered, but not usably: bounded separately from outages.
+      return { kind: "inconclusive", draft: refOf(draftRef), markdown, base };
+    }
+    if (verified.kind !== "report")
       return { kind: "pending", reason: `verifier:${verified.reason}` };
     const report: VerificationReport = verified.report;
     const reportContent = `${JSON.stringify(report, null, 2)}\n`;
@@ -264,7 +397,7 @@ export class RevisionWorker {
     const decision = decideRevision(
       {
         revisionCount: revision,
-        draft: { hash: `sha256:${draftRef.sha256}`, markdown: drafted.markdown },
+        draft: { hash: `sha256:${draftRef.sha256}`, markdown },
         brief: { hash: `sha256:${briefRef.sha256}` },
         report,
       },
@@ -272,7 +405,7 @@ export class RevisionWorker {
     );
     return {
       kind: "ready",
-      markdown: drafted.markdown,
+      markdown,
       draft: refOf(draftRef),
       report: refOf(reportRef),
       decision,
