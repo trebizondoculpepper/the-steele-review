@@ -216,6 +216,13 @@ describe("extractGroundedClaims", () => {
     expect(two.status === "extracted" && two.reused).toBe(false);
     if (two.status !== "extracted") throw new Error();
     expect(two.record.themeResult).toBe("c2:theme-proposals/b.json");
+    // The claim record now points at the newer extraction for the same occurrence.
+    const ref = await content.lookup(
+      `claims/${claimRecordId("Geoengineering has not been going on for decades")}.json`,
+    );
+    const rec = ClaimRecordSchema.parse(JSON.parse(await content.read(ref!)));
+    expect(rec.occurrences).toHaveLength(1);
+    expect(rec.occurrences[0].extraction).toBe(`${two.recordRef.commit}:${two.recordRef.path}`);
   });
 
   it("records model and prompt versions and fails cleanly on invalid output", async () => {

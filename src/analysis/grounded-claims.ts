@@ -489,15 +489,30 @@ async function upsertClaimRecord(
         };
     const known = new Set(current.occurrences.map((o) => o.occurrenceId));
     const added = items.filter((c) => !known.has((c.occurrence as ClaimOccurrence).occurrenceId));
+    // An occurrence re-extracted under a newer extraction (for example against
+    // theme proposals) keeps its identity but points at the latest extraction.
+    const reextracted = new Set(
+      items
+        .map((c) => (c.occurrence as ClaimOccurrence).occurrenceId)
+        .filter((id) => known.has(id)),
+    );
+    const occurrences = current.occurrences.map((o) =>
+      reextracted.has(o.occurrenceId) && o.extraction !== extractionRef
+        ? { ...o, extraction: extractionRef }
+        : o,
+    );
+    const refreshed = occurrences.some((o, i) => o !== current.occurrences[i]);
     const themeIds = [
       ...new Set([...current.themeIds, ...items.flatMap((c) => c.themeIds)]),
     ].sort();
-    if (ref && added.length === 0 && themeIds.length === current.themeIds.length) return;
+    if (ref && added.length === 0 && !refreshed && themeIds.length === current.themeIds.length) {
+      return;
+    }
     const next: ClaimRecord = {
       ...current,
       themeIds,
       occurrences: [
-        ...current.occurrences,
+        ...occurrences,
         ...added.map((c) => ({
           occurrenceId: (c.occurrence as ClaimOccurrence).occurrenceId,
           ...post,
