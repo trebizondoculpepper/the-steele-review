@@ -14,7 +14,7 @@
 `selectBriefEvidence` is pure.
 
 1. **Provenance check:** every claim, assessment and historical finding must belong to the same source version and archive reference. Any mismatch returns `provenance-mismatch` and saves nothing.
-2. **Evidence:** only evidence the applicability assessment *selected* (current, independent, applicable) is included. Each item gets a stable citation ID (`E1`, `E2`, …) with its research entry ID, revision and archive reference, and the exact evidence source. An item cited by several claims appears once.
+2. **Evidence:** only evidence the applicability assessment _selected_ (current, independent, applicable) is included. Each item gets a stable citation ID (`E1`, `E2`, …) with its research entry ID, revision and archive reference, and the exact evidence source. An item cited by several claims appears once.
 3. **Claims without support** are listed under `evidenceGaps` and left out of the critique. If no claim has support, the result is `evidence-gap` and no brief exists.
 4. **Historical findings** are optional and never block a brief.
 

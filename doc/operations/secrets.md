@@ -4,13 +4,13 @@ The current decision for the proof of concept: credentials are protected host fi
 
 ## Inputs
 
-| Variable | Sensitive | Used by | Notes |
-|---|---|---|---|
-| `NATS_URL` | yes, may carry user info | every worker, `backfill`, `discover`, `provision` | never printed |
-| `NATS_TOKEN` / `NATS_TOKEN_FILE` | yes | the same | optional |
-| `ELASTICSEARCH_URL` | yes, may carry user info | `index-worker`, `provision`, `replay-index`, `claim-timeline` | never printed |
-| `ELASTICSEARCH_API_KEY` / `ELASTICSEARCH_API_KEY_FILE` | yes | the same | optional |
-| `STEELE_*` paths, names and URLs | no | as documented in each entry point | the publication URL is public |
+| Variable                                               | Sensitive                | Used by                                                       | Notes                         |
+| ------------------------------------------------------ | ------------------------ | ------------------------------------------------------------- | ----------------------------- |
+| `NATS_URL`                                             | yes, may carry user info | every worker, `backfill`, `discover`, `provision`             | never printed                 |
+| `NATS_TOKEN` / `NATS_TOKEN_FILE`                       | yes                      | the same                                                      | optional                      |
+| `ELASTICSEARCH_URL`                                    | yes, may carry user info | `index-worker`, `provision`, `replay-index`, `claim-timeline` | never printed                 |
+| `ELASTICSEARCH_API_KEY` / `ELASTICSEARCH_API_KEY_FILE` | yes                      | the same                                                      | optional                      |
+| `STEELE_*` paths, names and URLs                       | no                       | as documented in each entry point                             | the publication URL is public |
 
 Model and search provider keys (OpenRouter, Kagi) aren't read by any entry point yet. When they are, they'll go through the same boundary.
 
