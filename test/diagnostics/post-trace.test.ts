@@ -238,4 +238,24 @@ describe("tracePost", () => {
     expect(trace.themes).toEqual({ state: "unavailable" });
     expect(trace.claims).toEqual({ state: "unavailable" });
   }, 30_000);
+  it("keeps a claim result's saved theme link when that theme result is not readable", async () => {
+    await content.write(
+      "claim-extractions/pub/p/c.json",
+      JSON.stringify({
+        schemaVersion: 2,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        themeResult: `${"f".repeat(40)}:theme-proposals/pub/p/missing.json`,
+        claims: [],
+        candidates: [],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const trace = await tracePost({ post, content });
+    expect(trace.claims.state === "recorded" && trace.claims.results[0].linkedThemeResult).toBe(
+      "ffffffffffff:theme-proposals/pub/p/missing.json",
+    );
+  });
 });

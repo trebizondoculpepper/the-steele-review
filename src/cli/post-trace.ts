@@ -9,6 +9,7 @@
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured-source archive
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   ELASTICSEARCH_URL[_FILE], ELASTICSEARCH_API_KEY[_FILE]   full-text index
+ *   STEELE_FULLTEXT_INDEX                            optional index name (default steele-source-text-v1)
  *
  * Read-only: no writes, provisioning, retries, events, model or research
  * calls. Output is allowlisted: statuses, counts, versions and logical
@@ -70,7 +71,7 @@ async function main(argv: string[]): Promise<number> {
               fulltextSourceVersion: async (publicationId: string, postId: string) => {
                 if (!es) throw new Error("unavailable");
                 const hits = await es.search(
-                  FULLTEXT_INDEX_V1,
+                  env.STEELE_FULLTEXT_INDEX || FULLTEXT_INDEX_V1,
                   { bool: { filter: [{ term: { publicationId } }, { term: { postId } }] } },
                   { size: 1 },
                 );

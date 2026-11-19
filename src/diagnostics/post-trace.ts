@@ -292,7 +292,18 @@ export async function tracePost(input: {
             schemaVersion: value.schemaVersion,
             sourceVersion: value.sourceVersion,
             stale: stale(value.sourceVersion),
-            ...(linked ? { linkedThemeResult: logical(linked) } : {}),
+            // Keep the saved link even when that theme result is beyond the
+            // inspection bound or unreadable: show the recorded reference.
+            ...(linked
+              ? { linkedThemeResult: logical(linked) }
+              : value.themeResult
+                ? {
+                    linkedThemeResult: value.themeResult.replace(
+                      /^([0-9a-f]{12})[0-9a-f]*:/,
+                      "$1:",
+                    ),
+                  }
+                : {}),
             model: value.extraction.modelVersion,
             prompt: value.extraction.promptVersion,
             accepted: value.schemaVersion === 2 ? value.claims.length : 0,
