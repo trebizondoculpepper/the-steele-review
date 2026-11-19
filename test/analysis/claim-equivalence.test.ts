@@ -200,6 +200,30 @@ describe("resolveClaimEquivalence", () => {
     expect((await read(a)).occurrences).toHaveLength(2);
   });
 
+  it("recovers pending copies through transitive redirects", async () => {
+    const [a, b, c] = [
+      await post("p1", "Weather modification has been around for decades."),
+      await post("p2", "Weather modification tools have existed for many decades."),
+      await post("p3", "Weather modification has existed for decades now."),
+    ].sort();
+    // C→B interrupted after its redirect; then B→A completes.
+    const ref = (await content.lookup(`claims/${c}.json`))!;
+    await content.revise(
+      `claims/${c}.json`,
+      `${JSON.stringify({ ...(await read(c)), canonical: b }, null, 2)}\n`,
+      ref.sha256,
+    );
+    const d = {
+      reason: "same",
+      modelVersion: "m",
+      promptVersion: "p",
+      decidedAt: new Date(0).toISOString(),
+    };
+    await mergeClaimRecords(content, b, a, d);
+    await resolveClaimEquivalence({ provider: model(), artifacts: content, recordId: a });
+    expect((await read(a)).occurrences).toHaveLength(3);
+  });
+
   it("keeps a negated or materially qualified claim separate", async () => {
     const first = await post("p1", "Weather modification has been around for decades.");
     const negated = await post("p2", "Weather modification has not been around for decades.");

@@ -236,7 +236,9 @@ export async function completePendingMerges(
     const other = path.slice("claims/".length, -".json".length);
     if (other === id) continue;
     const found = await readRecord(artifacts, other);
-    if (found?.record.canonical !== id) continue;
+    // Direct or transitive: C→B→A leaves C's occurrences pending for A too.
+    if (!found?.record.canonical) continue;
+    if ((await canonicalOf(artifacts, other)) !== id) continue;
     await copyOccurrences(artifacts, other, id, {
       reason: "merge completed after interruption",
       modelVersion: "recovery",

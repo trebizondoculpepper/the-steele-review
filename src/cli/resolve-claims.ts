@@ -84,7 +84,8 @@ async function main(argv: string[]): Promise<number> {
       modelVersion: provider.modelVersion,
       usage,
     });
-    return 0;
+    // Any failed resolution (provider or malformed output) fails the command.
+    return counts.failed ? 1 : 0;
   } catch (error) {
     report({ outcome: "failed", error: error instanceof Error ? error.name : "error" });
     return 1;
