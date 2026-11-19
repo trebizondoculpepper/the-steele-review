@@ -1,25 +1,23 @@
 /**
- * Manual command (#143): detect themes for one captured post against the
- * known-theme catalogue, persist the detection, and register new themes.
+ * Manual command (#143, revised by #181): propose themes for one captured post
+ * and save the per-post proposal result in the private content repository.
  *
- *   detect-themes --post-id <slug> [--seed-file <catalogue-seed.json>]
+ *   detect-themes --post-id <slug>
  *
- * A seed file is a JSON array of {name, definition, aliases?}; seeding is
- * idempotent and happens before detection.
+ * Extraction never writes canonical catalogue identities. If a catalogue
+ * exists in the content repository it is read as optional context only.
  *
  * Configuration (environment):
- *   STEELE_PUBLICATION_ID                       publication of the post
- *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured-source archive (read only)
+ *   STEELE_PUBLICATION_ID
+ *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
- *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL     model provider
+ *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL
  *
- * Output is one JSON line: post identity, theme IDs, counts and versions.
- * No source text, prompts or credentials are printed. No event is emitted
- * and no downstream consumer is triggered.
+ * Output is one JSON line: identities, counts, versions and usage only.
  */
-import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { ThemeCatalogueStore, detectThemes } from "../analysis/theme-catalogue.js";
+import { ThemeCatalogueStore } from "../analysis/theme-catalogue.js";
+import { proposeThemes } from "../analysis/theme-proposals.js";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { describeSetupError } from "../config/credentials.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
@@ -33,40 +31,14 @@ const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
 });
-
-const SeedSchema = z
-  .array(
-    z
-      .object({
-        name: z.string().trim().min(1).max(120),
-        definition: z.string().trim().min(1).max(2000),
-        aliases: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
-      })
-      .strict(),
-  )
-  .max(500);
-
-const USAGE = "Usage: detect-themes --post-id <slug> [--seed-file <path>]";
-
-function parseArgs(argv: string[]): { postId: string; seedFile?: string } {
-  let postId: string | undefined;
-  let seedFile: string | undefined;
-  for (let i = 0; i < argv.length; i += 2) {
-    const value = argv[i + 1];
-    if (!value) throw new Error(USAGE);
-    if (argv[i] === "--post-id") postId = value;
-    else if (argv[i] === "--seed-file") seedFile = value;
-    else throw new Error(USAGE);
-  }
-  if (!postId || !/^[a-z0-9][a-z0-9-]{0,299}$/.test(postId)) throw new Error(USAGE);
-  return { postId, ...(seedFile ? { seedFile } : {}) };
-}
+const USAGE = "Usage: detect-themes --post-id <slug>";
 
 async function main(argv: string[]): Promise<number> {
-  let args;
-  try {
-    args = parseArgs(argv);
-  } catch {
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    console.log(USAGE);
+    return 0;
+  }
+  if (argv.length !== 2 || argv[0] !== "--post-id" || !/^[a-z0-9][a-z0-9-]{0,299}$/.test(argv[1])) {
     console.error(USAGE);
     return 2;
   }
@@ -85,6 +57,9 @@ async function main(argv: string[]): Promise<number> {
     console.error(`detect-themes: ${describeSetupError(error)}`);
     return 2;
   }
+  const post = { publicationId: c.STEELE_PUBLICATION_ID, postId: argv[1] };
+  const report = (fields: Record<string, unknown>) =>
+    console.log(JSON.stringify({ event: "theme-proposals", ...post, ...fields }));
   const archive = new GitArtifactStore({
     repoPath: c.STEELE_ARCHIVE_PATH,
     repository: c.STEELE_ARCHIVE_REPOSITORY,
@@ -93,66 +68,62 @@ async function main(argv: string[]): Promise<number> {
     repoPath: c.STEELE_CONTENT_PATH,
     repository: c.STEELE_CONTENT_REPOSITORY,
   });
-  await content.initialise();
-  const catalogue = new ThemeCatalogueStore(content);
-  const post = { publicationId: c.STEELE_PUBLICATION_ID, postId: args.postId };
-  const report = (fields: Record<string, unknown>) =>
-    console.log(JSON.stringify({ event: "theme-detection", ...post, ...fields }));
-
-  if (args.seedFile) {
-    let seed;
-    try {
-      seed = SeedSchema.parse(JSON.parse(readFileSync(args.seedFile, "utf8")));
-    } catch {
-      console.error("detect-themes: seed file is unreadable or invalid");
-      return 2;
+  try {
+    await content.initialise();
+    const ref = await archive.lookup(collectionArtifactPath(post));
+    if (!ref) {
+      report({ outcome: "source-not-found" });
+      return 1;
     }
-    await catalogue.register(seed.map((s) => ({ ...s, origin: "seed" as const })));
-  }
-
-  const ref = await archive.lookup(collectionArtifactPath(post));
-  if (!ref) {
-    report({ outcome: "source-not-found" });
-    return 1;
-  }
-  const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
-  if (!record.complete) {
-    report({ outcome: "incomplete-source" });
-    return 1;
-  }
-  const outcome = await detectThemes({
-    provider,
-    catalogue,
-    artifacts: content,
-    post,
-    source: {
-      text: record.text,
-      sourceVersion: sourceVersionFor(record.text),
-      artifact: {
-        repository: ref.repository,
-        commit: ref.commit,
-        path: ref.path,
-        hash: `sha256:${ref.sha256}`,
+    const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
+    if (!record.complete) {
+      report({ outcome: "incomplete-source" });
+      return 1;
+    }
+    // Optional read-only context; never written by extraction.
+    const known = await new ThemeCatalogueStore(content).load();
+    const outcome = await proposeThemes({
+      provider,
+      artifacts: content,
+      post,
+      source: {
+        text: record.text,
+        sourceVersion: sourceVersionFor(record.text),
+        artifact: {
+          repository: ref.repository,
+          commit: ref.commit,
+          path: ref.path,
+          hash: `sha256:${ref.sha256}`,
+        },
       },
-    },
-  });
-  if (outcome.status === "failed") {
-    report({ outcome: outcome.reason, attempts: outcome.attempts });
+      ...(known.ref
+        ? {
+            catalogue: {
+              themes: known.catalogue.themes,
+              version: `${known.ref.commit}:${known.ref.sha256}`,
+            },
+          }
+        : {}),
+    });
+    if (outcome.status === "failed") {
+      report({ outcome: outcome.reason, attempts: outcome.attempts });
+      return 1;
+    }
+    report({
+      outcome: "proposed",
+      reused: outcome.reused,
+      proposals: outcome.result.proposals.length,
+      rejected: outcome.result.rejected.length,
+      result: `${outcome.ref.commit.slice(0, 12)}:${outcome.ref.path}`,
+      modelVersion: outcome.result.extraction.modelVersion,
+      promptVersion: outcome.result.extraction.promptVersion,
+      usage,
+    });
+    return 0;
+  } catch (error) {
+    report({ outcome: "failed", error: error instanceof Error ? error.name : "error" });
     return 1;
   }
-  report({
-    outcome: "detected",
-    reused: outcome.reused,
-    themeIds: outcome.themeIds,
-    existing: outcome.detection.existing.length,
-    proposed: outcome.detection.proposed.length,
-    rejected: outcome.detection.rejected.length,
-    detection: `${outcome.detectionRef.commit.slice(0, 12)}:${outcome.detectionRef.path}`,
-    modelVersion: outcome.detection.extraction.modelVersion,
-    promptVersion: outcome.detection.extraction.promptVersion,
-    usage,
-  });
-  return 0;
 }
 
 process.exitCode = await main(process.argv.slice(2));

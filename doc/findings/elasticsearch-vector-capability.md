@@ -4,15 +4,15 @@ Measured for issue #29 against a disposable single-node Elasticsearch 8.19.2 wit
 
 ## Result
 
-| Capability | Basic tier, 8.19.2 |
-| --- | --- |
-| `dense_vector` field with explicit `dims`, `index: true` | Supported |
-| `similarity: cosine` | Supported; used by the passage-vector mapping |
-| `similarity: dot_product`, `l2_norm`, `max_inner_product` | Supported (index, write and kNN probed) |
-| Top-level approximate `knn` search with `k` and `num_candidates` | Supported |
-| `knn.filter` (keyword term filter) | Supported |
-| Wrong-dimension vector on write | Rejected by Elasticsearch (HTTP 400, reported as `rejected`) |
-| Strict mapping with `dense_vector` alongside keyword/text/date/object fields | Supported |
+| Capability                                                                   | Basic tier, 8.19.2                                           |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `dense_vector` field with explicit `dims`, `index: true`                     | Supported                                                    |
+| `similarity: cosine`                                                         | Supported; used by the passage-vector mapping                |
+| `similarity: dot_product`, `l2_norm`, `max_inner_product`                    | Supported (index, write and kNN probed)                      |
+| Top-level approximate `knn` search with `k` and `num_candidates`             | Supported                                                    |
+| `knn.filter` (keyword term filter)                                           | Supported                                                    |
+| Wrong-dimension vector on write                                              | Rejected by Elasticsearch (HTTP 400, reported as `rejected`) |
+| Strict mapping with `dense_vector` alongside keyword/text/date/object fields | Supported                                                    |
 
 No separate vector database is needed: the observed limitation that would justify one (no dense-vector storage or approximate kNN at the available tier) does not exist. Paid inference (ELSER, inference endpoints) and advanced ranking are not used: embeddings are computed externally by the #28 embedding controller and only stored and searched here.
 

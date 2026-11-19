@@ -197,6 +197,39 @@ describe("extractGroundedClaims", () => {
     expect((await read()).occurrences.map((o) => o.postId)).toEqual(["p1", "p2"]);
   });
 
+  it("does not reuse a cached extraction made against a different theme result", async () => {
+    const one = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c1:theme-proposals/a.json",
+    });
+    const two = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c2:theme-proposals/b.json",
+    });
+    expect(one.status === "extracted" && one.reused).toBe(false);
+    expect(two.status === "extracted" && two.reused).toBe(false);
+    if (two.status !== "extracted") throw new Error();
+    expect(two.record.themeResult).toBe("c2:theme-proposals/b.json");
+    // The claim record now points at the newer extraction for the same occurrence.
+    const ref = await content.lookup(
+      `claims/${claimRecordId("Geoengineering has not been going on for decades")}.json`,
+    );
+    const rec = ClaimRecordSchema.parse(JSON.parse(await content.read(ref!)));
+    expect(rec.occurrences).toHaveLength(1);
+    expect(rec.occurrences[0].extraction).toBe(`${two.recordRef.commit}:${two.recordRef.path}`);
+    if (one.status !== "extracted") throw new Error();
+    expect(rec.occurrences[0].extractions).toEqual([
+      `${one.recordRef.commit}:${one.recordRef.path}`,
+      `${two.recordRef.commit}:${two.recordRef.path}`,
+    ]);
+  });
+
   it("records model and prompt versions and fails cleanly on invalid output", async () => {
     const ok = await extractGroundedClaims({
       provider: model(RESPONSE),

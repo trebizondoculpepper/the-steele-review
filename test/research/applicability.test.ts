@@ -71,6 +71,9 @@ const assessor = (p: ExtractionModelProvider) =>
     staleAfterDays: 365,
   });
 
+const assessorWithoutAgePolicy = (p: ExtractionModelProvider) =>
+  new ApplicabilityAssessor(p, { now: () => new Date("2026-11-01T00:00:00Z") });
+
 describe("ApplicabilityAssessor", () => {
   it("reuses stable evidence, reports stale and monitored material, and keeps incident gaps", async () => {
     const { p } = provider([
@@ -134,6 +137,68 @@ describe("ApplicabilityAssessor", () => {
     ]);
     const result = await assessor(p).assess(claim, [tides]);
     expect(result).toMatchObject({ status: "complete", selected: [], gaps: [claim.statement] });
+  });
+
+  it("reuses old independent evidence when no age policy is set", async () => {
+    const { p } = provider([
+      JSON.stringify({
+        assessments: [
+          {
+            entryId: "towers",
+            applicability: "applicable",
+            rationale: "Same stable question.",
+            reuseEvidence: [{ url: "https://example.org/old", passage: P }],
+            gaps: [],
+          },
+        ],
+      }),
+    ]);
+    const result = await assessorWithoutAgePolicy(p).assess(claim, [towers]);
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") return;
+    expect(result.selected).toEqual([
+      {
+        entryId: "towers",
+        revision: 3,
+        entryArtifact: artifact,
+        evidence: towers.matches[0]!.evidence[1],
+      },
+    ]);
+    expect(result.outdated).toEqual([]);
+    expect(result.gaps).toEqual([]);
+  });
+
+  it("keeps a changed circumstance explicit while reusing stable evidence", async () => {
+    const { p } = provider([
+      JSON.stringify({
+        assessments: [
+          {
+            entryId: "towers",
+            applicability: "partial",
+            rationale: "General exposure applies; this incident does not.",
+            reuseEvidence: [{ url: "https://example.org/old", passage: P }],
+            gaps: ["What residents reported in Exampletown on 3 May"],
+          },
+        ],
+        gaps: [],
+      }),
+    ]);
+    const result = await assessorWithoutAgePolicy(p).assess(claim, [towers]);
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") return;
+    expect(result.selected).toHaveLength(1);
+    expect(result.gaps).toEqual(["What residents reported in Exampletown on 3 May"]);
+    expect(result.selected[0]!.evidence.publishedAt).toBeUndefined();
+    expect(result.selected[0]!.evidence.lastCheckedAt).toBe("2023-01-01T00:00:00Z");
+  });
+
+  it("rejects a nonsensical age policy instead of silently ignoring it", async () => {
+    const { p } = provider([JSON.stringify({ assessments: [], gaps: [] })]);
+    const bad = new ApplicabilityAssessor(p, {
+      staleAfterDays: -1,
+      now: () => new Date("2026-11-01T00:00:00Z"),
+    });
+    await expect(bad.assess(claim, [towers])).rejects.toBeInstanceOf(RangeError);
   });
 
   it("treats only stale evidence as nothing current to reuse", async () => {
