@@ -12,7 +12,7 @@
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL
- *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?        optional: index occurrences
+ *   ELASTICSEARCH_URL[_FILE], ELASTICSEARCH_API_KEY[_FILE]?  optional: index occurrences
  *
  * Output is one JSON line with identities, counts and versions only.
  */
@@ -64,7 +64,7 @@ async function main(argv: string[]): Promise<number> {
   let es: ElasticsearchController | undefined;
   try {
     provider = openRouterFromEnv({}, { onUsage: (u) => usage.push(u) });
-    if (process.env.ELASTICSEARCH_URL) {
+    if (process.env.ELASTICSEARCH_URL || process.env.ELASTICSEARCH_URL_FILE) {
       const conn = elasticsearchConnection();
       es = new ElasticsearchController(conn.url, conn.apiKey);
       // Create the occurrence index if needed, then apply additive field upgrades.
