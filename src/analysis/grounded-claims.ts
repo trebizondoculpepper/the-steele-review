@@ -112,9 +112,30 @@ export const ExtractedClaimSchema = z
   })
   .strict();
 
+/**
+ * Record schema versions: 1 accepted every grounded claim (unthemed ones as
+ * "unclassified"); 2 (#182) separates accepted claims from refinement
+ * candidates. Version 1 records stay readable and are never re-certified.
+ */
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = 2;
+
+/** Why a grounded assertion is a refinement candidate, not an accepted claim. */
+export const CandidateReasonSchema = z.enum(["no-theme", "question", "unclear-referent"]);
+export type CandidateReason = z.infer<typeof CandidateReasonSchema>;
+
+export const ClaimCandidateSchema = z
+  .object({
+    claim: z.unknown(),
+    occurrence: z.unknown(),
+    kind: AssertionKindSchema,
+    themeIds: z.array(z.string()),
+    reasons: z.array(CandidateReasonSchema).min(1),
+  })
+  .strict();
+
 export const ClaimExtractionRecordSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     sourceVersion: z.string(),
     themeIds: z.array(z.string()),
@@ -122,7 +143,10 @@ export const ClaimExtractionRecordSchema = z
     themeResult: z.string().optional(),
     /** Catalogue IDs too long to link from an occurrence; never truncated. */
     skippedThemeIds: z.array(z.string()).optional(),
+    /** v1: every grounded claim. v2: accepted claims only. */
     claims: z.array(ExtractedClaimSchema),
+    /** v2: grounded assertions awaiting triage; never claim records or index entries. */
+    candidates: z.array(ClaimCandidateSchema).optional(),
     rejected: z.array(
       z
         .object({
@@ -184,6 +208,30 @@ export function claimRejectionStage(reason: string): RejectionStage {
   return "grounding"; // unknown theme, passage or speaker evidence not found
 }
 
+// Only personal pronouns standing for unnamed actors are flagged. "It",
+// "this" and "that" also open impersonal or self-contained constructions
+// ("It is illegal to…", "This treaty bans…"), so they are left to the prompt
+// and source inspection rather than rejected structurally.
+const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
+
+/**
+ * Structural acceptance checks. Semantic self-containment also relies on the
+ * prompt and on source inspection (#184); this catches the clear cases:
+ * no theme link, a question, or a statement that opens with an unresolved
+ * personal pronoun ("They are spraying us") instead of naming its subject.
+ */
+export function candidateReasons(
+  kind: z.infer<typeof AssertionKindSchema>,
+  themeIds: readonly string[],
+  statement: string,
+): CandidateReason[] {
+  const reasons: CandidateReason[] = [];
+  if (themeIds.length === 0) reasons.push("no-theme");
+  if (kind === "question") reasons.push("question");
+  if (LEADING_PRONOUN.test(statement.trim())) reasons.push("unclear-referent");
+  return reasons;
+}
+
 export function claimRecordId(statement: string): string {
   return `claim-${claimIdentityKey(statement).slice(7, 39)}`;
 }
@@ -200,8 +248,8 @@ export function claimExtractionPath(
     .update(
       JSON.stringify(
         themeResult === undefined
-          ? [modelVersion, promptVersion]
-          : [modelVersion, promptVersion, themeResult],
+          ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
+          : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult],
       ),
     )
     .digest("hex")
@@ -332,6 +380,7 @@ export async function extractGroundedClaims(input: {
       extractedAt: (input.now ?? (() => new Date()))().toISOString(),
     };
     const claims: ClaimExtractionRecord["claims"] = [];
+    const candidates: NonNullable<ClaimExtractionRecord["candidates"]> = [];
     const rejected: ClaimExtractionRecord["rejected"] = [];
     const seen = new Set<string>();
     output.claims.forEach((item, index) => {
@@ -394,13 +443,20 @@ export async function extractGroundedClaims(input: {
       if (seen.has(occurrence.occurrenceId))
         return rejected.push({ index, reason: "duplicate-occurrence" });
       seen.add(occurrence.occurrenceId);
+      // Acceptance (#182): at least one theme, an asserted proposition and a
+      // self-contained statement. Anything else is kept as a candidate.
+      const reasons = candidateReasons(m.kind, linked, claim.statement);
+      if (reasons.length > 0) {
+        candidates.push({ claim, occurrence, kind: m.kind, themeIds: linked, reasons });
+        return;
+      }
       claims.push({
         claim,
         occurrence,
         kind: m.kind,
         themeIds: linked,
-        classification: linked.length > 0 ? "themed" : "unclassified",
-        ...(m.kind === "question" ? {} : { claimRecordId: claimRecordId(claim.statement) }),
+        classification: "themed",
+        claimRecordId: claimRecordId(claim.statement),
       });
     });
     const detailed = rejected.map((r) => ({
@@ -409,13 +465,14 @@ export async function extractGroundedClaims(input: {
       candidate: candidateSnapshot(output.claims[r.index], CLAIM_DIAGNOSTIC_FIELDS),
     }));
     record = ClaimExtractionRecordSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CLAIM_EXTRACTION_SCHEMA_VERSION,
       post,
       sourceVersion: source.sourceVersion,
       themeIds: [...themeIds],
       ...(input.themeResult ? { themeResult: input.themeResult } : {}),
       ...(skippedThemeIds.length > 0 ? { skippedThemeIds } : {}),
       claims,
+      candidates,
       rejected: detailed,
       ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
       extraction,
