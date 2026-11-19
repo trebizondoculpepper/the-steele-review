@@ -223,6 +223,11 @@ describe("extractGroundedClaims", () => {
     const rec = ClaimRecordSchema.parse(JSON.parse(await content.read(ref!)));
     expect(rec.occurrences).toHaveLength(1);
     expect(rec.occurrences[0].extraction).toBe(`${two.recordRef.commit}:${two.recordRef.path}`);
+    if (one.status !== "extracted") throw new Error();
+    expect(rec.occurrences[0].extractions).toEqual([
+      `${one.recordRef.commit}:${one.recordRef.path}`,
+      `${two.recordRef.commit}:${two.recordRef.path}`,
+    ]);
   });
 
   it("records model and prompt versions and fails cleanly on invalid output", async () => {

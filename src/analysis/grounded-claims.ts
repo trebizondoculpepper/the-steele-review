@@ -158,6 +158,12 @@ export const ClaimRecordSchema = z
             postId: z.string(),
             kind: AssertionKindSchema,
             extraction: z.string(),
+            /**
+             * Every extraction (commit:path) that produced this occurrence, oldest
+             * first, so theme IDs accumulated from different results stay traceable
+             * to the result that linked them. `extraction` is the latest.
+             */
+            extractions: z.array(z.string()).max(100).optional(),
           })
           .strict(),
       )
@@ -498,7 +504,13 @@ async function upsertClaimRecord(
     );
     const occurrences = current.occurrences.map((o) =>
       reextracted.has(o.occurrenceId) && o.extraction !== extractionRef
-        ? { ...o, extraction: extractionRef }
+        ? {
+            ...o,
+            extraction: extractionRef,
+            extractions: [...new Set([...(o.extractions ?? [o.extraction]), extractionRef])].slice(
+              -100,
+            ),
+          }
         : o,
     );
     const refreshed = occurrences.some((o, i) => o !== current.occurrences[i]);
