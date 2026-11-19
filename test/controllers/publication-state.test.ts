@@ -139,7 +139,9 @@ describe("publication state transitions", () => {
       destinationDraftId: "draft-123",
     });
     expect(store.confirmPublished(reconcile, receipt).status).toBe("published");
-    // Once published, nothing is left to reconcile.
+    // Published but not yet completed is still reconcilable (to finish the handoff);
+    // once the operation is completed, nothing is left to reconcile.
+    store.complete(reconcile, { receipt }, []);
     expect(() => store.claimForReconciliation(KEY, "again", 60_000)).toThrow("invalid-transition");
   });
 

@@ -75,7 +75,13 @@ export interface ElasticsearchClientLike {
     existsAlias(params: { name: string }): Promise<boolean>;
   };
   search(
-    params: { index: string; query: unknown; size: number; _source: boolean },
+    params: {
+      index: string;
+      query?: unknown;
+      knn?: unknown;
+      size: number;
+      _source: boolean | { excludes: string[] };
+    },
     options: { requestTimeout: number; maxRetries: number },
   ): Promise<{ hits: { hits: Array<{ _id: string; _score: number | null; _source?: unknown }> } }>;
   close(): Promise<void>;
@@ -207,6 +213,52 @@ export class ElasticsearchController {
     try {
       const response = await this.client.search(
         { index, query, size, _source: true },
+        { requestTimeout: timeoutMs, maxRetries: 0 },
+      );
+      return response.hits.hits.map((hit) => ({
+        id: hit._id,
+        score: hit._score ?? 0,
+        source: hit._source,
+      }));
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /**
+   * Approximate k-nearest-neighbour search over one dense-vector field of one
+   * logical index, with an optional filter. `k` is capped like `search`;
+   * the vector field itself is excluded from returned sources.
+   */
+  async knnSearch(
+    index: string,
+    request: {
+      field: string;
+      queryVector: number[];
+      k: number;
+      numCandidates?: number;
+      filter?: unknown;
+      excludeFields?: string[];
+    },
+    options: { timeoutMs?: number } = {},
+  ): Promise<SearchHit[]> {
+    const k = Math.max(1, Math.min(request.k, MAX_SEARCH_RESULTS));
+    const numCandidates = Math.max(k, Math.min(request.numCandidates ?? k * 10, 1_000));
+    const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
+    try {
+      const response = await this.client.search(
+        {
+          index,
+          knn: {
+            field: request.field,
+            query_vector: request.queryVector,
+            k,
+            num_candidates: numCandidates,
+            ...(request.filter === undefined ? {} : { filter: request.filter }),
+          },
+          size: k,
+          _source: { excludes: request.excludeFields ?? [] },
+        },
         { requestTimeout: timeoutMs, maxRetries: 0 },
       );
       return response.hits.hits.map((hit) => ({
