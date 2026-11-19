@@ -16,7 +16,7 @@ This is an implementer map for [the agreed demo](../architecture/15-manual-resea
 | Writing             | `draftFromBrief`, `renderDraft`                                            | #164 adds source/theme context; #149 composes and saves one draft                          |
 | Verification        | `verifyDraft`, `isApprovalValidFor`, existing revision policy              | #164 supplies the same source context; #150 saves the exact-version report                 |
 
-#162 and #163 are small preparation capabilities that can be built against existing ports with fake data. #164 uses the delivered theme-output contract and is a prerequisite for the manual writer/verifier. The stage commands remain independently callable; their exact invocation and `--help` must be documented by each implementation ticket. This document does not claim that unmerged command names already exist.
+#162, #163 and the applicability correction #166 are small preparation capabilities that can be built against existing ports with fake data. #164 uses the delivered theme-output contract and is a prerequisite for the manual writer/verifier. The stage commands remain independently callable; their exact invocation and `--help` must be documented by each implementation ticket. This document does not claim that unmerged command names already exist.
 
 ## Identity boundaries
 
@@ -52,6 +52,12 @@ The delivered dossier metadata and research-entry formats serve different purpos
 Default effort is up to five searches and ten distinct fetched pages. Reuse existing evidence first and skip work already covered. Repeated queries/URLs or irrelevant results are not useful progress. Save meaningful improvements before offering another manually triggered batch. A later batch can extend the dossier; no autonomous loop or lifetime dossier cap is required.
 
 An HTTP/auth/credit/timeout failure remains an operational pending/error outcome, not a conclusion that no relevant evidence exists. Separate transient provider failure, exhausted no-progress effort, and covered/uncovered claim outcomes in the command's result. Do not turn them all into a successful empty response.
+
+## Corpus age is not automatic expiry
+
+The owner chose no scheduled refresh and no automatic evidence expiry. The delivered `ApplicabilityAssessor` currently defaults to excluding evidence whose `lastCheckedAt` is more than 365 days old. #166 is the small policy correction before #147 composes the manual research path.
+
+Keep dates and exact source references, and allow an explicit gap for a time-sensitive claim, changed circumstances or conflicting evidence. Do not discard an otherwise applicable older explanation solely on elapsed age. Preserve the independent-versus-monitored distinction. Existing callers/tests of `staleAfterDays` must be inspected so compatibility is handled explicitly rather than silently changing a caller's policy.
 
 ## Partial and wholly missing evidence
 
