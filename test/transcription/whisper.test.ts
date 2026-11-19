@@ -140,3 +140,16 @@ it("terminates a real child on cancellation, suppressing its diagnostics", async
     clearTimeout(timer);
   }
 });
+
+it("does not archive a no-speech marker as a successful transcript", async () => {
+  const { provider } = setup({
+    output: {
+      result: { language: "en" },
+      transcription: [{ text: "[BLANK_AUDIO]", offsets: { from: 0, to: 1000 } }],
+    },
+  });
+  await expect(
+    provider.transcribe({ path: join(dir, "source"), kind: "audio" }, signal()),
+  ).rejects.toMatchObject({ reason: "empty-transcript", retryable: false });
+  expect(await readdir(dir)).toEqual([]);
+});

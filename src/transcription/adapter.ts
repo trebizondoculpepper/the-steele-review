@@ -450,8 +450,9 @@ export class TranscriptionAdapter {
     let entries: string[];
     try {
       entries = await readdir(this.config.workspaceDir);
-    } catch {
-      return 0;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
     }
     const bytes = async (path: string, depth = 0): Promise<number> => {
       if (depth > 8) throw new TranscriptionError("workspace-full", true);
