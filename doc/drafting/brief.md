@@ -61,3 +61,37 @@ If nothing supported remains, the outcome is `no-supported-errors` and no draft 
 - `<id>.json`: the metadata, with the brief reference, source and ingestion reason, model, prompt and template versions, draft hash, citation IDs used, evidence-gap count and rejections.
 
 Messages are acknowledged only after durable state. Provider failures redeliver. No browsing or publishing happens. The drafting model is injected; **live provider: unverified**.
+
+# Verification
+
+`src/drafting/verify.ts` checks one exact draft against its exact brief.
+
+## Deterministic checks
+
+These run first, with no model:
+
+- **Identity:** the draft and brief bytes must hash to the references the draft metadata names. Otherwise the result is `invalid` (`draft-hash-mismatch` or `brief-hash-mismatch`).
+- **Original link:** must be the brief's source URL.
+- **Citations:** every `[E#]` must exist in the brief.
+- **Sources:** each listed source URL must match the brief's evidence, and each quoted source passage must be the evidence passage verbatim.
+
+Any failure is a `redraft`, with specific issues and required changes.
+
+## Verifier review
+
+A separate verifier role with its own prompt (`draft-verifier-v1`) then reviews semantic support against the brief only. It can use the same provider as the drafter, and does no browsing or research.
+
+- Each issue must quote an exact passage of the draft and state the required change. Unanchored issues are dropped and counted.
+- A redraft with no anchored issue isn't usable, so it stays pending.
+
+## Verdicts
+
+- `approve`: bound to the draft's hash. `isApprovalValidFor` rejects any changed text.
+- `redraft`: specific issues to fix.
+- `skip`: a redraft verdict on the final allowed attempt.
+
+An unavailable or malformed verifier leaves the work **pending** and never skips.
+
+## Worker
+
+`VerificationWorker.handle(message)` consumes `draft.ready` and runs one operation per draft hash, verifier model and prompt. It commits the report to `verifications/<publication>/<post>/<sha256>.json` and hands off `org.steele.draft.verified.v1` on `steele.v1.draft.verified`. **Live verifier: unverified**; only fake-verifier tests have run.
