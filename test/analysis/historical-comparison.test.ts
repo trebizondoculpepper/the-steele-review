@@ -148,6 +148,28 @@ describe("HistoricalComparator", () => {
     });
   });
 
+  it("gives the model the current publication date", async () => {
+    const { p, calls } = provider([json([repetition])]);
+    await new HistoricalComparator(p).compare(claim, earlier, undefined, "2026-03-20T00:00:00Z");
+    expect(calls[0]!.user).toContain('"publishedAt":"2026-03-20T00:00:00Z"');
+  });
+
+  it("bounds a provider call that never settles", async () => {
+    const hanging: ExtractionModelProvider = {
+      modelVersion: "fake/hang",
+      complete: (_r, signal) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("aborted"))),
+        ),
+    };
+    expect(
+      await new HistoricalComparator(hanging, undefined, 1, 50).compare(claim, earlier),
+    ).toEqual({
+      status: "failed",
+      reason: "provider-failed",
+    });
+  });
+
   it("reports insufficient context without a model call when nothing earlier exists", async () => {
     const { p, calls } = provider([]);
     const result = await new HistoricalComparator(p).compare(claim, []);
