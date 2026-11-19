@@ -174,7 +174,7 @@ it.skipIf(spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0)(
         "-i",
         "sine=frequency=440:duration=1",
         "-c:a",
-        "aac",
+        "mp2",
         "-f",
         "mpegts",
         outside,
@@ -182,7 +182,7 @@ it.skipIf(spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0)(
       { stdio: "ignore" },
     );
     expect(generated.status).toBe(0);
-    const playlist = join(jobDir, "media.audio");
+    const playlist = join(jobDir, "media.m3u8");
     await writeFile(
       playlist,
       `#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:1,\n${outside}\n#EXT-X-ENDLIST\n`,
@@ -200,6 +200,6 @@ it.skipIf(spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0)(
       provider.transcribe({ path: playlist, kind: "audio" }, signal()),
     ).rejects.toMatchObject({ reason: "provider-failed" });
     expect(calls).toEqual(["ffmpeg"]);
-    expect(await readdir(jobDir)).toEqual(["media.audio"]);
+    expect(await readdir(jobDir)).toEqual(["media.m3u8"]);
   },
 );
