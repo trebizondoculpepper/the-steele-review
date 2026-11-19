@@ -174,6 +174,25 @@ describe("queryClaimTimeline", () => {
   });
 });
 
+describe("claim-timeline CLI", () => {
+  it("rejects a malformed Elasticsearch URL without echoing it", async () => {
+    const { main } = await import("../../src/cli/claim-timeline.js");
+    const saved = process.env.ELASTICSEARCH_URL;
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (m: string) => void errors.push(m);
+    try {
+      process.env.ELASTICSEARCH_URL = "http://user:secret@host:99999999";
+      expect(await main(["--theme", "surveillance"])).toBe(2);
+      expect(errors.join("\n")).not.toContain("secret");
+    } finally {
+      console.error = original;
+      if (saved === undefined) delete process.env.ELASTICSEARCH_URL;
+      else process.env.ELASTICSEARCH_URL = saved;
+    }
+  });
+});
+
 const esUrl = process.env.STEELE_TEST_ES_URL;
 describe.skipIf(!esUrl)("queryClaimTimeline with Elasticsearch", () => {
   it("queries the strict occurrence mapping with sorting and filters", async () => {

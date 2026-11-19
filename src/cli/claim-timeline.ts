@@ -69,7 +69,14 @@ export async function main(argv: string[]): Promise<number> {
     console.error("claim-timeline: ELASTICSEARCH_URL is required");
     return 2;
   }
-  const es = new ElasticsearchController(url, process.env.ELASTICSEARCH_API_KEY || undefined);
+  let es: ElasticsearchController;
+  try {
+    es = new ElasticsearchController(url, process.env.ELASTICSEARCH_API_KEY || undefined);
+  } catch {
+    // Never echo the configured URL: it may carry credentials.
+    console.error("claim-timeline: ELASTICSEARCH_URL is not a valid URL");
+    return 2;
+  }
   try {
     const timeline = await queryClaimTimeline(
       es,
