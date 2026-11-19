@@ -25,3 +25,23 @@
 Only after the commit does it complete a state-controller operation, with a pending `org.steele.brief.ready.v1` event on `steele.v1.brief.ready`. The event is a metadata pointer: the brief's archive reference, counts and the ingestion reason.
 
 No drafting, browsing or publication happens at this step.
+
+# Research coordination
+
+`ResearchCoordinator` (`src/drafting/research-coordinator.ts`) routes one analysed post from its claims to a saved brief. It only routes; the injected research keeper owns research decisions.
+
+## advance(post)
+
+1. **Assess:** the keeper assesses each claim against the existing corpus. A keeper failure returns `retry` and requests nothing.
+2. **Request:** a claim with open gaps is a research need, keyed by its normalised statement. The need is requested once (a pending `org.steele.research.requested.v1` on `steele.v1.research.requested`), however many posts or runs ask. The post records itself as a waiter and the call returns `waiting`. Nothing is held open in memory.
+3. **Pause:** a need whose research is paused, for example by exhausted provider credit, makes the post `paused`.
+4. **Hand off:** once every need is settled, the brief is saved through `saveDraftingBrief`, which hands off `brief.ready` to drafting. Settled means saved, unresolved or failed; failed research leaves the claim as an evidence gap.
+
+## onResearchCompleted(event)
+
+Takes `{ needId, outcome: saved | unresolved | failed | paused, reason? }`. It records the outcome once and re-advances every waiting post.
+
+- A repeated event is a no-op.
+- A paused outcome is stored separately, so a later real result supersedes it.
+
+All state lives behind the state controller. Its new read-only `operationStatus` and `listOperations` views let the coordinator observe progress without claiming work. No writing, verification or publication happens in the coordinator.

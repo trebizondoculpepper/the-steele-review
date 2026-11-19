@@ -155,6 +155,28 @@ interface OperationRow {
   error_code: string | null;
 }
 
+/** Read-only operation state. */
+export interface OperationStatus {
+  key: string;
+  status: "claimed" | "released" | "completed" | "failed";
+  /** True when no further attempt will be granted. */
+  exhausted: boolean;
+  attempts: number;
+  errorCode?: string;
+  artifact?: unknown;
+}
+
+function toStatus(key: string, row: OperationRow): OperationStatus {
+  return {
+    key,
+    status: row.status as OperationStatus["status"],
+    exhausted: row.status === "failed",
+    attempts: row.attempts,
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...(row.artifact !== null ? { artifact: JSON.parse(row.artifact) as unknown } : {}),
+  };
+}
+
 export class OperationStore {
   private readonly db: DatabaseSync;
   private readonly now: () => number;
@@ -216,6 +238,28 @@ export class OperationStore {
         "SELECT status, owner, lease_expires_at, attempts, max_attempts, artifact, error_code FROM operations WHERE key = ?",
       )
       .get(key) as OperationRow | undefined;
+  }
+
+  /**
+   * Read-only view of one operation, for coordinators that must observe
+   * progress without claiming work. Undefined when the key is unknown.
+   */
+  operationStatus(key: string): OperationStatus | undefined {
+    const row = this.row(key);
+    return row ? toStatus(key, row) : undefined;
+  }
+
+  /** Read-only views of operations whose key starts with `prefix`, oldest key first, bounded. */
+  listOperations(prefix: string, limit = 100): OperationStatus[] {
+    if (!prefix) throw new OperationStoreError("invalid-input");
+    const bound = Math.max(1, Math.min(Math.trunc(limit), 1_000));
+    // Range scan rather than LIKE, so `%` and `_` in keys match literally.
+    const rows = this.db
+      .prepare(
+        "SELECT key, status, owner, lease_expires_at, attempts, max_attempts, artifact, error_code FROM operations WHERE key >= ? AND key < ? ORDER BY key LIMIT ?",
+      )
+      .all(prefix, `${prefix}\uffff`, bound) as unknown as Array<OperationRow & { key: string }>;
+    return rows.map((r) => toStatus(r.key, r));
   }
 
   /** True when the row is still held by exactly this claim attempt. */
