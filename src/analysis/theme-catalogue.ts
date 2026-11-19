@@ -39,7 +39,7 @@ export const CATALOGUE_SCHEMA_VERSION = 1;
 /** Upper bound on catalogue entries sent to the model in one request. */
 export const MAX_PROMPT_CATALOGUE = 200;
 
-const ThemeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/);
+const ThemeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/);
 
 export const CatalogueThemeSchema = z
   .object({

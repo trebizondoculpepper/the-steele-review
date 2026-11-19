@@ -126,6 +126,18 @@ export class InvalidClaimOccurrenceError extends Error {
 const sha = (value: unknown) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;
 
+/**
+ * Strict normalisation for reusable claim identity: Unicode, case and
+ * whitespace only. Signs, operators, decimal points and other punctuation
+ * are kept, because "+2%" and "-2%", or "> 10" and "< 10", are different
+ * claims. Grouping version "2" uses this key; version "1" used
+ * {@link normalisedClaimKey}.
+ */
+export function claimIdentityKey(statement: string): string {
+  const text = statement.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
+}
+
 /** Stable occurrence ID from post, source version and span. */
 export function occurrenceIdFor(input: {
   publicationId: string;
