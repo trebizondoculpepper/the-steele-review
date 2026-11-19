@@ -12,6 +12,14 @@ const claim = {
   id: `sha256:${"c".repeat(64)}`,
   statement: "The towers were switched on in March.",
   passage: "The towers were switched on in March, residents say.",
+  artifact: {
+    repository: "a",
+    commit: "e".repeat(40),
+    path: "mar.json",
+    hash: `sha256:${"f".repeat(64)}`,
+  },
+  sourceVersion: `sha256:${"1".repeat(64)}`,
+  span: { start: 100, end: 152 },
 };
 const artifact = {
   repository: "a",
@@ -101,6 +109,12 @@ describe("HistoricalComparator", () => {
       explanation: { generatedBy: "fake/compare-1", isEvidence: false },
     });
     expect(second!.kind).toBe("repetition");
+    expect(first!.current).toMatchObject({
+      artifact: claim.artifact,
+      sourceVersion: claim.sourceVersion,
+      start: 100,
+      end: 136,
+    });
     // Citations carry the immutable archive reference and exact quote offsets.
     const cite = first!.earlier[0]!;
     expect(cite.artifact).toEqual(artifact);

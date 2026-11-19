@@ -79,7 +79,16 @@ export interface ComparisonFinding {
   explanation: { text: string; generatedBy: string; isEvidence: false };
   uncertainty: "low" | "medium" | "high";
   changedCircumstances?: string;
-  current: { claimId: string; quote: string };
+  current: {
+    claimId: string;
+    quote: string;
+    /** Immutable archive reference and source version of the claim's post. */
+    artifact: ArtifactReference;
+    sourceVersion: string;
+    /** Exact offsets of the quote within the archived source text. */
+    start: number;
+    end: number;
+  };
   earlier: Citation[];
   conflictRationale?: string;
 }
@@ -118,6 +127,23 @@ function parseOutput(raw: string): unknown[] | undefined {
   }
 }
 
+export type ComparedClaim = Pick<
+  Claim,
+  "id" | "statement" | "passage" | "artifact" | "sourceVersion" | "span"
+>;
+
+function currentRef(claim: ComparedClaim, quote: string): ComparisonFinding["current"] {
+  const start = claim.span.start + claim.passage.indexOf(quote);
+  return {
+    claimId: claim.id,
+    quote,
+    artifact: claim.artifact,
+    sourceVersion: claim.sourceVersion,
+    start,
+    end: start + quote.length,
+  };
+}
+
 export class HistoricalComparator {
   private readonly prompt: Readonly<ExtractionPrompt>;
 
@@ -134,7 +160,7 @@ export class HistoricalComparator {
   }
 
   async compare(
-    claim: Pick<Claim, "id" | "statement" | "passage">,
+    claim: ComparedClaim,
     earlier: EarlierPassage[],
     signal?: AbortSignal,
   ): Promise<ComparisonOutcome> {
@@ -157,7 +183,7 @@ export class HistoricalComparator {
               isEvidence: false,
             },
             uncertainty: "high",
-            current: { claimId: claim.id, quote: claim.passage },
+            current: currentRef(claim, claim.passage),
             earlier: [],
           },
         ],
@@ -238,7 +264,7 @@ export class HistoricalComparator {
         },
         uncertainty: f.uncertainty,
         ...(f.changedCircumstances ? { changedCircumstances: f.changedCircumstances } : {}),
-        current: { claimId: claim.id, quote: currentQuote },
+        current: currentRef(claim, currentQuote),
         earlier: citations,
         ...(f.conflictRationale ? { conflictRationale: f.conflictRationale } : {}),
       });
@@ -255,7 +281,7 @@ export class HistoricalComparator {
 export async function compareAndStore(input: {
   comparator: HistoricalComparator;
   modelVersion: string;
-  claim: Pick<Claim, "id" | "statement" | "passage">;
+  claim: ComparedClaim;
   post: { publicationId: string; postId: string };
   earlier: EarlierPassage[];
   artifacts: GitArtifactStore;
