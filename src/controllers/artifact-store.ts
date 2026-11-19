@@ -84,7 +84,7 @@ export function assertArtifactPath(path: string): string {
  * The only path prefixes that may be revised in place. Everything else,
  * including captured sources and saved evidence, is write-once.
  */
-export const REVISABLE_PREFIXES: readonly string[] = ["dossier/"];
+export const REVISABLE_PREFIXES: readonly string[] = ["dossier/", "catalogue/"];
 
 export function isRevisablePath(path: string): boolean {
   return REVISABLE_PREFIXES.some((p) => path.startsWith(p));
