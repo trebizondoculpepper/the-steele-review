@@ -232,6 +232,30 @@ describe("EmbeddingConsumer", () => {
     expect(s.providerCalls).toHaveLength(0);
   });
 
+  it("records unreadable archive records instead of retrying forever", async () => {
+    const s = setup();
+    const ref = await artifacts.write("substack/example-pub/a-post/garbage.json", "not json\n");
+    const event = createTextReadyEvent({
+      publicationId: item.publicationId,
+      postId: item.postId,
+      url: item.url,
+      ingestionReason: "backfill",
+      artifact: {
+        repository: ref.repository,
+        commit: ref.commit,
+        path: ref.path,
+        hash: `sha256:${ref.sha256}`,
+      },
+      acquisitionMethod: "supplied-transcript",
+      complete: true,
+    });
+    const m = await message();
+    m.data = new TextEncoder().encode(JSON.stringify(event.toJSON()));
+    expect(await s.consumer.handle(m)).toBe("failed");
+    expect(m.acks).toBe(1);
+    expect(m.naks).toEqual([]);
+  });
+
   it("records incomplete sources and terminates malformed events", async () => {
     const s = setup();
     const partial = await message(record(false));

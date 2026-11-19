@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 import { vectorSpaceId, type EmbeddingModel } from "../controllers/embedding.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
 import type { OperationStore } from "../controllers/operation-store.js";
@@ -82,9 +82,16 @@ export class EmbeddingConsumer {
       record = CollectionRecordSchema.parse(
         JSON.parse(await this.config.artifacts.read(toArchiveRef(data.artifact))),
       );
-    } catch {
-      message.nak(retryDelay);
-      return "retry";
+    } catch (error) {
+      // Only a transient Git failure is worth redelivery; a missing, tampered
+      // or malformed record will never become valid, so record it and stop.
+      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
+        message.nak(retryDelay);
+        return "retry";
+      }
+      operations.recordPermanentFailure(`embed-invalid:${event.id}`, "unreadable-source");
+      await message.ack();
+      return "failed";
     }
     const sourceId = `substack/${data.publicationId}/${data.postId}`;
     const sourceVersion = sourceVersionFor(record.text);
