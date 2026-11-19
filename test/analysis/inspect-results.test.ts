@@ -235,6 +235,24 @@ describe("inspectPost", () => {
     expect(r.resultsTruncated).toBe(false);
   }, 120_000);
 
+  it("keeps inspecting when one listed artifact cannot be resolved", async () => {
+    await analyse();
+    const broken = {
+      list: content.list.bind(content),
+      read: content.read.bind(content),
+      lookup: async (path: string) => {
+        if (path.startsWith("theme-proposals/")) throw new Error("missing blob");
+        return content.lookup(path);
+      },
+    };
+    const r = await inspectPost(broken, post);
+    expect(r.themeResults[0]).toMatchObject({
+      status: "unreadable",
+      ref: expect.stringMatching(/^unresolved:theme-proposals\//),
+    });
+    expect(r.claimResults[0].status).toBe("ok");
+  });
+
   it("reports unreadable results instead of hiding them", async () => {
     await content.write("claim-extractions/pub/post/broken.json", "{not json");
     const r = await inspectPost(content, post);

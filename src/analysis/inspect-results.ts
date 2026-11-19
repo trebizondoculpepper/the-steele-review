@@ -69,7 +69,18 @@ export interface InspectionReport {
   resultsTruncated: boolean;
 }
 
-const logical = (ref: ArtifactRef) => `${ref.commit.slice(0, 12)}:${ref.path}`;
+const UNRESOLVED_COMMIT = "unresolved";
+/** Placeholder reference for a listed path whose artifact could not be resolved. */
+const unresolved = (path: string): ArtifactRef => ({
+  repository: "",
+  commit: UNRESOLVED_COMMIT,
+  path,
+  sha256: "",
+});
+const logical = (ref: ArtifactRef) =>
+  ref.commit === UNRESOLVED_COMMIT
+    ? `unresolved:${ref.path}`
+    : `${ref.commit.slice(0, 12)}:${ref.path}`;
 
 interface OccurrenceView {
   passage?: string;
@@ -133,7 +144,15 @@ async function readAll(
     const page = await store.list(prefix, PAGE, after);
     for (const path of page) {
       if (items.length >= MAX_RESULT_FILES) return { items, truncated: true };
-      const ref = await store.lookup(path);
+      // A listed artifact whose lookup or read fails (for example a missing
+      // blob) is reported as unreadable; the rest of the inspection continues.
+      let ref: ArtifactRef | undefined;
+      try {
+        ref = await store.lookup(path);
+      } catch {
+        items.push({ ref: unresolved(path) });
+        continue;
+      }
       if (!ref) continue;
       try {
         items.push({ ref, text: await store.read(ref) });
