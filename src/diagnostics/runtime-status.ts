@@ -21,7 +21,10 @@ import { Worker } from "node:worker_threads";
 import type { ElasticsearchConnection, NatsConnection } from "../config/credentials.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { NatsController } from "../controllers/nats.js";
-import type { OperationStatusCount } from "../controllers/operation-store.js";
+import type {
+  OperationInspection,
+  OperationStatusCount,
+} from "../controllers/operation-store.js";
 
 export const RUNTIME_STATUS_SCHEMA_VERSION = 1;
 
@@ -38,6 +41,11 @@ export interface HealthProbe {
 /** The state controller's narrow read-only inspection surface. */
 export interface StateCountsProbe {
   readCounts(signal?: AbortSignal): Promise<OperationStatusCount[]>;
+}
+
+/** One-operation inspection: `null` means the key is unknown. */
+export interface OperationProbe {
+  readOperation(key: string, signal?: AbortSignal): Promise<OperationInspection | null>;
 }
 
 export interface StateProbeOptions {
@@ -71,35 +79,52 @@ export interface RuntimeStatusReport {
   checks: RuntimeStatusCheck[];
 }
 
-const countsFromMessage = (message: unknown): OperationStatusCount[] | undefined => {
-  if (message === null || typeof message !== "object") return undefined;
-  const counts = (message as { counts?: unknown }).counts;
-  if (!Array.isArray(counts)) return undefined;
-  if (
-    !counts.every(
-      (entry) =>
-        entry !== null &&
-        typeof entry === "object" &&
-        typeof (entry as { status?: unknown }).status === "string" &&
-        typeof (entry as { count?: unknown }).count === "number",
-    )
-  ) {
-    return undefined;
-  }
-  return counts as OperationStatusCount[];
+const isCounts = (value: unknown): value is OperationStatusCount[] =>
+  Array.isArray(value) &&
+  value.every(
+    (entry) =>
+      entry !== null &&
+      typeof entry === "object" &&
+      typeof (entry as { status?: unknown }).status === "string" &&
+      typeof (entry as { count?: unknown }).count === "number",
+  );
+
+/** Allowlisted fields the worker may return for one operation. */
+const isOperation = (value: unknown): value is OperationInspection => {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const pending = record.pendingEvents;
+  return (
+    typeof record.key === "string" &&
+    typeof record.status === "string" &&
+    typeof record.exhausted === "boolean" &&
+    typeof record.attempts === "number" &&
+    typeof record.maxAttempts === "number" &&
+    pending !== null &&
+    typeof pending === "object" &&
+    typeof (pending as { pending?: unknown }).pending === "number" &&
+    typeof (pending as { sent?: unknown }).sent === "number"
+  );
 };
 
-function readCountsInWorker(
-  path: string,
-  workerUrl: string | URL,
+interface StateWorkerRequest {
+  path: string;
+  key?: string;
+}
+
+/** Run one inspection in a worker; resolves only on a live, valid reply. */
+function runInWorker<T>(
+  request: StateWorkerRequest,
+  options: StateProbeOptions,
   signal: AbortSignal | undefined,
-  execArgv: string[] | undefined,
-): Promise<OperationStatusCount[]> {
+  parse: (message: unknown) => T | undefined,
+): Promise<T> {
   if (signal?.aborted) return Promise.reject(new Error("state inspection aborted"));
+  const workerUrl = options.workerUrl ?? new URL("./state-probe-worker.js", import.meta.url);
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerUrl, {
-      workerData: { path },
-      ...(execArgv ? { execArgv } : {}),
+      workerData: request,
+      ...(options.execArgv ? { execArgv: options.execArgv } : {}),
     });
     let settled = false;
     const finish = (outcome: () => void) => {
@@ -109,12 +134,11 @@ function readCountsInWorker(
       void worker.terminate().catch(() => undefined);
       outcome();
     };
-    const onAbort = () =>
-      finish(() => reject(new Error("inspection aborted")));
+    const onAbort = () => finish(() => reject(new Error("state inspection aborted")));
     signal?.addEventListener("abort", onAbort, { once: true });
     worker.once("message", (message: unknown) => {
-      const counts = countsFromMessage(message);
-      if (counts) finish(() => resolve(counts));
+      const parsed = parse(message);
+      if (parsed !== undefined) finish(() => resolve(parsed));
       else finish(() => reject(new Error("operation store unavailable")));
     });
     worker.once("error", () => finish(() => reject(new Error("operation store unavailable"))));
@@ -125,12 +149,27 @@ function readCountsInWorker(
 /**
  * A state probe for one configured path. Each call inspects in a worker with a
  * freshly opened read-only connection, so a missing or incompatible database
- * becomes an unavailable check and nothing is created or migrated.
+ * becomes an unavailable result and nothing is created or migrated.
  */
-export function stateProbeFor(path: string, options: StateProbeOptions = {}): StateCountsProbe {
-  const workerUrl = options.workerUrl ?? new URL("./state-probe-worker.js", import.meta.url);
+export function stateProbeFor(
+  path: string,
+  options: StateProbeOptions = {},
+): StateCountsProbe & OperationProbe {
   return {
-    readCounts: (signal) => readCountsInWorker(path, workerUrl, signal, options.execArgv),
+    readCounts: (signal) =>
+      runInWorker({ path }, options, signal, (message) => {
+        if (message === null || typeof message !== "object") return undefined;
+        const record = message as { status?: unknown; counts?: unknown };
+        return record.status === "available" && isCounts(record.counts) ? record.counts : undefined;
+      }),
+    readOperation: (key, signal) =>
+      runInWorker({ path, key }, options, signal, (message) => {
+        if (message === null || typeof message !== "object") return undefined;
+        const record = message as { status?: unknown; operation?: unknown };
+        if (record.status !== "available") return undefined;
+        if (record.operation === null) return null;
+        return isOperation(record.operation) ? record.operation : undefined;
+      }),
   };
 }
 
@@ -170,10 +209,11 @@ export function elasticsearchProbe(
   };
 }
 
-const TIMED_OUT = Symbol("timed-out");
+/** Sentinel for a check that used its whole budget without answering. */
+export const TIMED_OUT = Symbol("timed-out");
 
 /** Resolve to `TIMED_OUT` and abort the work when its budget is spent. */
-async function bounded<T>(
+export async function withDeadline<T>(
   work: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
 ): Promise<T | typeof TIMED_OUT> {
@@ -198,7 +238,7 @@ async function probe(
 ): Promise<RuntimeStatusCheck> {
   if (!dependency) return { name, status: "not-configured" };
   try {
-    const outcome = await bounded((signal) => dependency.check(signal), timeoutMs);
+    const outcome = await withDeadline((signal) => dependency.check(signal), timeoutMs);
     return { name, status: outcome === TIMED_OUT ? "unavailable" : "healthy" };
   } catch {
     // A client error may contain an endpoint or credential: never surface it.
@@ -213,7 +253,7 @@ async function stateCheck(
   if (!dependency) return { name: "state", status: "not-configured" };
   const started = Date.now();
   try {
-    const counts = await bounded((signal) => dependency.readCounts(signal), timeoutMs);
+    const counts = await withDeadline((signal) => dependency.readCounts(signal), timeoutMs);
     // A probe that cannot be interrupted may still answer late; that answer is
     // not evidence of a healthy bounded check.
     if (counts === TIMED_OUT || Date.now() - started > timeoutMs) {
