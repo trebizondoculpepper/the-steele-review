@@ -11,7 +11,7 @@
  * messages, acquires claims or calls a model.
  *
  * Exit: 0 every configured check healthy; 1 any configured check unavailable
- * (mount, broker or search); 2 invalid invocation.
+ * (state, broker or search); 2 invalid invocation.
  *
  * Output is allowlisted: no credentials, connection URLs, hosts, filesystem
  * paths or raw exception text.
@@ -21,10 +21,10 @@ import {
   elasticsearchConnection,
   natsConnection,
 } from "../config/credentials.js";
-import { ElasticsearchController } from "../controllers/elasticsearch.js";
-import { NatsController } from "../controllers/nats.js";
 import {
   collectRuntimeStatus,
+  elasticsearchProbe,
+  natsProbe,
   renderRuntimeStatus,
   runtimeStatusExitCode,
   stateProbeFor,
@@ -41,29 +41,17 @@ const unusable: HealthProbe = {
   },
 };
 
-function natsProbe(): HealthProbe | undefined {
+function brokerProbe(): HealthProbe | undefined {
   try {
-    const connection = natsConnection();
-    const controller = new NatsController(connection.url, connection.token);
-    return { check: () => controller.check() };
+    return natsProbe(natsConnection());
   } catch (error) {
     return error instanceof CredentialError && error.problem === "missing" ? undefined : unusable;
   }
 }
 
-function elasticsearchProbe(): HealthProbe | undefined {
+function searchProbe(): HealthProbe | undefined {
   try {
-    const connection = elasticsearchConnection();
-    const controller = new ElasticsearchController(connection.url, connection.apiKey);
-    return {
-      check: async () => {
-        try {
-          await controller.check();
-        } finally {
-          await controller.close();
-        }
-      },
-    };
+    return elasticsearchProbe(elasticsearchConnection());
   } catch (error) {
     return error instanceof CredentialError && error.problem === "missing" ? undefined : unusable;
   }
@@ -72,8 +60,8 @@ function elasticsearchProbe(): HealthProbe | undefined {
 function dependencies(): RuntimeStatusDependencies {
   const statePath = process.env.STEELE_STATE_PATH;
   const state = statePath ? stateProbeFor(statePath) : undefined;
-  const nats = natsProbe();
-  const elasticsearch = elasticsearchProbe();
+  const nats = brokerProbe();
+  const elasticsearch = searchProbe();
   return {
     ...(state ? { state } : {}),
     ...(nats ? { nats } : {}),

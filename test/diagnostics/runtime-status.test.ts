@@ -10,6 +10,8 @@ import {
   collectRuntimeStatus,
   renderRuntimeStatus,
   runtimeStatusExitCode,
+  elasticsearchProbe,
+  natsProbe,
   stateProbeFor,
   type HealthProbe,
 } from "../../src/diagnostics/runtime-status.js";
@@ -22,9 +24,9 @@ const failing: HealthProbe = {
   },
 };
 
-/** The worker loads the controller from source under the test runner. */
+/** The worker entry runs from source under the test runner. */
 const workerOptions = {
-  moduleUrl: new URL("../../src/controllers/operation-store.ts", import.meta.url),
+  workerUrl: new URL("../../src/diagnostics/state-probe-worker.ts", import.meta.url),
   execArgv: ["--import", "tsx"],
 };
 
@@ -152,7 +154,48 @@ describe("collectRuntimeStatus", () => {
     expect(report.checks[0]).toEqual({ name: "state", status: "unavailable" });
   });
 
-  it("never renders a failing dependency's error text, endpoint or credential", async () => {
+  it("forwards the deadline through the controller probe wrappers", async () => {
+    let natsSignal: AbortSignal | undefined;
+    let searchSignal: AbortSignal | undefined;
+    let searchClosed = false;
+    const hanging = (record: (signal: AbortSignal | undefined) => void) => ({
+      check: async (signal?: AbortSignal) => {
+        record(signal);
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+      close: async () => undefined,
+    });
+    const searchController = {
+      check: async (signal?: AbortSignal) => {
+        searchSignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+      close: async () => {
+        searchClosed = true;
+      },
+    };
+    const report = await collectRuntimeStatus(
+      {
+        nats: natsProbe({ url: "nats://unused.invalid" }, hanging((s) => (natsSignal = s))),
+        elasticsearch: elasticsearchProbe(
+          { url: "http://unused.invalid" },
+          searchController,
+        ),
+      },
+      { timeoutMs: 20 },
+    );
+    expect(report.checks[1]).toEqual({ name: "nats", status: "unavailable" });
+    expect(report.checks[2]).toEqual({ name: "elasticsearch", status: "unavailable" });
+    expect(natsSignal?.aborted).toBe(true);
+    expect(searchSignal?.aborted).toBe(true);
+    expect(searchClosed).toBe(true);
+  });
+
+  it("never renders a failing dependency's error text, origin or credential", async () => {
     const sentinel = "https://user:sentinel-password@internal-sentinel-host:9200 sentinel-token";
     const report = await collectRuntimeStatus({
       nats: {

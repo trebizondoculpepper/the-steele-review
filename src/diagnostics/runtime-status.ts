@@ -18,6 +18,9 @@
  * view is an observation across controllers, not an atomic snapshot.
  */
 import { Worker } from "node:worker_threads";
+import type { ElasticsearchConnection, NatsConnection } from "../config/credentials.js";
+import { ElasticsearchController } from "../controllers/elasticsearch.js";
+import { NatsController } from "../controllers/nats.js";
 import type { OperationStatusCount } from "../controllers/operation-store.js";
 
 export const RUNTIME_STATUS_SCHEMA_VERSION = 1;
@@ -39,10 +42,10 @@ export interface StateCountsProbe {
 
 export interface StateProbeOptions {
   /**
-   * Module the worker imports to reach the state controller. Defaults to the
-   * compiled controller beside this module; tests may point at the source.
+   * The worker entry. Defaults to the compiled module beside this one; tests
+   * point at the TypeScript source instead.
    */
-  moduleUrl?: string | URL;
+  workerUrl?: string | URL;
   /** Node flags for the worker process (tests load TypeScript through tsx). */
   execArgv?: string[];
 }
@@ -68,35 +71,6 @@ export interface RuntimeStatusReport {
   checks: RuntimeStatusCheck[];
 }
 
-/**
- * Worker body. It imports the controller rather than reimplementing the
- * read-only open, so the inspection boundary stays owned by the controller.
- */
-const STATE_WORKER = `
-import { parentPort, workerData } from "node:worker_threads";
-const reply = (message) => {
-  parentPort.postMessage(message);
-  parentPort.close();
-};
-try {
-  const { OperationInspector } = await import(workerData.moduleUrl);
-  const opened = OperationInspector.open(workerData.path);
-  if (opened.status !== "available") {
-    reply({ status: "unavailable" });
-  } else {
-    try {
-      reply({ status: "healthy", counts: opened.inspector.statusCounts() });
-    } catch {
-      reply({ status: "unavailable" });
-    } finally {
-      opened.inspector.close();
-    }
-  }
-} catch {
-  reply({ status: "unavailable" });
-}
-`;
-
 const countsFromMessage = (message: unknown): OperationStatusCount[] | undefined => {
   if (message === null || typeof message !== "object") return undefined;
   const counts = (message as { counts?: unknown }).counts;
@@ -117,16 +91,14 @@ const countsFromMessage = (message: unknown): OperationStatusCount[] | undefined
 
 function readCountsInWorker(
   path: string,
-  moduleUrl: string,
+  workerUrl: string | URL,
   signal: AbortSignal | undefined,
   execArgv: string[] | undefined,
 ): Promise<OperationStatusCount[]> {
-  if (signal?.aborted) return Promise.reject(new Error("inspection aborted"));
+  if (signal?.aborted) return Promise.reject(new Error("state inspection aborted"));
   return new Promise((resolve, reject) => {
-    const url = new URL(`data:text/javascript,${encodeURIComponent(STATE_WORKER)}`);
-    // A data: URL is loaded as an ES module, so the worker can await the import.
-    const worker = new Worker(url, {
-      workerData: { path, moduleUrl },
+    const worker = new Worker(workerUrl, {
+      workerData: { path },
       ...(execArgv ? { execArgv } : {}),
     });
     let settled = false;
@@ -156,11 +128,45 @@ function readCountsInWorker(
  * becomes an unavailable check and nothing is created or migrated.
  */
 export function stateProbeFor(path: string, options: StateProbeOptions = {}): StateCountsProbe {
-  const moduleUrl = String(
-    options.moduleUrl ?? new URL("../controllers/operation-store.js", import.meta.url),
-  );
+  const workerUrl = options.workerUrl ?? new URL("./state-probe-worker.js", import.meta.url);
   return {
-    readCounts: (signal) => readCountsInWorker(path, moduleUrl, signal, options.execArgv),
+    readCounts: (signal) => readCountsInWorker(path, workerUrl, signal, options.execArgv),
+  };
+}
+
+/** Narrow controller surface the diagnostic needs: a check and a release. */
+export interface ConnectivityController {
+  check(signal?: AbortSignal): Promise<void>;
+  close(): Promise<void>;
+}
+
+/**
+ * NATS connectivity probe. The deadline signal reaches the controller, which
+ * closes the socket on abort, so a silent broker cannot outlive the check.
+ */
+export function natsProbe(
+  connection: NatsConnection,
+  controller: ConnectivityController = new NatsController(connection.url, connection.token),
+): HealthProbe {
+  return { check: (signal) => controller.check(signal) };
+}
+
+/** Search connectivity probe. The deadline signal reaches the request. */
+export function elasticsearchProbe(
+  connection: ElasticsearchConnection,
+  controller: ConnectivityController = new ElasticsearchController(
+    connection.url,
+    connection.apiKey,
+  ),
+): HealthProbe {
+  return {
+    check: async (signal) => {
+      try {
+        await controller.check(signal);
+      } finally {
+        await controller.close();
+      }
+    },
   };
 }
 
