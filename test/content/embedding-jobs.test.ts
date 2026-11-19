@@ -78,10 +78,10 @@ describe("planEmbeddingJobs", () => {
     const resized = plan({ chunking: { ...CHUNKING, maxChars: 120 } });
     expect(resized.indexName).not.toBe(base.indexName);
     expect(resized.jobs.length).not.toBe(base.jobs.length);
-    const newVersion = plan({
-      chunking: { ...CHUNKING, splitterVersion: CHUNKING.splitterVersion + 1 },
-    });
-    newVersion.jobs.forEach((job, i) => expect(job.reuseKey).not.toBe(base.jobs[i]!.reuseKey));
+    // A splitter version this code cannot run is refused rather than mislabelled.
+    expect(() =>
+      plan({ chunking: { ...CHUNKING, splitterVersion: CHUNKING.splitterVersion + 1 } }),
+    ).toThrow("unsupported-splitter-version");
   });
 
   it("reuses results for identical passage text across sources but not across sources' job keys", () => {
