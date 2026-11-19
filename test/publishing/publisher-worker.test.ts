@@ -39,10 +39,15 @@ afterEach(async () => {
 });
 
 /** Commit a synthetic approved draft and its approving report; return the approval event. */
-async function approved(postId: string, body = "A synthetic response.", ingestionReason = "live") {
+async function approved(
+  postId: string,
+  body = "A synthetic response.",
+  ingestionReason = "live",
+  sourceUrl = `https://pub.substack.com/p/${postId}`,
+) {
   const draft = await artifacts.write(
     `drafts/pub/${postId}/d.md`,
-    `Original post: https://pub.substack.com/p/${postId}\n\n${body}\n`,
+    `Original post: ${sourceUrl}\n\n${body}\n`,
   );
   const report = await artifacts.write(
     `verifications/pub/${postId}/r.json`,
@@ -366,6 +371,17 @@ describe("PublisherWorker smoke test", () => {
       reason: "rate-limited",
     });
     expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
+  });
+
+  it("bounds the default title for a very long source link", async () => {
+    const event = await approved(
+      "p1",
+      "A synthetic response.",
+      "live",
+      `https://pub.substack.com/p/${"x".repeat(270)}`,
+    );
+    expect(await worker().handle(message(event))).toMatchObject({ kind: "published" });
+    expect([...client.drafts.values()][0]!.title).toBe("A response to a monitored post");
   });
 
   it("applies the frequency limit between publications", async () => {

@@ -10,7 +10,11 @@ import {
   type PublicationReceipt,
 } from "../controllers/operation-store.js";
 import { parsePublishRequest, verifyApprovedArtifact, type PublishRequest } from "./approval.js";
-import { DestinationError, type PublicationDestination } from "./destination.js";
+import {
+  DestinationError,
+  DraftContentSchema,
+  type PublicationDestination,
+} from "./destination.js";
 import { reconcileUncertainPublication } from "./reconcile.js";
 
 /**
@@ -276,6 +280,20 @@ export class PublisherWorker {
           await message.ack();
           return { kind: "rejected", reason: "missing-source-link" };
         }
+        // Validate the content before any marker or side effect.
+        const defaultTitle = `A response to ${sourceUrl}`;
+        const content = DraftContentSchema.safeParse({
+          title:
+            this.config.titleFor?.(request, checked.markdown) ??
+            (defaultTitle.length <= 280 ? defaultTitle : "A response to a monitored post"),
+          bodyMarkdown: checked.markdown,
+          sourceUrl,
+        });
+        if (!content.success) {
+          operations.fail(claim, "publish:invalid-content", false);
+          await message.ack();
+          return { kind: "rejected", reason: "invalid-content" };
+        }
         // Durable marker before the side effect, so a restart knows creation
         // may have happened.
         operations.reconcileCompleted(
@@ -284,15 +302,7 @@ export class PublisherWorker {
           [],
         );
         creating = true;
-        const created = await destination.createDraft(
-          {
-            title:
-              this.config.titleFor?.(request, checked.markdown) ?? `A response to ${sourceUrl}`,
-            bodyMarkdown: checked.markdown,
-            sourceUrl,
-          },
-          signal,
-        );
+        const created = await destination.createDraft(content.data, signal);
         draftId = created.draftId;
         operations.saveDestinationDraft(claim, draftId);
         creating = false;
