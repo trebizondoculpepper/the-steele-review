@@ -398,7 +398,7 @@ export class GitArtifactStore {
    * Paths of artifacts currently stored under a directory prefix on the
    * branch, sorted, at most `limit` (read-only; never writes).
    */
-  async list(prefix: string, limit: number): Promise<string[]> {
+  async list(prefix: string, limit: number, after?: string): Promise<string[]> {
     assertArtifactPath(prefix);
     const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
     // An unreadable or non-Git archive is a failure, not an empty archive.
@@ -446,7 +446,8 @@ export class GitArtifactStore {
         const parts = (pending + chunk).split("\0");
         pending = parts.pop() ?? "";
         for (const part of parts) {
-          if (part) found.push(part);
+          // Paths at or before the cursor are skipped and do not use the budget.
+          if (part && (after === undefined || part > after)) found.push(part);
           if (found.length >= bound) {
             child.kill();
             return finish();
