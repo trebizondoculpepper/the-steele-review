@@ -62,6 +62,16 @@ describe("OperationStore", () => {
     expect(() => open()).toThrow("unsupported-schema");
   });
 
+  it("indexes pending events by operation and status for bounded counts", () => {
+    open().close();
+    const raw = new DatabaseSync(path);
+    const indexes = (
+      raw.prepare("PRAGMA index_list('pending_events')").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    raw.close();
+    expect(indexes).toContain("pending_events_by_operation");
+  });
+
   it("requires an absolute path and bounded busy timeout", () => {
     expect(() => new OperationStore({ path: "relative.sqlite" })).toThrow(OperationStoreError);
     expect(() => new OperationStore({ path, busyTimeoutMs: 600_000 })).toThrow("invalid-config");

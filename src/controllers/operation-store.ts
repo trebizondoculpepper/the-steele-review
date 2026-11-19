@@ -21,7 +21,7 @@ import { ArtifactReferenceSchema, type ArtifactReference } from "../content/arti
  * proceed during writes. Errors carry codes only: no paths or payloads.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export interface OperationStoreConfig {
   /** Absolute path of the SQLite file on a local persistent volume (runtime configuration). */
@@ -169,6 +169,11 @@ CREATE TABLE IF NOT EXISTS pending_events (
 CREATE INDEX IF NOT EXISTS pending_events_due ON pending_events (status, next_attempt_at);
 `;
 
+/** #171: inspection counts events per operation; keep that lookup bounded. */
+const MIGRATION_V3 = `
+CREATE INDEX IF NOT EXISTS pending_events_by_operation ON pending_events (operation_key, status);
+`;
+
 interface OperationRow {
   status: string;
   owner: string | null;
@@ -236,6 +241,12 @@ export class OperationStore {
       this.transaction(() => {
         this.db.exec(MIGRATION_V2);
         this.db.exec("PRAGMA user_version = 2");
+      });
+    }
+    if (version < 3) {
+      this.transaction(() => {
+        this.db.exec(MIGRATION_V3);
+        this.db.exec("PRAGMA user_version = 3");
       });
     }
   }
@@ -1103,6 +1114,11 @@ export class OperationInspector {
       // quiescent-immutable strategy below cannot read that state safely, so
       // report unavailable rather than lock, modify or guess.
       if (existsSync(`${resolved}-wal`)) return { status: "unavailable" };
+      // Record the file identity before opening. The immutable connection's
+      // page cache is only trustworthy if the file does not change between
+      // this snapshot and the schema read below, so the two are compared.
+      const identity = storeIdentity(resolved);
+      if (!identity) return { status: "unavailable" };
       // `immutable=1` reads without locking or creating `-wal`/`-shm`
       // sidecars, which a plain read-only connection would create.
       // A file URL encodes `?` and `#` in a path, which encodeURI would leave
@@ -1133,11 +1149,11 @@ export class OperationInspector {
       // unavailable here instead of throwing from a later inspection call.
       const counts = db.prepare(COUNTS_SQL);
       const operation = db.prepare(OPERATION_SQL);
-      // Quiescence must hold for the whole inspection, not just at open: a
-      // writer that starts later makes immutable reads stale or unsafe, so the
-      // file identity is recorded and re-checked around every read.
-      const identity = storeIdentity(resolved);
-      if (!identity) {
+      // Quiescence must hold from the identity snapshot through the schema
+      // read: a writer that committed in between leaves this connection with
+      // stale pages, while the identity would describe the newer file and
+      // every later check would pass. Reject the connection in that case.
+      if (existsSync(`${resolved}-wal`) || !unchanged(identity, storeIdentity(resolved))) {
         db.close();
         return { status: "unavailable" };
       }
