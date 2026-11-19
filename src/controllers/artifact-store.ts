@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -295,6 +295,75 @@ export class GitArtifactStore {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Paths of artifacts currently stored under a directory prefix on the
+   * branch, sorted, at most `limit` (read-only; never writes).
+   */
+  async list(prefix: string, limit: number): Promise<string[]> {
+    assertArtifactPath(prefix);
+    const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
+    // An unreadable or non-Git archive is a failure, not an empty archive.
+    try {
+      await this.run(["rev-parse", "--git-dir"]);
+    } catch {
+      throw new ArtifactStoreError("git-failed");
+    }
+    const head = await this.head();
+    if (!head) return [];
+    // Streamed and stopped at the bound, so a large archive is never
+    // buffered whole. Git lists tree entries in path order.
+    const paths = await new Promise<string[]>((resolve, reject) => {
+      const found: string[] = [];
+      let pending = "";
+      let done = false;
+      const child = spawn(
+        this.git,
+        [
+          "-C",
+          this.config.repoPath,
+          "ls-tree",
+          "-r",
+          "-z",
+          "--name-only",
+          "--full-tree",
+          head,
+          "--",
+          `${prefix}/`,
+        ],
+        {
+          env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1" },
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      const finish = (error?: Error) => {
+        if (done) return;
+        done = true;
+        if (error) reject(error);
+        else resolve(found);
+      };
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        if (done) return;
+        const parts = (pending + chunk).split("\0");
+        pending = parts.pop() ?? "";
+        for (const part of parts) {
+          if (part) found.push(part);
+          if (found.length >= bound) {
+            child.kill();
+            return finish();
+          }
+        }
+      });
+      child.on("error", (error) => finish(error));
+      child.on("close", (code) =>
+        code === 0 ? finish() : finish(new Error(`git exited ${code}`)),
+      );
+    }).catch(() => {
+      throw new ArtifactStoreError("git-failed");
+    });
+    return paths.sort();
   }
 
   /** Read the exact referenced version and verify its hash. */
