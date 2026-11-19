@@ -151,8 +151,10 @@ async function main(argv: string[]): Promise<number> {
         nats = new NatsController(conn.url, conn.token);
         await nats.connect("steele-announce-post");
         const published = await publishRecordedEvent(operations, outcome.eventId, nats);
-        // `missing` cannot occur for the ID just recorded; treat it as pending.
         delivery = published === "sent" ? "sent" : "pending";
+        // The event is durably recorded, but the requested publish did not
+        // complete: report it and exit 1 so a retry is not mistaken for done.
+        if (published === "pending") publishFailure = "publish-failed";
         if (published === "missing") publishFailure = "event-missing";
       } catch (error) {
         // The event is already recorded; it stays pending for a later run.
