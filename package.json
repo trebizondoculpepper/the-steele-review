@@ -18,6 +18,7 @@
     "replay-index": "node --enable-source-maps dist/cli/replay-index.js",
     "collect-worker": "node --enable-source-maps dist/cli/collect-worker.js",
     "provision": "node --enable-source-maps dist/cli/provision.js",
+    "detect-themes": "node --enable-source-maps dist/cli/detect-themes.js",
     "retry-collection": "node --enable-source-maps dist/cli/retry-collection.js"
   },
   "dependencies": {
