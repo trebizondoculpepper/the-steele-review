@@ -439,3 +439,35 @@ describe("TranscriptionAdapter", () => {
     });
   });
 });
+
+it("reserves provider conversion scratch alongside retained original media", async () => {
+  const fake = fakeFetch({ [AUDIO.url]: bytes("A") });
+  const p = { ...provider().p, maxScratchBytes: 2048 };
+  const a = new TranscriptionAdapter({
+    provider: p,
+    workspaceDir: dir,
+    allowedHosts: ["media.test"],
+    maxBytes: 1024,
+    maxWorkspaceBytes: 4096,
+    fetch: fake.fetch,
+  });
+  const first = await a.transcribe([AUDIO]);
+  await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+  await first.cleanup();
+  const second = await a.transcribe([AUDIO]);
+  await second.cleanup();
+  expect(await jobs()).toHaveLength(0);
+});
+
+it("rejects provider scratch budgets that cannot fit before accepting media", () => {
+  expect(
+    () =>
+      new TranscriptionAdapter({
+        provider: { ...provider().p, maxScratchBytes: 4096 },
+        workspaceDir: dir,
+        allowedHosts: ["media.test"],
+        maxBytes: 1024,
+        maxWorkspaceBytes: 4096,
+      }),
+  ).toThrow("download and provider scratch");
+});

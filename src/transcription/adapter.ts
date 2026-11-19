@@ -51,6 +51,8 @@ export interface ProviderResult {
 export interface TranscriptionProvider {
   readonly name: string;
   readonly model: string;
+  /** Maximum additional on-disk conversion/output scratch per job. */
+  readonly maxScratchBytes?: number;
   transcribe(
     input: { path: string; kind: MediaKind; durationSeconds?: number },
     signal: AbortSignal,
@@ -177,8 +179,13 @@ export class TranscriptionAdapter {
       timeoutMs: options.timeoutMs ?? 60 * 60 * 1000,
       retentionMs: options.retentionMs ?? 24 * 60 * 60 * 1000,
     });
-    if (this.config.maxBytes > this.config.maxWorkspaceBytes) {
-      throw new RangeError("maxBytes must not exceed maxWorkspaceBytes");
+    const scratch = options.provider.maxScratchBytes ?? 0;
+    if (
+      !Number.isSafeInteger(scratch) ||
+      scratch < 0 ||
+      this.config.maxBytes + scratch > this.config.maxWorkspaceBytes
+    ) {
+      throw new RangeError("download and provider scratch must fit maxWorkspaceBytes");
     }
     this.hosts = new Set(this.config.allowedHosts.map((h) => h.toLowerCase()));
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -271,11 +278,12 @@ export class TranscriptionAdapter {
       throw reason();
     }
     const foreign = await this.foreignBytes();
-    if (foreign + this.reservedBytes + this.config.maxBytes > this.config.maxWorkspaceBytes) {
+    const reservationBytes = this.config.maxBytes + (this.options.provider.maxScratchBytes ?? 0);
+    if (foreign + this.reservedBytes + reservationBytes > this.config.maxWorkspaceBytes) {
       this.releaseSlot();
       throw new TranscriptionError("workspace-full", true);
     }
-    this.reservedBytes += this.config.maxBytes;
+    this.reservedBytes += reservationBytes;
     const jobName = `job-${randomUUID()}`;
     const jobDir = join(this.config.workspaceDir, jobName);
     // The concurrency slot covers download and transcription only; the disk
@@ -300,7 +308,7 @@ export class TranscriptionAdapter {
       released = true;
       this.ownJobs.delete(jobName);
       this.activeJobs.delete(jobName);
-      this.reservedBytes -= this.config.maxBytes;
+      this.reservedBytes -= reservationBytes;
     };
     this.ownJobs.set(jobName, release);
     this.activeJobs.add(jobName);
