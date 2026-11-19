@@ -220,6 +220,41 @@ describe("ApplicabilityAssessor", () => {
     ]);
   });
 
+  it("keeps per-claim unresolved reasons for the model and the result", async () => {
+    const open = candidate("towers", [
+      evidence("https://example.org/fresh", "2026-10-01T00:00:00Z"),
+    ]);
+    open.matches = [
+      {
+        ...open.matches[0]!,
+        finding: "unresolved",
+        unresolvedReason: "No measurements published for this site.",
+      },
+    ];
+    const { p, calls } = provider([
+      JSON.stringify({
+        assessments: [
+          {
+            entryId: "towers",
+            applicability: "partial",
+            rationale: "r",
+            reuseEvidence: [],
+            gaps: [],
+          },
+        ],
+      }),
+    ]);
+    const result = await assessor(p).assess(claim, [open]);
+    expect(calls[0]).toContain("No measurements published for this site.");
+    if (result.status === "failed") throw new Error("failed");
+    expect(result.assessments[0]!.unresolved).toEqual([
+      {
+        statement: "Towers emit harmful radiation.",
+        reason: "No measurements published for this site.",
+      },
+    ]);
+  });
+
   it("enforces the deadline even when the provider ignores cancellation", async () => {
     const stuck: ExtractionModelProvider = {
       modelVersion: "fake/stuck",

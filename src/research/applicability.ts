@@ -74,6 +74,8 @@ export interface EntryAssessment {
   /** Generated rationale; not evidence. */
   rationale: { text: string; generatedBy: string; isEvidence: false };
   limitations: string[];
+  /** Addressed claims the entry left unresolved, with their reasons. */
+  unresolved: Array<{ statement: string; reason?: string }>;
 }
 
 export interface ApplicabilityResult {
@@ -164,6 +166,7 @@ export class ApplicabilityAssessor {
           matches: c.matches.map((m) => ({
             statement: m.statement,
             finding: m.finding,
+            ...(m.unresolvedReason ? { unresolvedReason: m.unresolvedReason } : {}),
             evidence: m.evidence.map((e) => ({
               url: e.url,
               title: e.title,
@@ -242,6 +245,12 @@ export class ApplicabilityAssessor {
           isEvidence: false,
         },
         limitations: [...candidate.limitations],
+        unresolved: candidate.matches
+          .filter((m) => m.finding === "unresolved")
+          .map((m) => ({
+            statement: m.statement,
+            ...(m.unresolvedReason ? { reason: m.unresolvedReason } : {}),
+          })),
       });
       if (a.applicability === "not-applicable") return;
       for (const g of a.gaps) gaps.add(g);
