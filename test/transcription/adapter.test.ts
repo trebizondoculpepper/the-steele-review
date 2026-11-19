@@ -471,3 +471,14 @@ it("rejects provider scratch budgets that cannot fit before accepting media", ()
       }),
   ).toThrow("download and provider scratch");
 });
+
+it("counts nested conversion scratch surviving a restart", async () => {
+  const scratch = join(dir, "job-crashed", "whisper-scratch");
+  await mkdir(scratch, { recursive: true });
+  await writeFile(join(scratch, "input.wav"), "x".repeat(3500));
+  const { a } = adapter({}, { [AUDIO.url]: bytes("A") });
+  await expect(a.transcribe([AUDIO])).rejects.toMatchObject({ reason: "workspace-full" });
+  await rm(join(dir, "job-crashed"), { recursive: true });
+  const job = await a.transcribe([AUDIO]);
+  await job.cleanup();
+});
