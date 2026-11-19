@@ -365,6 +365,65 @@ describe("VerificationWorker", () => {
     ).toMatchObject({ verdict: "skip" });
   });
 
+  it("reuses a report committed by an interrupted attempt without asking the verifier again", async () => {
+    const first = verifier([{ verdict: "approve", issues: [] }]);
+    const done = await new VerificationWorker({
+      artifacts,
+      verifier: first.p,
+      operations,
+      owner: "v",
+    }).handle(message(draftReady()));
+    if (done.kind !== "verified") throw new Error("not verified");
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare("UPDATE operations SET status = 'released' WHERE key LIKE 'verify:%'").run();
+    db.prepare("DELETE FROM pending_events").run();
+    const again = verifier([]);
+    const r = await new VerificationWorker({
+      artifacts,
+      verifier: again.p,
+      operations,
+      owner: "v",
+    }).handle(message(draftReady()));
+    expect(r).toMatchObject({
+      kind: "verified",
+      verdict: "approve",
+      report: { sha256: done.report.sha256 },
+    });
+    expect(again.calls).toHaveLength(0);
+    expect(operations.duePendingEvents(10, DRAFT_VERIFIED_SUBJECT)).toHaveLength(1);
+  });
+
+  it("rejects an event whose post differs from the draft and brief", async () => {
+    const worker = new VerificationWorker({
+      artifacts,
+      verifier: verifier([]).p,
+      operations,
+      owner: "v",
+    });
+    const other = {
+      ...draftReady(),
+      subject: "substack/pub/other",
+      data: { ...draftReady().data, postId: "other" },
+    };
+    expect(await worker.handle(message(other))).toEqual({
+      kind: "failed",
+      reason: "identity-mismatch",
+    });
+  });
+
+  it("fails cleanly on a brief with a valid hash but invalid contents", async () => {
+    const badBrief = await artifacts.write("briefs/pub/p/bad.json", "{}\n");
+    const r = await verifyDraft({
+      markdown,
+      draft: draftRef,
+      briefText: "{}\n",
+      briefRef: badBrief,
+      metadata: { ...metadata, brief: reference(badBrief) },
+      verifier: verifier([]).p,
+    });
+    expect(r).toEqual({ kind: "invalid", reason: "invalid-brief" });
+  });
+
   it("keeps work pending when the verifier is unavailable", async () => {
     const worker = new VerificationWorker({
       artifacts,

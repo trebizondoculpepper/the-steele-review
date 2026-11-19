@@ -84,7 +84,7 @@ export interface VerificationReport {
 
 export type VerifyOutcome =
   | { kind: "report"; report: VerificationReport }
-  | { kind: "invalid"; reason: "draft-hash-mismatch" | "brief-hash-mismatch" }
+  | { kind: "invalid"; reason: "draft-hash-mismatch" | "brief-hash-mismatch" | "invalid-brief" }
   | { kind: "pending"; reason: "verifier-unavailable" | "malformed-output" };
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -174,7 +174,12 @@ export async function verifyDraft(input: {
   ) {
     return { kind: "invalid", reason: "brief-hash-mismatch" };
   }
-  const brief = DraftingBriefSchema.parse(JSON.parse(input.briefText));
+  let brief: DraftingBrief;
+  try {
+    brief = DraftingBriefSchema.parse(JSON.parse(input.briefText));
+  } catch {
+    return { kind: "invalid", reason: "invalid-brief" };
+  }
   const prompt = input.prompt ?? DEFAULT_VERIFY_PROMPT;
   const attempt = Math.max(1, input.attempt ?? 1);
   const maxAttempts = Math.max(1, Math.min(input.maxAttempts ?? 3, 10));
@@ -373,8 +378,31 @@ export class VerificationWorker {
       return { kind: "failed", reason: "unreadable-artifact" };
     }
 
+    // The event, the draft metadata and the brief must all name the same post.
+    let briefSource: { publicationId: string; postId: string } | undefined;
+    try {
+      briefSource = DraftingBriefSchema.parse(JSON.parse(briefText)).source;
+    } catch {
+      briefSource = undefined;
+    }
+    if (
+      !briefSource ||
+      metadata.source?.publicationId !== d.publicationId ||
+      metadata.source?.postId !== d.postId ||
+      briefSource.publicationId !== d.publicationId ||
+      briefSource.postId !== d.postId
+    ) {
+      const reason = briefSource ? "identity-mismatch" : "invalid-brief";
+      operations.recordPermanentFailure(`verify-invalid:${event.id}`, reason);
+      await message.ack();
+      return { kind: "failed", reason };
+    }
+
     // The same text verified against a different brief is different work.
-    const key = `verify:${sha(`${d.draft.hash}\n${metadata.brief.hash}\n${this.config.verifier.modelVersion}\n${prompt.version}`)}`;
+    const id = sha(
+      `${d.draft.hash}\n${metadata.brief.hash}\n${this.config.verifier.modelVersion}\n${prompt.version}`,
+    );
+    const key = `verify:${id}`;
     const claimed = operations.claim(key, this.config.owner, 10 * 60_000, 1_000);
     if (claimed.kind === "completed") {
       await message.ack();
@@ -389,45 +417,57 @@ export class VerificationWorker {
       return { kind: "failed", reason: "exhausted" };
     }
 
-    const outcome = await verifyDraft({
-      markdown,
-      draft: toArchiveRef(d.draft),
-      briefText,
-      briefRef: toArchiveRef(metadata.brief),
-      metadata,
-      verifier: this.config.verifier,
-      prompt,
-      attempt: await this.attemptFor(d.publicationId, d.postId, metadata.brief.hash, d.draft.hash),
-      ...(this.config.maxAttempts ? { maxAttempts: this.config.maxAttempts } : {}),
-      ...(signal ? { signal } : {}),
-    });
-    if (outcome.kind === "invalid") {
-      operations.fail(claimed.claim, `verify:${outcome.reason}`, false);
-      await message.ack();
-      return { kind: "failed", reason: outcome.reason };
-    }
-    if (outcome.kind === "pending") {
-      // Not an editorial skip: release and come back later.
-      operations.fail(claimed.claim, `verify:${outcome.reason}`, true);
-      message.nak(retryDelay);
-      return { kind: "retry", reason: outcome.reason };
-    }
-    const content = `${JSON.stringify(outcome.report, null, 2)}\n`;
-    const path = `verifications/${d.publicationId}/${d.postId}/${sha(content)}.json`;
-    let reportRef: ArtifactRef;
+    // One report path per verification, so a report committed by an
+    // interrupted attempt is found and reused instead of asking again.
+    const path = `verifications/${d.publicationId}/${d.postId}/${id}.json`;
+    let reportRef: ArtifactRef | undefined;
+    let report: VerificationReport;
     try {
-      reportRef = await artifacts.write(path, content);
-    } catch (error) {
-      const existing =
-        error instanceof ArtifactStoreError && error.code === "immutable-conflict"
-          ? await artifacts.lookup(path)
-          : undefined;
-      if (!existing || existing.sha256 !== sha(content)) {
+      reportRef = await artifacts.lookup(path);
+    } catch {
+      operations.fail(claimed.claim, "verify:lookup-failed", true);
+      message.nak(retryDelay);
+      return { kind: "retry", reason: "lookup-failed" };
+    }
+    if (reportRef) {
+      report = JSON.parse(await artifacts.read(reportRef)) as VerificationReport;
+    } else {
+      const outcome = await verifyDraft({
+        markdown,
+        draft: toArchiveRef(d.draft),
+        briefText,
+        briefRef: toArchiveRef(metadata.brief),
+        metadata,
+        verifier: this.config.verifier,
+        prompt,
+        attempt: await this.attemptFor(
+          d.publicationId,
+          d.postId,
+          metadata.brief.hash,
+          d.draft.hash,
+        ),
+        ...(this.config.maxAttempts ? { maxAttempts: this.config.maxAttempts } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      if (outcome.kind === "invalid") {
+        operations.fail(claimed.claim, `verify:${outcome.reason}`, false);
+        await message.ack();
+        return { kind: "failed", reason: outcome.reason };
+      }
+      if (outcome.kind === "pending") {
+        // Not an editorial skip: release and come back later.
+        operations.fail(claimed.claim, `verify:${outcome.reason}`, true);
+        message.nak(retryDelay);
+        return { kind: "retry", reason: outcome.reason };
+      }
+      report = outcome.report;
+      try {
+        reportRef = await artifacts.write(path, `${JSON.stringify(report, null, 2)}\n`);
+      } catch {
         operations.fail(claimed.claim, "verify:commit-failed", true);
         message.nak(retryDelay);
         return { kind: "retry", reason: "commit-failed" };
       }
-      reportRef = existing;
     }
     const handoff = new CloudEvent({
       specversion: "1.0",
@@ -442,7 +482,7 @@ export class VerificationWorker {
         publicationId: d.publicationId,
         postId: d.postId,
         ingestionReason: d.ingestionReason,
-        verdict: outcome.report.verdict,
+        verdict: report.verdict,
         draft: d.draft,
         report: {
           repository: reportRef.repository,
@@ -452,18 +492,14 @@ export class VerificationWorker {
         },
       },
     });
-    operations.complete(
-      claimed.claim,
-      { report: reportRef.path, verdict: outcome.report.verdict },
-      [
-        {
-          eventId: handoff.id,
-          subject: DRAFT_VERIFIED_SUBJECT,
-          payload: JSON.stringify(handoff.toJSON()),
-        },
-      ],
-    );
+    operations.complete(claimed.claim, { report: reportRef.path, verdict: report.verdict }, [
+      {
+        eventId: handoff.id,
+        subject: DRAFT_VERIFIED_SUBJECT,
+        payload: JSON.stringify(handoff.toJSON()),
+      },
+    ]);
     await message.ack();
-    return { kind: "verified", verdict: outcome.report.verdict, report: reportRef };
+    return { kind: "verified", verdict: report.verdict, report: reportRef };
   }
 }
