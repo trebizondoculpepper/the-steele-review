@@ -53,13 +53,14 @@ const request = {
 };
 
 describe("findEarlierCoverage", () => {
-  it("queries the same publication up to the source date", async () => {
+  it("excludes the source post and later posts inside the retrieval query", async () => {
     const r = retriever([]);
     await findEarlierCoverage(r, request);
     expect(r.queries[0]).toMatchObject({
       text: "The council raised fees.",
       publicationId: "pub-a",
-      to: "2026-03-01T00:00:00Z",
+      before: "2026-03-01T00:00:00Z",
+      excludePostIds: ["source"],
     });
   });
 

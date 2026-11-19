@@ -67,7 +67,10 @@ export async function findEarlierCoverage(
   const result = await retriever.retrieve({
     text: r.claim.statement.slice(0, 2000),
     publicationId: r.publicationId,
-    to: r.sourcePublishedAt,
+    // Exclusion and the strict date bound are applied inside retrieval, so the
+    // source post and same-time posts cannot use up the candidate budget.
+    before: r.sourcePublishedAt,
+    excludePostIds: [r.sourcePostId],
     limit: Math.min(MAX_EARLIER, limit * 2),
   });
 
