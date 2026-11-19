@@ -7,6 +7,7 @@ import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   REVISION_DECIDED_SUBJECT,
   RevisionAttemptStore,
+  parseRevisionDecidedEvent,
   type AttemptRecord,
 } from "../../src/drafting/revision-attempts.js";
 
@@ -70,7 +71,7 @@ describe("RevisionAttemptStore", () => {
       revision: 0,
     });
     const [event] = operations.duePendingEvents(10, REVISION_DECIDED_SUBJECT);
-    expect(JSON.parse(event!.payload).data).toMatchObject({
+    expect(parseRevisionDecidedEvent(event!.payload).data).toMatchObject({
       revision: 0,
       action: "redraft",
       brief,

@@ -34,6 +34,7 @@ import {
 
 export const REVISION_DECIDED_SUBJECT = "steele.v1.revision.decided";
 export const REVISION_DECIDED_EVENT_TYPE_V1 = "org.steele.revision.decided.v1";
+export const REVISION_DECIDED_DATASCHEMA_V1 = "urn:steele:schema:revision-decided:v1";
 
 const Hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
@@ -63,6 +64,45 @@ export const AttemptRecordSchema = z
   })
   .strict();
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
+
+/** Versioned payload of the `revision.decided` handoff. */
+export const RevisionDecidedDataSchema = z
+  .object({
+    publicationId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    postId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    revision: z.number().int().min(0).max(10),
+    action: z.enum(["approve", "redraft", "skip"]),
+    brief: ArtifactReferenceSchema,
+    draft: ArtifactReferenceSchema,
+    report: ArtifactReferenceSchema,
+    record: ArtifactReferenceSchema,
+  })
+  .strict();
+export type RevisionDecidedData = z.infer<typeof RevisionDecidedDataSchema>;
+
+const RevisionDecidedEventSchema = z
+  .object({
+    specversion: z.literal("1.0"),
+    id: z.string().min(1).max(200),
+    source: z.string().min(1).max(500),
+    type: z.literal("org.steele.revision.decided.v1"),
+    time: z.iso.datetime({ offset: true }),
+    subject: z.string().min(1).max(500),
+    datacontenttype: z.literal("application/json"),
+    dataschema: z.literal("urn:steele:schema:revision-decided:v1"),
+    data: RevisionDecidedDataSchema,
+  })
+  .strict()
+  .refine((e) => e.subject === `substack/${e.data.publicationId}/${e.data.postId}`, {
+    message: "subject does not match the post",
+  });
+
+/** Parse and validate a serialised `revision.decided` event. */
+export function parseRevisionDecidedEvent(
+  input: string,
+): z.infer<typeof RevisionDecidedEventSchema> {
+  return RevisionDecidedEventSchema.parse(JSON.parse(input));
+}
 
 export type BeginOutcome =
   | { kind: "claimed"; claim: OperationClaim; previous?: ArtifactReference }
@@ -259,7 +299,8 @@ export class RevisionAttemptStore {
       time: new Date().toISOString(),
       subject: `substack/${record.publicationId}/${record.postId}`,
       datacontenttype: "application/json",
-      data: {
+      dataschema: REVISION_DECIDED_DATASCHEMA_V1,
+      data: RevisionDecidedDataSchema.parse({
         publicationId: record.publicationId,
         postId: record.postId,
         revision: record.revision,
@@ -268,18 +309,15 @@ export class RevisionAttemptStore {
         draft: record.draft,
         report: record.report,
         record: refOf(artifact),
-      },
+      }),
     });
+    const payload = JSON.stringify(event.toJSON());
+    // The emitted envelope must satisfy the published contract.
+    parseRevisionDecidedEvent(payload);
     return this.config.operations.complete(
       claim,
       { record: refOf(artifact), action: record.decision.action },
-      [
-        {
-          eventId: event.id,
-          subject: REVISION_DECIDED_SUBJECT,
-          payload: JSON.stringify(event.toJSON()),
-        },
-      ],
+      [{ eventId: event.id, subject: REVISION_DECIDED_SUBJECT, payload }],
     );
   }
 }
