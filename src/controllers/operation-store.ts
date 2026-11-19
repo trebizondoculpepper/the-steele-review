@@ -1,6 +1,9 @@
-import { DatabaseSync } from "node:sqlite";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
 
 /**
  * SQLite operation claims and pending event records for processing stages.
@@ -18,7 +21,7 @@ import { z } from "zod";
  * proceed during writes. Errors carry codes only: no paths or payloads.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export interface OperationStoreConfig {
   /** Absolute path of the SQLite file on a local persistent volume (runtime configuration). */
@@ -166,6 +169,11 @@ CREATE TABLE IF NOT EXISTS pending_events (
 CREATE INDEX IF NOT EXISTS pending_events_due ON pending_events (status, next_attempt_at);
 `;
 
+/** #171: inspection counts events per operation; keep that lookup bounded. */
+const MIGRATION_V3 = `
+CREATE INDEX IF NOT EXISTS pending_events_by_operation ON pending_events (operation_key, status);
+`;
+
 interface OperationRow {
   status: string;
   owner: string | null;
@@ -233,6 +241,12 @@ export class OperationStore {
       this.transaction(() => {
         this.db.exec(MIGRATION_V2);
         this.db.exec("PRAGMA user_version = 2");
+      });
+    }
+    if (version < 3) {
+      this.transaction(() => {
+        this.db.exec(MIGRATION_V3);
+        this.db.exec("PRAGMA user_version = 3");
       });
     }
   }
@@ -845,6 +859,387 @@ export class OperationStore {
   /** Read-only view of a publication's state. */
   publicationState(key: string): PublicationState | undefined {
     return this.toPublicationState(key);
+  }
+
+  close(): void {
+    if (this.db.isOpen) this.db.close();
+  }
+}
+
+/**
+ * Allowlisted snapshot of one operation, for diagnostics only (#171).
+ *
+ * Deliberately narrow: no owner, no raw payloads, no physical paths and no
+ * generic query surface. The completion artifact is shown only when the stored
+ * value is a valid immutable artifact reference; anything else stays hidden.
+ */
+export interface OperationInspection {
+  key: string;
+  status: OperationStatus["status"];
+  /** True when no further attempt will be granted. */
+  exhausted: boolean;
+  attempts: number;
+  maxAttempts: number;
+  errorCode?: string;
+  /** Lease expiry as an ISO 8601 timestamp, when a lease is held. */
+  leaseExpiresAt?: string;
+  /** Logical completion artifact evidence, when a known writer recorded one. */
+  artifact?: OperationArtifact;
+  pendingEvents: { pending: number; sent: number };
+}
+
+export interface OperationStatusCount {
+  status: OperationStatus["status"];
+  count: number;
+}
+
+export type OperationInspectorOpenResult =
+  | { status: "available"; inspector: OperationInspector }
+  | { status: "unavailable" };
+
+interface InspectionRow {
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  artifact: string | null;
+  error_code: string | null;
+  lease_expires_at: number | null;
+  pending_count: number | null;
+  sent_count: number | null;
+}
+
+/**
+ * Logical completion evidence recorded by the existing stage writers.
+ *
+ * Writers store different shapes: the collection store a bare `ArtifactRef`
+ * (`sha256` without a scheme), the claim worker `{ claimsArtifact }`, the
+ * publisher `{ artifact }`, and the brief/verification stages only a partial
+ * `{ path, commit }`. Normalise the recognised forms and never return any
+ * other field: an unrecognised artifact may carry tokens or payload.
+ */
+export type OperationArtifact =
+  | {
+      kind: "reference";
+      repository: string;
+      commit: string;
+      path: string;
+      hash: string;
+    }
+  | { kind: "partial"; commit?: string; path?: string };
+
+/** Raw `ArtifactRef` as stored by the collection controller (`sha256` bare). */
+const StoredRefSchema = z
+  .object({
+    repository: ArtifactReferenceSchema.shape.repository,
+    commit: ArtifactReferenceSchema.shape.commit,
+    path: ArtifactReferenceSchema.shape.path,
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
+/** Fields a partial writer may record; nothing else is exposed. */
+const PartialSchema = z
+  .object({
+    commit: ArtifactReferenceSchema.shape.commit.optional(),
+    path: ArtifactReferenceSchema.shape.path.optional(),
+  })
+  .strict();
+
+const PathOnlySchema = ArtifactReferenceSchema.shape.path;
+
+/** True when the object carries no key outside the allowlist. */
+function onlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(record).every((key) => allowed.includes(key));
+}
+
+function asReference(value: unknown): OperationArtifact | undefined {
+  const full = ArtifactReferenceSchema.safeParse(value);
+  if (full.success) return { kind: "reference", ...full.data };
+  const stored = StoredRefSchema.safeParse(value);
+  if (stored.success) {
+    // Re-validate as a logical reference: the repository is a logical name and
+    // the path is relative, so a legacy absolute path, private URL or parent
+    // traversal cannot reach diagnostics.
+    const { repository, commit, path, sha256 } = stored.data;
+    const normalised = ArtifactReferenceSchema.safeParse({
+      repository,
+      commit,
+      path,
+      hash: `sha256:${sha256}`,
+    });
+    if (normalised.success) return { kind: "reference", ...normalised.data };
+  }
+  return undefined;
+}
+
+/** Recognise a completion artifact without returning unlisted fields. */
+export function logicalArtifact(value: unknown): OperationArtifact | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+
+  const direct = asReference(value);
+  if (direct) return direct;
+  for (const key of ["artifact", "ref", "claimsArtifact"] as const) {
+    const nested = asReference(record[key]);
+    if (nested) return nested;
+  }
+
+  // Brief and historical-comparison writers record { path, commit }.
+  if (onlyKeys(record, ["commit", "path"])) {
+    const partial = PartialSchema.safeParse({
+      ...(record.commit === undefined ? {} : { commit: record.commit }),
+      ...(record.path === undefined ? {} : { path: record.path }),
+    });
+    if (partial.success && (partial.data.commit || partial.data.path)) {
+      const { commit, path } = partial.data;
+      return {
+        kind: "partial",
+        ...(commit === undefined ? {} : { commit }),
+        ...(path === undefined ? {} : { path }),
+      };
+    }
+  }
+
+  // Verification records { report: <path>, verdict }; expose the path only.
+  if (onlyKeys(record, ["report", "verdict"])) {
+    const path = PathOnlySchema.safeParse(record.report);
+    if (path.success) return { kind: "partial", path: path.data };
+  }
+
+  return undefined;
+}
+
+/**
+ * The store changed after the inspector opened it, so a result can no longer be
+ * trusted: an immutable connection that reads a moving file can return stale
+ * rows or fail with a corruption error. Callers report the store as unavailable.
+ * Deliberately carries no path, SQL or filesystem detail.
+ */
+export class OperationStoreChangedError extends Error {
+  constructor() {
+    super("operation store changed during inspection");
+    this.name = "OperationStoreChangedError";
+  }
+}
+
+/**
+ * Identity of the database file at open: any write replaced or extended it.
+ * `changeCounter` is SQLite's own header counter, which moves on every write
+ * even when a filesystem timestamp has coarse resolution.
+ */
+interface StoreIdentity {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  changeCounter: number | undefined;
+}
+
+/** SQLite's 100-byte header; the change counter is the big-endian u32 at offset 24. */
+function sqliteChangeCounter(path: string): number | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const header = Buffer.alloc(100);
+    if (readSync(fd, header, 0, 100, 0) < 28) return undefined;
+    return header.readUInt32BE(24);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function storeIdentity(path: string): StoreIdentity | undefined {
+  try {
+    const stats = statSync(path, { bigint: true });
+    if (!stats.isFile()) return undefined;
+    return {
+      dev: stats.dev,
+      ino: stats.ino,
+      size: stats.size,
+      mtimeNs: stats.mtimeNs,
+      changeCounter: sqliteChangeCounter(path),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const COUNTS_SQL =
+  "SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status";
+
+/** One statement, one snapshot: the row and its event counts share a moment. */
+const OPERATION_SQL = `SELECT o.status, o.attempts, o.max_attempts, o.artifact, o.error_code, o.lease_expires_at,
+          (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'pending') AS pending_count,
+          (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'sent') AS sent_count
+     FROM operations o WHERE o.key = ?`;
+
+const unchanged = (a: StoreIdentity, b: StoreIdentity | undefined): boolean =>
+  b !== undefined &&
+  a.dev === b.dev &&
+  a.ino === b.ino &&
+  a.size === b.size &&
+  a.mtimeNs === b.mtimeNs &&
+  a.changeCounter === b.changeCounter;
+
+export class OperationInspector {
+  private constructor(
+    private readonly db: DatabaseSync,
+    private readonly now: () => number,
+    private readonly resolvedPath: string,
+    private readonly identity: StoreIdentity,
+    private readonly counts: StatementSync,
+    private readonly operation: StatementSync,
+  ) {}
+
+  static open(
+    path: string,
+    options: { busyTimeoutMs?: number; now?: () => number } = {},
+  ): OperationInspectorOpenResult {
+    if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path)) {
+      return { status: "unavailable" };
+    }
+    const busy = options.busyTimeoutMs ?? 2_000;
+    if (!Number.isInteger(busy) || busy < 0 || busy > 60_000) {
+      return { status: "unavailable" };
+    }
+    let db: DatabaseSync | undefined;
+    try {
+      if (!statSync(path).isFile()) return { status: "unavailable" };
+      // SQLite writes the WAL beside the resolved database file, so a symlinked
+      // path must be followed before looking for the sidecar or opening it.
+      const resolved = realpathSync(path);
+      // A WAL sidecar means a writer is live or frames are uncheckpointed. The
+      // quiescent-immutable strategy below cannot read that state safely, so
+      // report unavailable rather than lock, modify or guess.
+      if (existsSync(`${resolved}-wal`)) return { status: "unavailable" };
+      // Record the file identity before opening. The immutable connection's
+      // page cache is only trustworthy if the file does not change between
+      // this snapshot and the schema read below, so the two are compared.
+      const identity = storeIdentity(resolved);
+      if (!identity) return { status: "unavailable" };
+      // `immutable=1` reads without locking or creating `-wal`/`-shm`
+      // sidecars, which a plain read-only connection would create.
+      // A file URL encodes `?` and `#` in a path, which encodeURI would leave
+      // ambiguous; the query parameter then selects immutable mode.
+      const fileUrl = pathToFileURL(resolved);
+      fileUrl.searchParams.set("immutable", "1");
+      db = new DatabaseSync(fileUrl.href, { readOnly: true, timeout: busy });
+      const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      if (version < 1 || version > SCHEMA_VERSION) {
+        db.close();
+        return { status: "unavailable" };
+      }
+      const tables = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      if (!tables.has("operations") || !tables.has("pending_events")) {
+        db.close();
+        return { status: "unavailable" };
+      }
+      // Prepare both inspection statements now: compiling them proves the
+      // columns they read exist, so an incompatible database is reported as
+      // unavailable here instead of throwing from a later inspection call.
+      const counts = db.prepare(COUNTS_SQL);
+      const operation = db.prepare(OPERATION_SQL);
+      // Quiescence must hold from the identity snapshot through the schema
+      // read: a writer that committed in between leaves this connection with
+      // stale pages, while the identity would describe the newer file and
+      // every later check would pass. Reject the connection in that case.
+      if (existsSync(`${resolved}-wal`) || !unchanged(identity, storeIdentity(resolved))) {
+        db.close();
+        return { status: "unavailable" };
+      }
+      return {
+        status: "available",
+        inspector: new OperationInspector(
+          db,
+          options.now ?? Date.now,
+          resolved,
+          identity,
+          counts,
+          operation,
+        ),
+      };
+    } catch {
+      // A corrupt or unreadable database is unavailable, never a crash and
+      // never an excuse to repair it here.
+      if (db?.isOpen) db.close();
+      return { status: "unavailable" };
+    }
+  }
+
+  /**
+   * Run one read only while the file is provably unchanged. Checked before and
+   * after the query: a change during the read discards the result, because the
+   * immutable connection may have mixed pages from two versions of the file.
+   */
+  private read<T>(query: () => T): T {
+    if (this.changed()) throw new OperationStoreChangedError();
+    const value = query();
+    if (this.changed()) throw new OperationStoreChangedError();
+    return value;
+  }
+
+  private changed(): boolean {
+    if (existsSync(`${this.resolvedPath}-wal`)) return true;
+    return !unchanged(this.identity, storeIdentity(this.resolvedPath));
+  }
+
+  /**
+   * Counts by operation status, in status order.
+   * @throws OperationStoreChangedError when the file changed since opening.
+   */
+  statusCounts(): OperationStatusCount[] {
+    const rows = this.read(() => this.counts.all()) as Array<{ status: string; count: number }>;
+    return rows.map((row) => ({
+      status: row.status as OperationStatus["status"],
+      count: row.count,
+    }));
+  }
+
+  /**
+   * One operation by exact key, or undefined when the key is unknown.
+   * @throws OperationStoreChangedError when the file changed since opening.
+   */
+  inspect(key: string): OperationInspection | undefined {
+    if (!Key.safeParse(key).success) return undefined;
+    const row = this.read(() => this.operation.get(key)) as InspectionRow | undefined;
+    if (!row) return undefined;
+    let artifact: OperationArtifact | undefined;
+    if (row.artifact !== null) {
+      try {
+        artifact = logicalArtifact(JSON.parse(row.artifact));
+      } catch {
+        artifact = undefined;
+      }
+    }
+    const leaseExpiresAt = row.lease_expires_at;
+    const exhausted =
+      row.status === "failed" ||
+      (row.status === "claimed" &&
+        row.attempts >= row.max_attempts &&
+        (leaseExpiresAt === null || leaseExpiresAt <= this.now()));
+    return {
+      key,
+      status: row.status as OperationStatus["status"],
+      exhausted,
+      attempts: row.attempts,
+      maxAttempts: row.max_attempts,
+      ...(row.error_code ? { errorCode: row.error_code } : {}),
+      ...(leaseExpiresAt === null
+        ? {}
+        : { leaseExpiresAt: new Date(leaseExpiresAt).toISOString() }),
+      ...(artifact ? { artifact } : {}),
+      pendingEvents: { pending: row.pending_count ?? 0, sent: row.sent_count ?? 0 },
+    };
   }
 
   close(): void {
