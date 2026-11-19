@@ -8,7 +8,13 @@ import {
 } from "../controllers/embedding.js";
 import type { SearchHit } from "../controllers/elasticsearch.js";
 import { ArtifactReferenceSchema, type ArtifactReference } from "./artifact-reference.js";
-import type { Passage } from "./passages.js";
+import {
+  DEFAULT_PASSAGE_MAX_CHARS,
+  DEFAULT_PASSAGE_MIN_CHARS,
+  DEFAULT_PASSAGE_OVERLAP_CHARS,
+  PASSAGE_SPLITTER_VERSION,
+  type Passage,
+} from "./passages.js";
 
 /**
  * Versioned passage-vector storage in Elasticsearch (Basic tier dense
@@ -25,9 +31,40 @@ import type { Passage } from "./passages.js";
 export const PASSAGE_VECTOR_SCHEMA_VERSION = 1;
 export const PASSAGE_VECTOR_FIELD = "embedding";
 
-/** Logical index (alias) for one vector space. */
-export function passageVectorIndexName(model: EmbeddingModel): string {
-  const space = createHash("sha256").update(vectorSpaceId(model)).digest("hex").slice(0, 16);
+/** Chunking configuration a passage set was produced with. */
+export interface ChunkingConfig {
+  splitterVersion: number;
+  maxChars: number;
+  overlapChars: number;
+  minChars: number;
+}
+
+/** Default chunking: the current splitter version with its default sizes. */
+export const DEFAULT_CHUNKING: ChunkingConfig = {
+  splitterVersion: PASSAGE_SPLITTER_VERSION,
+  maxChars: DEFAULT_PASSAGE_MAX_CHARS,
+  overlapChars: DEFAULT_PASSAGE_OVERLAP_CHARS,
+  minChars: DEFAULT_PASSAGE_MIN_CHARS,
+};
+
+/** Stable key for a chunking configuration. */
+export function chunkingKey(chunking: ChunkingConfig): string {
+  return `split-v${chunking.splitterVersion}-${chunking.maxChars}-${chunking.overlapChars}-${chunking.minChars}`;
+}
+
+/**
+ * Logical index (alias) for one vector space and one chunking configuration:
+ * passages split differently are different documents and never share an
+ * index, even with the same embedding model.
+ */
+export function passageVectorIndexName(
+  model: EmbeddingModel,
+  chunking: ChunkingConfig = DEFAULT_CHUNKING,
+): string {
+  const space = createHash("sha256")
+    .update(JSON.stringify([vectorSpaceId(model), chunkingKey(chunking)]))
+    .digest("hex")
+    .slice(0, 16);
   return `steele-passage-vectors-v${PASSAGE_VECTOR_SCHEMA_VERSION}-${space}`;
 }
 
@@ -42,6 +79,7 @@ export function passageVectorMapping(model: EmbeddingModel) {
       sourceId: { type: "keyword" },
       sourceVersion: { type: "keyword" },
       splitterVersion: { type: "integer" },
+      chunking: { type: "keyword" },
       start: { type: "integer" },
       end: { type: "integer" },
       text: { type: "text" },
@@ -87,6 +125,7 @@ export const PassageVectorDocumentSchema = z
     sourceId: z.string().min(1),
     sourceVersion: z.string().min(1),
     splitterVersion: z.number().int().positive(),
+    chunking: z.string().min(1),
     start: z.number().int().min(0),
     end: z.number().int().min(1),
     text: z.string().min(1),
@@ -149,12 +188,16 @@ export class PassageVectorStore {
   readonly indexName: string;
   readonly vectorSpace: string;
 
+  readonly chunkingKey: string;
+
   constructor(
     private readonly es: PassageVectorIndex,
     readonly model: EmbeddingModel,
+    readonly chunking: ChunkingConfig = DEFAULT_CHUNKING,
   ) {
     this.vectorSpace = vectorSpaceId(EmbeddingModelSchema.parse(model));
-    this.indexName = passageVectorIndexName(model);
+    this.chunkingKey = chunkingKey(chunking);
+    this.indexName = passageVectorIndexName(model, chunking);
   }
 
   /** Explicitly create this vector space's index; an existing one is left unchanged. */
@@ -175,12 +218,16 @@ export class PassageVectorStore {
       throw new VectorSpaceError("vector length does not match model dimensions");
     }
     if (vector.inputId !== passage.id) throw new VectorSpaceError("vector is for another passage");
+    if (passage.splitterVersion !== this.chunking.splitterVersion) {
+      throw new VectorSpaceError("passage was produced by a different splitter version");
+    }
     return PassageVectorDocumentSchema.parse({
       schemaVersion: PASSAGE_VECTOR_SCHEMA_VERSION,
       passageId: passage.id,
       sourceId: passage.sourceId,
       sourceVersion: passage.sourceVersion,
       splitterVersion: passage.splitterVersion,
+      chunking: this.chunkingKey,
       start: passage.start,
       end: passage.end,
       text: passage.text,
@@ -227,7 +274,13 @@ export class PassageVectorStore {
       const doc = PassageVectorDocumentSchema.omit({ [PASSAGE_VECTOR_FIELD]: true }).safeParse(
         hit.source,
       );
-      if (!doc.success || doc.data.vectorSpace !== this.vectorSpace) continue;
+      if (
+        !doc.success ||
+        doc.data.vectorSpace !== this.vectorSpace ||
+        doc.data.chunking !== this.chunkingKey
+      ) {
+        continue;
+      }
       matches.push({
         score: hit.score,
         passageId: doc.data.passageId,

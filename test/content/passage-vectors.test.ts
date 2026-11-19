@@ -3,11 +3,12 @@ import {
   PASSAGE_VECTOR_FIELD,
   PassageVectorStore,
   VectorSpaceError,
+  chunkingKey,
   passageVectorIndexName,
   passageVectorMapping,
   type PassageVectorIndex,
 } from "../../src/content/passage-vectors.js";
-import { splitPassages } from "../../src/content/passages.js";
+import { PASSAGE_SPLITTER_VERSION, splitPassages } from "../../src/content/passages.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import {
   EmbeddingController,
@@ -22,6 +23,12 @@ const MODEL: EmbeddingModel = {
   model: "embed-small",
   version: "1",
   dimensions: 4,
+};
+const CHUNKING = {
+  splitterVersion: PASSAGE_SPLITTER_VERSION,
+  maxChars: 60,
+  overlapChars: 0,
+  minChars: 10,
 };
 const TEXT =
   "The synthetic council raised fees by three percent. " +
@@ -113,7 +120,7 @@ describe("passage vector mapping", () => {
 describe("PassageVectorStore", () => {
   it("stores passage identity, text, provenance, splitter and model with the vector", async () => {
     const { es, docs } = fakeIndex();
-    const store = new PassageVectorStore(es, MODEL);
+    const store = new PassageVectorStore(es, MODEL, CHUNKING);
     expect(await store.provision()).toBe("created");
     const { list, embedded } = await vectorsFor();
     for (const [i, p] of list.entries()) await store.write(p, embedded[i]!, artifact);
@@ -134,7 +141,7 @@ describe("PassageVectorStore", () => {
 
   it("returns nearest passages with exact text and provenance, not vectors", async () => {
     const { es } = fakeIndex();
-    const store = new PassageVectorStore(es, MODEL);
+    const store = new PassageVectorStore(es, MODEL, CHUNKING);
     await store.provision();
     const { list, embedded } = await vectorsFor();
     for (const [i, p] of list.entries()) await store.write(p, embedded[i]!, artifact);
@@ -146,7 +153,7 @@ describe("PassageVectorStore", () => {
 
   it("keeps supplied transcript timings through storage and retrieval", async () => {
     const { es, docs } = fakeIndex();
-    const store = new PassageVectorStore(es, MODEL);
+    const store = new PassageVectorStore(es, MODEL, CHUNKING);
     await store.provision();
     const timed = splitPassages(
       {
@@ -171,9 +178,25 @@ describe("PassageVectorStore", () => {
     expect(store.document(list[0]!, plain[0]!, artifact)).not.toHaveProperty("transcriptTimings");
   });
 
+  it("isolates passage sets produced by different chunking configurations", async () => {
+    expect(passageVectorIndexName(MODEL, CHUNKING)).not.toBe(
+      passageVectorIndexName(MODEL, { ...CHUNKING, maxChars: 120 }),
+    );
+    const { es, docs } = fakeIndex();
+    const store = new PassageVectorStore(es, MODEL, CHUNKING);
+    await store.provision();
+    const { list, embedded } = await vectorsFor();
+    await store.write(list[0]!, embedded[0]!, artifact);
+    expect(docs.get(store.indexName)!.get(list[0]!.id)!.chunking).toBe(chunkingKey(CHUNKING));
+    const otherVersion = new PassageVectorStore(es, MODEL, { ...CHUNKING, splitterVersion: 99 });
+    expect(() => otherVersion.document(list[0]!, embedded[0]!, artifact)).toThrow(
+      "splitter version",
+    );
+  });
+
   it("rejects vectors and queries from an incompatible model or dimension", async () => {
     const { es } = fakeIndex();
-    const store = new PassageVectorStore(es, MODEL);
+    const store = new PassageVectorStore(es, MODEL, CHUNKING);
     const { list } = await vectorsFor();
     const other = await vectorsFor({ ...MODEL, version: "2" });
     expect(() => store.document(list[0]!, other.embedded[0]!, artifact)).toThrow(VectorSpaceError);
@@ -201,6 +224,7 @@ describe.skipIf(!esUrl)("Elasticsearch vector capability", () => {
         knnSearch: (i, r) => es.knnSearch(i, r),
       },
       model,
+      CHUNKING,
     );
     try {
       const license = (await admin.license.get()).license.type;
