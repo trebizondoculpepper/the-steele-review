@@ -84,6 +84,7 @@ export interface WhisperProviderConfig {
 export class WhisperProvider implements TranscriptionProvider {
   readonly name = "whisper.cpp";
   readonly model: string;
+  readonly maxScratchBytes: number;
   private readonly config: z.infer<typeof Config>;
   private readonly run: WhisperRunner;
 
@@ -99,6 +100,8 @@ export class WhisperProvider implements TranscriptionProvider {
     if (!parsed.success) throw new Error("invalid local transcription configuration");
     this.config = parsed.data;
     this.model = this.config.model;
+    this.maxScratchBytes =
+      Math.ceil((this.config.maxDurationSeconds + 2) * 32_000 + 4096) + MAX_JSON_BYTES;
     this.run = options.run ?? runWhisperCommand;
   }
 

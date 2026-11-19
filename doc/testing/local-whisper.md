@@ -21,3 +21,5 @@ npx vp test run test/transcription/whisper.test.ts test/transcription/adapter.te
 These tests do not demonstrate Raspberry Pi throughput or transcript quality. Collector composition, runtime provisioning and a bounded target-machine trial are tracked separately. Enabling a provider does not reset terminal operation records; pending-post replay requires an explicit state-controller operation. Never edit SQLite directly to force a retry.
 
 Actual machine locations, mount paths and deployment results belong in private infrastructure documentation. Model weights and temporary media belong on dedicated persistent disk mounts, not in Git or an unbounded memory filesystem. The text archive retains transcript text, timestamps and provenance only.
+
+The provider declares its maximum conversion/output scratch reservation. The adapter reserves that alongside the original download in the shared workspace budget before accepting each job, retaining the reservation until cleanup succeeds. Configuration is refused if a single download plus scratch cannot fit.
