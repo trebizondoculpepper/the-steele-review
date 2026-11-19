@@ -16,28 +16,24 @@
 import { stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
   inspectOperation,
-  isOperationKey,
   operationExitCode,
+  parseOperationArguments,
   renderOperation,
 } from "../diagnostics/operation-detail.js";
 
 const USAGE = "Usage: operation <operation-key> [--json]";
 
 async function main(argv: string[]): Promise<number> {
-  if (argv.includes("--help") || argv.includes("-h")) {
+  const parsed = parseOperationArguments(argv);
+  if (!parsed.ok) {
+    console.error(USAGE);
+    return 2;
+  }
+  if (parsed.args.help) {
     console.log(USAGE);
     return 0;
   }
-  let key: string | undefined;
-  let json = false;
-  for (const arg of argv) {
-    if (arg === "--json") json = true;
-    else if (key === undefined && isOperationKey(arg)) key = arg;
-    else {
-      console.error(USAGE);
-      return 2;
-    }
-  }
+  const key = parsed.args.key;
   if (key === undefined) {
     console.error(USAGE);
     return 2;
@@ -48,7 +44,7 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const report = await inspectOperation(stateProbeFor(statePath), key);
-  console.log(json ? JSON.stringify(report) : renderOperation(report));
+  console.log(parsed.args.json ? JSON.stringify(report) : renderOperation(report));
   return operationExitCode(report);
 }
 

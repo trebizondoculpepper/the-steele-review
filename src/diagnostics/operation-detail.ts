@@ -27,6 +27,47 @@ export function isOperationKey(key: string): boolean {
   return key.length >= 1 && key.length <= MAX_OPERATION_KEY_LENGTH;
 }
 
+export interface OperationArguments {
+  /** Present when a positional key was supplied. */
+  key?: string;
+  json: boolean;
+  help: boolean;
+}
+
+export type OperationArgumentResult =
+  | { ok: true; args: OperationArguments }
+  | { ok: false };
+
+/**
+ * Parse `operation <key> [--json]`. Unknown options are rejected rather than
+ * treated as keys, so a mistyped flag is a usage error (exit 2). `--` ends
+ * option parsing for keys that begin with a dash.
+ */
+export function parseOperationArguments(argv: string[]): OperationArgumentResult {
+  let key: string | undefined;
+  let json = false;
+  let help = false;
+  let optionsEnded = false;
+  for (const arg of argv) {
+    if (!optionsEnded && arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && (arg === "--help" || arg === "-h")) {
+      help = true;
+      continue;
+    }
+    if (!optionsEnded && arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (!optionsEnded && arg.startsWith("-")) return { ok: false };
+    if (key !== undefined || !isOperationKey(arg)) return { ok: false };
+    key = arg;
+  }
+  return { ok: true, args: { ...(key === undefined ? {} : { key }), json, help } };
+}
+
 export type OperationReport =
   | {
       schemaVersion: typeof OPERATION_REPORT_SCHEMA_VERSION;

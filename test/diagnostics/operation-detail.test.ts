@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -7,6 +7,7 @@ import {
   inspectOperation,
   isOperationKey,
   operationExitCode,
+  parseOperationArguments,
   renderOperation,
 } from "../../src/diagnostics/operation-detail.js";
 import { stateProbeFor } from "../../src/diagnostics/runtime-status.js";
@@ -132,6 +133,10 @@ describe("inspectOperation", () => {
     const report = await inspectOperation(stateProbeFor(path, workerOptions), "op-missing");
     expect(report.status).toBe("unavailable");
     expect(operationExitCode(report)).toBe(1);
+    // Inspection must not create the database or any sidecar.
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}-wal`)).toBe(false);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   it("reports unavailable when no state controller is configured", async () => {
@@ -155,6 +160,32 @@ describe("inspectOperation", () => {
       { timeoutMs: 10 },
     );
     expect(report.status).toBe("unavailable");
+  });
+
+  it("rejects unknown options instead of reading them as keys", () => {
+    expect(parseOperationArguments(["--jsno"])).toEqual({ ok: false });
+    expect(parseOperationArguments(["op-1", "--jsno"])).toEqual({ ok: false });
+    expect(parseOperationArguments(["a", "b"])).toEqual({ ok: false });
+    expect(parseOperationArguments([""])).toEqual({ ok: false });
+  });
+
+  it("parses the key, --json and a key after the -- separator", () => {
+    expect(parseOperationArguments(["op-1"])).toEqual({
+      ok: true,
+      args: { key: "op-1", json: false, help: false },
+    });
+    expect(parseOperationArguments(["op-1", "--json"])).toEqual({
+      ok: true,
+      args: { key: "op-1", json: true, help: false },
+    });
+    expect(parseOperationArguments(["--", "--dashed-key"])).toEqual({
+      ok: true,
+      args: { key: "--dashed-key", json: false, help: false },
+    });
+    expect(parseOperationArguments(["--json"])).toEqual({
+      ok: true,
+      args: { json: true, help: false },
+    });
   });
 
   it("accepts only keys the state controller can address", () => {
