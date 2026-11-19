@@ -53,15 +53,48 @@ export function createTextReadyEvent(
   );
 }
 
-/** Decode and validate a received text-ready event. */
+export class InvalidTextReadyEventError extends Error {
+  constructor(reason: string) {
+    super(`Invalid text-ready event: ${reason}`);
+    this.name = "InvalidTextReadyEventError";
+  }
+}
+
+const EnvelopeSchema = z.looseObject({
+  specversion: z.literal("1.0"),
+  id: z.string().min(1).max(200),
+  source: z.string().min(1).max(500),
+  type: z.literal(TEXT_READY_EVENT_TYPE_V1),
+  dataschema: z.literal(TEXT_READY_DATASCHEMA_V1),
+  datacontenttype: z.literal("application/json"),
+  time: z.iso.datetime({ offset: true }),
+  subject: z.string().min(1),
+  causationid: z.string().min(1).max(200).optional(),
+  correlationid: z.string().min(1).max(200).optional(),
+});
+
+/**
+ * Decode and validate a received text-ready event: the full envelope
+ * (version, type, schema, content type, time, identity), the payload, and
+ * that the subject is the payload's content key. Errors never echo payloads.
+ */
 export function parseTextReadyEvent(input: string): CloudEvent<TextReadyData> {
-  const raw = JSON.parse(input) as Record<string, unknown>;
-  if (raw.type !== TEXT_READY_EVENT_TYPE_V1 || raw.dataschema !== TEXT_READY_DATASCHEMA_V1) {
-    throw new Error("unsupported text-ready event");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(input);
+  } catch {
+    throw new InvalidTextReadyEventError("not valid JSON");
   }
-  if (typeof raw.id !== "string" || typeof raw.time !== "string") {
-    throw new Error("malformed text-ready envelope");
+  const envelope = EnvelopeSchema.safeParse(raw);
+  if (!envelope.success) throw new InvalidTextReadyEventError("envelope failed validation");
+  const data = TextReadyDataSchema.safeParse(envelope.data.data);
+  if (!data.success) throw new InvalidTextReadyEventError("payload failed validation");
+  if (envelope.data.subject !== `substack/${data.data.publicationId}/${data.data.postId}`) {
+    throw new InvalidTextReadyEventError("subject does not match payload content key");
   }
-  const data = TextReadyDataSchema.parse(raw.data);
-  return new CloudEvent<TextReadyData>({ ...raw, data }, true);
+  try {
+    return new CloudEvent<TextReadyData>({ ...envelope.data, data: data.data }, true);
+  } catch {
+    throw new InvalidTextReadyEventError("envelope failed CloudEvents validation");
+  }
 }
