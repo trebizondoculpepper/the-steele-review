@@ -216,6 +216,19 @@ describe("parseClaimOccurrence", () => {
         assertionDates: [{ text: "last spring", value: "2020-05-01" }],
       }),
     ],
+    ["changed url", (o: Record<string, unknown>) => ({ ...o, url: "https://other.example/p/x" })],
+    [
+      "changed publication time",
+      (o: Record<string, unknown>) => ({ ...o, sourcePublishedAt: "2020-01-01T00:00:00Z" }),
+    ],
+    [
+      "changed author",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        publisher: { ...(o.publisher as object), author: "Someone Else" },
+      }),
+    ],
+    ["invented qualifier", (o: Record<string, unknown>) => ({ ...o, qualifiers: ["possibly"] })],
     [
       "substituted artifact",
       (o: Record<string, unknown>) => ({

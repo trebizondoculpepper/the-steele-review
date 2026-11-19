@@ -283,6 +283,20 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
   if (o.publisher.publicationId !== o.publicationId) {
     throw new InvalidClaimOccurrenceError("publisher does not match the occurrence publication");
   }
+  // Post metadata comes from the trusted source, never from the stored record.
+  if (
+    o.url !== source.url ||
+    o.sourcePublishedAt !== source.publishedAt ||
+    o.publisher.author !== source.author
+  ) {
+    throw new InvalidClaimOccurrenceError("post metadata does not match the supplied source");
+  }
+  // Qualifiers are verbatim wording, so they must occur in the passage.
+  for (const qualifier of o.qualifiers) {
+    if (!o.passage.includes(qualifier)) {
+      throw new InvalidClaimOccurrenceError("qualifier does not occur in the passage");
+    }
+  }
   assertSpeakerEvidence(o.speaker, source.text);
   return o;
 }
