@@ -3,7 +3,7 @@ import { CloudEvent } from "cloudevents";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import type { EmbeddingModel } from "../controllers/embedding.js";
+import { vectorSpaceId, type EmbeddingModel } from "../controllers/embedding.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { parseTextReadyEvent } from "../events/text-ready-event.js";
@@ -12,7 +12,7 @@ import {
   type EmbeddingPort,
   type VectorWriterPort,
 } from "./embedding-batch.js";
-import { planEmbeddingJobs } from "./embedding-jobs.js";
+import { EmbeddingPlanError, planEmbeddingJobs } from "./embedding-jobs.js";
 import { sourceVersionFor } from "./fulltext-document.js";
 import { DEFAULT_CHUNKING, chunkingKey, type ChunkingConfig } from "./passage-vectors.js";
 
@@ -89,16 +89,33 @@ export class EmbeddingConsumer {
     const sourceId = `substack/${data.publicationId}/${data.postId}`;
     const sourceVersion = sourceVersionFor(record.text);
     const chunking = this.config.chunking ?? DEFAULT_CHUNKING;
-    const plan = planEmbeddingJobs({
-      sourceId,
-      text: record.text,
-      sourceVersion,
-      artifact: data.artifact,
-      model: this.config.model,
-      chunking,
-      ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
-    });
-    const key = `embed-source:${sourceId}:${sourceVersion}:${plan.vectorSpace}:${chunkingKey(chunking)}`;
+    const key = `embed-source:${sourceId}:${sourceVersion}:${vectorSpaceId(this.config.model)}:${chunkingKey(chunking)}`;
+    // The archived record must belong to the post the event names, or its
+    // passages would carry another post's provenance.
+    if (record.item.publicationId !== data.publicationId || record.item.postId !== data.postId) {
+      operations.recordPermanentFailure(`embed-invalid:${event.id}`, "identity-mismatch");
+      await message.ack();
+      return "failed";
+    }
+    let plan;
+    try {
+      plan = planEmbeddingJobs({
+        sourceId,
+        text: record.text,
+        sourceVersion,
+        artifact: data.artifact,
+        model: this.config.model,
+        chunking,
+        ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+      });
+    } catch (error) {
+      if (error instanceof EmbeddingPlanError) {
+        operations.recordPermanentFailure(key, `plan:${error.reason}`);
+        await message.ack();
+        return "failed";
+      }
+      throw error;
+    }
     if (!record.complete) {
       operations.recordPermanentFailure(key, "incomplete-source");
       await message.ack();
@@ -152,7 +169,8 @@ export class EmbeddingConsumer {
     }
     if (done < plan.jobs.length) {
       // Progress is recorded per job; release the source claim and come back.
-      operations.fail(claim, signal?.aborted ? "embed:shutdown" : "embed:in-progress", true);
+      // Progress is not failure: hand the claim back without spending an attempt.
+      operations.yieldClaim(claim);
       message.nak(signal?.aborted ? 0 : Math.min(retryDelay, 5_000));
       return signal?.aborted ? "retry" : "in-progress";
     }

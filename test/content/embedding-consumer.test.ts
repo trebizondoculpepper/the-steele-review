@@ -199,6 +199,39 @@ describe("EmbeddingConsumer", () => {
     for (const id of firstWritten) expect(resumed.written).not.toContain(id);
   });
 
+  it("finishes a long source one job per delivery without exhausting attempts", async () => {
+    const long = Array.from(
+      { length: 60 },
+      (_, i) => `Synthetic sentence number ${i} about council fees.`,
+    ).join(" ");
+    const s = setup({ maxJobs: 1 });
+    let outcome = "";
+    for (let i = 0; i < 200 && outcome !== "embedded"; i++) {
+      outcome = await s.consumer.handle(await message({ ...record(), text: long }));
+    }
+    expect(outcome).toBe("embedded");
+  }, 60_000);
+
+  it("rejects an archive record that belongs to another post", async () => {
+    const s = setup();
+    const m = await message({
+      ...record(),
+      item: { ...item, postId: "other-post", url: "https://example-pub.substack.com/p/other-post" },
+    });
+    expect(await s.consumer.handle(m)).toBe("failed");
+    expect(m.acks).toBe(1);
+    expect(s.written).toEqual([]);
+  });
+
+  it("records a source too large to plan as a permanent failure", async () => {
+    const huge = Array.from({ length: 7_000 }, (_, i) => `Sentence ${i} is here.`).join(" ");
+    const s = setup();
+    const m = await message({ ...record(), text: huge });
+    expect(await s.consumer.handle(m)).toBe("failed");
+    expect(m.acks).toBe(1);
+    expect(s.providerCalls).toHaveLength(0);
+  });
+
   it("records incomplete sources and terminates malformed events", async () => {
     const s = setup();
     const partial = await message(record(false));
