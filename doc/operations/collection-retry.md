@@ -6,7 +6,7 @@ A post whose collection ended as `transcription-unavailable` is terminal: enabli
 npm run retry-collection -- --post-id <slug>
 ```
 
-Run it beside the collector, with the same `STEELE_PUBLICATION_URL`, `STEELE_PUBLICATION_ID` and `STEELE_STATE_PATH`. It needs no broker or search credentials.
+Run it beside the collector, with the same `STEELE_PUBLICATION_URL`, `STEELE_PUBLICATION_ID` and `STEELE_STATE_PATH`, and `STEELE_DISCOVERY_SUBJECT` if the deployment overrides the discovery subject. It needs no broker or search credentials.
 
 What it does:
 

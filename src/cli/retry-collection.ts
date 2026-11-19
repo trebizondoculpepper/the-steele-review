@@ -8,6 +8,7 @@
  *   STEELE_PUBLICATION_URL   public HTTPS publication base URL
  *   STEELE_PUBLICATION_ID    the publication the post belongs to
  *   STEELE_STATE_PATH        absolute path of the collector's SQLite state file
+ *   STEELE_DISCOVERY_SUBJECT optional; must match the subject the collector consumes
  *
  * The post's metadata is re-read from the public archive (bounded scan), so
  * the redelivered discovery event carries validated source metadata. The
@@ -26,6 +27,7 @@ const EnvSchema = z.object({
   STEELE_PUBLICATION_URL: z.url({ protocol: /^https$/ }),
   STEELE_PUBLICATION_ID: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
   STEELE_STATE_PATH: z.string().min(1),
+  STEELE_DISCOVERY_SUBJECT: z.string().min(1).optional(),
 });
 
 async function main(argv: string[]): Promise<number> {
@@ -84,7 +86,11 @@ async function main(argv: string[]): Promise<number> {
   }
   const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
   try {
-    const result = retryCollection({ operations, item });
+    const result = retryCollection({
+      operations,
+      item,
+      ...(c.STEELE_DISCOVERY_SUBJECT ? { subject: c.STEELE_DISCOVERY_SUBJECT } : {}),
+    });
     console.log(
       JSON.stringify({
         event: "collection-retry",

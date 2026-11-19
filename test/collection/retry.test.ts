@@ -171,3 +171,11 @@ describe("parseRetryArgs", () => {
     }
   });
 });
+
+describe("configured discovery subject", () => {
+  it("records the retry event on the subject the collector consumes", () => {
+    failAttempt("transcription-unavailable");
+    retryCollection({ operations: ops, item, subject: "custom.discovery" });
+    expect(ops.duePendingEvents()[0].subject).toBe("custom.discovery");
+  });
+});
