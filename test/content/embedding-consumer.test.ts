@@ -7,6 +7,7 @@ import {
   CONTENT_EMBEDDED_SUBJECT,
   EmbeddingConsumer,
   transcriptTimingsFor,
+  MAX_PASSAGE_TIMINGS,
 } from "../../src/content/embedding-consumer.js";
 import type { VectorWriterPort } from "../../src/content/embedding-batch.js";
 import { DEFAULT_CHUNKING } from "../../src/content/passage-vectors.js";
@@ -176,6 +177,28 @@ describe("transcriptTimingsFor", () => {
     const c = transcriptTimingsFor(combined).transcriptTimings!;
     expect(c).toHaveLength(1);
     expect(c[0]!.start).toBe(combined.text.lastIndexOf("Officials denied that"));
+  });
+});
+
+describe("dense transcript timings", () => {
+  it("coalesces so no passage overlaps more than the stored bound", () => {
+    const words = Array.from({ length: 3_000 }, (_, i) => ({
+      start: i,
+      end: i + 0.5,
+      text: `w${i % 10}`,
+    }));
+    const r = {
+      ...record(),
+      text: words.map((w) => w.text).join(" "),
+      supplied: { transcript: words },
+    };
+    const t = transcriptTimingsFor(r, 2_000).transcriptTimings!;
+    const passage = { start: 0, end: 2_000 };
+    expect(
+      t.filter((x) => x.start < passage.end && x.end > passage.start).length,
+    ).toBeLessThanOrEqual(MAX_PASSAGE_TIMINGS);
+    expect(t[0]!.startSeconds).toBe(0);
+    expect(t.at(-1)!.endSeconds).toBe(2_999.5);
   });
 });
 

@@ -120,7 +120,7 @@ export class EmbeddingConsumer {
         model: this.config.model,
         chunking,
         ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
-        ...transcriptTimingsFor(record),
+        ...transcriptTimingsFor(record, chunking.maxChars),
       });
     } catch (error) {
       if (error instanceof EmbeddingPlanError) {
@@ -244,7 +244,14 @@ export class EmbeddingConsumer {
  * in order. Segments without both times, or not found verbatim, are left
  * out: no timing is ever guessed.
  */
-export function transcriptTimingsFor(record: CollectionRecord): {
+/** Bound on timings stored with one passage vector. */
+export const MAX_PASSAGE_TIMINGS = 500;
+
+export function transcriptTimingsFor(
+  record: CollectionRecord,
+  /** Largest passage size; timings are coalesced so no passage overlaps more than the stored bound. */
+  maxPassageChars = DEFAULT_CHUNKING.maxChars,
+): {
   transcriptTimings?: TranscriptTiming[];
 } {
   const segments = record.supplied.transcript;
@@ -275,5 +282,22 @@ export function transcriptTimingsFor(record: CollectionRecord): {
       endSeconds: s.end,
     });
   }
-  return timings.length ? { transcriptTimings: timings } : {};
+  if (!timings.length) return {};
+  // A passage stores at most MAX_PASSAGE_TIMINGS timings. Merge consecutive
+  // segments until each spans enough text that no passage can overlap more;
+  // a merged timing runs from its first start to its last end, so it is
+  // coarser but never wrong.
+  const minChars = Math.ceil(maxPassageChars / (MAX_PASSAGE_TIMINGS - 2));
+  const merged: TranscriptTiming[] = [];
+  for (const t of timings) {
+    const prev = merged.at(-1);
+    if (prev && prev.end - prev.start < minChars) {
+      merged[merged.length - 1] = {
+        ...prev,
+        end: t.end,
+        endSeconds: Math.max(prev.endSeconds, t.endSeconds),
+      };
+    } else merged.push({ ...t });
+  }
+  return { transcriptTimings: merged };
 }
