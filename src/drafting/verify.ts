@@ -103,7 +103,13 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
       requiredChange: `Link the original post as ${brief.source.url}.`,
     });
   }
-  for (const id of new Set([...markdown.matchAll(/\[(E[0-9]+)\]/g)].map((m) => m[1]!))) {
+  // Quoted lines reproduce source text verbatim; a "[E7]" inside a quote is
+  // the source's own text, not a reference the draft introduced.
+  const unquoted = markdown
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+  for (const id of new Set([...unquoted.matchAll(/\[(E[0-9]+)\]/g)].map((m) => m[1]!))) {
     if (!citations.has(id)) {
       issues.push({
         source: "deterministic",
@@ -144,7 +150,7 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
     for (let j = i + 1; j < lines.length && /^ {2}>/.test(lines[j]!); j++)
       quoted.push(lines[j]!.replace(/^ {2}> ?/, ""));
     // Compared with line endings normalised the same way the renderer splits them.
-    if (quoted.join("\n") !== c.evidence.passage.replace(/\r\n?/g, "\n")) {
+    if (quoted.join("\n") !== c.evidence.passage.replace(/\r\n/g, "\n")) {
       issues.push({
         source: "deterministic",
         passage: lines[i]!,
@@ -340,22 +346,33 @@ export class VerificationWorker {
     briefHash: string,
     draftHash: string,
   ): Promise<number> {
-    let previous = 0;
+    // Distinct earlier drafts: several reports for one draft (other verifier
+    // models or prompts) still count as one attempt.
+    const earlier = new Set<string>();
     for (const path of await this.config.artifacts.list(
       `verifications/${publicationId}/${postId}`,
       1_000,
     )) {
       const ref = await this.config.artifacts.lookup(path);
       if (!ref) continue;
+      let text: string;
       try {
-        const r = JSON.parse(await this.config.artifacts.read(ref)) as VerificationReport;
-        if (r.brief?.hash === briefHash && r.draft?.hash !== draftHash && r.verdict === "redraft")
-          previous++;
+        text = await this.config.artifacts.read(ref);
+      } catch (error) {
+        // A transient failure must not under-count: let the caller retry.
+        if (error instanceof ArtifactStoreError && error.code === "git-failed") throw error;
+        continue;
+      }
+      try {
+        const r = JSON.parse(text) as VerificationReport;
+        if (r.brief?.hash === briefHash && r.draft?.hash !== draftHash && r.verdict === "redraft") {
+          earlier.add(r.draft.hash);
+        }
       } catch {
-        // An unreadable report is not counted.
+        // An unparseable report is not counted.
       }
     }
-    return previous + 1;
+    return earlier.size + 1;
   }
 
   async handle(
@@ -458,6 +475,19 @@ export class VerificationWorker {
         return { kind: "retry", reason: "report-read-failed" };
       }
     } else {
+      let attempt: number;
+      try {
+        attempt = await this.attemptFor(
+          d.publicationId,
+          d.postId,
+          metadata.brief.hash,
+          d.draft.hash,
+        );
+      } catch {
+        operations.yieldClaim(claimed.claim);
+        message.nak(retryDelay);
+        return { kind: "retry", reason: "attempt-count-failed" };
+      }
       const outcome = await verifyDraft({
         markdown,
         draft: toArchiveRef(d.draft),
@@ -466,12 +496,7 @@ export class VerificationWorker {
         metadata,
         verifier: this.config.verifier,
         prompt,
-        attempt: await this.attemptFor(
-          d.publicationId,
-          d.postId,
-          metadata.brief.hash,
-          d.draft.hash,
-        ),
+        attempt,
         ...(this.config.maxAttempts ? { maxAttempts: this.config.maxAttempts } : {}),
         ...(signal ? { signal } : {}),
       });
@@ -481,8 +506,9 @@ export class VerificationWorker {
         return { kind: "failed", reason: outcome.reason };
       }
       if (outcome.kind === "pending") {
-        // Not an editorial skip: release and come back later.
-        operations.fail(claimed.claim, `verify:${outcome.reason}`, true);
+        // Not an editorial skip and not a failed attempt: hand the claim
+        // back without spending the budget, so an outage never exhausts it.
+        operations.yieldClaim(claimed.claim);
         message.nak(retryDelay);
         return { kind: "retry", reason: outcome.reason };
       }

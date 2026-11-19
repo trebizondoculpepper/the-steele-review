@@ -255,6 +255,30 @@ describe("verifyDraft", () => {
     ]);
   });
 
+  it("does not treat a citation-like token inside a quoted source as a draft reference", () => {
+    const quoting = {
+      ...brief,
+      citations: [
+        {
+          ...brief.citations[0]!,
+          evidence: {
+            ...brief.citations[0]!.evidence,
+            passage: "See [E7] in the original report.",
+          },
+        },
+      ],
+    };
+    const md = renderDraft(quoting, {
+      summary: "s",
+      themes: [],
+      errors: [{ claimId, explanation: "x", citationIds: ["E1"], uncertainty: "low" }],
+    });
+    expect(checkDraftReferences(md, quoting)).toEqual([]);
+    expect(
+      checkDraftReferences(md.replace("x [E1]", "x [E1][E7]"), quoting).map((i) => i.passage),
+    ).toEqual(["[E7]"]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -495,6 +519,25 @@ describe("VerificationWorker", () => {
       verifier: verifier([]).p,
     });
     expect(r).toEqual({ kind: "invalid", reason: "invalid-brief" });
+  });
+
+  it("never exhausts pending verification during a long outage", async () => {
+    const worker = new VerificationWorker({
+      artifacts,
+      verifier: verifier(Array(5).fill(new Error("down"))).p,
+      operations,
+      owner: "v",
+      retryDelayMs: 0,
+    });
+    for (let i = 0; i < 5; i++)
+      expect(await worker.handle(message(draftReady()))).toMatchObject({ kind: "retry" });
+    const ok = new VerificationWorker({
+      artifacts,
+      verifier: verifier([{ verdict: "approve", issues: [] }]).p,
+      operations,
+      owner: "v",
+    });
+    expect(await ok.handle(message(draftReady()))).toMatchObject({ kind: "verified" });
   });
 
   it("keeps work pending when the verifier is unavailable", async () => {
