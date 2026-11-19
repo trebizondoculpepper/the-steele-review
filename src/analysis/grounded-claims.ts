@@ -63,12 +63,12 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  */
 
 export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
-  version: "grounded-claims-v2",
+  version: "grounded-claims-v5",
   instructions: [
     'claimType must be factual, opinion, prediction or ambiguous. speaker.kind must be author-voice, quoted, unknown or uncertain. Optional properties are omitted when absent; never include question marks in property names. Use JSON arrays for qualifiers, entities, dates and themeIds. A valid empty result is {"claims":[]}.',
     "Extract the specific claims the source text makes that a reader might want to check or respond to. Do not judge whether they are true.",
-    "For each claim copy the shortest passage that states it exactly as written, character for character; if that passage occurs more than once, set `occurrence` to its 1-based position.",
-    "`statement` restates the claim as the source asserts it, keeping qualifiers, quantities and negation. List hedging and scope words in `qualifiers` and stated dates in `dates` ({text, value?}).",
+    "For each claim copy one contiguous passage exactly as written, character for character, with no inserted ellipses or joined excerpts; if that passage occurs more than once, set `occurrence` to its 1-based position.",
+    "`statement` explains the intended meaning of this one assertion in self-contained ordinary language. Use the whole post to resolve they, it, that injection and similar references; make your best contextual interpretation even when uncertain, explicitly qualifying uncertain meaning and important assumptions in statement. Do not combine separate assertions or invent unsupported actors or details. Keep qualifiers, quantities and negation. Only statement may paraphrase: passage, qualifiers and dates[].text must be copied verbatim from the chosen quotation. Use empty arrays when no quoted qualifiers/dates occur; dates use {text, value?} with value only when unambiguous.",
     "`kind` is assertion (the text asserts it), quotation (it reports someone else saying it), question (posed as a question), or speculation (explicitly floated as possible).",
     "`speaker`: kind author-voice, quoted, unknown or uncertain. Give a `name` only for quoted/uncertain speakers named in the text, with `attribution`: the exact passage that names them.",
     "`themeIds`: the ids of the listed post themes this claim belongs to, possibly several. Use an empty list when none applies; never invent ids.",
