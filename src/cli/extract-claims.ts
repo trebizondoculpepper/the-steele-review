@@ -155,8 +155,7 @@ async function main(argv: string[]): Promise<number> {
       reused: outcome.reused,
       claims: outcome.record.claims.length,
       kinds,
-      unclassified: outcome.record.claims.filter((cl) => cl.classification === "unclassified")
-        .length,
+      candidates: outcome.record.candidates?.length ?? 0,
       rejected: outcome.record.rejected.length,
       claimRecords: outcome.claimRecords.length,
       indexed: outcome.indexed,
