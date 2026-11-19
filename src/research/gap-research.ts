@@ -92,6 +92,14 @@ export type GapResearchOutcome =
  * Public HTTPS destinations only: search results are untrusted, so loopback,
  * private, link-local and internal names are never handed to the fetcher.
  */
+/** Lower-case hostname without brackets or a trailing DNS root dot. */
+export function canonicalHost(hostname: string): string {
+  return hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+}
+
 export function isPublicHttpsUrl(u: string): boolean {
   let url: URL;
   try {
@@ -100,7 +108,7 @@ export function isPublicHttpsUrl(u: string): boolean {
     return false;
   }
   if (url.protocol !== "https:" || url.username || url.password) return false;
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const host = canonicalHost(url.hostname);
   if (!host.includes(".") && !host.includes(":")) return false;
   if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/.test(host)) return false;
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -162,7 +170,7 @@ export async function researchGaps(input: {
   const timeoutMs = Math.max(100, Math.min(input.limits?.timeoutMs ?? 30_000, 300_000));
   const prompt = input.prompt ?? DEFAULT_GAP_RESEARCH_PROMPT;
   const now = (input.now ?? (() => new Date()))().toISOString();
-  const monitored = new Set((input.monitoredHosts ?? []).map((h) => h.toLowerCase()));
+  const monitored = new Set((input.monitoredHosts ?? []).map(canonicalHost));
 
   // Only the gaps are researched.
   const queries = [...new Set(input.gaps.map((g) => g.trim()).filter(Boolean))].slice(
@@ -246,7 +254,7 @@ export async function researchGaps(input: {
       rejectedCitations++;
       continue;
     }
-    const host = new URL(page.url).hostname.toLowerCase();
+    const host = canonicalHost(new URL(page.url).hostname);
     evidence.push({
       kind: monitored.has(host) ? "monitored" : "external",
       url: page.url,

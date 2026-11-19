@@ -175,6 +175,29 @@ describe("researchGaps", () => {
       expect(result.stored.entry.addressedClaims[0]!.evidence[0]!.kind).toBe("monitored");
   });
 
+  it("recognises the monitored publication behind a trailing-dot or upper-case host", async () => {
+    pages["https://Example-Pub.substack.com./p/towers"] = {
+      ...pages["https://example-pub.substack.com/p/towers"]!,
+      url: "https://Example-Pub.substack.com./p/towers",
+    };
+    const { s } = search({
+      "Exampletown tower exposure measurements": ["https://Example-Pub.substack.com./p/towers"],
+    });
+    const { r } = reasoner({
+      finding: "supported",
+      explanation: "Readers report illness.",
+      evidence: [
+        { url: "https://Example-Pub.substack.com./p/towers", quote: "the towers make them ill" },
+      ],
+    });
+    const result = await run({ search: s, reasoner: r, fetcher: fetcher().f });
+    if (result.kind !== "saved") throw new Error("not saved");
+    expect(result.finding).toBe("unresolved");
+    expect(result.stored.entry.addressedClaims[0]!.evidence.map((e) => e.kind)).toEqual([
+      "monitored",
+    ]);
+  });
+
   it("records an unresolved outcome when nothing is found or fetching fails", async () => {
     const empty = await run({ search: search({}).s });
     expect(empty).toMatchObject({ kind: "saved", finding: "unresolved" });
