@@ -388,6 +388,28 @@ export function selectCandidates(
     .map((x) => x.t);
 }
 
+/**
+ * Resolve a stored detection to catalogue identities: existing IDs plus the
+ * IDs its proposals register as (idempotent, so a later call returns the
+ * same IDs the detection run produced, including alias and suffix cases).
+ */
+export async function registerDetectedThemes(
+  store: ThemeCatalogueStore,
+  detection: ThemeDetection,
+): Promise<{ ids: string[]; ref?: ArtifactRef }> {
+  if (detection.proposed.length === 0) return { ids: [] };
+  const registered = await store.register(
+    detection.proposed.map((p) => ({
+      name: p.name,
+      definition: p.definition,
+      aliases: [],
+      origin: "detected" as const,
+      ...(p.possibleMatchOf ? { possibleMatchOf: p.possibleMatchOf } : {}),
+    })),
+  );
+  return { ids: registered.ids, ...(registered.stored.ref ? { ref: registered.stored.ref } : {}) };
+}
+
 export function detectionPath(
   post: { publicationId: string; postId: string },
   sourceVersion: string,
@@ -561,21 +583,9 @@ export async function detectThemes(input: {
     }
   }
 
-  let newRef: ArtifactRef | undefined = catalogueRef;
-  let newIds: string[] = [];
-  if (detection.proposed.length > 0) {
-    const registered = await input.catalogue.register(
-      detection.proposed.map((p) => ({
-        name: p.name,
-        definition: p.definition,
-        aliases: [],
-        origin: "detected" as const,
-        ...(p.possibleMatchOf ? { possibleMatchOf: p.possibleMatchOf } : {}),
-      })),
-    );
-    newIds = registered.ids;
-    newRef = registered.stored.ref;
-  }
+  const registered = await registerDetectedThemes(input.catalogue, detection);
+  const newIds = registered.ids;
+  const newRef: ArtifactRef | undefined = registered.ref ?? catalogueRef;
   const themeIds = [...new Set([...detection.existing.map((e) => e.id), ...newIds])];
   return {
     status: "detected",

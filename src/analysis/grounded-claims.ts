@@ -292,7 +292,13 @@ export async function extractGroundedClaims(input: {
           },
           source,
         );
-        occurrence = createClaimOccurrence({ claim, source, speaker, themes: linked });
+        occurrence = createClaimOccurrence({
+          claim,
+          source,
+          speaker,
+          themes: linked,
+          assertionKind: m.kind,
+        });
       } catch {
         return rejected.push({ index, reason: "invalid-claim" });
       }

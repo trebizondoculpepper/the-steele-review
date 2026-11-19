@@ -23,9 +23,11 @@ import {
   ThemeCatalogueStore,
   ThemeDetectionSchema,
   detectionPath,
+  registerDetectedThemes,
 } from "../analysis/theme-catalogue.js";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { describeSetupError, elasticsearchConnection } from "../config/credentials.js";
+import { transcriptTimingsFor } from "../content/embedding-consumer.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
@@ -101,10 +103,12 @@ async function main(argv: string[]): Promise<number> {
       return 1;
     }
     const detection = ThemeDetectionSchema.parse(JSON.parse(await content.read(detectionRef)));
-    const { catalogue } = await new ThemeCatalogueStore(content).load();
-    const detectedNames = new Set(detection.proposed.map((p) => p.name));
-    const ids = new Set(detection.existing.map((e) => e.id));
-    const themes = catalogue.themes.filter((t) => ids.has(t.id) || detectedNames.has(t.name));
+    // Resolve proposals through the catalogue's own identity rules, never by display name.
+    const themeStore = new ThemeCatalogueStore(content);
+    const registered = await registerDetectedThemes(themeStore, detection);
+    const ids = new Set([...detection.existing.map((e) => e.id), ...registered.ids]);
+    const { catalogue } = await themeStore.load();
+    const themes = catalogue.themes.filter((t) => ids.has(t.id));
     const outcome = await extractGroundedClaims({
       provider,
       artifacts: content,
@@ -123,6 +127,8 @@ async function main(argv: string[]): Promise<number> {
         postId: post.postId,
         url: record.item.url,
         ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+        // Supplied transcript timings, aligned the same way as for passages.
+        ...transcriptTimingsFor(record),
       },
     });
     if (outcome.status === "failed") {

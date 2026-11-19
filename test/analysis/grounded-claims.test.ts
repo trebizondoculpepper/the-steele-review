@@ -150,6 +150,9 @@ describe("extractGroundedClaims", () => {
     // Questions get no normalised claim record; others do, distinct from occurrences.
     expect(out.claimRecords).toHaveLength(3);
     expect(indexed).toHaveLength(4);
+    expect(
+      indexed.map((d) => (d.doc as unknown as { assertionKind: string }).assertionKind),
+    ).toEqual(["assertion", "quotation", "question", "speculation"]);
     const ref = await content.lookup(
       `claims/${claimRecordId("Over 90% of planes spray aluminium")}.json`,
     );

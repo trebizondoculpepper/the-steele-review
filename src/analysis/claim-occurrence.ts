@@ -89,6 +89,10 @@ export const ClaimOccurrenceSchema = z
       .describe("Observed publication time of the post; not the date the claim was first made."),
     assertionDates: z.array(DateMentionSchema).max(20),
     themes: z.array(z.string().min(1).max(60)).max(30),
+    assertionKind: z
+      .enum(["assertion", "quotation", "question", "speculation"])
+      .optional()
+      .describe("How the passage puts the claim; questions and speculation are not assertions."),
     publisher: z
       .object({
         publicationId: z.string().min(1),
@@ -202,6 +206,7 @@ export function createClaimOccurrence(input: {
   source: OccurrenceSource;
   speaker: Speaker;
   themes?: string[];
+  assertionKind?: "assertion" | "quotation" | "question" | "speculation";
   grouping?: { key: string; method: "model-assisted"; version: string };
 }): ClaimOccurrence {
   const claim = parseClaim(input.claim, input.source);
@@ -243,6 +248,7 @@ export function createClaimOccurrence(input: {
           .filter(Boolean),
       ),
     ],
+    ...(input.assertionKind ? { assertionKind: input.assertionKind } : {}),
     publisher: {
       publicationId: input.source.publicationId,
       ...(input.source.author ? { author: input.source.author } : {}),
@@ -387,6 +393,7 @@ export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
       properties: { text: { type: "keyword" }, value: { type: "date" } },
     },
     themes: { type: "keyword" },
+    assertionKind: { type: "keyword" },
     publisher: {
       type: "object",
       properties: { publicationId: { type: "keyword" }, author: { type: "keyword" } },
