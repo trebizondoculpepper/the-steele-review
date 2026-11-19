@@ -54,6 +54,13 @@ Use a private Git repository on the persistent artifact volume to version text, 
 
 No backup/restore implementation or disaster-recovery system is required for this proof of concept. Consider that work only after the end-to-end experiment succeeds. Ordinary retry correctness and duplicate-publication prevention remain in scope.
 
+## Private state-controller boundary
+
+SQLite is retained for the proof of concept, privately owned by one in-process state controller. Elasticsearch remains the search index, not a second authority for operation claims. A separate state microservice is deferred unless independently deployed workers require it.
+
+Only the state-controller implementation imports the SQLite driver, knows its configured database path, owns migrations, or issues SQL/transactions. Workers and other controllers receive a small typed interface with domain operations: claim an operation, complete it with an artifact and pending event, inspect its status, list pending events, and conditionally mark an event sent. Add renewal/failure operations only when required by the lifecycle contract. Do not expose a generic query, arbitrary table access, raw database handle, or database-file access.
+
+Keep transaction semantics inside the controller: completion and pending handoff are atomic. Claims and completion use ownership/version tokens so expired workers cannot overwrite newer owners. Reads return detached domain records, not driver-specific values. Unit tests may inject an in-memory interface implementation; controller integration tests use a temporary private database. Application components must not share or mount the database file as their communication mechanism. If a service boundary is added later, preserve these domain methods instead of exposing SQL remotely.
 ## Git controller boundary
 
 All application Git operations belong behind a typed service/controller. The existing `GitArtifactStore` is the archive-facing controller: consumers ask to initialise, save, look up, list or read artifacts and receive typed results. Callers must not construct Git commands, parse Git output or invoke subprocesses. Keep repository plumbing and process execution inside this boundary, including operational archive inspection tools. Ordinary developer Git commands are outside the application boundary.

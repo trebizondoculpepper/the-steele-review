@@ -22,7 +22,7 @@ Save extraction version and content hash. Re-extraction can then produce a new d
 
 ## Historical imports
 
-Historical backfill is distinct from continuous monitoring. It uses the same archive and extraction pipeline, but must not automatically publish critiques of every imported post. Events carry an ingestion reason, such as `live`, `backfill`, or `reprocess`; policy determines eligibility for publication. Backfill access method and initial coverage are unresolved.
+Historical backfill is distinct from continuous monitoring. It uses the same archive and extraction pipeline, but must not automatically publish critiques of every imported post. Events carry an ingestion reason, such as `live`, `backfill`, or `reprocess`; policy determines eligibility for publication. Use the historical controller for bounded enumeration; initial coverage is three posts, one at a time. Verify actual access and completeness on the selected sample rather than implying complete historical coverage.
 
 Access failures, unavailable media, and partial content are explicit outcomes. Do not analyse a partial source as though the complete article were available.
 

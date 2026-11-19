@@ -25,7 +25,7 @@ Before publishing, check:
 - Partial extraction or uncertain transcription does not undermine the argument.
 - The article has not already been published for the same source and editorial purpose.
 
-Passing checks enables automatic publication. Failed or inconclusive checks may trigger bounded research or revision attempts; after the configured limit, mark the article skipped and record specific reasons. Attempt limits, costs, and acceptance rules remain to be defined. A model's self-reported confidence is not a sufficient acceptance rule.
+Passing checks enables automatic publication. Failed or inconclusive checks may trigger bounded targeted revision attempts against the supplied evidence; the verifier does not browse or conduct new research. Missing evidence returns to the research stage or produces a skip; after the configured limit, mark the article skipped and record specific reasons. Attempt limits, costs, and acceptance rules remain to be defined. A model's self-reported confidence is not a sufficient acceptance rule.
 
 ## Untrusted source material
 
@@ -34,3 +34,5 @@ Fetched posts and research pages are data, not operational instructions. Their c
 ## Deferred capabilities
 
 A human approval queue is deferred. Skipped items remain inspectable through stored records and logs. A correction workflow for already published articles still needs design; retaining source and evidence versions makes it possible.
+
+The current milestones begin with content capture only. See [milestones](13-milestones.md); drafting and verification are later capabilities, not M1 acceptance requirements.

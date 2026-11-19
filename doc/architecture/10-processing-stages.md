@@ -38,13 +38,13 @@ Research first retrieves existing entries, assesses whether they match the actua
 
 Evidence selection produces a saved versioned brief referencing the exact source, extracted claims, applicable research and any historical comparisons. It sends a metadata event pointing to that brief. Insufficient evidence yields a gap/skip result; do not prompt drafting to make up support.
 
-The writer receives that brief and follows a versioned template:
+The writer receives that brief and follows the agreed simple format:
 
-1. Link to the original article.
-2. Brief and fair summary of the source argument.
-3. Explanation of the ideas and their origins where evidence supports that history.
-4. Specific criticism explaining errors or lack of support, with the supported explanation.
-5. Sources and material uncertainty.
+1. Summary of the source post, with its original link.
+2. Related conspiratorial themes and supported context.
+3. Factual errors and underlying reasoning errors, with citations and material uncertainty.
+
+Detailed editorial voice/style is deferred until drafts can be evaluated. Do not invent historical origins merely to fill a template section.
 
 The writer does not browse or publish. Missing support is reported as an evidence gap. Criticism may be firm but must demonstrate its claims rather than rely on calling the source obviously false. Save the exact draft, citations, model/prompt/template versions and input references in Git.
 
@@ -56,10 +56,10 @@ The verifier returns publish approval, targeted redraft instructions, or a skip.
 
 ## Publishing
 
-The publisher accepts only an approved exact artifact. It creates or reuses a destination draft, persists its destination ID before publishing, confirms publication and stores the resulting URL/status in SQLite plus an artifact receipt. On an uncertain response, reconcile that draft's state rather than create another article. An unresolved outcome remains pending/uncertain; do not treat it as an editorial skip or blindly retry publication.
+One small publisher worker receives a trusted verifier event referencing approved Git commit/path and logical archive. Validate message shape, then check and atomically claim the publication through the state controller before reading any article bytes. Already published means return the saved receipt; active ownership means defer; an uncertain earlier attempt means reconcile first. Load the exact approved file through archive controller, send through the Substack adapter, save destination ID/URL and acknowledge after durable outcome/handoff.
 
-Keep Substack publishing inside its controller. Validate authenticated draft creation, formatting and status read-back before unattended use. Destination publication, credentials and subscriber-email behaviour are not yet selected. No ticket authorises publishing an arbitrary real article while testing; use a controlled adapter until an actual test destination is authorised.
+Git hashes identify content; trusted event origin grants approval. The publisher does not repeat research or model verification. Keep state transitions, archive reads and vendor API calls in their existing narrow controllers, not separate services. Persist the destination draft ID before the publish call; reconcile an uncertain response against that same draft rather than create another. No public posting is authorised by automated tests, and publishing account setup is deferred beyond the initial milestones.
 
 ## Unresolved deployment dependencies
 
-Embedding, transcription, writing/verifying and research/search services need actual providers and runtime configuration. Storage and schema work, fake-adapter tests, full-text-only indexing, and supplied-transcript acquisition can proceed without them. Downstream tickets should distinguish an implementable interface from an unproven live integration and retain the existing security and review gates.
+Provider direction is local Whisper first, OpenRouter for text-model access/configurable hosted fallback and Kagi for research search/extraction. Exact model IDs, embedding model/dimensions and live credentials remain configuration to validate; chosen services are not yet proven integrations. Storage and schema work, fake-adapter tests, full-text-only indexing, and supplied-transcript acquisition can proceed without them. Downstream tickets should distinguish an implementable interface from an unproven live integration and retain the existing security and review gates.
