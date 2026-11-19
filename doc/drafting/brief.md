@@ -127,3 +127,20 @@ An unavailable or malformed verifier leaves the work **pending** and never skips
 2. **`finish(claim, record)`** first checks the claim is still held; a worker whose lease was taken over gets `stale-owner`. It then commits the immutable record to `revisions/<publication>/<post>/<brief>/<revision>/<claim attempt>.json` (one path per claim attempt, so a stale holder's late commit never collides with the current one; only the fenced completion makes a record authoritative), keeping the original brief and every draft and report reference. An identical earlier commit is reused; a conflicting one is refused. Finally it completes the state transition with a pending `org.steele.revision.decided.v1` on `steele.v1.revision.decided`.
 
 No model calls, publishing or consumer loop happen here.
+
+# Revision worker
+
+`RevisionWorker` (`src/drafting/revision-worker.ts`) consumes `brief.ready` and runs the bounded loop for one brief:
+
+1. Draft with the writer (#42).
+2. Verify the exact draft (#43).
+3. Apply the pure revision policy (#99).
+4. Record the attempt (#100).
+
+A redraft goes back to the same writer with the previous draft and the verifier's anchored feedback, and the changed draft is verified again, up to `maxRevisions` (default 2).
+
+- **Resumable:** recorded attempts are reused from stored state, so a duplicate or redelivered event makes no model calls.
+- **Pending, not skipped:** an unavailable writer or verifier (for example, exhausted credit) yields the attempt and redelivers.
+- **Output:** the attempt store's `revision.decided` event, either approving the exact draft or skipping with its reason, for a later consumer.
+
+No browsing, research or publishing happens here.
