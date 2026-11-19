@@ -279,6 +279,17 @@ describe("verifyDraft", () => {
     ).toEqual(["[E7]"]);
   });
 
+  it("checks the monitored post's quotation and claim headings against the brief", () => {
+    const altered = markdown.replace(`> ${STATEMENT}`, "> The towers emit deadly radiation.");
+    expect(checkDraftReferences(altered, brief).map((i) => i.problem)).toEqual([
+      "The quotation from the original post is not the brief's passage verbatim.",
+    ]);
+    const invented = markdown.replace(`### "${STATEMENT}"`, '### "Something the post never said."');
+    expect(checkDraftReferences(invented, brief).map((i) => i.problem)).toEqual([
+      "This heading names a claim that is not in the brief.",
+    ]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -538,6 +549,30 @@ describe("VerificationWorker", () => {
       owner: "v",
     });
     expect(await ok.handle(message(draftReady()))).toMatchObject({ kind: "verified" });
+  });
+
+  it("concludes with an explicit skip after repeated inconclusive answers", async () => {
+    const worker = new VerificationWorker({
+      artifacts,
+      verifier: verifier(Array(3).fill("not json")).p,
+      operations,
+      owner: "v",
+      maxInconclusive: 2,
+      retryDelayMs: 0,
+    });
+    expect(await worker.handle(message(draftReady()))).toEqual({
+      kind: "retry",
+      reason: "malformed-output",
+    });
+    expect(await worker.handle(message(draftReady()))).toEqual({
+      kind: "retry",
+      reason: "malformed-output",
+    });
+    const r = await worker.handle(message(draftReady()));
+    expect(r).toMatchObject({ kind: "verified", verdict: "skip" });
+    expect(
+      JSON.parse(operations.duePendingEvents(10, DRAFT_VERIFIED_SUBJECT)[0]!.payload).data.verdict,
+    ).toBe("skip");
   });
 
   it("keeps work pending when the verifier is unavailable", async () => {

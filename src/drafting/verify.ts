@@ -119,6 +119,36 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
       });
     }
   }
+  // Each criticised claim heading must be a brief claim, with its exact
+  // passage from the monitored post quoted beneath it.
+  const claimsByStatement = new Map(brief.claims.map((c) => [c.statement, c]));
+  {
+    const all = markdown.split("\n");
+    for (let i = 0; i < all.length; i++) {
+      const h = all[i]!.match(/^### "(.*)"$/);
+      if (!h) continue;
+      const claim = claimsByStatement.get(h[1]!);
+      const quoted: string[] = [];
+      let j = i + 1;
+      while (j < all.length && all[j] === "") j++;
+      for (; j < all.length && /^>/.test(all[j]!); j++) quoted.push(all[j]!.replace(/^> ?/, ""));
+      if (!claim) {
+        issues.push({
+          source: "deterministic",
+          passage: all[i]!,
+          problem: "This heading names a claim that is not in the brief.",
+          requiredChange: "Criticise only claims from the brief, using their exact statements.",
+        });
+      } else if (quoted.join("\n") !== claim.passage.replace(/\r\n/g, "\n")) {
+        issues.push({
+          source: "deterministic",
+          passage: all[i]!,
+          problem: "The quotation from the original post is not the brief's passage verbatim.",
+          requiredChange: "Quote the original post's passage exactly as in the brief.",
+        });
+      }
+    }
+  }
   // Source list lines: "- [E1] Title ...: https://url" followed by quoted passage lines.
   const lines = markdown.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -311,6 +341,42 @@ export function isApprovalValidFor(report: VerificationReport, markdown: string)
   return report.verdict === "approve" && report.draft.hash === `sha256:${sha(markdown)}`;
 }
 
+function verifiedEvent(
+  d: { publicationId: string; postId: string; ingestionReason: string; draft: unknown },
+  causationId: string,
+  report: VerificationReport,
+  reportRef: ArtifactRef,
+): { eventId: string; subject: string; payload: string } {
+  const handoff = new CloudEvent({
+    specversion: "1.0",
+    id: randomUUID(),
+    source: "urn:steele:drafting:verifier",
+    type: DRAFT_VERIFIED_EVENT_TYPE_V1,
+    time: new Date().toISOString(),
+    subject: `substack/${d.publicationId}/${d.postId}`,
+    datacontenttype: "application/json",
+    causationid: causationId,
+    data: {
+      publicationId: d.publicationId,
+      postId: d.postId,
+      ingestionReason: d.ingestionReason,
+      verdict: report.verdict,
+      draft: d.draft,
+      report: {
+        repository: reportRef.repository,
+        commit: reportRef.commit,
+        path: reportRef.path,
+        hash: `sha256:${reportRef.sha256}`,
+      },
+    },
+  });
+  return {
+    eventId: handoff.id,
+    subject: DRAFT_VERIFIED_SUBJECT,
+    payload: JSON.stringify(handoff.toJSON()),
+  };
+}
+
 export type VerificationWorkerOutcome =
   | { kind: "verified"; verdict: VerificationReport["verdict"]; report: ArtifactRef }
   | { kind: "already-verified" }
@@ -332,6 +398,8 @@ export class VerificationWorker {
       owner: string;
       prompt?: ExtractionPrompt;
       maxAttempts?: number;
+      /** Inconclusive verifier answers tolerated before an explicit skip. */
+      maxInconclusive?: number;
       retryDelayMs?: number;
     },
   ) {}
@@ -439,7 +507,14 @@ export class VerificationWorker {
       `${d.draft.hash}\n${metadata.brief.hash}\n${this.config.verifier.modelVersion}\n${prompt.version}`,
     );
     const key = `verify:${id}`;
-    const claimed = operations.claim(key, this.config.owner, 10 * 60_000, 1_000);
+    // The budget counts only inconclusive verifier answers; an unavailable
+    // verifier yields its claim without spending it.
+    const claimed = operations.claim(
+      key,
+      this.config.owner,
+      10 * 60_000,
+      this.config.maxInconclusive ?? 5,
+    );
     if (claimed.kind === "completed") {
       await message.ack();
       return { kind: "already-verified" };
@@ -449,8 +524,47 @@ export class VerificationWorker {
       return { kind: "retry", reason: "busy" };
     }
     if (claimed.kind === "exhausted") {
+      if (claimed.errorCode !== "verify:inconclusive") {
+        await message.ack();
+        return { kind: "failed", reason: "exhausted" };
+      }
+      // Repeatedly inconclusive: conclude with an explicit skip, never silence.
+      const path = `verifications/${d.publicationId}/${d.postId}/${id}.json`;
+      const report: VerificationReport = {
+        schemaVersion: VERIFICATION_SCHEMA_VERSION,
+        verdict: "skip",
+        draft: refOf(toArchiveRef(d.draft)),
+        brief: refOf(toArchiveRef(metadata.brief)),
+        issues: [
+          {
+            source: "verifier",
+            problem: "The verifier gave no usable verdict after repeated attempts.",
+            requiredChange:
+              "Review the draft by hand or verify it with another verifier configuration.",
+          },
+        ],
+        attempt: 1,
+        maxAttempts: 1,
+        verifier: {
+          modelVersion: this.config.verifier.modelVersion,
+          promptVersion: prompt.version,
+        },
+        rejectedIssues: 0,
+      };
+      let reportRef: ArtifactRef;
+      try {
+        reportRef =
+          (await artifacts.lookup(path)) ??
+          (await artifacts.write(path, `${JSON.stringify(report, null, 2)}\n`));
+      } catch {
+        message.nak(retryDelay);
+        return { kind: "retry", reason: "commit-failed" };
+      }
+      operations.reconcileCompleted(key, { report: reportRef.path, verdict: "skip" }, [
+        verifiedEvent(d, event.id, report, reportRef),
+      ]);
       await message.ack();
-      return { kind: "failed", reason: "exhausted" };
+      return { kind: "verified", verdict: "skip", report: reportRef };
     }
 
     // One report path per verification, so a report committed by an
@@ -506,9 +620,12 @@ export class VerificationWorker {
         return { kind: "failed", reason: outcome.reason };
       }
       if (outcome.kind === "pending") {
-        // Not an editorial skip and not a failed attempt: hand the claim
+        // An unavailable verifier is not an editorial decision: hand the claim
         // back without spending the budget, so an outage never exhausts it.
-        operations.yieldClaim(claimed.claim);
+        // An inconclusive answer spends one attempt of a bounded budget.
+        if (outcome.reason === "malformed-output")
+          operations.fail(claimed.claim, "verify:inconclusive", true);
+        else operations.yieldClaim(claimed.claim);
         message.nak(retryDelay);
         return { kind: "retry", reason: outcome.reason };
       }
@@ -521,35 +638,8 @@ export class VerificationWorker {
         return { kind: "retry", reason: "commit-failed" };
       }
     }
-    const handoff = new CloudEvent({
-      specversion: "1.0",
-      id: randomUUID(),
-      source: "urn:steele:drafting:verifier",
-      type: DRAFT_VERIFIED_EVENT_TYPE_V1,
-      time: new Date().toISOString(),
-      subject: `substack/${d.publicationId}/${d.postId}`,
-      datacontenttype: "application/json",
-      causationid: event.id,
-      data: {
-        publicationId: d.publicationId,
-        postId: d.postId,
-        ingestionReason: d.ingestionReason,
-        verdict: report.verdict,
-        draft: d.draft,
-        report: {
-          repository: reportRef.repository,
-          commit: reportRef.commit,
-          path: reportRef.path,
-          hash: `sha256:${reportRef.sha256}`,
-        },
-      },
-    });
     operations.complete(claimed.claim, { report: reportRef.path, verdict: report.verdict }, [
-      {
-        eventId: handoff.id,
-        subject: DRAFT_VERIFIED_SUBJECT,
-        payload: JSON.stringify(handoff.toJSON()),
-      },
+      verifiedEvent(d, event.id, report, reportRef),
     ]);
     await message.ack();
     return { kind: "verified", verdict: report.verdict, report: reportRef };
