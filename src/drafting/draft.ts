@@ -338,13 +338,16 @@ export function renderDraft(brief: DraftingBrief, draft: ModelDraft): string {
   }
   lines.push("", "## Sources", "");
   for (const c of brief.citations.filter((x) => used.has(x.citationId))) {
-    const date = c.evidence.publishedAt ? `, published ${c.evidence.publishedAt.slice(0, 10)}` : "";
-    lines.push(
-      `- [${c.citationId}] ${c.evidence.title}${c.evidence.publisher ? ` (${c.evidence.publisher})` : ""}${date}, retrieved ${c.evidence.retrievedAt.slice(0, 10)}: ${c.evidence.url}`,
-      quote(c.evidence.passage, "  "),
-    );
+    lines.push(renderSourceEntry(c), quote(c.evidence.passage, "  "));
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** The source-list line for one citation: title, publisher, dates and URL. */
+export function renderSourceEntry(c: DraftingBrief["citations"][number]): string {
+  const date = c.evidence.publishedAt ? `, published ${c.evidence.publishedAt.slice(0, 10)}` : "";
+  const publisher = c.evidence.publisher ? ` (${c.evidence.publisher})` : "";
+  return `- [${c.citationId}] ${c.evidence.title}${publisher}${date}, retrieved ${c.evidence.retrievedAt.slice(0, 10)}: ${c.evidence.url}`;
 }
 
 export type DraftWorkerOutcome =
