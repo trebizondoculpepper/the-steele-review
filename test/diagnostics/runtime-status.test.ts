@@ -180,11 +180,11 @@ describe("collectRuntimeStatus", () => {
     };
     const report = await collectRuntimeStatus(
       {
-        nats: natsProbe({ url: "nats://unused.invalid" }, hanging((s) => (natsSignal = s))),
-        elasticsearch: elasticsearchProbe(
-          { url: "http://unused.invalid" },
-          searchController,
+        nats: natsProbe(
+          { url: "nats://unused.invalid" },
+          hanging((s) => (natsSignal = s)),
         ),
+        elasticsearch: elasticsearchProbe({ url: "http://unused.invalid" }, searchController),
       },
       { timeoutMs: 20 },
     );

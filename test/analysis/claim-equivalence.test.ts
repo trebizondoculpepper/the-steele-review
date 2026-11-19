@@ -179,7 +179,10 @@ describe("resolveClaimEquivalence", { timeout: 60_000 }, () => {
       extraction,
       ...(extractions ? { extractions } : {}),
     });
-    const write = async (recordId: string, others: { extraction: string; extractions?: string[] }) =>
+    const write = async (
+      recordId: string,
+      others: { extraction: string; extractions?: string[] },
+    ) =>
       content.revise(
         `claims/${recordId}.json`,
         `${JSON.stringify({

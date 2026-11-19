@@ -15,6 +15,7 @@
  *   STEELE_COLLECT_CONSUMER           durable consumer name (provisioned separately)
  *   STEELE_COLLECT_RETRY_DELAY_MS?    redelivery delay after a retryable failure
  *   STEELE_COLLECT_DISPATCH_INTERVAL_MS?  pending handoff retry interval (default 30 s)
+ *   STEELE_DISCOVERY_SUBJECT?          override for redelivered discovery events (default steele.v1.source.detected)
  *
  * Optional CPU-only transcription is selected with STEELE_TRANSCRIPTION_PROVIDER.
  * Disabled by default; see doc/testing/local-whisper.md for configuration.
@@ -30,7 +31,9 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { NatsController } from "../controllers/nats.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { SubstackContentCollector } from "../controllers/substack/collect.js";
+import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
 import { parseDiscoveryEvent } from "../events/discovery-event.js";
+import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
 
 const EnvSchema = z.object({
   STEELE_PUBLICATION_URL: z.url({ protocol: /^https$/ }),
@@ -42,6 +45,7 @@ const EnvSchema = z.object({
   STEELE_COLLECT_CONSUMER: z.string().min(1),
   STEELE_COLLECT_RETRY_DELAY_MS: z.coerce.number().int().positive().optional(),
   STEELE_COLLECT_DISPATCH_INTERVAL_MS: z.coerce.number().int().positive().optional(),
+  STEELE_DISCOVERY_SUBJECT: z.string().min(1).optional(),
 });
 
 async function main(): Promise<number> {
@@ -80,6 +84,8 @@ async function main(): Promise<number> {
     operations,
     collector: new SubstackContentCollector({ publicationUrl: c.STEELE_PUBLICATION_URL }),
     publisher: nats,
+    // Publish only the collector's own subjects from the shared outbox.
+    dispatchSubjects: [TEXT_READY_SUBJECT, c.STEELE_DISCOVERY_SUBJECT ?? DEFAULT_DISCOVERY_SUBJECT],
     ...(transcriber ? { transcriber } : {}),
     owner: `collect-worker:${hostname()}:${process.pid}`,
     ...(c.STEELE_COLLECT_RETRY_DELAY_MS ? { retryDelayMs: c.STEELE_COLLECT_RETRY_DELAY_MS } : {}),

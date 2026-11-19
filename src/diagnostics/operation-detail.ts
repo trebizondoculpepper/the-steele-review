@@ -34,9 +34,7 @@ export interface OperationArguments {
   help: boolean;
 }
 
-export type OperationArgumentResult =
-  | { ok: true; args: OperationArguments }
-  | { ok: false };
+export type OperationArgumentResult = { ok: true; args: OperationArguments } | { ok: false };
 
 /**
  * Parse `operation <key> [--json]`. Unknown options are rejected rather than
@@ -75,8 +73,16 @@ export type OperationReport =
       status: "found";
       operation: OperationInspection;
     }
-  | { schemaVersion: typeof OPERATION_REPORT_SCHEMA_VERSION; observedAt: string; status: "not-found" }
-  | { schemaVersion: typeof OPERATION_REPORT_SCHEMA_VERSION; observedAt: string; status: "unavailable" };
+  | {
+      schemaVersion: typeof OPERATION_REPORT_SCHEMA_VERSION;
+      observedAt: string;
+      status: "not-found";
+    }
+  | {
+      schemaVersion: typeof OPERATION_REPORT_SCHEMA_VERSION;
+      observedAt: string;
+      status: "unavailable";
+    };
 
 /**
  * Inspect one operation. `unavailable` covers missing, incompatible, changed or
@@ -88,7 +94,8 @@ export async function inspectOperation(
   options: { now?: () => Date; timeoutMs?: number } = {},
 ): Promise<OperationReport> {
   const observedAt = (options.now ?? (() => new Date()))().toISOString();
-  if (!probe) return { schemaVersion: OPERATION_REPORT_SCHEMA_VERSION, observedAt, status: "unavailable" };
+  if (!probe)
+    return { schemaVersion: OPERATION_REPORT_SCHEMA_VERSION, observedAt, status: "unavailable" };
   const timeoutMs = options.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
   const started = Date.now();
   try {
@@ -99,7 +106,12 @@ export async function inspectOperation(
     if (operation === null) {
       return { schemaVersion: OPERATION_REPORT_SCHEMA_VERSION, observedAt, status: "not-found" };
     }
-    return { schemaVersion: OPERATION_REPORT_SCHEMA_VERSION, observedAt, status: "found", operation };
+    return {
+      schemaVersion: OPERATION_REPORT_SCHEMA_VERSION,
+      observedAt,
+      status: "found",
+      operation,
+    };
   } catch {
     return { schemaVersion: OPERATION_REPORT_SCHEMA_VERSION, observedAt, status: "unavailable" };
   }
@@ -138,6 +150,8 @@ export function renderOperation(report: OperationReport): string {
     );
     lines.push(`artifact: partial ${parts.join(" ")}`.trim());
   }
-  lines.push(`pending events: pending ${operation.pendingEvents.pending}, sent ${operation.pendingEvents.sent}`);
+  lines.push(
+    `pending events: pending ${operation.pendingEvents.pending}, sent ${operation.pendingEvents.sent}`,
+  );
   return lines.join("\n");
 }
