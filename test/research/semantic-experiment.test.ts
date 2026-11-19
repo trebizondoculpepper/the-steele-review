@@ -120,6 +120,10 @@ describe("runSemanticExperiment", () => {
     await expect(runSemanticExperiment({ sources, probes: [], embedder })).rejects.toThrow(
       ExperimentBoundError,
     );
+    const dup = [probes[0]!, { ...probes[1]!, id: probes[0]!.id }];
+    await expect(runSemanticExperiment({ sources, probes: dup, embedder })).rejects.toThrow(
+      "unique",
+    );
   });
 
   it("renders a report that labels probes, quotes passages and states the caveat", async () => {

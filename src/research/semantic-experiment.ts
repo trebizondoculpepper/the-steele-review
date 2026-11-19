@@ -123,6 +123,10 @@ export async function runSemanticExperiment(input: {
   if (input.probes.length === 0 || input.probes.length > MAX_EXPERIMENT_PROBES) {
     throw new ExperimentBoundError(`between 1 and ${MAX_EXPERIMENT_PROBES} probes are required`);
   }
+  // Vectors are keyed by probe ID, so IDs must be unique.
+  if (new Set(input.probes.map((p) => p.id)).size !== input.probes.length) {
+    throw new ExperimentBoundError("probe IDs must be unique");
+  }
   const topK = Math.max(1, Math.min(input.topK ?? 3, 10));
 
   const passages: Array<Omit<ExperimentMatch, "score">> = [];
