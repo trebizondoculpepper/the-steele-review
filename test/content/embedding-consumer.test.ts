@@ -6,6 +6,7 @@ import type { CollectionRecord } from "../../src/collection/collection-store.js"
 import {
   CONTENT_EMBEDDED_SUBJECT,
   EmbeddingConsumer,
+  transcriptTimingsFor,
 } from "../../src/content/embedding-consumer.js";
 import type { VectorWriterPort } from "../../src/content/embedding-batch.js";
 import { DEFAULT_CHUNKING } from "../../src/content/passage-vectors.js";
@@ -141,6 +142,28 @@ function setup(
   return { consumer, providerCalls, written, published, abort };
 }
 
+describe("transcriptTimingsFor", () => {
+  it("aligns timed segments to the record text and skips untimed ones", () => {
+    const r = {
+      ...record(),
+      supplied: {
+        transcript: [
+          { start: 0, end: 4.5, text: "The synthetic council raised fees by three percent." },
+          { text: "A synthetic critic said the fees would harm residents." },
+          { start: 9, end: 12, text: "Officials denied that any fee change had happened." },
+        ],
+      },
+    };
+    const t = transcriptTimingsFor(r).transcriptTimings!;
+    expect(t).toHaveLength(2);
+    expect(TEXT.slice(t[1]!.start, t[1]!.end)).toBe(
+      "Officials denied that any fee change had happened.",
+    );
+    expect(t[1]).toMatchObject({ startSeconds: 9, endSeconds: 12 });
+    expect(transcriptTimingsFor(record())).toEqual({});
+  });
+});
+
 describe("EmbeddingConsumer", () => {
   it("embeds every passage, completes and hands off", async () => {
     const s = setup();
@@ -254,6 +277,12 @@ describe("EmbeddingConsumer", () => {
     expect(await s.consumer.handle(m)).toBe("failed");
     expect(m.acks).toBe(1);
     expect(m.naks).toEqual([]);
+  });
+
+  it("still embeds a complete record after an incomplete one with the same text", async () => {
+    const s = setup();
+    expect(await s.consumer.handle(await message(record(false)))).toBe("incomplete-source");
+    expect(await s.consumer.handle(await message())).toBe("embedded");
   });
 
   it("records incomplete sources and terminates malformed events", async () => {

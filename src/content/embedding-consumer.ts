@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
-import { CollectionRecordSchema } from "../collection/collection-store.js";
+import { CollectionRecordSchema, type CollectionRecord } from "../collection/collection-store.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
 import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 import { vectorSpaceId, type EmbeddingModel } from "../controllers/embedding.js";
@@ -14,6 +14,7 @@ import {
 } from "./embedding-batch.js";
 import { EmbeddingPlanError, planEmbeddingJobs } from "./embedding-jobs.js";
 import { sourceVersionFor } from "./fulltext-document.js";
+import type { TranscriptTiming } from "./passages.js";
 import { DEFAULT_CHUNKING, chunkingKey, type ChunkingConfig } from "./passage-vectors.js";
 
 /**
@@ -96,7 +97,12 @@ export class EmbeddingConsumer {
     const sourceId = `substack/${data.publicationId}/${data.postId}`;
     const sourceVersion = sourceVersionFor(record.text);
     const chunking = this.config.chunking ?? DEFAULT_CHUNKING;
-    const key = `embed-source:${sourceId}:${sourceVersion}:${vectorSpaceId(this.config.model)}:${chunkingKey(chunking)}`;
+    // Hashed so long post or model identifiers always fit the store's key bound.
+    const key = `embed-source:${createHash("sha256")
+      .update(
+        `${sourceId}\n${sourceVersion}\n${vectorSpaceId(this.config.model)}\n${chunkingKey(chunking)}`,
+      )
+      .digest("hex")}`;
     // The archived record must belong to the post the event names, or its
     // passages would carry another post's provenance.
     if (record.item.publicationId !== data.publicationId || record.item.postId !== data.postId) {
@@ -114,6 +120,7 @@ export class EmbeddingConsumer {
         model: this.config.model,
         chunking,
         ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+        ...transcriptTimingsFor(record),
       });
     } catch (error) {
       if (error instanceof EmbeddingPlanError) {
@@ -124,7 +131,8 @@ export class EmbeddingConsumer {
       throw error;
     }
     if (!record.complete) {
-      operations.recordPermanentFailure(key, "incomplete-source");
+      // Event-scoped: a later complete record with the same text must still run.
+      operations.recordPermanentFailure(`embed-invalid:${event.id}`, "incomplete-source");
       await message.ack();
       return "incomplete-source";
     }
@@ -229,4 +237,27 @@ export class EmbeddingConsumer {
     }
     return sent;
   }
+}
+
+/**
+ * Align supplied timed transcript segments to offsets in the record text,
+ * in order. Segments without both times, or not found verbatim, are left
+ * out: no timing is ever guessed.
+ */
+export function transcriptTimingsFor(record: CollectionRecord): {
+  transcriptTimings?: TranscriptTiming[];
+} {
+  const segments = record.supplied.transcript;
+  if (!segments?.length) return {};
+  const timings: TranscriptTiming[] = [];
+  let cursor = 0;
+  for (const s of segments) {
+    if (s.start === undefined || s.end === undefined || s.end < s.start || !s.text.trim()) continue;
+    const at = record.text.indexOf(s.text.trim(), cursor);
+    if (at === -1) continue;
+    const end = at + s.text.trim().length;
+    timings.push({ start: at, end, startSeconds: s.start, endSeconds: s.end });
+    cursor = end;
+  }
+  return timings.length ? { transcriptTimings: timings } : {};
 }
