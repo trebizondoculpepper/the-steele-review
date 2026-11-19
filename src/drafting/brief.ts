@@ -36,6 +36,43 @@ export const BRIEF_READY_SUBJECT = "steele.v1.brief.ready";
 export const BRIEF_READY_EVENT_TYPE_V1 = "org.steele.brief.ready.v1";
 export const BRIEF_READY_DATASCHEMA_V1 = "urn:steele:schema:brief-ready:v1";
 
+/** Versioned payload of the `brief.ready` metadata pointer. */
+export const BriefReadyDataSchema = z
+  .object({
+    publicationId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    postId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+    ingestionReason: z.enum(["live", "backfill", "reprocess"]),
+    brief: ArtifactReferenceSchema,
+    claims: z.number().int().min(1),
+    citations: z.number().int().min(1),
+    evidenceGaps: z.number().int().min(0),
+  })
+  .strict();
+export type BriefReadyData = z.infer<typeof BriefReadyDataSchema>;
+
+const BriefReadyEventSchema = z
+  .object({
+    specversion: z.literal("1.0"),
+    id: z.string().min(1).max(200),
+    source: z.string().min(1).max(500),
+    type: z.literal("org.steele.brief.ready.v1"),
+    time: z.iso.datetime({ offset: true }),
+    subject: z.string().min(1).max(500),
+    datacontenttype: z.literal("application/json"),
+    dataschema: z.literal("urn:steele:schema:brief-ready:v1"),
+    correlationid: z.string().min(1).max(200).optional(),
+    data: BriefReadyDataSchema,
+  })
+  .strict()
+  .refine((e) => e.subject === `substack/${e.data.publicationId}/${e.data.postId}`, {
+    message: "subject does not match the post",
+  });
+
+/** Parse and validate a serialised `brief.ready` event. */
+export function parseBriefReadyEvent(input: string): z.infer<typeof BriefReadyEventSchema> {
+  return BriefReadyEventSchema.parse(JSON.parse(input));
+}
+
 const Hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const Id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 
@@ -75,6 +112,14 @@ export const DraftingBriefSchema = z
             citationIds: z.array(z.string()).min(1),
             limitations: z.array(z.string()),
             gaps: z.array(z.string()),
+            /** Whether the applicability assessment covered every retrieved entry. */
+            assessment: z
+              .object({
+                status: z.enum(["complete", "incomplete"]),
+                omittedEntries: z.array(z.string()),
+                rejectedItems: z.number().int().min(0),
+              })
+              .strict(),
             /** Research findings the applicable entries left unresolved, with their reasons. */
             unresolved: z.array(
               z
@@ -210,6 +255,13 @@ export function selectBriefEvidence(input: BriefInput): BriefSelection {
       citationIds: ids,
       limitations,
       gaps: a.gaps,
+      // An incomplete assessment is kept visible: the evidence is usable, but
+      // some retrieved research was never judged.
+      assessment: {
+        status: a.status,
+        omittedEntries: [...a.omitted],
+        rejectedItems: a.rejected.length,
+      },
       unresolved: a.assessments
         .filter((x) => x.applicability !== "not-applicable")
         .flatMap((x) =>
@@ -273,6 +325,7 @@ export async function saveDraftingBrief(input: {
       return { kind: "failed", reason: "lookup-failed" };
     }
     if (!committed) return { kind: "exhausted" };
+    if (committed.sha256 !== hash) return { kind: "failed", reason: "artifact-mismatch" };
     input.operations.reconcileCompleted(key, { path: committed.path, commit: committed.commit }, [
       readyEvent(selection.brief, committed, input.correlationId),
     ]);
@@ -280,9 +333,9 @@ export async function saveDraftingBrief(input: {
   }
   if (claimed.kind === "completed") {
     const existing = await input.artifacts.lookup(path);
-    return existing
-      ? { kind: "saved", artifact: existing, reused: true }
-      : { kind: "failed", reason: "missing-artifact" };
+    if (!existing) return { kind: "failed", reason: "missing-artifact" };
+    if (existing.sha256 !== hash) return { kind: "failed", reason: "artifact-mismatch" };
+    return { kind: "saved", artifact: existing, reused: true };
   }
   let artifact: ArtifactRef;
   try {
@@ -295,6 +348,11 @@ export async function saveDraftingBrief(input: {
     if (!existing) {
       input.operations.fail(claimed.claim, "brief:commit-failed", true);
       return { kind: "failed", reason: "commit-failed" };
+    }
+    // Content-addressed: whatever is stored at the path must be this brief.
+    if (existing.sha256 !== hash) {
+      input.operations.fail(claimed.claim, "brief:artifact-mismatch", false);
+      return { kind: "failed", reason: "artifact-mismatch" };
     }
     artifact = existing;
   }
@@ -321,7 +379,7 @@ function readyEvent(
     datacontenttype: "application/json",
     dataschema: BRIEF_READY_DATASCHEMA_V1,
     ...(correlationId ? { correlationid: correlationId } : {}),
-    data: {
+    data: BriefReadyDataSchema.parse({
       publicationId,
       postId,
       ingestionReason: brief.source.ingestionReason,
@@ -334,11 +392,10 @@ function readyEvent(
       claims: brief.claims.length,
       citations: brief.citations.length,
       evidenceGaps: brief.evidenceGaps.length,
-    },
+    }),
   });
-  return {
-    eventId: event.id,
-    subject: BRIEF_READY_SUBJECT,
-    payload: JSON.stringify(event.toJSON()),
-  };
+  const payload = JSON.stringify(event.toJSON());
+  // The emitted envelope must satisfy the published contract.
+  parseBriefReadyEvent(payload);
+  return { eventId: event.id, subject: BRIEF_READY_SUBJECT, payload };
 }

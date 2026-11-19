@@ -8,6 +8,7 @@ import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   BRIEF_READY_SUBJECT,
   DraftingBriefSchema,
+  parseBriefReadyEvent,
   saveDraftingBrief,
   selectBriefEvidence,
   type BriefInput,
@@ -158,6 +159,20 @@ describe("selectBriefEvidence", () => {
     ]);
   });
 
+  it("keeps an incomplete applicability assessment visible", () => {
+    const a = {
+      ...assessment(towers.id, ["https://example.org/a"]),
+      status: "incomplete" as const,
+      omitted: ["tides"],
+    };
+    const r = selectBriefEvidence(input({ assessments: [a] }));
+    expect(r.kind === "brief" && r.brief.claims[0]!.assessment).toEqual({
+      status: "incomplete",
+      omittedEntries: ["tides"],
+      rejectedItems: 0,
+    });
+  });
+
   it("does not need historical findings, but keeps them when supplied", () => {
     const without = selectBriefEvidence(input());
     const withHistory = selectBriefEvidence(input({ comparisons: [history(towers.id)] }));
@@ -230,7 +245,7 @@ describe("saveDraftingBrief", () => {
     expect(first.artifact.path).toMatch(/^briefs\/pub\/p\/[0-9a-f]{64}\.json$/);
     const pending = operations.duePendingEvents(10, BRIEF_READY_SUBJECT);
     expect(pending).toHaveLength(1);
-    expect(JSON.parse(pending[0]!.payload).data).toMatchObject({
+    expect(parseBriefReadyEvent(pending[0]!.payload).data).toMatchObject({
       brief: { path: first.artifact.path, commit: first.artifact.commit },
       ingestionReason: "live",
       claims: 1,
@@ -251,6 +266,22 @@ describe("saveDraftingBrief", () => {
     const again = await saveDraftingBrief({ brief: input(), artifacts, operations, owner: "w" });
     expect(again).toMatchObject({ kind: "saved", reused: true, artifact: first.artifact });
     expect(operations.duePendingEvents(10, BRIEF_READY_SUBJECT)).toHaveLength(1);
+  });
+
+  it("refuses to reuse a stored artifact whose digest differs from the brief", async () => {
+    const first = await saveDraftingBrief({ brief: input(), artifacts, operations, owner: "w" });
+    if (first.kind !== "saved") throw new Error("not saved");
+    const tampered = {
+      ...artifacts,
+      lookup: async () => ({ ...first.artifact, sha256: "0".repeat(64) }),
+    };
+    const again = await saveDraftingBrief({
+      brief: input(),
+      artifacts: tampered as unknown as typeof artifacts,
+      operations,
+      owner: "w",
+    });
+    expect(again).toEqual({ kind: "failed", reason: "artifact-mismatch" });
   });
 
   it("saves nothing for an evidence gap or provenance mismatch", async () => {
