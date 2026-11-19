@@ -1,6 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import {
   locatePassage,
   type ExtractionModelProvider,
@@ -403,14 +407,13 @@ export async function extractAndStoreThemes(input: {
     input.extractor.modelVersion,
     input.extractor.promptVersion,
   );
-  let themeSet: ThemeSet;
-  let artifact: ArtifactRef;
+  let themeSet!: ThemeSet;
+  let artifact!: ArtifactRef;
   let reused = false;
   let incomplete = false;
   let rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"] = [];
-  const existing = await input.artifacts.lookup(path);
-  if (existing) {
-    const record = StoredThemeRecordSchema.parse(JSON.parse(await input.artifacts.read(existing)));
+  const loadStored = async (ref: ArtifactRef) => {
+    const record = StoredThemeRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
     const stored = record.themeSet as { themes?: Array<{ label?: string; novel?: boolean }> };
     // Re-validate with the vocabulary that was in effect when it was stored:
     // the labels it marked as not novel.
@@ -422,8 +425,12 @@ export async function extractAndStoreThemes(input: {
     themeSet = parseThemeSet(record.themeSet, input.source, vocabulary);
     incomplete = record.status === "incomplete";
     rejected = record.rejected;
-    artifact = existing;
+    artifact = ref;
     reused = true;
+  };
+  const existing = await input.artifacts.lookup(path);
+  if (existing) {
+    await loadStored(existing);
   } else {
     const result = await input.extractor.extract(input.source, input.knownLabels, input.signal);
     if (result.status === "failed") return result;
@@ -433,7 +440,16 @@ export async function extractAndStoreThemes(input: {
     // The extraction status and rejections are archived with the themes, so a
     // reused result is never mistaken for a complete one.
     const record = { status: result.status, rejected, themeSet };
-    artifact = await input.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
+    try {
+      artifact = await input.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
+    } catch (error) {
+      // A concurrent run committed this path first: its record wins.
+      if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict")
+        throw error;
+      const winner = await input.artifacts.lookup(path);
+      if (!winner) throw error;
+      await loadStored(winner);
+    }
   }
   const sourceId = `substack:${input.post.publicationId}:${input.post.postId}`;
   const document = {

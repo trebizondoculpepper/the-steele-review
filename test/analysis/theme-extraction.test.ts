@@ -299,6 +299,45 @@ describe("extractAndStoreThemes", () => {
     ]);
   });
 
+  it("reuses the winning record when a concurrent run committed first", async () => {
+    const a = provider([json([surveillance])]);
+    const b = provider([json([consent])]);
+    const { port } = index();
+    const extractorA = new ThemeExtractor({ provider: a.p, now });
+    const extractorB = new ThemeExtractor({
+      provider: b.p,
+      now: () => new Date("2026-05-01T00:00:05Z"),
+    });
+    // Both runs miss the lookup; A commits first, B then conflicts on write.
+    const realLookup = artifacts.lookup.bind(artifacts);
+    let lookups = 0;
+    artifacts.lookup = async (path) => (lookups++ < 2 ? undefined : realLookup(path));
+    const first = await extractAndStoreThemes({
+      extractor: extractorA,
+      artifacts,
+      index: port,
+      post,
+      source,
+    });
+    const second = await extractAndStoreThemes({
+      extractor: {
+        ...extractorB,
+        extract: extractorB.extract.bind(extractorB),
+        modelVersion: extractorA.modelVersion,
+        promptVersion: extractorA.promptVersion,
+      } as ThemeExtractor,
+      artifacts,
+      index: port,
+      post,
+      source,
+    });
+    expect(second).toMatchObject({ status: "stored", reused: true });
+    if (first.status === "stored" && second.status === "stored") {
+      expect(second.artifact).toEqual(first.artifact);
+      expect(second.themeSet.themes.map((t) => t.label)).toEqual(["mass surveillance"]);
+    }
+  });
+
   it("stores nothing when extraction fails", async () => {
     const { p } = provider([new Error("down"), new Error("down")]);
     const { port, docs } = index();
