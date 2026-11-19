@@ -163,3 +163,12 @@ describe("PublicPageFetcher", () => {
     expect(pageFromHtml("https://x.example/", "<p>hi</p>").title).toBe("https://x.example/");
   });
 });
+
+describe("hostile HTML", () => {
+  it("converts pathological unclosed tags in linear time", () => {
+    const html = "<script>".repeat(50_000) + "<p>text</p>";
+    const start = performance.now();
+    pageFromHtml("https://x.example/", html);
+    expect(performance.now() - start).toBeLessThan(5_000);
+  });
+});

@@ -11,7 +11,7 @@ import {
   type SearchProvider,
   type SearchResult,
 } from "../research/gap-research.js";
-import { htmlToPlainText } from "./substack/collect.js";
+import { convert } from "html-to-text";
 
 /**
  * Web adapters behind the gap-research ports (#154): a Kagi search provider
@@ -355,34 +355,71 @@ export class PublicPageFetcher implements PageFetcher {
   }
 }
 
-const decode = (s: string) => htmlToPlainText(s).replace(/\s+/g, " ").trim();
+/** Elements whose content is never page text. */
+const SKIPPED = [
+  "script",
+  "style",
+  "noscript",
+  "template",
+  "svg",
+  "nav",
+  "footer",
+  "header",
+  "head",
+  "img",
+  "figure",
+];
 
-function meta(html: string, name: string): string | undefined {
-  const re = new RegExp(
-    `<meta[^>]+(?:property|name)=["']${name}["'][^>]*content=["']([^"']*)["']|<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${name}["']`,
-    "i",
-  );
-  const m = html.match(re);
-  const value = m?.[1] ?? m?.[2];
-  return value ? decode(value) || undefined : undefined;
+/** Linear-time HTML to text via the parser: no backtracking regex over the body. */
+function bodyText(html: string): string {
+  return convert(html, {
+    wordwrap: false,
+    selectors: [
+      { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
+      ...SKIPPED.map((selector) => ({ selector, format: "skip" })),
+    ],
+  })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Only the document head is searched for metadata, bounded in size. */
+const HEAD_SCAN_CHARS = 64 * 1024;
+
+const decode = (s: string) => convert(s, { wordwrap: false }).replace(/\s+/g, " ").trim();
+
+function meta(head: string, name: string): string | undefined {
+  // Scan tag by tag with a simple non-backtracking pattern.
+  for (const m of head.matchAll(/<meta\b[^>]{0,2000}>/gi)) {
+    const tag = m[0];
+    const key = tag.match(/\b(?:property|name)\s*=\s*["']([^"']{1,200})["']/i)?.[1];
+    if (key?.toLowerCase() !== name) continue;
+    const value = tag.match(/\bcontent\s*=\s*["']([^"']{0,1000})["']/i)?.[1];
+    return value ? decode(value) || undefined : undefined;
+  }
+  return undefined;
 }
 
 export function pageFromHtml(url: string, html: string): FetchedPage {
-  const title =
-    meta(html, "og:title") ?? decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "");
-  const publisher = meta(html, "og:site_name");
-  const published = meta(html, "article:published_time");
+  const head = html.slice(0, HEAD_SCAN_CHARS);
+  const titleStart = head.search(/<title\b[^>]{0,200}>/i);
+  let rawTitle = "";
+  if (titleStart >= 0) {
+    const open = head.indexOf(">", titleStart) + 1;
+    const close = head.toLowerCase().indexOf("</title>", open);
+    if (close > open) rawTitle = head.slice(open, Math.min(close, open + 2000));
+  }
+  const title = meta(head, "og:title") ?? decode(rawTitle);
+  const publisher = meta(head, "og:site_name");
+  const published = meta(head, "article:published_time");
   const publishedAt =
     published && !Number.isNaN(Date.parse(published))
       ? new Date(published).toISOString()
       : undefined;
-  const bodyHtml = html
-    .replace(/<(script|style|noscript|template|svg|nav|footer|header)[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<head[\s\S]*?<\/head>/i, " ");
   return {
     url,
     title: (title || url).slice(0, 500),
-    text: htmlToPlainText(bodyHtml),
+    text: bodyText(html),
     ...(publisher ? { publisher: publisher.slice(0, 200) } : {}),
     ...(publishedAt ? { publishedAt } : {}),
   };
