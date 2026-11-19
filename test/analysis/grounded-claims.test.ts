@@ -215,6 +215,10 @@ describe("extractGroundedClaims", () => {
       source: source("p3"),
       themes,
     });
-    expect(bad).toEqual({ status: "failed", reason: "malformed-output", attempts: 2 });
+    expect(bad).toMatchObject({ status: "failed", reason: "malformed-output", attempts: 2 });
+    // Bounded, private diagnostics of each malformed attempt.
+    const malformed = (bad as { malformed?: Array<{ reason: string; stage: string }> }).malformed;
+    expect(malformed?.map((m) => m.stage)).toEqual(["schema", "schema"]);
+    expect(malformed?.[0].reason).toBe("not-json");
   });
 });

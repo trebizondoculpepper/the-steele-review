@@ -1,6 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
+  CandidateSnapshotSchema,
+  MalformedResponseSchema,
+  RejectionStageSchema,
+  candidateSnapshot,
+  malformedResponse,
+  saveFailureDiagnostics,
+  type MalformedResponse,
+  type RejectionStage,
+} from "./rejection.js";
+import {
   ArtifactStoreError,
   type ArtifactRef,
   type GitArtifactStore,
@@ -317,9 +327,17 @@ export const ThemeDetectionSchema = z
     ),
     rejected: z.array(
       z
-        .object({ kind: z.enum(["existing", "proposed"]), index: z.number(), reason: z.string() })
+        .object({
+          kind: z.enum(["existing", "proposed"]),
+          index: z.number(),
+          reason: z.string(),
+          stage: RejectionStageSchema.optional(),
+          candidate: CandidateSnapshotSchema.optional(),
+        })
         .strict(),
     ),
+    /** Malformed responses from earlier attempts of a successful run. */
+    malformedAttempts: z.array(MalformedResponseSchema).optional(),
     extraction: z
       .object({ modelVersion: z.string(), promptVersion: z.string(), detectedAt: z.string() })
       .strict(),
@@ -341,6 +359,7 @@ export type DetectionOutcome =
       status: "failed";
       reason: "provider-failed" | "malformed-output" | "source-too-large";
       attempts: number;
+      malformed?: MalformedResponse[];
     };
 
 function parseOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
@@ -412,6 +431,21 @@ export async function registerDetectedThemes(
   return { ids: registered.ids, ...(registered.stored.ref ? { ref: registered.stored.ref } : {}) };
 }
 
+/** Allowlisted candidate fields kept for private inspection of rejections. */
+export const THEME_DIAGNOSTIC_FIELDS = [
+  "id",
+  "name",
+  "definition",
+  "confidence",
+  "possibleMatchOf",
+] as const;
+
+/** Which validation stage a theme rejection reason belongs to. */
+export function themeRejectionStage(reason: string): RejectionStage {
+  if (reason.startsWith("passage-") || reason === "unknown-id") return "grounding";
+  return "semantic"; // invalid name, duplicates, unknown possible match
+}
+
 export function detectionPath(
   post: { publicationId: string; postId: string },
   sourceVersion: string,
@@ -481,6 +515,7 @@ export async function detectThemes(input: {
     let failure: "provider-failed" | "malformed-output" = "provider-failed";
     const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
     let used = 0;
+    const malformed: MalformedResponse[] = [];
     for (; used < attempts && !output; used++) {
       let raw: string;
       try {
@@ -493,9 +528,25 @@ export async function detectThemes(input: {
         continue;
       }
       output = raw.length <= maxResponseChars ? parseOutput(raw) : undefined;
-      if (!output) failure = "malformed-output";
+      if (!output) {
+        failure = "malformed-output";
+        malformed.push(malformedResponse(used + 1, raw, maxResponseChars));
+      }
     }
-    if (!output) return { status: "failed", reason: failure, attempts: used };
+    if (!output) {
+      // Keep a bounded, redacted excerpt of each malformed response privately.
+      await saveFailureDiagnostics(input.artifacts, `extraction-failures/themes/${path}`, {
+        reason: failure,
+        attempts: used,
+        malformed,
+      });
+      return {
+        status: "failed",
+        reason: failure,
+        attempts: used,
+        ...(malformed.length > 0 ? { malformed } : {}),
+      };
+    }
 
     const rejected: ThemeDetection["rejected"] = [];
     const locate = (passages: z.infer<typeof PassagesSchema>) => {
@@ -556,7 +607,15 @@ export async function detectThemes(input: {
       catalogueVersion,
       existing,
       proposed,
-      rejected,
+      rejected: rejected.map((r) => ({
+        ...r,
+        stage: themeRejectionStage(r.reason),
+        candidate: candidateSnapshot(
+          r.kind === "existing" ? output.existing[r.index] : output.proposed[r.index],
+          THEME_DIAGNOSTIC_FIELDS,
+        ),
+      })),
+      ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
       extraction: {
         modelVersion: input.provider.modelVersion,
         promptVersion: prompt.version,
