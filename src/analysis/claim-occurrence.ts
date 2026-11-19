@@ -89,6 +89,10 @@ export const ClaimOccurrenceSchema = z
       .describe("Observed publication time of the post; not the date the claim was first made."),
     assertionDates: z.array(DateMentionSchema).max(20),
     themes: z.array(z.string().min(1).max(60)).max(30),
+    assertionKind: z
+      .enum(["assertion", "quotation", "question", "speculation"])
+      .optional()
+      .describe("How the passage puts the claim; questions and speculation are not assertions."),
     publisher: z
       .object({
         publicationId: z.string().min(1),
@@ -121,6 +125,18 @@ export class InvalidClaimOccurrenceError extends Error {
 
 const sha = (value: unknown) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;
+
+/**
+ * Strict normalisation for reusable claim identity: Unicode, case and
+ * whitespace only. Signs, operators, decimal points and other punctuation
+ * are kept, because "+2%" and "-2%", or "> 10" and "< 10", are different
+ * claims. Grouping version "2" uses this key; version "1" used
+ * {@link normalisedClaimKey}.
+ */
+export function claimIdentityKey(statement: string): string {
+  const text = statement.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
+}
 
 /** Stable occurrence ID from post, source version and span. */
 export function occurrenceIdFor(input: {
@@ -202,6 +218,7 @@ export function createClaimOccurrence(input: {
   source: OccurrenceSource;
   speaker: Speaker;
   themes?: string[];
+  assertionKind?: "assertion" | "quotation" | "question" | "speculation";
   grouping?: { key: string; method: "model-assisted"; version: string };
 }): ClaimOccurrence {
   const claim = parseClaim(input.claim, input.source);
@@ -243,6 +260,7 @@ export function createClaimOccurrence(input: {
           .filter(Boolean),
       ),
     ],
+    ...(input.assertionKind ? { assertionKind: input.assertionKind } : {}),
     publisher: {
       publicationId: input.source.publicationId,
       ...(input.source.author ? { author: input.source.author } : {}),
@@ -345,6 +363,11 @@ export function claimOccurrenceJsonSchema(): Record<string, unknown> {
 }
 
 /** Explicit strict Elasticsearch mapping for {@link CLAIM_OCCURRENCE_INDEX_V1}. */
+/** Fields added after the first occurrence index version; applied additively to existing indices. */
+export const CLAIM_OCCURRENCE_MAPPING_ADDITIONS = {
+  assertionKind: { type: "keyword" },
+} as const;
+
 export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
   dynamic: "strict",
   properties: {
@@ -387,6 +410,7 @@ export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
       properties: { text: { type: "keyword" }, value: { type: "date" } },
     },
     themes: { type: "keyword" },
+    assertionKind: { type: "keyword" },
     publisher: {
       type: "object",
       properties: { publicationId: { type: "keyword" }, author: { type: "keyword" } },

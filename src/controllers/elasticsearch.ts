@@ -73,6 +73,7 @@ export interface ElasticsearchClientLike {
       aliases: Record<string, Record<string, never>>;
     }): Promise<unknown>;
     existsAlias(params: { name: string }): Promise<boolean>;
+    putMapping(params: { index: string; properties: Record<string, unknown> }): Promise<unknown>;
   };
   search(
     params: {
@@ -289,6 +290,19 @@ export class ElasticsearchController {
       if (await this.client.indices.exists({ index: backing })) return "unchanged";
       await this.client.indices.create({ index: backing, mappings, aliases: { [alias]: {} } });
       return "created";
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /**
+   * Additively upgrade a provisioned index: add new fields to its mapping.
+   * Elasticsearch only accepts compatible additions, so existing fields can
+   * never be changed or removed through this call.
+   */
+  async addMappingFields(alias: string, properties: Record<string, unknown>): Promise<void> {
+    try {
+      await this.client.indices.putMapping({ index: alias, properties });
     } catch (error) {
       throw classifyIndexingError(error);
     }

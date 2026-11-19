@@ -3,6 +3,7 @@ import { MAX_SEARCH_RESULTS, type SearchHit } from "../controllers/elasticsearch
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
   ClaimOccurrenceSchema,
+  claimIdentityKey,
   normalisedClaimKey,
   type ClaimOccurrence,
 } from "./claim-occurrence.js";
@@ -99,7 +100,12 @@ export async function queryClaimTimeline(
   const f = TimelineFilterSchema.parse(input);
   const filter: unknown[] = [];
   if (f.groupingKey) filter.push({ term: { "grouping.key": f.groupingKey } });
-  if (f.statement) filter.push({ term: { "grouping.key": normalisedClaimKey(f.statement) } });
+  // Match both grouping versions: v1 (loose text key) and v2 (strict key).
+  if (f.statement) {
+    filter.push({
+      terms: { "grouping.key": [normalisedClaimKey(f.statement), claimIdentityKey(f.statement)] },
+    });
+  }
   if (f.claimId) filter.push({ term: { claimId: f.claimId } });
   if (f.theme) filter.push({ term: { themes: f.theme } });
   if (f.publicationId) filter.push({ term: { publicationId: f.publicationId } });
