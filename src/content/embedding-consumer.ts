@@ -265,17 +265,27 @@ export function transcriptTimingsFor(
     .join(" ");
   if (!transcript || !record.text.endsWith(transcript)) return {};
   const base = record.text.length - transcript.length;
-  const timings: TranscriptTiming[] = [];
+  // Each timing records its contiguous run: an untimed or unaligned segment
+  // ends the run, so merging never bridges text with no supplied timing.
+  const timings: Array<TranscriptTiming & { run: number }> = [];
+  let run = 0;
   let cursor = 0;
   for (const s of segments) {
     const text = s.text.trim();
     if (!text) continue;
     const at = transcript.indexOf(text, cursor);
-    if (at === -1) continue;
+    if (at === -1) {
+      run++;
+      continue;
+    }
     cursor = at + text.length;
     // Zero-length or untimed segments are skipped: no timing is guessed.
-    if (s.start === undefined || s.end === undefined || s.end <= s.start) continue;
+    if (s.start === undefined || s.end === undefined || s.end <= s.start) {
+      run++;
+      continue;
+    }
     timings.push({
+      run,
       start: base + at,
       end: base + cursor,
       startSeconds: s.start,
@@ -288,10 +298,10 @@ export function transcriptTimingsFor(
   // a merged timing runs from its first start to its last end, so it is
   // coarser but never wrong.
   const minChars = Math.ceil(maxPassageChars / (MAX_PASSAGE_TIMINGS - 2));
-  const merged: TranscriptTiming[] = [];
+  const merged: Array<TranscriptTiming & { run: number }> = [];
   for (const t of timings) {
     const prev = merged.at(-1);
-    if (prev && prev.end - prev.start < minChars) {
+    if (prev && prev.run === t.run && prev.end - prev.start < minChars) {
       merged[merged.length - 1] = {
         ...prev,
         end: t.end,
@@ -299,5 +309,10 @@ export function transcriptTimingsFor(
       };
     } else merged.push({ ...t });
   }
-  return { transcriptTimings: merged };
+  // A run too short to reach the minimum span is left out rather than
+  // stretched over untimed text, which keeps the per-passage bound.
+  const kept = merged
+    .filter((t) => t.end - t.start >= minChars || minChars <= 1)
+    .map(({ run: _run, ...t }) => t);
+  return kept.length ? { transcriptTimings: kept } : {};
 }

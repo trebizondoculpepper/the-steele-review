@@ -181,6 +181,25 @@ describe("transcriptTimingsFor", () => {
 });
 
 describe("dense transcript timings", () => {
+  it("never merges across an untimed segment", () => {
+    const segs = [
+      { start: 0, end: 1, text: "a" },
+      { text: "untimed words in the middle" },
+      ...Array.from({ length: 10 }, (_, i) => ({ start: 10 + i, end: 10.5 + i, text: `word${i}` })),
+    ];
+    const r = {
+      ...record(),
+      text: segs.map((x) => x.text).join(" "),
+      supplied: { transcript: segs },
+    };
+    const t = transcriptTimingsFor(r, 2_000).transcriptTimings ?? [];
+    const untimed = r.text.indexOf("untimed");
+    for (const x of t)
+      expect(x.end <= untimed || x.start >= untimed + "untimed words in the middle".length).toBe(
+        true,
+      );
+  });
+
   it("coalesces so no passage overlaps more than the stored bound", () => {
     const words = Array.from({ length: 3_000 }, (_, i) => ({
       start: i,
