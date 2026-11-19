@@ -70,18 +70,21 @@ For the Whisper proof of concept, the owner accepts representative manual audio 
 
 ## Small delivery tasks
 
-| Ticket                                                                      | Work                                            | Size |
-| --------------------------------------------------------------------------- | ----------------------------------------------- | ---- |
-| #[142](https://github.com/trebizondoculpepper/the-steele-review/issues/142) | Audit existing contracts and select the sample  | S    |
-| #[143](https://github.com/trebizondoculpepper/the-steele-review/issues/143) | Known/new theme extraction integration          | M    |
-| #[144](https://github.com/trebizondoculpepper/the-steele-review/issues/144) | Grounded claims and theme links                 | M    |
-| #[145](https://github.com/trebizondoculpepper/the-steele-review/issues/145) | Equivalent-claim reuse and distinct occurrences | M    |
-| #[146](https://github.com/trebizondoculpepper/the-steele-review/issues/146) | Controlled Git dossier revisions                | M    |
-| #[147](https://github.com/trebizondoculpepper/the-steele-review/issues/147) | Manual research, reuse and claim coverage       | M    |
-| #[148](https://github.com/trebizondoculpepper/the-steele-review/issues/148) | Pinned evidence package with explicit gaps      | S    |
-| #[149](https://github.com/trebizondoculpepper/the-steele-review/issues/149) | Manual cited drafting                           | S    |
-| #[150](https://github.com/trebizondoculpepper/the-steele-review/issues/150) | Manual verification and bounded revisions       | S    |
-| #[151](https://github.com/trebizondoculpepper/the-steele-review/issues/151) | End-to-end acceptance evidence                  | M    |
+| Ticket                                                                      | Work                                                       | Size |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------- | ---- |
+| #[142](https://github.com/trebizondoculpepper/the-steele-review/issues/142) | Audit existing contracts and select the sample             | S    |
+| #[143](https://github.com/trebizondoculpepper/the-steele-review/issues/143) | Known/new theme extraction integration                     | M    |
+| #[144](https://github.com/trebizondoculpepper/the-steele-review/issues/144) | Grounded claims and theme links                            | M    |
+| #[145](https://github.com/trebizondoculpepper/the-steele-review/issues/145) | Equivalent-claim reuse and distinct occurrences            | M    |
+| #[146](https://github.com/trebizondoculpepper/the-steele-review/issues/146) | Controlled Git dossier revisions                           | M    |
+| #[147](https://github.com/trebizondoculpepper/the-steele-review/issues/147) | Manual research, reuse and claim coverage                  | M    |
+| #[148](https://github.com/trebizondoculpepper/the-steele-review/issues/148) | Pinned evidence package with explicit gaps                 | S    |
+| #[149](https://github.com/trebizondoculpepper/the-steele-review/issues/149) | Manual cited drafting                                      | S    |
+| #[150](https://github.com/trebizondoculpepper/the-steele-review/issues/150) | Manual verification and bounded revisions                  | S    |
+| #[151](https://github.com/trebizondoculpepper/the-steele-review/issues/151) | End-to-end acceptance evidence                             | M    |
+| [#162](https://github.com/trebizondoculpepper/the-steele-review/issues/162) | Dossier/structured-evidence bridge                         | S    |
+| [#163](https://github.com/trebizondoculpepper/the-steele-review/issues/163) | Bounded alternative query planning                         | S    |
+| [#164](https://github.com/trebizondoculpepper/the-steele-review/issues/164) | Shared pinned source/theme context for writer and verifier | M    |
 
 These estimates assume reuse of delivered controllers and schemas. The parent XL estimate is an aggregate programme roll-up, not an unsplit implementation job. The audit identifies actual missing capabilities; new large work must be split into separately estimated S/M tickets. Native issue dependencies specify sequencing and allow dossier work to proceed alongside extraction after the audit.
 
@@ -92,3 +95,5 @@ Actual deployment locations, credentials and operational logs remain exclusively
 The source-understanding, research and drafting parent epics are tracking umbrellas, not executable jobs. Each child has an S/M estimate, input/output contract, manual invocation requirement, focused acceptance evidence and native prerequisite links. Ready labels do not waive an open dependency, another agent's claim or an unresolved review finding.
 
 The original audit is [recorded here](../findings/manual-demo-audit.md). Its three posts are a selected sample; proposed equivalence between their assertions remains a hypothesis to check in full context. Never merge claims solely to meet the acceptance checklist. Use a clearly labelled fixture where real material does not establish a suitable demonstration case.
+
+The [manual stage handoff map](../testing/manual-stage-handoffs.md) records inspected controller interfaces, identity/citation conversions, all-gap outcomes and a focused fixture matrix. Preparation tasks #162–#164 close identified integration gaps without adding automatic coordination.
