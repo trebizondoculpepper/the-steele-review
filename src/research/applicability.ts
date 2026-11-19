@@ -28,8 +28,8 @@ export const DEFAULT_APPLICABILITY_PROMPT: ExtractionPrompt = {
   instructions: [
     "Decide whether each existing research entry applies to the new claim.",
     "applicability: applicable (answers this claim), partial (stable background applies, specifics do not) or not-applicable (different subject, even if similar wording).",
-    "List the evidence URLs from that entry that support reuse, and the incident-specific details of the new claim that the entry does not cover as gaps.",
-    'Respond with JSON only: {"assessments":[{"entryId","applicability","rationale","reuseEvidenceUrls":[],"gaps":[]}],"gaps":[]}.',
+    "List the evidence items (url and exact passage) from that entry that support reuse, and the incident-specific details of the new claim that the entry does not cover as gaps.",
+    'Respond with JSON only: {"assessments":[{"entryId","applicability","rationale","reuseEvidence":[{"url","passage"}],"gaps":[]}],"gaps":[]}.',
   ].join("\n"),
 };
 
@@ -38,7 +38,13 @@ const ModelAssessmentSchema = z
     entryId: z.string().min(1).max(200),
     applicability: z.enum(["applicable", "partial", "not-applicable"]),
     rationale: z.string().trim().min(1).max(4000),
-    reuseEvidenceUrls: z.array(z.string().min(1).max(2000)).max(20),
+    reuseEvidence: z
+      .array(
+        z
+          .object({ url: z.string().min(1).max(2000), passage: z.string().min(1).max(4000) })
+          .strict(),
+      )
+      .max(20),
     gaps: z.array(z.string().trim().min(1).max(1000)).max(20),
   })
   .strict();
@@ -82,6 +88,8 @@ export interface ApplicabilityResult {
     index: number;
     reason: "malformed" | "unknown-entry" | "unknown-evidence" | "duplicate";
   }>;
+  /** Supplied entries the model did not assess. */
+  omitted: string[];
   modelVersion: string;
   promptVersion: string;
 }
@@ -141,6 +149,7 @@ export class ApplicabilityAssessor {
         outdated: [],
         gaps: [claim.statement],
         rejected: [],
+        omitted: [],
       };
     }
     const boundary = `DATA-${randomBytes(12).toString("hex")}`;
@@ -175,10 +184,19 @@ export class ApplicabilityAssessor {
     for (let attempt = 1; attempt <= attempts && !output; attempt++) {
       const deadline = AbortSignal.timeout(this.options.timeoutMs ?? 120_000);
       try {
-        const raw = await this.provider.complete(
-          { system: this.prompt.instructions, user, maxOutputChars: 50_000 },
-          signal ? AbortSignal.any([signal, deadline]) : deadline,
-        );
+        const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+        // Race the call against the deadline so a provider that ignores its
+        // abort signal still cannot hold the assessment open.
+        const raw = await Promise.race([
+          this.provider.complete(
+            { system: this.prompt.instructions, user, maxOutputChars: 50_000 },
+            combined,
+          ),
+          new Promise<never>((_, reject) => {
+            if (combined.aborted) reject(new Error("deadline"));
+            combined.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
+          }),
+        ]);
         output = parseOutput(raw);
         if (!output) last = "malformed-output";
       } catch {
@@ -204,8 +222,13 @@ export class ApplicabilityAssessor {
       const candidate = byId.get(a.entryId);
       if (!candidate) return rejected.push({ index, reason: "unknown-entry" });
       if (seen.has(a.entryId)) return rejected.push({ index, reason: "duplicate" });
-      const evidence = new Map(candidate.matches.flatMap((m) => m.evidence).map((e) => [e.url, e]));
-      if (a.reuseEvidenceUrls.some((u) => !evidence.has(u))) {
+      // Keyed by URL and passage: one URL can carry several distinct passages.
+      const evidenceKey = (e: { url: string; passage: string }) =>
+        JSON.stringify([e.url, e.passage]);
+      const evidence = new Map(
+        candidate.matches.flatMap((m) => m.evidence).map((e) => [evidenceKey(e), e]),
+      );
+      if (a.reuseEvidence.some((r) => !evidence.has(evidenceKey(r)))) {
         return rejected.push({ index, reason: "unknown-evidence" });
       }
       seen.add(a.entryId);
@@ -223,8 +246,8 @@ export class ApplicabilityAssessor {
       if (a.applicability === "not-applicable") return;
       for (const g of a.gaps) gaps.add(g);
       for (const g of candidate.unresolvedGaps) gaps.add(g);
-      for (const url of new Set(a.reuseEvidenceUrls)) {
-        const e = evidence.get(url)!;
+      for (const key of new Set(a.reuseEvidence.map(evidenceKey))) {
+        const e = evidence.get(key)!;
         const ref = {
           entryId: candidate.entryId,
           revision: candidate.revision,
@@ -237,11 +260,14 @@ export class ApplicabilityAssessor {
         else selected.push(ref);
       }
     });
+    // Every supplied entry must be assessed; an omission is not a judgement.
+    const omitted = candidates.filter((c) => !seen.has(c.entryId)).map((c) => c.entryId);
     // Applicable entries with nothing current to reuse leave the claim open.
     if (selected.length === 0) gaps.add(claim.statement);
     return {
-      status: rejected.length ? "incomplete" : "complete",
+      status: rejected.length || omitted.length ? "incomplete" : "complete",
       ...base,
+      omitted,
       assessments,
       selected,
       outdated,

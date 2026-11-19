@@ -3,6 +3,7 @@ import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import { ApplicabilityAssessor } from "../../src/research/applicability.js";
 import type { ResearchCandidate } from "../../src/research/research-store.js";
 
+const P = "Exposure from such towers is far below safety limits.";
 const claim = {
   id: `sha256:${"c".repeat(64)}`,
   statement: "The new towers in Exampletown emit harmful radiation, residents said on 3 May.",
@@ -79,10 +80,10 @@ describe("ApplicabilityAssessor", () => {
             entryId: "towers",
             applicability: "partial",
             rationale: "The general exposure research applies; this incident is new.",
-            reuseEvidenceUrls: [
-              "https://example.org/fresh",
-              "https://example.org/old",
-              "https://example.org/self",
+            reuseEvidence: [
+              { url: "https://example.org/fresh", passage: P },
+              { url: "https://example.org/old", passage: P },
+              { url: "https://example.org/self", passage: P },
             ],
             gaps: ["What residents reported in Exampletown on 3 May"],
           },
@@ -90,7 +91,7 @@ describe("ApplicabilityAssessor", () => {
             entryId: "tides",
             applicability: "not-applicable",
             rationale: "Different subject.",
-            reuseEvidenceUrls: [],
+            reuseEvidence: [],
             gaps: [],
           },
         ],
@@ -125,7 +126,7 @@ describe("ApplicabilityAssessor", () => {
             entryId: "tides",
             applicability: "not-applicable",
             rationale: "Unrelated.",
-            reuseEvidenceUrls: ["https://example.org/tides"],
+            reuseEvidence: [{ url: "https://example.org/tides", passage: P }],
             gaps: [],
           },
         ],
@@ -143,7 +144,7 @@ describe("ApplicabilityAssessor", () => {
             entryId: "towers",
             applicability: "applicable",
             rationale: "Same question.",
-            reuseEvidenceUrls: ["https://example.org/old"],
+            reuseEvidence: [{ url: "https://example.org/old", passage: P }],
             gaps: [],
           },
         ],
@@ -162,14 +163,14 @@ describe("ApplicabilityAssessor", () => {
       entryId: "towers",
       applicability: "applicable",
       rationale: "r",
-      reuseEvidenceUrls: [],
+      reuseEvidence: [],
       gaps: [],
     };
     const { p } = provider([
       JSON.stringify({
         assessments: [
           { ...ok, entryId: "ghost" },
-          { ...ok, reuseEvidenceUrls: ["https://example.org/invented"] },
+          { ...ok, reuseEvidence: [{ url: "https://example.org/invented", passage: P }] },
           ok,
           ok,
           { entryId: "towers" },
@@ -185,6 +186,49 @@ describe("ApplicabilityAssessor", () => {
         { index: 3, reason: "duplicate" },
         { index: 4, reason: "malformed" },
       ],
+    });
+  });
+
+  it("tells apart passages from the same URL and flags omitted entries", async () => {
+    const twoPassages = candidate("towers", [
+      evidence("https://example.org/fresh", "2026-10-01T00:00:00Z"),
+      {
+        ...evidence("https://example.org/fresh", "2026-10-01T00:00:00Z"),
+        passage: "A second, different passage.",
+      },
+    ]);
+    const { p } = provider([
+      JSON.stringify({
+        assessments: [
+          {
+            entryId: "towers",
+            applicability: "applicable",
+            rationale: "r",
+            reuseEvidence: [
+              { url: "https://example.org/fresh", passage: "A second, different passage." },
+            ],
+            gaps: [],
+          },
+        ],
+      }),
+    ]);
+    const result = await assessor(p).assess(claim, [twoPassages, tides]);
+    expect(result).toMatchObject({ status: "incomplete", omitted: ["tides"] });
+    if (result.status === "failed") return;
+    expect(result.selected.map((s) => s.evidence.passage)).toEqual([
+      "A second, different passage.",
+    ]);
+  });
+
+  it("enforces the deadline even when the provider ignores cancellation", async () => {
+    const stuck: ExtractionModelProvider = {
+      modelVersion: "fake/stuck",
+      complete: () => new Promise(() => {}),
+    };
+    const a = new ApplicabilityAssessor(stuck, { maxAttempts: 1, timeoutMs: 50 });
+    expect(await a.assess(claim, [towers])).toEqual({
+      status: "failed",
+      reason: "provider-failed",
     });
   });
 
