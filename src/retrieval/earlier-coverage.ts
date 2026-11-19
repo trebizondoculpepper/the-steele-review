@@ -74,12 +74,12 @@ export async function findEarlierCoverage(
     limit: Math.min(MAX_EARLIER, limit * 2),
   });
 
-  let excludedUndated = 0;
+  const undatedPosts = new Set<string>();
   const bestPerPost = new Map<string, EarlierPassage>();
   for (const p of result.passages) {
     if (p.publicationId !== r.publicationId || p.postId === r.sourcePostId) continue;
     if (!p.publishedAt) {
-      excludedUndated++;
+      undatedPosts.add(p.postId);
       continue;
     }
     if (Date.parse(p.publishedAt) >= sourceTime) continue; // strictly earlier only
@@ -87,6 +87,22 @@ export async function findEarlierCoverage(
     if (!current || p.signals.fused > current.signals.fused) {
       bestPerPost.set(p.postId, p as EarlierPassage);
     }
+  }
+  // The date filter removes undated posts inside retrieval, so count matching
+  // undated posts with a separate query; they cannot be placed in the chronology.
+  try {
+    const undated = await retriever.retrieve({
+      text: r.claim.statement.slice(0, 2000),
+      publicationId: r.publicationId,
+      excludePostIds: [r.sourcePostId],
+      undatedOnly: true,
+      limit: MAX_EARLIER,
+    });
+    for (const p of undated.passages) {
+      if (p.postId !== r.sourcePostId && !p.publishedAt) undatedPosts.add(p.postId);
+    }
+  } catch {
+    // Counting is best effort; the note below still states the limitation.
   }
   const passages = [...bestPerPost.values()]
     .sort((a, b) => b.signals.fused - a.signals.fused)
@@ -97,7 +113,7 @@ export async function findEarlierCoverage(
     limitations: {
       mode: result.mode,
       ...(result.semanticUnavailable ? { semanticUnavailable: result.semanticUnavailable } : {}),
-      excludedUndated,
+      excludedUndated: undatedPosts.size,
       note: COVERAGE_NOTE,
     },
   };

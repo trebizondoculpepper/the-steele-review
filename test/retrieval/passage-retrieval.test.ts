@@ -316,6 +316,10 @@ describe.skipIf(!esUrl)("PassageRetriever with Elasticsearch", () => {
         publicationId: "pub-a",
       });
       expect(earlier.passages.map((p) => p.postId)).toEqual(["meters"]);
+      // Every fixture post is dated, so an undated-only search finds nothing.
+      expect((await retriever.retrieve({ text: "towers", undatedOnly: true })).passages).toEqual(
+        [],
+      );
       const anyPublication = await retriever.retrieve({
         text: "towers",
         excludePostIds: ["towers"],

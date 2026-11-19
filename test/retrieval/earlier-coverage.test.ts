@@ -36,6 +36,9 @@ function retriever(passages: RetrievedPassage[], mode: RetrievalResult["mode"] =
     queries,
     retrieve: async (q: RetrievalQuery): Promise<RetrievalResult> => {
       queries.push(q);
+      if (q.undatedOnly) {
+        return { mode, passages: passages.filter((p) => !p.publishedAt) };
+      }
       return {
         mode,
         ...(mode === "keyword-only" ? { semanticUnavailable: "no-embedder" as const } : {}),

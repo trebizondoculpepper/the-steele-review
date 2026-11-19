@@ -46,6 +46,8 @@ export interface RetrievalQuery {
   before?: string;
   /** Posts to leave out entirely, e.g. the source post of a claim. */
   excludePostIds?: string[];
+  /** Only posts without a publication date (ignores date bounds). */
+  undatedOnly?: boolean;
   limit?: number;
 }
 
@@ -105,6 +107,7 @@ const QuerySchema = z.object({
   to: z.iso.datetime({ offset: true }).optional(),
   before: z.iso.datetime({ offset: true }).optional(),
   excludePostIds: z.array(z.string().min(1)).max(50).optional(),
+  undatedOnly: z.boolean().optional(),
   limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
 });
 
@@ -233,6 +236,10 @@ export class PassageRetriever {
   private filters(query: z.infer<typeof QuerySchema>, dateField: string, publicationField: string) {
     const filter: unknown[] = [];
     if (query.publicationId) filter.push({ term: { [publicationField]: query.publicationId } });
+    if (query.undatedOnly) {
+      filter.push({ bool: { must_not: [{ exists: { field: dateField } }] } });
+      return filter;
+    }
     if (query.from || query.to || query.before) {
       filter.push({
         range: {
