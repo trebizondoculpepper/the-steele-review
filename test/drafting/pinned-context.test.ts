@@ -313,6 +313,7 @@ describe("pinned source and theme context", () => {
       canonicalMapping: new Map([[a.themes.proposals[0].id, "five-g-health"]]),
     });
     if (mapped.kind !== "loaded") throw new Error();
+    expect(mapped.context.contextRef).not.toBe(a.contextRef); // mapping is part of identity
     expect(mapped.context.themes.proposals[0]).toMatchObject({
       title: "5G health concerns",
       canonicalId: "five-g-health",

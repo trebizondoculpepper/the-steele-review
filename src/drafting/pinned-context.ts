@@ -50,9 +50,18 @@ export type PinnedContextOutcome =
 
 const refKey = (r: ArtifactRef) => [r.repository, r.commit, r.path, r.sha256];
 
-export function contextRefFor(source: ArtifactRef, themes: ArtifactRef): string {
+/**
+ * Identity of the exact context: source and theme result references plus any
+ * librarian mapping applied, since the mapping changes what the model sees.
+ */
+export function contextRefFor(
+  source: ArtifactRef,
+  themes: ArtifactRef,
+  mapping: ReadonlyMap<string, string> = new Map(),
+): string {
+  const pairs = [...mapping.entries()].sort(([a], [b]) => a.localeCompare(b));
   return `sha256:${createHash("sha256")
-    .update(JSON.stringify({ source: refKey(source), themes: refKey(themes) }))
+    .update(JSON.stringify({ source: refKey(source), themes: refKey(themes), mapping: pairs }))
     .digest("hex")}`;
 }
 
@@ -117,7 +126,15 @@ export async function loadPinnedContext(input: {
     context: {
       source: { ref: sourceRef, sourceVersion: input.brief.source.sourceVersion, text },
       themes: { ref: input.themes, proposals },
-      contextRef: contextRefFor(sourceRef, input.themes),
+      contextRef: contextRefFor(
+        sourceRef,
+        input.themes,
+        new Map(
+          proposals
+            .filter((p) => p.canonicalId)
+            .map((p) => [p.id, p.canonicalId!] as [string, string]),
+        ),
+      ),
     },
   };
 }
