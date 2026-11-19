@@ -98,7 +98,9 @@ const logical = (ref: ArtifactRef) =>
 // Saved claim and occurrence payloads are typed `unknown` in the record
 // schema; validate the projected fields so malformed data degrades to
 // "unknown"/empty rather than crashing or rendering misleading values.
-const Span = z.object({ start: z.number().int(), end: z.number().int() });
+const Span = z
+  .object({ start: z.number().int().min(0), end: z.number().int().min(0) })
+  .refine((v) => v.end >= v.start);
 const ClaimView = z.object({
   statement: z.string().optional().catch(undefined),
   passage: z.string().optional().catch(undefined),
@@ -108,14 +110,15 @@ const OccurrenceView = z.object({
   passage: z.string().optional().catch(undefined),
   span: Span.optional().catch(undefined),
   transcriptTime: z
-    .object({ startSeconds: z.number(), endSeconds: z.number() })
+    .object({ startSeconds: z.number().min(0), endSeconds: z.number().min(0) })
+    .refine((v) => v.endSeconds >= v.startSeconds)
     .optional()
     .catch(undefined),
-  sourcePublishedAt: z.string().optional().catch(undefined),
+  sourcePublishedAt: z.iso.datetime({ offset: true }).optional().catch(undefined),
   speaker: z
     .object({
-      kind: z.string().optional().catch(undefined),
-      name: z.string().optional().catch(undefined),
+      kind: z.enum(["author-voice", "quoted", "unknown", "uncertain"]).optional().catch(undefined),
+      name: z.string().trim().min(1).max(200).optional().catch(undefined),
     })
     .optional()
     .catch(undefined),

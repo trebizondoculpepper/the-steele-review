@@ -292,6 +292,52 @@ describe("inspectPost", () => {
     expect(() => renderInspection(r)).not.toThrow();
   });
 
+  it("rejects well-typed but semantically invalid projected values", async () => {
+    await content.write(
+      "claim-extractions/pub/post/semantic.json",
+      JSON.stringify({
+        schemaVersion: 2,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        claims: [
+          {
+            claim: { statement: "A claim" },
+            occurrence: {
+              passage: "A claim",
+              sourcePublishedAt: "not-a-date",
+              speaker: { kind: "robot", name: "   " },
+              transcriptTime: { startSeconds: -5, endSeconds: 3 },
+            },
+            kind: "assertion",
+            themeIds: [],
+            classification: "themed",
+          },
+          {
+            claim: { statement: "Another claim" },
+            occurrence: {
+              passage: "Another claim",
+              transcriptTime: { startSeconds: 30, endSeconds: 10 },
+            },
+            kind: "assertion",
+            themeIds: [],
+            classification: "themed",
+          },
+        ],
+        candidates: [],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const r = await inspectPost(content, post);
+    const [first, second] = r.claimResults[0].accepted!;
+    expect(first.sourcePublishedAt).toBeUndefined();
+    expect(first.location.transcriptSeconds).toBeUndefined();
+    expect(first.speaker).toEqual({ kind: "unknown" });
+    expect(second.location.transcriptSeconds).toBeUndefined();
+    expect(() => renderInspection(r)).not.toThrow();
+  });
+
   it("resolves theme titles from the claim result's own linked theme result", async () => {
     await analyse();
     const id = (await inspectPost(content, post)).themeResults[0].proposals![0].id;
