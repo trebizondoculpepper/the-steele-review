@@ -350,6 +350,25 @@ export class OperationStore {
     });
   }
 
+  /**
+   * Hand a claim back without counting it as a failed attempt, for work that
+   * made progress and will continue on a later delivery. Fenced like other
+   * transitions. Attempt numbers stay monotonic (they are the fencing token);
+   * instead the attempt budget is extended by one, so continuations never
+   * exhaust the failure budget.
+   */
+  yieldClaim(claim: OperationClaim): void {
+    this.transaction(() => {
+      const row = this.row(claim.key);
+      if (!this.holds(row, claim)) throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'released', owner = NULL, lease_expires_at = NULL, max_attempts = max_attempts + 1, updated_at = ? WHERE key = ?",
+        )
+        .run(this.now(), claim.key);
+    });
+  }
+
   /** Extend a held lease. Throws not-owner if the lease was lost. */
   renew(claim: OperationClaim, leaseMs: number): number {
     const { key } = claim;

@@ -189,6 +189,20 @@ describe("OperationStore", () => {
     expect(store.claim("op-done", "x", 1_000).kind).toBe("completed");
   });
 
+  it("yields a claim without spending an attempt", () => {
+    const store = open();
+    for (let i = 0; i < 10; i++) {
+      const c = store.claim("op-progress", "w", 1_000, 2);
+      expect(c.kind).toBe("claimed");
+      store.yieldClaim(held(c));
+    }
+    expect(() => store.yieldClaim({ key: "op-progress", owner: "w", attempt: 1 })).toThrow(
+      "not-owner",
+    );
+    // Attempt numbers keep increasing, so an old handle can never match a newer claim.
+    expect(held(store.claim("op-progress", "w", 1_000, 2)).attempt).toBe(11);
+  });
+
   it("rejects invalid claim input", () => {
     const store = open();
     expect(() => store.claim("", "w", 1_000)).toThrow("invalid-input");
