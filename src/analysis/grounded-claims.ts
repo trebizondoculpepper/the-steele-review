@@ -1,6 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
+  CandidateSnapshotSchema,
+  MalformedResponseSchema,
+  RejectionStageSchema,
+  candidateSnapshot,
+  malformedResponse,
+  saveFailureDiagnostics,
+  type MalformedResponse,
+  type RejectionStage,
+} from "./rejection.js";
+import {
   ArtifactStoreError,
   type ArtifactRef,
   type GitArtifactStore,
@@ -53,11 +63,12 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  */
 
 export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
-  version: "grounded-claims-v1",
+  version: "grounded-claims-v5",
   instructions: [
+    'claimType must be factual, opinion, prediction or ambiguous. speaker.kind must be author-voice, quoted, unknown or uncertain. Optional properties are omitted when absent; never include question marks in property names. Use JSON arrays for qualifiers, entities, dates and themeIds. A valid empty result is {"claims":[]}.',
     "Extract the specific claims the source text makes that a reader might want to check or respond to. Do not judge whether they are true.",
-    "For each claim copy the shortest passage that states it exactly as written, character for character; if that passage occurs more than once, set `occurrence` to its 1-based position.",
-    "`statement` restates the claim as the source asserts it, keeping qualifiers, quantities and negation. List hedging and scope words in `qualifiers` and stated dates in `dates` ({text, value?}).",
+    "For each claim copy one contiguous passage exactly as written, character for character, with no inserted ellipses or joined excerpts; if that passage occurs more than once, set `occurrence` to its 1-based position.",
+    "`statement` explains the intended meaning of this one assertion in self-contained ordinary language. Use the whole post to resolve they, it, that injection and similar references; make your best contextual interpretation even when uncertain, explicitly qualifying uncertain meaning and important assumptions in statement. Do not combine separate assertions or invent unsupported actors or details. Keep qualifiers, quantities and negation. Only statement may paraphrase: passage, qualifiers and dates[].text must be copied verbatim from the chosen quotation. Use empty arrays when no quoted qualifiers/dates occur; dates use {text, value?} with value only when unambiguous.",
     "`kind` is assertion (the text asserts it), quotation (it reports someone else saying it), question (posed as a question), or speculation (explicitly floated as possible).",
     "`speaker`: kind author-voice, quoted, unknown or uncertain. Give a `name` only for quoted/uncertain speakers named in the text, with `attribution`: the exact passage that names them.",
     "`themeIds`: the ids of the listed post themes this claim belongs to, possibly several. Use an empty list when none applies; never invent ids.",
@@ -101,16 +112,53 @@ export const ExtractedClaimSchema = z
   })
   .strict();
 
+/**
+ * Record schema versions: 1 accepted every grounded claim (unthemed ones as
+ * "unclassified"); 2 (#182) separates accepted claims from refinement
+ * candidates. Version 1 records stay readable and are never re-certified.
+ */
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = 2;
+
+/** Why a grounded assertion is a refinement candidate, not an accepted claim. */
+export const CandidateReasonSchema = z.enum(["no-theme", "question", "unclear-referent"]);
+export type CandidateReason = z.infer<typeof CandidateReasonSchema>;
+
+export const ClaimCandidateSchema = z
+  .object({
+    claim: z.unknown(),
+    occurrence: z.unknown(),
+    kind: AssertionKindSchema,
+    themeIds: z.array(z.string()),
+    reasons: z.array(CandidateReasonSchema).min(1),
+  })
+  .strict();
+
 export const ClaimExtractionRecordSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     sourceVersion: z.string(),
     themeIds: z.array(z.string()),
+    /** Exact theme result (commit:path) the theme IDs belong to. */
+    themeResult: z.string().optional(),
     /** Catalogue IDs too long to link from an occurrence; never truncated. */
     skippedThemeIds: z.array(z.string()).optional(),
+    /** v1: every grounded claim. v2: accepted claims only. */
     claims: z.array(ExtractedClaimSchema),
-    rejected: z.array(z.object({ index: z.number(), reason: z.string() }).strict()),
+    /** v2: grounded assertions awaiting triage; never claim records or index entries. */
+    candidates: z.array(ClaimCandidateSchema).optional(),
+    rejected: z.array(
+      z
+        .object({
+          index: z.number(),
+          reason: z.string(),
+          stage: RejectionStageSchema.optional(),
+          candidate: CandidateSnapshotSchema.optional(),
+        })
+        .strict(),
+    ),
+    /** Malformed responses from earlier attempts of a successful run. */
+    malformedAttempts: z.array(MalformedResponseSchema).optional(),
     extraction: z
       .object({ modelVersion: z.string(), promptVersion: z.string(), extractedAt: z.string() })
       .strict(),
@@ -137,6 +185,12 @@ export const ClaimRecordSchema = z
             /** Exact source passage and speaker kind, so comparisons see context. */
             passage: z.string().max(4000).optional(),
             speakerKind: z.string().optional(),
+            /**
+             * Every extraction (commit:path) that produced this occurrence, oldest
+             * first, so theme IDs accumulated from different results stay traceable
+             * to the result that linked them. `extraction` is the latest.
+             */
+            extractions: z.array(z.string()).max(100).optional(),
           })
           .strict(),
       )
@@ -172,6 +226,40 @@ export type ClaimRecord = z.infer<typeof ClaimRecordSchema>;
 
 export { claimIdentityKey };
 
+/** Allowlisted candidate fields kept for private inspection of rejections. */
+export const CLAIM_DIAGNOSTIC_FIELDS = ["statement", "passage", "kind", "claimType"] as const;
+
+/** Which validation stage a claim rejection reason belongs to. */
+export function claimRejectionStage(reason: string): RejectionStage {
+  if (reason === "malformed-claim" || reason === "invalid-claim") return "schema";
+  if (reason === "duplicate-occurrence") return "semantic";
+  return "grounding"; // unknown theme, passage or speaker evidence not found
+}
+
+// Only personal pronouns standing for unnamed actors are flagged. "It",
+// "this" and "that" also open impersonal or self-contained constructions
+// ("It is illegal to…", "This treaty bans…"), so they are left to the prompt
+// and source inspection rather than rejected structurally.
+const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
+
+/**
+ * Structural acceptance checks. Semantic self-containment also relies on the
+ * prompt and on source inspection (#184); this catches the clear cases:
+ * no theme link, a question, or a statement that opens with an unresolved
+ * personal pronoun ("They are spraying us") instead of naming its subject.
+ */
+export function candidateReasons(
+  kind: z.infer<typeof AssertionKindSchema>,
+  themeIds: readonly string[],
+  statement: string,
+): CandidateReason[] {
+  const reasons: CandidateReason[] = [];
+  if (themeIds.length === 0) reasons.push("no-theme");
+  if (kind === "question") reasons.push("question");
+  if (LEADING_PRONOUN.test(statement.trim())) reasons.push("unclear-referent");
+  return reasons;
+}
+
 export function claimRecordId(statement: string): string {
   return `claim-${claimIdentityKey(statement).slice(7, 39)}`;
 }
@@ -181,9 +269,17 @@ export function claimExtractionPath(
   sourceVersion: string,
   modelVersion: string,
   promptVersion: string,
+  /** The exact theme result the claims link to; part of the cache identity. */
+  themeResult?: string,
 ): string {
   const key = createHash("sha256")
-    .update(JSON.stringify([modelVersion, promptVersion]))
+    .update(
+      JSON.stringify(
+        themeResult === undefined
+          ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
+          : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult],
+      ),
+    )
     .digest("hex")
     .slice(0, 16);
   return `claim-extractions/${post.publicationId}/${post.postId}/${sourceVersion.slice(7, 39)}-${key}.json`;
@@ -214,6 +310,7 @@ export type GroundedClaimsOutcome =
       status: "failed";
       reason: "provider-failed" | "malformed-output" | "source-too-large";
       attempts: number;
+      malformed?: MalformedResponse[];
     };
 
 export async function extractGroundedClaims(input: {
@@ -224,6 +321,8 @@ export async function extractGroundedClaims(input: {
   indexName?: string;
   source: OccurrenceSource;
   themes: Array<Pick<CatalogueTheme, "id" | "name" | "definition">>;
+  /** Reference (commit:path) to the theme result the themes come from. */
+  themeResult?: string;
   maxAttempts?: number;
   maxSourceChars?: number;
   maxResponseChars?: number;
@@ -242,6 +341,7 @@ export async function extractGroundedClaims(input: {
     source.sourceVersion,
     input.provider.modelVersion,
     prompt.version,
+    input.themeResult,
   );
 
   let record: ClaimExtractionRecord;
@@ -269,6 +369,7 @@ export async function extractGroundedClaims(input: {
     let failure: "provider-failed" | "malformed-output" = "provider-failed";
     const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
     let used = 0;
+    const malformed: MalformedResponse[] = [];
     for (; used < attempts && !output; used++) {
       let raw: string;
       try {
@@ -281,9 +382,25 @@ export async function extractGroundedClaims(input: {
         continue;
       }
       output = raw.length <= maxResponseChars ? parseOutput(raw) : undefined;
-      if (!output) failure = "malformed-output";
+      if (!output) {
+        failure = "malformed-output";
+        malformed.push(malformedResponse(used + 1, raw, maxResponseChars));
+      }
     }
-    if (!output) return { status: "failed", reason: failure, attempts: used };
+    if (!output) {
+      // Keep a bounded, redacted excerpt of each malformed response privately.
+      await saveFailureDiagnostics(input.artifacts, `extraction-failures/claims/${path}`, {
+        reason: failure,
+        attempts: used,
+        malformed,
+      });
+      return {
+        status: "failed",
+        reason: failure,
+        attempts: used,
+        ...(malformed.length > 0 ? { malformed } : {}),
+      };
+    }
 
     const extraction = {
       modelVersion: input.provider.modelVersion,
@@ -291,6 +408,7 @@ export async function extractGroundedClaims(input: {
       extractedAt: (input.now ?? (() => new Date()))().toISOString(),
     };
     const claims: ClaimExtractionRecord["claims"] = [];
+    const candidates: NonNullable<ClaimExtractionRecord["candidates"]> = [];
     const rejected: ClaimExtractionRecord["rejected"] = [];
     const seen = new Set<string>();
     output.claims.forEach((item, index) => {
@@ -353,23 +471,38 @@ export async function extractGroundedClaims(input: {
       if (seen.has(occurrence.occurrenceId))
         return rejected.push({ index, reason: "duplicate-occurrence" });
       seen.add(occurrence.occurrenceId);
+      // Acceptance (#182): at least one theme, an asserted proposition and a
+      // self-contained statement. Anything else is kept as a candidate.
+      const reasons = candidateReasons(m.kind, linked, claim.statement);
+      if (reasons.length > 0) {
+        candidates.push({ claim, occurrence, kind: m.kind, themeIds: linked, reasons });
+        return;
+      }
       claims.push({
         claim,
         occurrence,
         kind: m.kind,
         themeIds: linked,
-        classification: linked.length > 0 ? "themed" : "unclassified",
-        ...(m.kind === "question" ? {} : { claimRecordId: claimRecordId(claim.statement) }),
+        classification: "themed",
+        claimRecordId: claimRecordId(claim.statement),
       });
     });
+    const detailed = rejected.map((r) => ({
+      ...r,
+      stage: claimRejectionStage(r.reason),
+      candidate: candidateSnapshot(output.claims[r.index], CLAIM_DIAGNOSTIC_FIELDS),
+    }));
     record = ClaimExtractionRecordSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CLAIM_EXTRACTION_SCHEMA_VERSION,
       post,
       sourceVersion: source.sourceVersion,
       themeIds: [...themeIds],
+      ...(input.themeResult ? { themeResult: input.themeResult } : {}),
       ...(skippedThemeIds.length > 0 ? { skippedThemeIds } : {}),
       claims,
-      rejected,
+      candidates,
+      rejected: detailed,
+      ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
       extraction,
     });
     const content = `${JSON.stringify(record, null, 2)}\n`;
@@ -452,15 +585,36 @@ export async function upsertClaimRecord(
     }
     const known = new Set(current.occurrences.map((o) => o.occurrenceId));
     const added = items.filter((c) => !known.has((c.occurrence as ClaimOccurrence).occurrenceId));
+    // An occurrence re-extracted under a newer extraction (for example against
+    // theme proposals) keeps its identity but points at the latest extraction.
+    const reextracted = new Set(
+      items
+        .map((c) => (c.occurrence as ClaimOccurrence).occurrenceId)
+        .filter((id) => known.has(id)),
+    );
+    const occurrences = current.occurrences.map((o) =>
+      reextracted.has(o.occurrenceId) && o.extraction !== extractionRef
+        ? {
+            ...o,
+            extraction: extractionRef,
+            extractions: [...new Set([...(o.extractions ?? [o.extraction]), extractionRef])].slice(
+              -100,
+            ),
+          }
+        : o,
+    );
+    const refreshed = occurrences.some((o, i) => o !== current.occurrences[i]);
     const themeIds = [
       ...new Set([...current.themeIds, ...items.flatMap((c) => c.themeIds)]),
     ].sort();
-    if (ref && added.length === 0 && themeIds.length === current.themeIds.length) return;
+    if (ref && added.length === 0 && !refreshed && themeIds.length === current.themeIds.length) {
+      return;
+    }
     const next: ClaimRecord = {
       ...current,
       themeIds,
       occurrences: [
-        ...current.occurrences,
+        ...occurrences,
         ...added.map((c) => ({
           occurrenceId: (c.occurrence as ClaimOccurrence).occurrenceId,
           ...post,

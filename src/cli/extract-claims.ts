@@ -5,7 +5,8 @@
  *
  *   extract-claims --post-id <slug>
  *
- * Run detect-themes for the post first, with the same STEELE_MODEL.
+ * Run detect-themes for the post first, with the same STEELE_MODEL: claims
+ * link to that exact theme-proposal result.
  *
  * Configuration (environment):
  *   STEELE_PUBLICATION_ID
@@ -24,12 +25,10 @@ import {
 } from "../analysis/claim-occurrence.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
 import {
-  DEFAULT_CATALOGUE_THEME_PROMPT,
-  ThemeCatalogueStore,
-  ThemeDetectionSchema,
-  detectionPath,
-  registerDetectedThemes,
-} from "../analysis/theme-catalogue.js";
+  DEFAULT_THEME_PROPOSAL_PROMPT,
+  parseThemeProposalResult,
+  themeProposalPath,
+} from "../analysis/theme-proposals.js";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { describeSetupError, elasticsearchConnection } from "../config/credentials.js";
 import { transcriptTimingsFor } from "../content/embedding-consumer.js";
@@ -103,30 +102,31 @@ async function main(argv: string[]): Promise<number> {
       return 1;
     }
     const sourceVersion = sourceVersionFor(record.text);
-    const detectionRef = await content.lookup(
-      detectionPath(
+    // Claims link to the exact saved theme-proposal result (#181).
+    const themeRef = await content.lookup(
+      themeProposalPath(
         post,
         sourceVersion,
         provider.modelVersion,
-        DEFAULT_CATALOGUE_THEME_PROMPT.version,
+        DEFAULT_THEME_PROPOSAL_PROMPT.version,
       ),
     );
-    if (!detectionRef) {
-      report({ outcome: "themes-not-detected" });
+    if (!themeRef) {
+      report({ outcome: "themes-not-proposed" });
       return 1;
     }
-    const detection = ThemeDetectionSchema.parse(JSON.parse(await content.read(detectionRef)));
-    // Resolve proposals through the catalogue's own identity rules, never by display name.
-    const themeStore = new ThemeCatalogueStore(content);
-    const registered = await registerDetectedThemes(themeStore, detection);
-    const ids = new Set([...detection.existing.map((e) => e.id), ...registered.ids]);
-    const { catalogue } = await themeStore.load();
-    const themes = catalogue.themes.filter((t) => ids.has(t.id));
+    const themeResult = parseThemeProposalResult(JSON.parse(await content.read(themeRef)));
+    const themes = themeResult.proposals.map((p) => ({
+      id: p.id,
+      name: p.title,
+      definition: p.description ?? p.title,
+    }));
     const outcome = await extractGroundedClaims({
       provider,
       artifacts: content,
       ...(es ? { index: es } : {}),
       themes,
+      themeResult: `${themeRef.commit}:${themeRef.path}`,
       source: {
         text: record.text,
         sourceVersion,
@@ -155,8 +155,7 @@ async function main(argv: string[]): Promise<number> {
       reused: outcome.reused,
       claims: outcome.record.claims.length,
       kinds,
-      unclassified: outcome.record.claims.filter((cl) => cl.classification === "unclassified")
-        .length,
+      candidates: outcome.record.candidates?.length ?? 0,
       rejected: outcome.record.rejected.length,
       claimRecords: outcome.claimRecords.length,
       indexed: outcome.indexed,

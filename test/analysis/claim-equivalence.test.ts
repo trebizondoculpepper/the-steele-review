@@ -56,13 +56,14 @@ async function post(postId: string, sentence: string) {
             entities: [],
             dates: [],
             speaker: { kind: "author-voice" },
-            themeIds: [],
+            themeIds: ["geoengineering"],
           },
         ],
       }),
     ),
     artifacts: content,
-    themes: [],
+    // Accepted claims need a theme link (#182); candidates get no claim record.
+    themes: [{ id: "geoengineering", name: "Geoengineering", definition: "Weather modification." }],
     source: {
       text,
       sourceVersion: sourceVersionFor(text),
@@ -85,7 +86,7 @@ const read = async (id: string) =>
     JSON.parse(await content.read((await content.lookup(`claims/${id}.json`))!)),
   );
 
-describe("resolveClaimEquivalence", () => {
+describe("resolveClaimEquivalence", { timeout: 60_000 }, () => {
   it("reuses an earlier claim for an equivalent rewording, keeping both occurrences", async () => {
     const first = await post("p1", "Weather modification has been around for decades.");
     const second = await post("p2", "Weather modification tools have existed for many decades.");

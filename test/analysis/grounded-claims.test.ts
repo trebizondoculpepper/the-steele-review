@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import {
+  ClaimExtractionRecordSchema,
   ClaimRecordSchema,
+  candidateReasons,
   claimRecordId,
   extractGroundedClaims,
 } from "../../src/analysis/grounded-claims.js";
@@ -117,7 +119,7 @@ describe("claimRecordId", () => {
 });
 
 describe("extractGroundedClaims", () => {
-  it("extracts grounded, attributed, theme-linked claims and keeps unclassified ones explicit", async () => {
+  it("accepts themed, self-contained assertions and keeps the rest as candidates (#182)", async () => {
     const indexed: Array<{ id: string; doc: { themes: string[] } }> = [];
     const index = {
       indexDocument: async (_i: string, id: string, doc: unknown) =>
@@ -131,12 +133,16 @@ describe("extractGroundedClaims", () => {
       themes,
     });
     if (out.status !== "extracted") throw new Error(out.status);
-    const { claims, rejected } = out.record;
+    const { claims, rejected, candidates } = out.record;
+    expect(out.record.schemaVersion).toBe(2);
     expect(claims.map((c) => [c.kind, c.classification])).toEqual([
       ["assertion", "themed"],
       ["quotation", "themed"],
-      ["question", "themed"],
-      ["speculation", "unclassified"],
+    ]);
+    // Questions, unthemed speculation and unclear referents are candidates, not claims.
+    expect(candidates?.map((c) => [c.kind, c.reasons])).toEqual([
+      ["question", ["question", "unclear-referent"]],
+      ["speculation", ["no-theme"]],
     ]);
     expect(rejected.map((r) => r.reason)).toEqual(["unknown-theme-id", "speaker-not-evidenced"]);
 
@@ -155,12 +161,15 @@ describe("extractGroundedClaims", () => {
     expect(quoted.span.start).toBe(TEXT.indexOf("over 90%"));
     expect(quoted.assertionDates).toEqual([{ text: "2019" }]);
 
-    // Questions get no normalised claim record; others do, distinct from occurrences.
-    expect(out.claimRecords).toHaveLength(3);
-    expect(indexed).toHaveLength(4);
+    // Only accepted claims get normalised records and index entries.
+    expect(out.claimRecords).toHaveLength(2);
+    expect(indexed).toHaveLength(2);
     expect(
       indexed.map((d) => (d.doc as unknown as { assertionKind: string }).assertionKind),
-    ).toEqual(["assertion", "quotation", "question", "speculation"]);
+    ).toEqual(["assertion", "quotation"]);
+    expect(
+      await content.lookup(`claims/${claimRecordId("The heat may be man-made")}.json`),
+    ).toBeUndefined();
     const ref = await content.lookup(
       `claims/${claimRecordId("Over 90% of planes spray aluminium")}.json`,
     );
@@ -197,6 +206,39 @@ describe("extractGroundedClaims", () => {
     expect((await read()).occurrences.map((o) => o.postId)).toEqual(["p1", "p2"]);
   });
 
+  it("does not reuse a cached extraction made against a different theme result", async () => {
+    const one = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c1:theme-proposals/a.json",
+    });
+    const two = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source(),
+      themes,
+      themeResult: "c2:theme-proposals/b.json",
+    });
+    expect(one.status === "extracted" && one.reused).toBe(false);
+    expect(two.status === "extracted" && two.reused).toBe(false);
+    if (two.status !== "extracted") throw new Error();
+    expect(two.record.themeResult).toBe("c2:theme-proposals/b.json");
+    // The claim record now points at the newer extraction for the same occurrence.
+    const ref = await content.lookup(
+      `claims/${claimRecordId("Geoengineering has not been going on for decades")}.json`,
+    );
+    const rec = ClaimRecordSchema.parse(JSON.parse(await content.read(ref!)));
+    expect(rec.occurrences).toHaveLength(1);
+    expect(rec.occurrences[0].extraction).toBe(`${two.recordRef.commit}:${two.recordRef.path}`);
+    if (one.status !== "extracted") throw new Error();
+    expect(rec.occurrences[0].extractions).toEqual([
+      `${one.recordRef.commit}:${one.recordRef.path}`,
+      `${two.recordRef.commit}:${two.recordRef.path}`,
+    ]);
+  });
+
   it("records model and prompt versions and fails cleanly on invalid output", async () => {
     const ok = await extractGroundedClaims({
       provider: model(RESPONSE),
@@ -207,7 +249,7 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: "grounded-claims-v1",
+      promptVersion: "grounded-claims-v5",
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
@@ -215,6 +257,59 @@ describe("extractGroundedClaims", () => {
       source: source("p3"),
       themes,
     });
-    expect(bad).toEqual({ status: "failed", reason: "malformed-output", attempts: 2 });
+    expect(bad).toMatchObject({ status: "failed", reason: "malformed-output", attempts: 2 });
+    // Bounded, private diagnostics of each malformed attempt.
+    const malformed = (bad as { malformed?: Array<{ reason: string; stage: string }> }).malformed;
+    expect(malformed?.map((m) => m.stage)).toEqual(["schema", "schema"]);
+    expect(malformed?.[0].reason).toBe("not-json");
+  });
+});
+
+describe("record versions (#182)", () => {
+  it("keeps version-1 records readable without re-certifying them", () => {
+    const v1 = {
+      schemaVersion: 1,
+      post: { publicationId: "pub", postId: "p" },
+      sourceVersion: `sha256:${"c".repeat(64)}`,
+      themeIds: [],
+      claims: [
+        {
+          claim: {},
+          occurrence: {},
+          kind: "assertion",
+          themeIds: [],
+          classification: "unclassified",
+          claimRecordId: "claim-x",
+        },
+      ],
+      rejected: [],
+      extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+    };
+    const parsed = ClaimExtractionRecordSchema.parse(v1);
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.candidates).toBeUndefined();
+  });
+
+  it("accepts a themed claim whose speaker and date are unknown", () => {
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Geoengineering has run for decades"),
+    ).toEqual([]);
+    expect(candidateReasons("speculation", ["geoengineering"], "The heat may be man-made")).toEqual(
+      [],
+    );
+    expect(candidateReasons("assertion", ["geoengineering"], "They are poisoning us")).toEqual([
+      "unclear-referent",
+    ]);
+    // Impersonal and demonstrative constructions are self-contained.
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "It is illegal to modify weather for hostile purposes",
+      ),
+    ).toEqual([]);
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "This treaty bans weather warfare"),
+    ).toEqual([]);
   });
 });

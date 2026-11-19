@@ -15,8 +15,12 @@ import type { ResearchCandidate } from "./research-store.js";
  * - Reuse is partial by design: stable explanation can be reused while
  *   incident-specific details (dates, people, places of this event) are
  *   returned as explicit gaps.
- * - Currency is checked deterministically: evidence last checked before the
- *   staleness cut-off is reported as outdated, never selected as current.
+ * - Age is not evidence of irrelevance. The owner chose corpus reuse with no
+ *   scheduled refresh or automatic expiry, so an otherwise applicable
+ *   independent source is reused however old its last check is. A caller that
+ *   explicitly asks for an age cut-off still gets one (the deprecated
+ *   `staleAfterDays` option), and material excluded that way is reported as
+ *   outdated rather than silently dropped.
  * - Every selected evidence item cites the entry, its revision and archive
  *   reference, and the evidence URL and passage exactly as committed. Entry
  *   limitations and unresolved gaps are carried through.
@@ -121,7 +125,13 @@ export class ApplicabilityAssessor {
   constructor(
     private readonly provider: ExtractionModelProvider,
     private readonly options: {
-      /** Evidence last checked longer ago than this is outdated. */
+      /**
+       * @deprecated Automatic age-only expiry is not the project policy:
+       * corpus reuse keeps a well-grounded source however old its last check
+       * is. This option is honoured when a caller sets it explicitly, so no
+       * requested policy is silently discarded; leave it unset to use the
+       * current behaviour.
+       */
       staleAfterDays?: number;
       now?: () => Date;
       prompt?: ExtractionPrompt;
@@ -209,7 +219,11 @@ export class ApplicabilityAssessor {
     if (!output) return { status: "failed", reason: last };
 
     const now = (this.options.now ?? (() => new Date()))().getTime();
-    const cutoff = now - (this.options.staleAfterDays ?? 365) * 86_400_000;
+    const staleAfterDays = this.options.staleAfterDays;
+    if (staleAfterDays !== undefined && (!Number.isFinite(staleAfterDays) || staleAfterDays < 1)) {
+      throw new RangeError("staleAfterDays must be a positive number of days when supplied");
+    }
+    const cutoff = staleAfterDays === undefined ? undefined : now - staleAfterDays * 86_400_000;
     const byId = new Map(candidates.map((c) => [c.entryId, c]));
     const seen = new Set<string>();
     const assessments: EntryAssessment[] = [];
@@ -263,7 +277,9 @@ export class ApplicabilityAssessor {
           entryArtifact: candidate.artifact,
           evidence: e,
         };
-        if (Date.parse(e.lastCheckedAt) < cutoff) outdated.push({ ...ref, reason: "stale" });
+        if (cutoff !== undefined && Date.parse(e.lastCheckedAt) < cutoff) {
+          outdated.push({ ...ref, reason: "stale" });
+        }
         // Monitored material never confirms the publication's own assertion.
         else if (e.kind === "monitored") outdated.push({ ...ref, reason: "monitored-only" });
         else selected.push(ref);
