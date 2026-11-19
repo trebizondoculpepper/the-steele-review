@@ -125,9 +125,24 @@ export class PublisherWorker {
       message.nak(Math.min(retryDelay, 5_000));
       return { kind: "deferred", reason: "busy" };
     }
+    // Keep the admission while the publication is in flight, however long
+    // artifact loading or destination calls take.
+    const lease = this.config.leaseMs ?? 10 * 60_000;
+    const renewal = setInterval(
+      () => {
+        try {
+          operations.renew(admission.claim, lease);
+        } catch {
+          clearInterval(renewal);
+        }
+      },
+      Math.max(1, Math.floor(lease / 3)),
+    );
+    renewal.unref?.();
     try {
       return await this.admitted(message, request, state?.status, signal);
     } finally {
+      clearInterval(renewal);
       try {
         operations.yieldClaim(admission.claim);
       } catch {
@@ -160,7 +175,7 @@ export class PublisherWorker {
       if (reconciled.status === "unpublished") {
         // Read-back showed nothing was published: republishing is a new
         // publication and must respect the frequency limit too.
-        const wait = this.rateLimitWait();
+        const wait = this.rateLimitWait(request.key);
         if (wait > 0) {
           operations.yieldClaim(reconciled.claim);
           message.nak(wait);
@@ -357,9 +372,10 @@ export class PublisherWorker {
   }
 
   /** Time until the frequency limit allows another publication, from durable receipts. */
-  private rateLimitWait(): number {
+  private rateLimitWait(exceptKey?: string): number {
     const min = this.config.minIntervalMs ?? 0;
     if (min <= 0) return 0;
+    let unsettled = false;
     let latest = 0;
     let after: string | undefined;
     for (;;) {
@@ -371,13 +387,16 @@ export class PublisherWorker {
       if (page.length === 0) break;
       for (const op of page) {
         // Receipts live in the publication state, whichever path confirmed them.
-        const at = Date.parse(
-          this.config.operations.publicationState(op.key)?.receipt?.publishedAt ?? "",
-        );
+        const pub = this.config.operations.publicationState(op.key);
+        const at = Date.parse(pub?.receipt?.publishedAt ?? "");
         if (at > latest) latest = at;
+        // Another article's uncertain outcome may already be a publication
+        // whose time is unknown: admit nothing new until read-back settles it.
+        if (pub?.status === "uncertain" && op.key !== exceptKey) unsettled = true;
       }
       after = page[page.length - 1]!.key;
     }
+    if (unsettled) return Math.max(1_000, Math.min(min, this.config.retryDelayMs ?? 60_000));
     const now = (this.config.now ?? (() => new Date()))().getTime();
     return latest ? Math.max(0, latest + min - now) : 0;
   }

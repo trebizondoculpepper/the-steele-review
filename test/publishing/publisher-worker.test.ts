@@ -279,19 +279,40 @@ describe("PublisherWorker smoke test", () => {
     expect(client.drafts.size).toBe(0);
   });
 
-  it("applies the frequency limit before republishing a draft read back as unpublished", async () => {
+  it("holds other articles while one is uncertain, then rate-limits after its republish", async () => {
     const w = worker({ minIntervalMs: 60 * 60_000 });
+    expect(await w.handle(message(await approved("p0")))).toMatchObject({ kind: "published" });
+    clock = new Date(clock.getTime() + 61 * 60_000);
     const a = await approved("p1");
     // A's publish fails ambiguously without publishing.
     client.inject("publishDraft", "outage");
     expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "uncertain" });
-    // B publishes meanwhile.
-    expect(await w.handle(message(await approved("p2")))).toMatchObject({ kind: "published" });
-    // A is read back as unpublished, but the limit now applies.
-    expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "rate-limited" });
-    clock = new Date(clock.getTime() + 61 * 60_000);
+    // B is held while A's outcome is unknown.
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+    // A is read back as unpublished and republished within the limit.
     expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
+    // B now waits for the interval after A.
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
     expect(client.drafts.size).toBe(2);
+  });
+
+  it("admits nothing new while another publication's outcome is uncertain", async () => {
+    const w = worker({ minIntervalMs: 60 * 60_000 });
+    const a = await approved("p1");
+    client.inject("publishDraft", "lost-response");
+    expect(await w.handle(message(a))).toEqual({ kind: "deferred", reason: "uncertain" });
+    // A may already be live: B waits rather than risking two posts inside the interval.
+    expect(await w.handle(message(await approved("p2")))).toEqual({
+      kind: "deferred",
+      reason: "rate-limited",
+    });
+    expect(await w.handle(message(a))).toMatchObject({ kind: "published" });
   });
 
   it("applies the frequency limit between publications", async () => {
