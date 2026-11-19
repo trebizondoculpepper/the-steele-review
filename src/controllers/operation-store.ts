@@ -1,6 +1,6 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
@@ -998,10 +998,88 @@ export function logicalArtifact(value: unknown): OperationArtifact | undefined {
   return undefined;
 }
 
+/**
+ * The store changed after the inspector opened it, so a result can no longer be
+ * trusted: an immutable connection that reads a moving file can return stale
+ * rows or fail with a corruption error. Callers report the store as unavailable.
+ * Deliberately carries no path, SQL or filesystem detail.
+ */
+export class OperationStoreChangedError extends Error {
+  constructor() {
+    super("operation store changed during inspection");
+    this.name = "OperationStoreChangedError";
+  }
+}
+
+/**
+ * Identity of the database file at open: any write replaced or extended it.
+ * `changeCounter` is SQLite's own header counter, which moves on every write
+ * even when a filesystem timestamp has coarse resolution.
+ */
+interface StoreIdentity {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  changeCounter: number | undefined;
+}
+
+/** SQLite's 100-byte header; the change counter is the big-endian u32 at offset 24. */
+function sqliteChangeCounter(path: string): number | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const header = Buffer.alloc(100);
+    if (readSync(fd, header, 0, 100, 0) < 28) return undefined;
+    return header.readUInt32BE(24);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function storeIdentity(path: string): StoreIdentity | undefined {
+  try {
+    const stats = statSync(path, { bigint: true });
+    if (!stats.isFile()) return undefined;
+    return {
+      dev: stats.dev,
+      ino: stats.ino,
+      size: stats.size,
+      mtimeNs: stats.mtimeNs,
+      changeCounter: sqliteChangeCounter(path),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const COUNTS_SQL =
+  "SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status";
+
+/** One statement, one snapshot: the row and its event counts share a moment. */
+const OPERATION_SQL = `SELECT o.status, o.attempts, o.max_attempts, o.artifact, o.error_code, o.lease_expires_at,
+          (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'pending') AS pending_count,
+          (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'sent') AS sent_count
+     FROM operations o WHERE o.key = ?`;
+
+const unchanged = (a: StoreIdentity, b: StoreIdentity | undefined): boolean =>
+  b !== undefined &&
+  a.dev === b.dev &&
+  a.ino === b.ino &&
+  a.size === b.size &&
+  a.mtimeNs === b.mtimeNs &&
+  a.changeCounter === b.changeCounter;
+
 export class OperationInspector {
   private constructor(
     private readonly db: DatabaseSync,
     private readonly now: () => number,
+    private readonly resolvedPath: string,
+    private readonly identity: StoreIdentity,
+    private readonly counts: StatementSync,
+    private readonly operation: StatementSync,
   ) {}
 
   static open(
@@ -1050,9 +1128,29 @@ export class OperationInspector {
         db.close();
         return { status: "unavailable" };
       }
+      // Prepare both inspection statements now: compiling them proves the
+      // columns they read exist, so an incompatible database is reported as
+      // unavailable here instead of throwing from a later inspection call.
+      const counts = db.prepare(COUNTS_SQL);
+      const operation = db.prepare(OPERATION_SQL);
+      // Quiescence must hold for the whole inspection, not just at open: a
+      // writer that starts later makes immutable reads stale or unsafe, so the
+      // file identity is recorded and re-checked around every read.
+      const identity = storeIdentity(resolved);
+      if (!identity) {
+        db.close();
+        return { status: "unavailable" };
+      }
       return {
         status: "available",
-        inspector: new OperationInspector(db, options.now ?? Date.now),
+        inspector: new OperationInspector(
+          db,
+          options.now ?? Date.now,
+          resolved,
+          identity,
+          counts,
+          operation,
+        ),
       };
     } catch {
       // A corrupt or unreadable database is unavailable, never a crash and
@@ -1062,30 +1160,42 @@ export class OperationInspector {
     }
   }
 
-  /** Counts by operation status, in status order. */
+  /**
+   * Run one read only while the file is provably unchanged. Checked before and
+   * after the query: a change during the read discards the result, because the
+   * immutable connection may have mixed pages from two versions of the file.
+   */
+  private read<T>(query: () => T): T {
+    if (this.changed()) throw new OperationStoreChangedError();
+    const value = query();
+    if (this.changed()) throw new OperationStoreChangedError();
+    return value;
+  }
+
+  private changed(): boolean {
+    if (existsSync(`${this.resolvedPath}-wal`)) return true;
+    return !unchanged(this.identity, storeIdentity(this.resolvedPath));
+  }
+
+  /**
+   * Counts by operation status, in status order.
+   * @throws OperationStoreChangedError when the file changed since opening.
+   */
   statusCounts(): OperationStatusCount[] {
-    const rows = this.db
-      .prepare("SELECT status, COUNT(*) AS count FROM operations GROUP BY status ORDER BY status")
-      .all() as Array<{ status: string; count: number }>;
+    const rows = this.read(() => this.counts.all()) as Array<{ status: string; count: number }>;
     return rows.map((row) => ({
       status: row.status as OperationStatus["status"],
       count: row.count,
     }));
   }
 
-  /** One operation by exact key, or undefined when the key is unknown. */
+  /**
+   * One operation by exact key, or undefined when the key is unknown.
+   * @throws OperationStoreChangedError when the file changed since opening.
+   */
   inspect(key: string): OperationInspection | undefined {
     if (!Key.safeParse(key).success) return undefined;
-    // One statement, one snapshot: the operation row and its event counts
-    // cannot come from two different moments.
-    const row = this.db
-      .prepare(
-        `SELECT o.status, o.attempts, o.max_attempts, o.artifact, o.error_code, o.lease_expires_at,
-                (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'pending') AS pending_count,
-                (SELECT COUNT(*) FROM pending_events p WHERE p.operation_key = o.key AND p.status = 'sent') AS sent_count
-           FROM operations o WHERE o.key = ?`,
-      )
-      .get(key) as InspectionRow | undefined;
+    const row = this.read(() => this.operation.get(key)) as InspectionRow | undefined;
     if (!row) return undefined;
     let artifact: OperationArtifact | undefined;
     if (row.artifact !== null) {

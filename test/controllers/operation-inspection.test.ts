@@ -15,6 +15,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   OperationInspector,
   OperationStore,
+  OperationStoreChangedError,
   logicalArtifact,
 } from "../../src/controllers/operation-store.js";
 
@@ -202,6 +203,49 @@ describe("read-only open", () => {
     db.exec("PRAGMA user_version = 999");
     db.close();
     expect(OperationInspector.open(path).status).toBe("unavailable");
+  });
+
+  it("refuses a database whose tables lack the columns inspection reads", () => {
+    const dir = directory();
+    const path = join(dir, "incompatible.db");
+    const db = new DatabaseSync(path);
+    db.exec("CREATE TABLE operations (key TEXT PRIMARY KEY)");
+    db.exec("CREATE TABLE pending_events (event_id TEXT PRIMARY KEY)");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+    // The tables exist and the version is supported, but inspect() would throw
+    // `no such column` rather than report an explicit unavailable result.
+    expect(OperationInspector.open(path)).toEqual({ status: "unavailable" });
+  });
+
+  it("refuses to inspect once the store changed since it opened", () => {
+    const dir = directory();
+    const path = join(dir, "operations.db");
+    const store = storeAt(path);
+    store.claim("op-stable", "worker", 60_000);
+    store.close();
+
+    const inspector = openInspector(path);
+    const writer = storeAt(path);
+    writer.claim("op-later", "worker", 60_000);
+    writer.close();
+
+    // The immutable connection may now mix pages from two file versions, so
+    // the inspection is abandoned instead of returning a stale or corrupt read.
+    expect(() => inspector.inspect("op-stable")).toThrow(OperationStoreChangedError);
+    expect(() => inspector.statusCounts()).toThrow(OperationStoreChangedError);
+  });
+
+  it("refuses to inspect when a WAL sidecar appears after opening", () => {
+    const dir = directory();
+    const path = join(dir, "operations.db");
+    const store = storeAt(path);
+    store.claim("op-stable", "worker", 60_000);
+    store.close();
+
+    const inspector = openInspector(path);
+    writeFileSync(`${path}-wal`, "");
+    expect(() => inspector.statusCounts()).toThrow(OperationStoreChangedError);
   });
 
   it("refuses a database with no recognisable schema", () => {
