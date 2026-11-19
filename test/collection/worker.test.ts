@@ -493,6 +493,16 @@ describe("CollectionWorker", () => {
     expect(operations.duePendingEvents()).toHaveLength(0);
   });
 
+  it("never publishes other stages' events from the shared outbox", async () => {
+    const { worker, operations, published } = setup({});
+    operations.reconcileCompleted("analysed:pub/p:x", {}, [
+      { eventId: "analysed-x", subject: "steele.v1.post.analysed", payload: "{}" },
+    ]);
+    expect(await worker.dispatchPending()).toBe(0);
+    expect(published).toHaveLength(0);
+    expect(operations.pendingEventStatus("analysed-x")).toBe("pending");
+  });
+
   it("terminates malformed events without touching state", async () => {
     const { worker, collectCalls } = setup({});
     const m = message("live", new TextEncoder().encode('{"not":"an event"}'));

@@ -10,6 +10,7 @@
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
  *   STEELE_DISCOVERY_STREAM?   default STEELE_DISCOVERY
  *   STEELE_CONTENT_STREAM?     default STEELE_CONTENT
+ *   STEELE_ANALYSIS_STREAM?    default STEELE_ANALYSIS (post-analysed events)
  *   STEELE_COLLECT_CONSUMER?   default steele-collector
  *   STEELE_INDEX_CONSUMER?     default steele-indexer
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
@@ -30,11 +31,13 @@ import {
   provisionDurableConsumer,
 } from "../controllers/nats-provision.js";
 import { NatsController } from "../controllers/nats.js";
+import { ANALYSIS_STREAM, POST_ANALYSED_SUBJECT } from "../events/post-analysed-event.js";
 import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
 
 const EnvSchema = z.object({
   STEELE_DISCOVERY_STREAM: z.string().min(1).default("STEELE_DISCOVERY"),
   STEELE_CONTENT_STREAM: z.string().min(1).default("STEELE_CONTENT"),
+  STEELE_ANALYSIS_STREAM: z.string().min(1).default(ANALYSIS_STREAM),
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
   STEELE_FULLTEXT_INDEX: z.string().min(1).default(FULLTEXT_INDEX_V1),
@@ -71,6 +74,10 @@ async function main(): Promise<number> {
     report.contentStream = await provisionDiscoveryStream(nats, {
       name: c.STEELE_CONTENT_STREAM,
       subjects: [TEXT_READY_SUBJECT],
+    });
+    report.analysisStream = await provisionDiscoveryStream(nats, {
+      name: c.STEELE_ANALYSIS_STREAM,
+      subjects: [POST_ANALYSED_SUBJECT],
     });
     report.collectConsumer = await provisionDurableConsumer(nats, {
       stream: c.STEELE_DISCOVERY_STREAM,

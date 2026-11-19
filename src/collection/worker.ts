@@ -8,6 +8,7 @@ import type {
 } from "../controllers/operation-store.js";
 import type { CollectionResult } from "../controllers/substack/collect.js";
 import { parseDiscoveryEvent, type IngestionReason } from "../events/discovery-event.js";
+import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
 import { TEXT_READY_SUBJECT, createTextReadyEvent } from "../events/text-ready-event.js";
 import type { MediaCandidate, TranscriptionJob } from "../transcription/adapter.js";
 import type { CollectionRecord, CollectionStore } from "./collection-store.js";
@@ -62,7 +63,18 @@ export type WorkerOutcome =
   | "retry"
   | "invalid-event";
 
+/** Subjects the collector owns in the shared outbox: text-ready handoffs and its own discovery retries. */
+export const COLLECTOR_DISPATCH_SUBJECTS: readonly string[] = [
+  TEXT_READY_SUBJECT,
+  DEFAULT_DISCOVERY_SUBJECT,
+];
+
 export interface CollectionWorkerConfig {
+  /**
+   * Outbox subjects this worker publishes; defaults to
+   * {@link COLLECTOR_DISPATCH_SUBJECTS}. Set when the discovery subject is overridden.
+   */
+  dispatchSubjects?: readonly string[];
   store: CollectionStore;
   operations: OperationStore;
   collector: CollectorPort;
@@ -356,7 +368,13 @@ export class CollectionWorker {
    */
   async dispatchPending(signal?: AbortSignal, limit = 100): Promise<number> {
     let sent = 0;
-    for (const pending of this.config.operations.duePendingEvents(limit)) {
+    // Only the collector's own subjects: other stages share the configured
+    // outbox (for example post-analysed events, which are published only on
+    // an explicit request) and must never be sent by the collector.
+    const due = (this.config.dispatchSubjects ?? COLLECTOR_DISPATCH_SUBJECTS).flatMap((subject) =>
+      this.config.operations.duePendingEvents(limit, subject),
+    );
+    for (const pending of due) {
       if (signal?.aborted) break;
       try {
         await this.config.publisher.publish(pending.subject, encoder.encode(pending.payload), {
