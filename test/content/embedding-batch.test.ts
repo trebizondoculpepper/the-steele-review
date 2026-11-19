@@ -253,6 +253,8 @@ describe("executeEmbeddingBatch", () => {
       { jobKey: p.jobs[0]!.jobKey, reason: "invalid-output", retryable: false },
     ]);
     expect(result.embedded).toEqual(p.jobs.slice(1).map((j) => j.jobKey));
+    // A failed job is reported once, not also as remaining work.
+    expect(result.remaining).toEqual([]);
   });
 
   it("does not complete jobs whose lease was taken over mid-batch", async () => {
