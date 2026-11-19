@@ -6,6 +6,7 @@ import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import {
   ThemeCatalogueStore,
   detectThemes,
+  selectCandidates,
   themeSlug,
 } from "../../src/analysis/theme-catalogue.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
@@ -67,10 +68,36 @@ describe("theme catalogue", () => {
   it("reuses identities by exact name or alias and never duplicates under concurrency", async () => {
     const { ids } = await seed();
     expect(ids).toEqual(["geoengineering"]);
-    const again = await catalogue.register([
-      { name: "Weather Modification", definition: "x", aliases: [], origin: "detected" },
+    const same = await catalogue.register([
+      {
+        name: "Weather Modification",
+        definition: "Claims that weather or climate is deliberately modified at scale.",
+        aliases: [],
+        origin: "detected",
+      },
     ]);
-    expect(again.ids).toEqual(["geoengineering"]);
+    expect(same.ids).toEqual(["geoengineering"]);
+    // Same name, different scope: separate identity, linked as a possible match, stable on rerun.
+    const other1 = await catalogue.register([
+      {
+        name: "Weather Modification",
+        definition: "Cloud seeding for agriculture.",
+        aliases: [],
+        origin: "detected",
+      },
+    ]);
+    const other2 = await catalogue.register([
+      {
+        name: "Weather Modification",
+        definition: "Cloud seeding for agriculture.",
+        aliases: [],
+        origin: "detected",
+      },
+    ]);
+    expect(other1.ids[0]).not.toBe("geoengineering");
+    expect(other2.ids).toEqual(other1.ids);
+    const linked = (await catalogue.load()).catalogue.themes.find((t) => t.id === other1.ids[0]);
+    expect(linked?.possibleMatchOf).toBe("geoengineering");
 
     const other = new ThemeCatalogueStore(content);
     const [a, b] = await Promise.all([
@@ -81,7 +108,7 @@ describe("theme catalogue", () => {
     ]);
     expect(a.ids).toEqual(b.ids);
     const ids2 = (await catalogue.load()).catalogue.themes.map((t) => t.id);
-    expect(ids2).toEqual(["geoengineering", "smart-meters"]);
+    expect(ids2).toEqual(["geoengineering", other1.ids[0], "smart-meters"]);
     void ids2;
     expect(themeSlug("Chemtrails & 5G!")).toBe("chemtrails-and-5g");
     expect(themeSlug("Dépopulation")).toBe("depopulation");
@@ -104,6 +131,28 @@ describe("theme catalogue", () => {
     const u2 = await catalogue.register([unsure]);
     expect(u1.ids[0]).not.toBe("geoengineering");
     expect(u2.ids).toEqual(u1.ids);
+  });
+});
+
+describe("selectCandidates", () => {
+  it("keeps relevant themes when the catalogue exceeds the limit", () => {
+    const filler = Array.from({ length: 300 }, (_, i) => ({
+      id: `filler-${i}`,
+      name: `Filler ${i}`,
+      definition: "Unrelated topic.",
+      aliases: [],
+      origin: "seed" as const,
+    }));
+    const late = {
+      id: "smart-meters",
+      name: "Smart meters",
+      definition: "Claims about smart meters harming health.",
+      aliases: [],
+      origin: "detected" as const,
+    };
+    const chosen = selectCandidates([...filler, late], "Remove your smart meters now", 200);
+    expect(chosen).toHaveLength(200);
+    expect(chosen[0].id).toBe("smart-meters");
   });
 });
 

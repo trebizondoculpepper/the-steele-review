@@ -155,16 +155,38 @@ export class ThemeCatalogueStore {
         // An explicitly uncertain proposal never merges into the theme it
         // might match: it reuses only an identity recorded with the same
         // uncertainty (i.e. its own earlier registration).
+        // Reuse requires the same name AND the same scope (definition): a
+        // same-named proposal with a different definition is not assumed to
+        // be the same theme. It gets its own identity, linked as a possible
+        // match to the named one so the uncertainty stays visible.
+        const definition = identityName(valid.definition);
+        const sameName = (t: CatalogueTheme) => namesOf(t).some((n) => names.has(n));
         const same = themes.find(
           (t) =>
-            namesOf(t).some((n) => names.has(n)) &&
-            (valid.possibleMatchOf === undefined
-              ? t.possibleMatchOf === undefined
-              : t.possibleMatchOf === valid.possibleMatchOf),
+            sameName(t) &&
+            identityName(t.definition) === definition &&
+            t.possibleMatchOf === valid.possibleMatchOf,
         );
         if (same) {
           ids.push(same.id);
           continue;
+        }
+        if (valid.possibleMatchOf === undefined) {
+          const namesake = themes.find((t) => sameName(t) && t.possibleMatchOf === undefined);
+          if (namesake) valid.possibleMatchOf = namesake.id;
+          // A rerun of this same proposal must resolve to the identity minted now.
+          const earlier = namesake
+            ? themes.find(
+                (t) =>
+                  sameName(t) &&
+                  identityName(t.definition) === definition &&
+                  t.possibleMatchOf === namesake.id,
+              )
+            : undefined;
+          if (earlier) {
+            ids.push(earlier.id);
+            continue;
+          }
         }
         const base = themeSlug(valid.name);
         if (!base) throw new Error("theme name has no usable characters");
@@ -322,6 +344,41 @@ function parseOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined
   }
 }
 
+/**
+ * Bounded, deterministic candidate selection: every entry when the
+ * catalogue fits, otherwise the entries whose name, aliases and definition
+ * share the most words with the source (ties by catalogue order). Retrieval
+ * only narrows candidates; the model still decides, and an omitted theme can
+ * at worst be proposed as new and linked by name.
+ */
+export function selectCandidates(
+  themes: readonly CatalogueTheme[],
+  text: string,
+  limit: number,
+): CatalogueTheme[] {
+  if (themes.length <= limit) return [...themes];
+  const words = new Set(
+    identityName(text)
+      .split(" ")
+      .filter((w) => w.length > 3),
+  );
+  const score = (t: CatalogueTheme) => {
+    const terms = new Set(
+      identityName([t.name, ...t.aliases, t.definition].join(" "))
+        .split(" ")
+        .filter((w) => w.length > 3),
+    );
+    let n = 0;
+    for (const w of terms) if (words.has(w)) n++;
+    return n;
+  };
+  return themes
+    .map((t, i) => ({ t, i, s: score(t) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .slice(0, limit)
+    .map((x) => x.t);
+}
+
 export function detectionPath(
   post: { publicationId: string; postId: string },
   sourceVersion: string,
@@ -374,7 +431,7 @@ export async function detectThemes(input: {
   if (detectionRef) {
     detection = ThemeDetectionSchema.parse(JSON.parse(await input.artifacts.read(detectionRef)));
   } else {
-    const known = catalogue.themes.slice(0, MAX_PROMPT_CATALOGUE);
+    const known = selectCandidates(catalogue.themes, input.source.text, MAX_PROMPT_CATALOGUE);
     const knownIds = new Set(known.map((t) => t.id));
     const boundary = `SOURCE-${randomBytes(12).toString("hex")}`;
     const user = [
