@@ -37,3 +37,9 @@ Initial human-checkable comparison set: theme extraction should return a weather
 ## Parallel work
 
 After this audit, #143 and #146 can proceed in parallel. The two new adapter tickets are independent of all stage tickets and can be built with fakes in tests.
+
+## Follow-up readiness decisions
+
+The matrix above records the initial audit, not a live implementation inventory. Concrete OpenRouter and Kagi/page-fetch adapters subsequently shipped in #153/#154 (`src/controllers/openrouter.ts`, `src/controllers/research-web.ts`), and controlled dossier revisions shipped in #146. Inspect those delivered interfaces rather than rebuilding the ports. The [manual demo contract](../architecture/15-manual-research-demo.md) now records the human-refined notability heuristic, cheap experimental model, productive research continuation and transcript-quality gate.
+
+The sample's proposed repeated assertions are candidate matches. Compare full context, dates and qualifiers; retain distinct normalised claims if equivalence is uncertain. The acceptance checklist must not force the two posts into one claim ID merely because this initial audit suggested that demonstration. A clearly labelled synthetic fixture can demonstrate equivalence when real material does not.
