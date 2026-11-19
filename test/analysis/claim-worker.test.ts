@@ -294,6 +294,30 @@ describe("ClaimExtractionWorker", () => {
     expect(JSON.parse(again.published[0]!.body).data.sourceArtifact).toEqual(originalSource);
   });
 
+  it("retries rather than acknowledging exhaustion when the archive lookup fails", async () => {
+    const { worker } = setup([goodClaims]);
+    await worker.handle(await message());
+    const db = (
+      operations as unknown as {
+        db: { prepare(s: string): { run(...a: unknown[]): void; all(): Array<{ key: string }> } };
+      }
+    ).db;
+    const key = db.prepare("SELECT key FROM operations WHERE key LIKE 'claims:%'").all()[0]!.key;
+    db.prepare("UPDATE operations SET status = 'failed' WHERE key = ?").run(key);
+    const again = setup([]);
+    artifacts.lookup = async () => {
+      throw new Error("git unavailable");
+    };
+    const m = await message(record(), "substack/example-pub/a-post/retry.json").catch(
+      () => undefined,
+    );
+    // message() itself writes through artifacts.write, which is unaffected.
+    expect(m).toBeDefined();
+    expect(await again.worker.handle(m!)).toBe("retry");
+    expect(m!.acks).toBe(0);
+    expect(m!.naks).toHaveLength(1);
+  });
+
   it("records incomplete sources without extracting", async () => {
     const { worker, calls } = setup([goodClaims]);
     const m = await message(record(false));

@@ -167,7 +167,14 @@ export class ClaimExtractionWorker {
     if (claimed.kind === "exhausted") {
       // The final attempt may have committed the claim set and crashed before
       // completing: finish from that artifact instead of abandoning it.
-      const committed = await this.config.artifacts.lookup(path).catch(() => undefined);
+      let committed: ArtifactRef | undefined;
+      try {
+        committed = await this.config.artifacts.lookup(path);
+      } catch {
+        // A lookup failure is not proof the claim set is absent: retry later.
+        message.nak(retryDelay);
+        return "retry";
+      }
       if (committed) {
         const stored = JSON.parse(await this.config.artifacts.read(committed)) as StoredClaimSet;
         this.config.operations.reconcileCompleted(key, { claimsArtifact: toReference(committed) }, [
