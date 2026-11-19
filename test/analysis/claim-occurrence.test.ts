@@ -216,6 +216,28 @@ describe("parseClaimOccurrence", () => {
         assertionDates: [{ text: "last spring", value: "2020-05-01" }],
       }),
     ],
+    [
+      "span past the end",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        span: { ...(o.span as { start: number }), end: 10_000 },
+      }),
+    ],
+    [
+      "forged claim ID",
+      (o: Record<string, unknown>) => ({ ...o, claimId: `sha256:${"7".repeat(64)}` }),
+    ],
+    [
+      "changed statement",
+      (o: Record<string, unknown>) => ({ ...o, statement: "Something different." }),
+    ],
+    [
+      "invented transcript time",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        transcriptTime: { startSeconds: 100, endSeconds: 200 },
+      }),
+    ],
     ["changed url", (o: Record<string, unknown>) => ({ ...o, url: "https://other.example/p/x" })],
     [
       "changed publication time",

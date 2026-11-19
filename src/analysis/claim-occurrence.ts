@@ -6,6 +6,7 @@ import {
   ClaimTypeSchema,
   DateMentionSchema,
   canonicalDateValue,
+  claimIdFor,
   parseClaim,
   type Claim,
   type ClaimSource,
@@ -258,6 +259,9 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
   if (o.publicationId !== source.publicationId || o.postId !== source.postId) {
     throw new InvalidClaimOccurrenceError("occurrence belongs to another post");
   }
+  if (o.span.end <= o.span.start || o.span.end > source.text.length) {
+    throw new InvalidClaimOccurrenceError("span lies outside the source text");
+  }
   if (source.text.slice(o.span.start, o.span.end) !== o.passage) {
     throw new InvalidClaimOccurrenceError("passage does not match the source text at that span");
   }
@@ -265,6 +269,22 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
     throw new InvalidClaimOccurrenceError(
       "occurrence ID does not match its post, version and span",
     );
+  }
+  const expectedClaimId = claimIdFor({
+    sourceVersion: o.sourceVersion,
+    start: o.span.start,
+    end: o.span.end,
+    statement: o.statement,
+    modelVersion: o.extraction.modelVersion,
+    promptVersion: o.extraction.promptVersion,
+  });
+  if (o.claimId !== expectedClaimId) {
+    throw new InvalidClaimOccurrenceError("claim ID does not match the claim fields");
+  }
+  // Transcript time is derived from the supplied timings, never stored freely.
+  const expectedTime = transcriptTimeFor(source, o.span);
+  if (JSON.stringify(o.transcriptTime ?? null) !== JSON.stringify(expectedTime ?? null)) {
+    throw new InvalidClaimOccurrenceError("transcript time does not match the supplied timings");
   }
   for (const date of o.assertionDates) {
     if (!o.passage.includes(date.text)) {
