@@ -132,9 +132,12 @@ export async function executeEmbeddingBatch(input: {
   // Renew every lease still held; a job whose lease was lost goes back to
   // the queue untouched so another invocation can finish it.
   const lost = new Set<Work>();
+  // Jobs already failed in an earlier sub-batch: their leases are released
+  // and they are reported once, never renewed or listed as remaining.
+  const settled = new Set<Work>();
   const renewAll = () => {
     for (const w of work) {
-      if (lost.has(w)) continue;
+      if (lost.has(w) || settled.has(w)) continue;
       try {
         operations.renew(w.jobClaim, leaseMs);
         if (w.reuseClaim) operations.renew(w.reuseClaim, leaseMs);
@@ -180,6 +183,7 @@ export async function executeEmbeddingBatch(input: {
       const retryable = reason === "cancelled" ? true : (failure?.retryable ?? true);
       operations.fail(w.jobClaim, `embed:${reason}`, retryable);
       if (w.reuseClaim) operations.fail(w.reuseClaim, `embed:${reason}`, retryable);
+      settled.add(w);
       result.failed.push({ jobKey: w.job.jobKey, reason, retryable });
     }
     if (input.signal?.aborted) break;
@@ -188,11 +192,10 @@ export async function executeEmbeddingBatch(input: {
   // Store each vector, then record completion.
   for (const w of work) {
     if (!w.vector) {
+      if (settled.has(w)) continue; // already reported as failed
       // Never attempted (cancelled before its sub-batch) or lease lost: still pending.
-      if (lost.has(w) || !result.failed.some((f) => f.jobKey === w.job.jobKey)) {
-        if (!lost.has(w)) operations.fail(w.jobClaim, "embed:not-attempted", true);
-        result.remaining.push(w.job.jobKey);
-      }
+      if (!lost.has(w)) operations.fail(w.jobClaim, "embed:not-attempted", true);
+      result.remaining.push(w.job.jobKey);
       continue;
     }
     renewAll();
