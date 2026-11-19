@@ -5,6 +5,7 @@ import { sourceVersionFor } from "../content/fulltext-document.js";
 import {
   ClaimTypeSchema,
   DateMentionSchema,
+  canonicalDateValue,
   parseClaim,
   type Claim,
   type ClaimSource,
@@ -268,6 +269,15 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
   for (const date of o.assertionDates) {
     if (!o.passage.includes(date.text)) {
       throw new InvalidClaimOccurrenceError("assertion date wording does not occur in the passage");
+    }
+    // A normalised value is only allowed when the wording itself states it.
+    if (date.value !== undefined && canonicalDateValue(date.text) !== date.value) {
+      throw new InvalidClaimOccurrenceError("assertion date value does not match its wording");
+    }
+  }
+  for (const field of ["repository", "commit", "path", "hash"] as const) {
+    if (o.artifact[field] !== source.artifact[field]) {
+      throw new InvalidClaimOccurrenceError("artifact does not match the supplied source artifact");
     }
   }
   if (o.publisher.publicationId !== o.publicationId) {

@@ -336,6 +336,14 @@ function isoDateFromText(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Canonical ISO date for wording that states one unambiguously, else
+ * undefined. Exported so other contracts apply exactly the same rule.
+ */
+export function canonicalDateValue(text: string): string | undefined {
+  return isoDateFromText(text);
+}
+
 /** Recompute the canonical claim ID from validated fields. */
 function canonicalClaimId(claim: Claim): string {
   return claimIdFor({

@@ -209,6 +209,20 @@ describe("parseClaimOccurrence", () => {
       }),
     ],
     ["verdict field", (o: Record<string, unknown>) => ({ ...o, verdict: "false" })],
+    [
+      "precise value for vague wording",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        assertionDates: [{ text: "last spring", value: "2020-05-01" }],
+      }),
+    ],
+    [
+      "substituted artifact",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        artifact: { ...(o.artifact as object), commit: "f".repeat(40) },
+      }),
+    ],
   ])("rejects a %s", (_name, mutate) => {
     expect(() =>
       parseClaimOccurrence(mutate(valid() as unknown as Record<string, unknown>), source),
