@@ -2,7 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { resolveClaimEquivalence } from "../../src/analysis/claim-equivalence.js";
+import {
+  mergeClaimRecords,
+  resolveClaimEquivalence,
+} from "../../src/analysis/claim-equivalence.js";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import {
   ClaimRecordSchema,
@@ -141,6 +144,26 @@ describe("resolveClaimEquivalence", () => {
     });
     expect(out).toMatchObject({ status: "already-merged", canonical: canonicalId });
     expect((await read(canonicalId)).occurrences).toHaveLength(2);
+  });
+
+  it("forwards a copy whose target was redirected meanwhile", async () => {
+    const ids = [
+      await post("p1", "Weather modification has been around for decades."),
+      await post("p2", "Weather modification tools have existed for many decades."),
+      await post("p3", "Weather modification has existed for decades now."),
+    ].sort();
+    const [a, b, c] = ids;
+    // b already redirected to a (its occurrences copied); now merge c into b.
+    const decision = {
+      reason: "same",
+      modelVersion: "m",
+      promptVersion: "p",
+      decidedAt: new Date(0).toISOString(),
+    } as never;
+    await mergeClaimRecords(content, b, a, decision);
+    await mergeClaimRecords(content, c, b, decision);
+    expect((await read(a)).occurrences).toHaveLength(3);
+    expect((await read(b)).occurrences).toHaveLength(1);
   });
 
   it("keeps a negated or materially qualified claim separate", async () => {

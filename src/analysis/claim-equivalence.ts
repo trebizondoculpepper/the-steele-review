@@ -200,40 +200,59 @@ export async function mergeClaimRecords(
   await copyOccurrences(artifacts, from, into, decision);
 }
 
+class TargetRedirected extends Error {}
+
 async function copyOccurrences(
   artifacts: GitArtifactStore,
   from: string,
   into: string,
   decision: Pick<EquivalenceDecision, "reason" | "modelVersion" | "promptVersion" | "decidedAt">,
 ): Promise<void> {
-  const source = await readRecord(artifacts, from);
-  if (!source) throw new Error("claim record missing");
-  await revise(artifacts, into, (target) => {
-    const known = new Set(target.occurrences.map((o) => o.occurrenceId));
-    const added = source.record.occurrences.filter((o) => !known.has(o.occurrenceId));
-    const themeIds = [...new Set([...target.themeIds, ...source.record.themeIds])].sort();
-    const already = (target.equivalences ?? []).some((e) => e.record === from);
-    if (added.length === 0 && already && themeIds.length === target.themeIds.length)
-      return undefined;
-    return {
-      ...target,
-      themeIds,
-      occurrences: [...target.occurrences, ...added],
-      equivalences: already
-        ? target.equivalences
-        : [
-            ...(target.equivalences ?? []),
-            {
-              record: from,
-              statement: source.record.statement,
-              reason: decision.reason,
-              modelVersion: decision.modelVersion,
-              promptVersion: decision.promptVersion,
-              decidedAt: decision.decidedAt,
-            },
-          ],
-    };
-  });
+  // The target may itself be redirected concurrently. Each copy is a
+  // compare-and-swap on the target that refuses a redirected target, so the
+  // copy either lands before the target's redirect (and that merge, which
+  // copies after redirecting, carries it forward) or retries on the new
+  // canonical record. Occurrences can therefore never be stranded.
+  let target = await canonicalOf(artifacts, into);
+  for (let hop = 0; hop < 20; hop++) {
+    if (target === from) return;
+    const source = await readRecord(artifacts, from);
+    if (!source) throw new Error("claim record missing");
+    try {
+      await revise(artifacts, target, (t) => {
+        if (t.canonical) throw new TargetRedirected();
+        const known = new Set(t.occurrences.map((o) => o.occurrenceId));
+        const added = source.record.occurrences.filter((o) => !known.has(o.occurrenceId));
+        const themeIds = [...new Set([...t.themeIds, ...source.record.themeIds])].sort();
+        const already = (t.equivalences ?? []).some((e) => e.record === from);
+        if (added.length === 0 && already && themeIds.length === t.themeIds.length)
+          return undefined;
+        return {
+          ...t,
+          themeIds,
+          occurrences: [...t.occurrences, ...added],
+          equivalences: already
+            ? t.equivalences
+            : [
+                ...(t.equivalences ?? []),
+                {
+                  record: from,
+                  statement: source.record.statement,
+                  reason: decision.reason,
+                  modelVersion: decision.modelVersion,
+                  promptVersion: decision.promptVersion,
+                  decidedAt: decision.decidedAt,
+                },
+              ],
+        };
+      });
+      return;
+    } catch (error) {
+      if (!(error instanceof TargetRedirected)) throw error;
+      target = await canonicalOf(artifacts, target);
+    }
+  }
+  throw new Error("redirect chain too long");
 }
 
 /** Follow redirects to the current canonical record (bounded). */
