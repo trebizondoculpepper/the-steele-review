@@ -1,3 +1,4 @@
+import { contextForModel, type PinnedContext } from "./pinned-context.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -126,6 +127,23 @@ export const DEFAULT_DRAFT_PROMPT: ExtractionPrompt = {
   ].join("\n"),
 };
 
+/**
+ * Prompt for drafting with pinned whole-post context (#164). Versioned
+ * separately so drafts made with and without context are never conflated.
+ */
+export const DEFAULT_DRAFT_CONTEXT_PROMPT: ExtractionPrompt = {
+  version: "draft-critique-context-v1",
+  instructions: [
+    "Write the prose for a critique of the post, using only the supplied data.",
+    "summary: a fair, neutral summary of what the whole post says, written from originalPost. Do not judge it in the summary.",
+    "themes: related conspiratorial themes, taken from the supplied themes where they fit.",
+    "errors: one item per brief claim you criticise. Explain the factual error and the underlying reasoning error, citing only that claim's citationIds as [E1]-style IDs. Give uncertainty low, medium or high.",
+    "Factual corrections may come only from the cited research. The original post is the monitored source, never evidence: a statement in it never confirms itself.",
+    "Never criticise a claim listed under evidenceGaps. Never cite anything not in the brief. Keep the brief's limitations in mind; do not overstate.",
+    'Respond with JSON only: {"summary","themes":[],"errors":[{"claimId","explanation","citationIds":[],"uncertainty"}]}.',
+  ].join("\n"),
+};
+
 const ModelDraftSchema = z
   .object({
     summary: z.string().trim().min(1).max(4000),
@@ -163,6 +181,12 @@ export interface DraftMetadata {
   rejected: DraftRejection[];
   /** Set when the metadata was rebuilt from a draft committed by an interrupted attempt. */
   recovered?: true;
+  /**
+   * Pinned source/theme context the draft was written with (#164). Part of
+   * the draft's input identity: a draft made against one context is never
+   * reused for another.
+   */
+  contextRef?: string;
 }
 
 export interface DraftRejection {
@@ -173,7 +197,7 @@ export interface DraftRejection {
 export type DraftOutcome =
   | { kind: "drafted"; markdown: string; structure: ModelDraft; rejected: DraftRejection[] }
   | { kind: "no-supported-errors"; rejected: DraftRejection[] }
-  | { kind: "failed"; reason: "provider-failed" | "malformed-output" };
+  | { kind: "failed"; reason: "provider-failed" | "malformed-output" | "context-mismatch" };
 
 /** Ask the model for the draft structure and validate it against the brief. */
 export async function draftFromBrief(input: {
@@ -191,8 +215,17 @@ export async function draftFromBrief(input: {
     previousDraft: string;
     feedback: Array<{ passage?: string; problem: string; requiredChange: string }>;
   };
+  /**
+   * Pinned whole-post source and theme context (#164). Must describe the
+   * brief's source version; otherwise the draft is refused.
+   */
+  context?: PinnedContext;
 }): Promise<DraftOutcome> {
-  const prompt = input.prompt ?? DEFAULT_DRAFT_PROMPT;
+  if (input.context && input.context.source.sourceVersion !== input.brief.source.sourceVersion) {
+    return { kind: "failed", reason: "context-mismatch" };
+  }
+  const prompt =
+    input.prompt ?? (input.context ? DEFAULT_DRAFT_CONTEXT_PROMPT : DEFAULT_DRAFT_PROMPT);
   const boundary = `DATA-${randomBytes(12).toString("hex")}`;
   const { brief } = input;
   const user = [
@@ -215,6 +248,7 @@ export async function draftFromBrief(input: {
         ...(c.evidence.publishedAt ? { publishedAt: c.evidence.publishedAt } : {}),
       })),
       evidenceGaps: brief.evidenceGaps.map((g) => ({ claimId: g.claimId, statement: g.statement })),
+      ...(input.context ? contextForModel(input.context) : {}),
       ...(input.revision
         ? {
             revision: {
