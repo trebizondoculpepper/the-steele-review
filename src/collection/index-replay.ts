@@ -40,7 +40,9 @@ export const ReplaySelectionSchema = z
     limit: z.number().int().min(1).max(MAX_REPLAY),
   })
   .strict()
-  .refine((s) => !s.from || !s.to || s.from <= s.to, { message: "from must not be after to" });
+  .refine((s) => !s.from || !s.to || Date.parse(s.from) <= Date.parse(s.to), {
+    message: "from must not be after to",
+  });
 export type ReplaySelection = z.input<typeof ReplaySelectionSchema>;
 
 export interface ReplayReport {
@@ -108,7 +110,13 @@ export async function replayArchiveToIndex(input: {
     }
     if (sel.from || sel.to) {
       const at = record.item.publishedAt;
-      if (!at || (sel.from && at < sel.from) || (sel.to && at > sel.to)) {
+      // Compared as instants: offsets differ between sources.
+      const t = at ? Date.parse(at) : Number.NaN;
+      if (
+        Number.isNaN(t) ||
+        (sel.from && t < Date.parse(sel.from)) ||
+        (sel.to && t > Date.parse(sel.to))
+      ) {
         report.skipped++;
         continue;
       }

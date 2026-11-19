@@ -152,6 +152,21 @@ describe("replayArchiveToIndex", () => {
     expect(bounded).toMatchObject({ selected: 1, truncated: true });
   });
 
+  it("compares the date range as instants across offsets", async () => {
+    await archive(record("a", "2026-01-01T03:00:00+05:00"));
+    const result = await replayArchiveToIndex({
+      selection: {
+        publicationId: "example-pub",
+        from: "2025-12-31T21:00:00Z",
+        to: "2025-12-31T23:00:00Z",
+        limit: 5,
+      },
+      artifacts,
+      index: versionedIndex().port,
+    });
+    expect(result).toMatchObject({ selected: 1, skipped: 0 });
+  });
+
   it("reports unreadable records and requires a bounded selection", async () => {
     await artifacts.write("substack/example-pub/bad/collected.json", "not json\n");
     const result = await replayArchiveToIndex({
