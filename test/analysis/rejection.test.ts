@@ -69,6 +69,13 @@ describe("rejection diagnostics helpers", () => {
     expect(candidateSnapshot("not an object", ["name"]).fields).toEqual({});
   });
 
+  it("redacts in bounded time on pathological input", () => {
+    const start = performance.now();
+    const out = safeText("a/".repeat(80_000), 1000);
+    expect(performance.now() - start).toBeLessThan(500);
+    expect(out.truncated).toBe(true);
+  });
+
   it("classifies and bounds malformed responses", () => {
     expect(malformedResponse(1, "not json", 1000).reason).toBe("not-json");
     expect(malformedResponse(1, '{"wrong":1}', 1000).reason).toBe("invalid-structure");

@@ -33,15 +33,24 @@ export type CandidateSnapshot = z.infer<typeof CandidateSnapshotSchema>;
 // Long tokens that look like credentials: provider keys, bearer tokens,
 // JWT-like strings and long hex/base64 runs.
 const SECRET_LIKE =
-  /\b(?:sk|pk|rk|ghp|gho|glpat|xox[abp])[-_][A-Za-z0-9_-]{8,}|\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|\b[A-Fa-f0-9]{40,}\b|\b(?=[A-Za-z0-9+/]*\d)(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{48,}={0,2}/g;
+  /\b(?:sk|pk|rk|ghp|gho|glpat|xox[abp])[-_][A-Za-z0-9_-]{8,}|\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|\b[A-Fa-f0-9]{40,}\b/g;
+
+// Long base64-like runs: matched greedily once, then checked in a callback,
+// so scanning is linear (no lookahead re-scans).
+const LONG_RUN = /[A-Za-z0-9+/]{48,}={0,2}/g;
+const isKeyLike = (run: string) => /\d/.test(run) && /[A-Za-z]/.test(run);
 
 /** Make untrusted text safe to keep: no control characters, secrets redacted, bounded. */
 export function safeText(value: string, max: number): { text: string; truncated: boolean } {
   // Strip C0/C1 control characters except newline and tab.
-  const cleaned = value
+  // Bound the work first: only a little more than the kept length is scanned,
+  // with slack so a secret straddling the cut is still recognised.
+  const window = value.length > max + 256 ? value.slice(0, max + 256) : value;
+  const cleaned = window
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
-    .replace(SECRET_LIKE, "[redacted]");
-  return cleaned.length > max
+    .replace(SECRET_LIKE, "[redacted]")
+    .replace(LONG_RUN, (run) => (isKeyLike(run) ? "[redacted]" : run));
+  return cleaned.length > max || window.length < value.length
     ? { text: `${cleaned.slice(0, max)}…`, truncated: true }
     : { text: cleaned, truncated: false };
 }
