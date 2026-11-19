@@ -157,6 +157,37 @@ describe("IndexingConsumer", () => {
     });
   });
 
+  it("records exhausted retries durably on the last allowed delivery", async () => {
+    const { port } = index([new IndexingError("unavailable", true)]);
+    const { event, bytes } = await eventBytes();
+    const m = msg(bytes);
+    m.deliveryCount = 10;
+    expect(await consumer(port).handle(m)).toEqual({ action: "ack", outcome: "failed" });
+    expect(m.acks).toBe(1);
+    expect(operations.claim(`index:${event.subject}:${event.id}`, "x", 1_000)).toEqual({
+      kind: "exhausted",
+      errorCode: "retries-exhausted:unavailable",
+    });
+  });
+
+  it("does not acknowledge when the failure cannot be recorded", async () => {
+    const { port } = index([new IndexingError("rejected", false)]);
+    const { bytes } = await eventBytes();
+    const m = msg(bytes);
+    const broken = new IndexingConsumer({
+      artifacts,
+      index: port,
+      operations: {
+        recordPermanentFailure: () => {
+          throw new Error("disk full");
+        },
+      } as unknown as OperationStore,
+      owner: "w",
+    });
+    await expect(broken.handle(m)).rejects.toThrow();
+    expect(m.acks).toBe(0);
+  });
+
   it("terminates malformed messages", async () => {
     const m = msg(new TextEncoder().encode('{"not":"an event"}'));
     expect(await consumer(index().port).handle(m)).toEqual({

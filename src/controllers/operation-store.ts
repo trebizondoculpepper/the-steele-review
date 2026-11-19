@@ -321,6 +321,35 @@ export class OperationStore {
     });
   }
 
+  /**
+   * Durably record a permanent, non-retryable outcome for an operation in a
+   * single transaction, whether or not anyone holds a claim on it. A
+   * completed operation is left untouched. Use for outcomes observed outside
+   * a claim (for example a consumer giving up on a message), so the record
+   * cannot be lost between separate claim and fail steps.
+   */
+  recordPermanentFailure(key: string, errorCode: string): void {
+    if (!Key.safeParse(key).success || !errorCode) throw new OperationStoreError("invalid-input");
+    this.transaction(() => {
+      const now = this.now();
+      const row = this.row(key);
+      if (row?.status === "completed") return;
+      if (row) {
+        this.db
+          .prepare(
+            "UPDATE operations SET status = 'failed', owner = NULL, lease_expires_at = NULL, error_code = ?, updated_at = ? WHERE key = ?",
+          )
+          .run(errorCode.slice(0, 100), now, key);
+      } else {
+        this.db
+          .prepare(
+            "INSERT INTO operations (key, status, attempts, max_attempts, error_code, updated_at) VALUES (?, 'failed', 0, 1, ?, ?)",
+          )
+          .run(key, errorCode.slice(0, 100), now);
+      }
+    });
+  }
+
   /** Extend a held lease. Throws not-owner if the lease was lost. */
   renew(claim: OperationClaim, leaseMs: number): number {
     const { key } = claim;

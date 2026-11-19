@@ -37,16 +37,17 @@ export interface IndexingConsumerConfig {
   owner: string;
   retryDelayMs?: number;
   timeoutMs?: number;
+  /** The durable consumer's max deliveries (provisioning default 10). */
+  maxDeliver?: number;
   onDecision?: (decision: IndexingDecision) => void;
 }
 
 export class IndexingConsumer {
   constructor(private readonly config: IndexingConsumerConfig) {}
 
-  /** Record a permanent outcome so it stays visible after acknowledgment. */
+  /** Record a permanent outcome durably (one transaction) before acknowledging. */
   private recordPermanent(key: string, reason: string): void {
-    const claimed = this.config.operations.claim(key, this.config.owner, 60_000, 1);
-    if (claimed.kind === "claimed") this.config.operations.fail(claimed.claim, reason, false);
+    this.config.operations.recordPermanentFailure(key, reason);
   }
 
   async handle(message: DeliveredMessage): Promise<IndexingDecision> {
@@ -76,9 +77,18 @@ export class IndexingConsumer {
       case "stale":
         await message.ack();
         return { action: "ack", outcome: outcome.kind };
-      case "retry":
+      case "retry": {
+        // On the last delivery the broker allows, record the failure durably
+        // instead of letting delivery stop with nothing recorded.
+        const maxDeliver = this.config.maxDeliver ?? 10;
+        if (message.deliveryCount >= maxDeliver) {
+          this.recordPermanent(key, `retries-exhausted:${outcome.reason}`);
+          await message.ack();
+          return { action: "ack", outcome: "failed" };
+        }
         message.nak(this.config.retryDelayMs ?? 30_000);
         return { action: "nak", reason: outcome.reason };
+      }
       case "incomplete":
         this.recordPermanent(key, "incomplete-content");
         await message.ack();
