@@ -243,7 +243,22 @@ export async function saveDraftingBrief(input: {
   const key = `brief:${hash}`;
 
   const claimed = input.operations.claim(key, input.owner, 5 * 60_000, 5);
-  if (claimed.kind === "busy" || claimed.kind === "exhausted") return { kind: claimed.kind };
+  if (claimed.kind === "busy") return { kind: "busy" };
+  if (claimed.kind === "exhausted") {
+    // A final attempt may have committed the brief and stopped before
+    // completing: finish from that artifact instead of abandoning it.
+    let committed: ArtifactRef | undefined;
+    try {
+      committed = await input.artifacts.lookup(path);
+    } catch {
+      return { kind: "failed", reason: "lookup-failed" };
+    }
+    if (!committed) return { kind: "exhausted" };
+    input.operations.reconcileCompleted(key, { path: committed.path, commit: committed.commit }, [
+      readyEvent(selection.brief, committed, input.correlationId),
+    ]);
+    return { kind: "saved", artifact: committed, reused: true };
+  }
   if (claimed.kind === "completed") {
     const existing = await input.artifacts.lookup(path);
     return existing
@@ -264,6 +279,19 @@ export async function saveDraftingBrief(input: {
     }
     artifact = existing;
   }
+  input.operations.complete(claimed.claim, { path: artifact.path, commit: artifact.commit }, [
+    readyEvent(selection.brief, artifact, input.correlationId),
+  ]);
+  return { kind: "saved", artifact, reused: false };
+}
+
+/** The `brief.ready` metadata pointer for a saved brief, as a pending event record. */
+function readyEvent(
+  brief: DraftingBrief,
+  artifact: ArtifactRef,
+  correlationId: string | undefined,
+): { eventId: string; subject: string; payload: string } {
+  const { publicationId, postId } = brief.source;
   const event = new CloudEvent({
     specversion: "1.0",
     id: randomUUID(),
@@ -273,24 +301,25 @@ export async function saveDraftingBrief(input: {
     subject: `substack/${publicationId}/${postId}`,
     datacontenttype: "application/json",
     dataschema: BRIEF_READY_DATASCHEMA_V1,
-    ...(input.correlationId ? { correlationid: input.correlationId } : {}),
+    ...(correlationId ? { correlationid: correlationId } : {}),
     data: {
       publicationId,
       postId,
-      ingestionReason: selection.brief.source.ingestionReason,
+      ingestionReason: brief.source.ingestionReason,
       brief: {
         repository: artifact.repository,
         commit: artifact.commit,
         path: artifact.path,
         hash: `sha256:${artifact.sha256}`,
       },
-      claims: selection.brief.claims.length,
-      citations: selection.brief.citations.length,
-      evidenceGaps: selection.brief.evidenceGaps.length,
+      claims: brief.claims.length,
+      citations: brief.citations.length,
+      evidenceGaps: brief.evidenceGaps.length,
     },
   });
-  input.operations.complete(claimed.claim, { path: artifact.path, commit: artifact.commit }, [
-    { eventId: event.id, subject: BRIEF_READY_SUBJECT, payload: JSON.stringify(event.toJSON()) },
-  ]);
-  return { kind: "saved", artifact, reused: false };
+  return {
+    eventId: event.id,
+    subject: BRIEF_READY_SUBJECT,
+    payload: JSON.stringify(event.toJSON()),
+  };
 }

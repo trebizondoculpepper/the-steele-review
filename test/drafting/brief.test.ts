@@ -226,6 +226,18 @@ describe("saveDraftingBrief", () => {
     expect(operations.duePendingEvents(10, BRIEF_READY_SUBJECT)).toHaveLength(1);
   });
 
+  it("completes from a committed brief when the operation is exhausted", async () => {
+    const first = await saveDraftingBrief({ brief: input(), artifacts, operations, owner: "w" });
+    if (first.kind !== "saved") throw new Error("not saved");
+    // Simulate a final attempt that committed and stopped before completing.
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare("UPDATE operations SET status = 'failed'").run();
+    db.prepare("DELETE FROM pending_events").run();
+    const again = await saveDraftingBrief({ brief: input(), artifacts, operations, owner: "w" });
+    expect(again).toMatchObject({ kind: "saved", reused: true, artifact: first.artifact });
+    expect(operations.duePendingEvents(10, BRIEF_READY_SUBJECT)).toHaveLength(1);
+  });
+
   it("saves nothing for an evidence gap or provenance mismatch", async () => {
     const gap = await saveDraftingBrief({
       brief: input({ assessments: [assessment(towers.id, [])] }),
