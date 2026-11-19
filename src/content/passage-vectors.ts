@@ -46,6 +46,10 @@ export function passageVectorMapping(model: EmbeddingModel) {
       end: { type: "integer" },
       text: { type: "text" },
       publishedAt: { type: "date" },
+      transcriptTimings: {
+        type: "object",
+        properties: { startSeconds: { type: "float" }, endSeconds: { type: "float" } },
+      },
       artifact: {
         type: "object",
         properties: {
@@ -87,6 +91,15 @@ export const PassageVectorDocumentSchema = z
     end: z.number().int().min(1),
     text: z.string().min(1),
     publishedAt: z.iso.datetime({ offset: true }).optional(),
+    /** Supplied media timings overlapping the passage; absent when none were supplied. */
+    transcriptTimings: z
+      .array(
+        z
+          .object({ startSeconds: z.number().nonnegative(), endSeconds: z.number().nonnegative() })
+          .strict(),
+      )
+      .max(500)
+      .optional(),
     artifact: ArtifactReferenceSchema,
     inputHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     vectorSpace: z.string().min(1),
@@ -129,6 +142,7 @@ export interface PassageMatch {
   end: number;
   artifact: ArtifactReference;
   publishedAt?: string;
+  transcriptTimings?: Array<{ startSeconds: number; endSeconds: number }>;
 }
 
 export class PassageVectorStore {
@@ -171,6 +185,9 @@ export class PassageVectorStore {
       end: passage.end,
       text: passage.text,
       ...(passage.publishedAt ? { publishedAt: passage.publishedAt } : {}),
+      ...(passage.transcriptTimings?.length
+        ? { transcriptTimings: passage.transcriptTimings }
+        : {}),
       artifact,
       inputHash: vector.inputHash,
       vectorSpace: vector.vectorSpace,
@@ -220,6 +237,7 @@ export class PassageVectorStore {
         end: doc.data.end,
         artifact: doc.data.artifact,
         ...(doc.data.publishedAt ? { publishedAt: doc.data.publishedAt } : {}),
+        ...(doc.data.transcriptTimings ? { transcriptTimings: doc.data.transcriptTimings } : {}),
       });
     }
     return matches;

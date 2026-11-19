@@ -102,6 +102,7 @@ describe("TranscriptionAdapter", () => {
       provider: "fake",
       model: "fake-1",
       mediaKind: "audio",
+      mediaUrl: AUDIO.url,
       confidence: 0.9,
       complete: true,
       machineGenerated: true,
@@ -117,6 +118,7 @@ describe("TranscriptionAdapter", () => {
     const { a, calls } = adapter({}, { [VIDEO.url]: bytes("VIDEO") });
     const job = await a.transcribe([AUDIO, VIDEO]);
     expect(job.transcript.mediaKind).toBe("video");
+    expect(job.transcript.mediaUrl).toBe(VIDEO.url);
     expect(calls).toEqual([AUDIO.url, VIDEO.url]);
     await job.cleanup();
   });

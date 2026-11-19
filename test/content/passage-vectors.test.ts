@@ -144,6 +144,33 @@ describe("PassageVectorStore", () => {
     expect(top!.artifact).toEqual(artifact);
   });
 
+  it("keeps supplied transcript timings through storage and retrieval", async () => {
+    const { es, docs } = fakeIndex();
+    const store = new PassageVectorStore(es, MODEL);
+    await store.provision();
+    const timed = splitPassages(
+      {
+        sourceId: "substack/example-pub/a-post",
+        text: TEXT,
+        sourceVersion: sourceVersionFor(TEXT),
+        transcriptTimings: [{ start: 0, end: TEXT.length, startSeconds: 12.5, endSeconds: 48 }],
+      },
+      { maxChars: 60, overlapChars: 0, minChars: 10 },
+    ).passages;
+    const embedded = await new EmbeddingController({ provider: provider() }).embed(
+      timed.map((p) => ({ id: p.id, text: p.text, inputHash: inputHashFor(p.text) })),
+    );
+    for (const [i, p] of timed.entries()) await store.write(p, embedded[i]!, artifact);
+    expect(docs.get(store.indexName)!.get(timed[0]!.id)!.transcriptTimings).toEqual(
+      timed[0]!.transcriptTimings,
+    );
+    const [top] = await store.nearest(toyVector("fee"), 1);
+    expect(top!.transcriptTimings?.length).toBeGreaterThan(0);
+    // Untimed passages carry no invented timings.
+    const { list, embedded: plain } = await vectorsFor();
+    expect(store.document(list[0]!, plain[0]!, artifact)).not.toHaveProperty("transcriptTimings");
+  });
+
   it("rejects vectors and queries from an incompatible model or dimension", async () => {
     const { es } = fakeIndex();
     const store = new PassageVectorStore(es, MODEL);
