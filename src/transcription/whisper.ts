@@ -199,6 +199,13 @@ export class WhisperProvider implements TranscriptionProvider {
         previousStart = start;
         return { text: text.trim(), start, end };
       });
+      if (
+        segments.every((s) =>
+          /^(?:\s*\[(?:BLANK_AUDIO|NO_SPEECH|SILENCE|MUSIC)\]\s*)+$/i.test(s.text),
+        )
+      ) {
+        throw new TranscriptionError("empty-transcript", false);
+      }
       return { segments, language: result.result.language, complete: true };
     } catch (error) {
       if (error instanceof TranscriptionError) throw error;
