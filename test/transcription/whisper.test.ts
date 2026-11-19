@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,3 +154,52 @@ it("does not archive a no-speech marker as a successful transcript", async () =>
   ).rejects.toMatchObject({ reason: "empty-transcript", retryable: false });
   expect(await readdir(dir)).toEqual([]);
 });
+
+it.skipIf(spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0)(
+  "rejects a downloaded HLS playlist that references a local file",
+  async () => {
+    const jobDir = join(dir, "job");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(jobDir);
+    const outside = join(dir, "private-recording.ts");
+    const generated = spawnSync(
+      "ffmpeg",
+      [
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=1",
+        "-c:a",
+        "aac",
+        "-f",
+        "mpegts",
+        outside,
+      ],
+      { stdio: "ignore" },
+    );
+    expect(generated.status).toBe(0);
+    const playlist = join(jobDir, "media.audio");
+    await writeFile(
+      playlist,
+      `#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:1,\n${outside}\n#EXT-X-ENDLIST\n`,
+    );
+    const calls: string[] = [];
+    const provider = new WhisperProvider({
+      modelPath: "/models/model.bin",
+      model: "test",
+      run: async (binary, args, options) => {
+        calls.push(binary);
+        return runWhisperCommand(binary, args, options);
+      },
+    });
+    await expect(
+      provider.transcribe({ path: playlist, kind: "audio" }, signal()),
+    ).rejects.toMatchObject({ reason: "provider-failed" });
+    expect(calls).toEqual(["ffmpeg"]);
+    expect(await readdir(jobDir)).toEqual(["media.audio"]);
+  },
+);
