@@ -66,6 +66,17 @@ export type CompletionOutcome =
   | { kind: "recorded"; advanced: Array<{ post: string; outcome: CoordinatorOutcome }> }
   | { kind: "duplicate" };
 
+/**
+ * True when an advance reached a state that needs no further resumption:
+ * still waiting or paused on research (the waiter stays registered), or a
+ * brief outcome other than a transient failure.
+ */
+function isDurable(outcome: CoordinatorOutcome): boolean {
+  if (outcome.kind === "retry") return false;
+  if (outcome.kind !== "brief") return true;
+  return outcome.result.kind !== "failed" && outcome.result.kind !== "busy";
+}
+
 const postKey = (s: BriefInput["source"]) => `${s.publicationId}/${s.postId}@${s.sourceVersion}`;
 
 /**
@@ -174,7 +185,7 @@ export class ResearchCoordinator {
         const resumedKey = `research-resumed:${waiter.key.slice("research-waiter:".length)}`;
         if (!post || operations.operationStatus(resumedKey)?.status === "completed") continue;
         const outcome = await this.advance(post, signal);
-        if (outcome.kind !== "retry")
+        if (isDurable(outcome))
           operations.reconcileCompleted(resumedKey, { outcome: outcome.kind }, []);
         advanced.push({ post: postKey(post.source), outcome });
       }

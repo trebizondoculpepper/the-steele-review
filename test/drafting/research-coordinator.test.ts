@@ -240,6 +240,35 @@ describe("ResearchCoordinator", () => {
     ).toEqual({ kind: "duplicate" });
   });
 
+  it("keeps a waiter eligible when its brief handoff fails transiently", async () => {
+    const corpus = new Set<string>();
+    let failWrites = true;
+    const flaky = {
+      write: async (path: string, content: string) => {
+        if (failWrites) throw new Error("git down");
+        return artifacts.write(path, content);
+      },
+      lookup: (path: string) => artifacts.lookup(path),
+    };
+    const c = new ResearchCoordinator({
+      keeper: keeper(corpus).k,
+      operations,
+      artifacts: flaky,
+      owner: "coord",
+    });
+    await c.advance(post("p1", [TOWERS]));
+    corpus.add(TOWERS);
+    const first = await c.onResearchCompleted({ needId: researchNeedId(TOWERS), outcome: "saved" });
+    expect(first).toMatchObject({
+      advanced: [{ outcome: { kind: "brief", result: { kind: "failed" } } }],
+    });
+    failWrites = false;
+    const again = await c.onResearchCompleted({ needId: researchNeedId(TOWERS), outcome: "saved" });
+    expect(again).toMatchObject({
+      advanced: [{ outcome: { kind: "brief", result: { kind: "saved" } } }],
+    });
+  });
+
   it("retries when the research keeper fails, without requesting anything", async () => {
     const c = coordinator(keeper(new Set(), true).k);
     expect(await c.advance(post("p1", [TOWERS]))).toEqual({
