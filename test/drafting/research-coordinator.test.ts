@@ -291,6 +291,23 @@ describe("ResearchCoordinator", () => {
     expect(JSON.parse(briefs()[0]!.payload).data).toMatchObject({ claims: 1, evidenceGaps: 0 });
   });
 
+  it("retries while an interrupted request is unrecorded, then requests it", async () => {
+    const c = coordinator(keeper(new Set()).k);
+    // Another attempt claimed the request and stopped before recording it.
+    operations.claim(`research-request:${researchNeedId(TOWERS)}`, "crashed", 60_000);
+    expect(await c.advance(post("p1", [TOWERS]))).toEqual({
+      kind: "retry",
+      reason: "request-in-flight",
+    });
+    expect(requests()).toEqual([]);
+    const db = (operations as unknown as { db: { prepare(s: string): { run(): void } } }).db;
+    db.prepare(
+      "UPDATE operations SET lease_expires_at = 0 WHERE key LIKE 'research-request:%'",
+    ).run();
+    expect(await c.advance(post("p1", [TOWERS]))).toMatchObject({ kind: "waiting" });
+    expect(requests()).toHaveLength(1);
+  });
+
   it("retries when the research keeper fails, without requesting anything", async () => {
     const c = coordinator(keeper(new Set(), true).k);
     expect(await c.advance(post("p1", [TOWERS]))).toEqual({

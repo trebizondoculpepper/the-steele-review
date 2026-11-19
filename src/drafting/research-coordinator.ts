@@ -112,6 +112,7 @@ export class ResearchCoordinator {
     const waiting: string[] = [];
     const paused: string[] = [];
     const settled: number[] = [];
+    const inFlight: string[] = [];
     for (const [i, a] of assessments.entries()) {
       // The corpus already covers this claim.
       if (a.gaps.length === 0) continue;
@@ -130,9 +131,12 @@ export class ResearchCoordinator {
         paused.push(needId);
         continue;
       }
-      this.request(needId, post.claims[i]!, a.gaps);
-      waiting.push(needId);
+      if (!this.request(needId, post.claims[i]!, a.gaps)) inFlight.push(needId);
+      else waiting.push(needId);
     }
+    // A request another attempt claimed but has not yet recorded may never
+    // be sent; come back once its lease ends rather than wait forever.
+    if (inFlight.length) return { kind: "retry", reason: "request-in-flight" };
     if (paused.length) return { kind: "paused", needIds: paused };
     if (waiting.length) return { kind: "waiting", needIds: waiting };
 
@@ -208,15 +212,20 @@ export class ResearchCoordinator {
     return { kind: "recorded", advanced };
   }
 
-  /** Request research for a need once, however many posts or runs ask. */
-  private request(needId: string, claim: Pick<Claim, "id" | "statement">, gaps: string[]): void {
+  /**
+   * Request research for a need once, however many posts or runs ask.
+   * True when the request is durably recorded; false while another attempt
+   * holds it unfinished, so the caller retries after that lease ends.
+   */
+  private request(needId: string, claim: Pick<Claim, "id" | "statement">, gaps: string[]): boolean {
     const claimed = this.config.operations.claim(
       `research-request:${needId}`,
       this.config.owner,
       60_000,
-      5,
+      1_000,
     );
-    if (claimed.kind !== "claimed") return; // already requested (or in flight)
+    if (claimed.kind === "completed") return true;
+    if (claimed.kind !== "claimed") return false;
     const event = new CloudEvent({
       specversion: "1.0",
       id: randomUUID(),
@@ -234,6 +243,7 @@ export class ResearchCoordinator {
         payload: JSON.stringify(event.toJSON()),
       },
     ]);
+    return true;
   }
 
   /** Remember that a post waits on a need, so completion can resume it. */
