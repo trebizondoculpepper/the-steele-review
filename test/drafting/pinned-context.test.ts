@@ -38,7 +38,7 @@ const provider = (...responses: string[]): ExtractionModelProvider & { calls: st
   };
 };
 
-async function writeSource(text: string, postId = "p"): Promise<ArtifactRef> {
+async function writeSource(text: string, postId = "p", complete = true): Promise<ArtifactRef> {
   const it = { ...item, postId, url: `https://pub.example.com/p/${postId}` };
   return archive.write(
     collectionArtifactPath(it),
@@ -46,7 +46,7 @@ async function writeSource(text: string, postId = "p"): Promise<ArtifactRef> {
       item: it,
       ingestionReason: "backfill",
       text,
-      complete: true,
+      complete,
       supplied: {},
       provenance: {
         sourceUrl: it.url,
@@ -258,6 +258,29 @@ describe("pinned source and theme context", () => {
       (await draftFromBrief({ brief: wrongVersion, provider: provider(), context })).kind ===
         "failed",
     ).toBe(true);
+  });
+
+  it("refuses identical text from a different source artifact, and incomplete captures", async () => {
+    const context = await loaded();
+    // Same text, different post: same text version, different artifact.
+    const twin = await writeSource(TEXT, "twin");
+    const twinBrief = briefFor(twin);
+    expect(twinBrief.source.sourceVersion).toBe(context.source.sourceVersion);
+    expect((await draftFromBrief({ brief: twinBrief, provider: provider(), context })).kind).toBe(
+      "failed",
+    );
+
+    const partial = await writeSource("Partial transcript only.", "partial", false);
+    expect(
+      (
+        await loadPinnedContext({
+          archive,
+          content,
+          brief: briefFor(partial, "Partial transcript only."),
+          themes: themesRef,
+        })
+      ).kind,
+    ).toBe("incomplete-source");
   });
 
   it("rejects a theme result for another source and refuses to truncate an overlarge source", async () => {

@@ -46,6 +46,8 @@ export type PinnedContextOutcome =
   | { kind: "source-mismatch" }
   | { kind: "theme-mismatch" }
   | { kind: "source-too-large"; chars: number; maxChars: number }
+  /** The capture is marked incomplete (for example, transcription pending). */
+  | { kind: "incomplete-source" }
   | { kind: "unreadable"; what: "source" | "themes" };
 
 const refKey = (r: ArtifactRef) => [r.repository, r.commit, r.path, r.sha256];
@@ -88,6 +90,8 @@ export async function loadPinnedContext(input: {
   try {
     // read() verifies the commit, path and content hash.
     const record = CollectionRecordSchema.parse(JSON.parse(await input.archive.read(sourceRef)));
+    // An incomplete capture is not the whole post; never present it as one.
+    if (!record.complete) return { kind: "incomplete-source" };
     text = record.text;
   } catch {
     return { kind: "unreadable", what: "source" };
@@ -137,6 +141,26 @@ export async function loadPinnedContext(input: {
       ),
     },
   };
+}
+
+/**
+ * True when the context was loaded from exactly the source artifact the brief
+ * names. Text-version equality alone is not enough: identical text in two
+ * posts or capture revisions shares a version but not an artifact.
+ */
+export function contextMatchesBrief(
+  context: PinnedContext,
+  brief: Pick<DraftingBrief, "source">,
+): boolean {
+  const a = brief.source.artifact;
+  const r = context.source.ref;
+  return (
+    context.source.sourceVersion === brief.source.sourceVersion &&
+    r.repository === a.repository &&
+    r.commit === a.commit &&
+    r.path === a.path &&
+    `sha256:${r.sha256}` === a.hash
+  );
 }
 
 /** The context as the model sees it: fenced data, source separate from research. */

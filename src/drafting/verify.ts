@@ -1,4 +1,4 @@
-import { contextForModel, type PinnedContext } from "./pinned-context.js";
+import { contextForModel, contextMatchesBrief, type PinnedContext } from "./pinned-context.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -258,7 +258,7 @@ export async function verifyDraft(input: {
   // no context substituted, dropped or added after the fact.
   if (
     (input.context?.contextRef ?? undefined) !== (input.metadata.contextRef ?? undefined) ||
-    (input.context && input.context.source.sourceVersion !== brief.source.sourceVersion)
+    (input.context && !contextMatchesBrief(input.context, brief))
   ) {
     return { kind: "invalid", reason: "context-mismatch" };
   }

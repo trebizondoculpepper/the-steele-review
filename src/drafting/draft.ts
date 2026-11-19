@@ -1,4 +1,4 @@
-import { contextForModel, type PinnedContext } from "./pinned-context.js";
+import { contextForModel, contextMatchesBrief, type PinnedContext } from "./pinned-context.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -221,7 +221,7 @@ export async function draftFromBrief(input: {
    */
   context?: PinnedContext;
 }): Promise<DraftOutcome> {
-  if (input.context && input.context.source.sourceVersion !== input.brief.source.sourceVersion) {
+  if (input.context && !contextMatchesBrief(input.context, input.brief)) {
     return { kind: "failed", reason: "context-mismatch" };
   }
   const prompt =
