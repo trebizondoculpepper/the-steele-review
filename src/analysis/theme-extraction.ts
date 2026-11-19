@@ -33,6 +33,8 @@ import {
  * its full-text document are never modified.
  */
 
+const MAX_THEMES = 30;
+
 export const DEFAULT_THEME_PROMPT: ExtractionPrompt = {
   version: "theme-extraction-v1",
   instructions: [
@@ -53,7 +55,8 @@ const ModelThemeSchema = z
       .array(
         z
           .object({
-            passage: z.string().min(1),
+            // The #77 evidence limit, enforced before building the set.
+            passage: z.string().min(1).max(4000),
             occurrence: z.number().int().positive().optional(),
           })
           .strict(),
@@ -76,7 +79,8 @@ export type ThemeExtractionResult =
           | "passage-not-found"
           | "ambiguous-passage"
           | "invalid-label"
-          | "duplicate-label";
+          | "duplicate-label"
+          | "over-limit";
       }>;
       attempts: number;
     }
@@ -225,6 +229,7 @@ export class ThemeExtractor {
     attempts: number,
   ): ThemeExtractionResult {
     const themes: Theme[] = [];
+    const themeIndices: number[] = [];
     const rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"] = [];
     const seen = new Set<string>();
     items.forEach((item, index) => {
@@ -241,6 +246,7 @@ export class ThemeExtractor {
         evidence.push({ ...located, passage });
       }
       seen.add(label);
+      themeIndices.push(index);
       themes.push({
         label,
         wording: parsed.data.wording.trim(),
@@ -249,12 +255,16 @@ export class ThemeExtractor {
         evidence,
       });
     });
+    // Themes beyond the contract limit are reported, never dropped silently.
+    for (const index of themeIndices.slice(MAX_THEMES))
+      rejected.push({ index, reason: "over-limit" });
+    rejected.sort((a, b) => a.index - b.index);
     const themeSet = parseThemeSet(
       {
         schemaVersion: THEME_SCHEMA_VERSION,
         sourceVersion: source.sourceVersion,
         artifact: source.artifact,
-        themes: themes.slice(0, 30),
+        themes: themes.slice(0, MAX_THEMES),
         extraction: {
           modelVersion: this.config.provider.modelVersion,
           promptVersion: this.prompt.version,
@@ -269,6 +279,28 @@ export class ThemeExtractor {
       : { status: "incomplete", themeSet, rejected, attempts };
   }
 }
+
+const StoredThemeRecordSchema = z
+  .object({
+    status: z.enum(["complete", "incomplete"]),
+    rejected: z.array(
+      z
+        .object({
+          index: z.number().int().min(0),
+          reason: z.enum([
+            "malformed-theme",
+            "passage-not-found",
+            "ambiguous-passage",
+            "invalid-label",
+            "duplicate-label",
+            "over-limit",
+          ]),
+        })
+        .strict(),
+    ),
+    themeSet: z.unknown(),
+  })
+  .strict();
 
 export const THEME_INDEX_V1 = "steele-source-themes-v1";
 
@@ -325,6 +357,8 @@ export type ThemePipelineResult =
       artifact: ArtifactRef;
       reused: boolean;
       incomplete: boolean;
+      /** Themes the extraction rejected; restored from the archive on reuse. */
+      rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"];
     }
   | Extract<ThemeExtractionResult, { status: "failed" }>;
 
@@ -368,11 +402,11 @@ export async function extractAndStoreThemes(input: {
   let artifact: ArtifactRef;
   let reused = false;
   let incomplete = false;
+  let rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"] = [];
   const existing = await input.artifacts.lookup(path);
   if (existing) {
-    const stored = JSON.parse(await input.artifacts.read(existing)) as {
-      themes?: Array<{ label?: string; novel?: boolean }>;
-    };
+    const record = StoredThemeRecordSchema.parse(JSON.parse(await input.artifacts.read(existing)));
+    const stored = record.themeSet as { themes?: Array<{ label?: string; novel?: boolean }> };
     // Re-validate with the vocabulary that was in effect when it was stored:
     // the labels it marked as not novel.
     const flagged = (stored.themes ?? []).filter((t) => t.novel !== undefined);
@@ -380,7 +414,9 @@ export async function extractAndStoreThemes(input: {
       flagged.length > 0
         ? new Set(flagged.filter((t) => t.novel === false).map((t) => String(t.label)))
         : undefined;
-    themeSet = parseThemeSet(stored, input.source, vocabulary);
+    themeSet = parseThemeSet(record.themeSet, input.source, vocabulary);
+    incomplete = record.status === "incomplete";
+    rejected = record.rejected;
     artifact = existing;
     reused = true;
   } else {
@@ -388,7 +424,11 @@ export async function extractAndStoreThemes(input: {
     if (result.status === "failed") return result;
     themeSet = result.themeSet;
     incomplete = result.status === "incomplete";
-    artifact = await input.artifacts.write(path, `${JSON.stringify(themeSet, null, 2)}\n`);
+    rejected = result.status === "incomplete" ? result.rejected : [];
+    // The extraction status and rejections are archived with the themes, so a
+    // reused result is never mistaken for a complete one.
+    const record = { status: result.status, rejected, themeSet };
+    artifact = await input.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
   }
   const sourceId = `substack:${input.post.publicationId}:${input.post.postId}`;
   await input.index.indexDocument(input.indexName ?? THEME_INDEX_V1, sourceId, {
@@ -409,5 +449,5 @@ export async function extractAndStoreThemes(input: {
     promptVersion: themeSet.extraction.promptVersion,
     extractedAt: themeSet.extraction.extractedAt,
   });
-  return { status: "stored", themeSet, artifact, reused, incomplete };
+  return { status: "stored", themeSet, artifact, reused, incomplete, rejected };
 }

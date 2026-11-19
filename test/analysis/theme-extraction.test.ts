@@ -108,6 +108,37 @@ describe("ThemeExtractor", () => {
     if (result.status === "incomplete") expect(result.themeSet.themes).toHaveLength(1);
   });
 
+  it("rejects oversized evidence and reports themes beyond the limit", async () => {
+    const longText = `${"word ".repeat(1_000)}end.`;
+    const longSource = { ...source, text: longText, sourceVersion: sourceVersionFor(longText) };
+    const tooLong = provider([
+      json([
+        { wording: "Huge", confidence: "low", passages: [{ passage: longText.slice(0, 4_500) }] },
+      ]),
+    ]);
+    expect(
+      await new ThemeExtractor({ provider: tooLong.p, now }).extract(longSource),
+    ).toMatchObject({
+      status: "incomplete",
+      rejected: [{ index: 0, reason: "malformed-theme" }],
+    });
+    const many = Array.from({ length: 32 }, (_, i) => ({
+      wording: `Theme number ${i}`,
+      confidence: "medium",
+      passages: [{ passage: "The synthetic towers are watching everyone." }],
+    }));
+    const lots = provider([json(many)]);
+    const result = await new ThemeExtractor({ provider: lots.p, now }).extract(source);
+    expect(result).toMatchObject({
+      status: "incomplete",
+      rejected: [
+        { index: 30, reason: "over-limit" },
+        { index: 31, reason: "over-limit" },
+      ],
+    });
+    if (result.status === "incomplete") expect(result.themeSet.themes).toHaveLength(30);
+  });
+
   it("retries malformed responses a bounded number of times", async () => {
     const ok = provider(["not json", json([surveillance])]);
     expect(
@@ -165,7 +196,11 @@ describe("extractAndStoreThemes", () => {
     });
     expect(result).toMatchObject({ status: "stored", reused: false, incomplete: false });
     if (result.status !== "stored") return;
-    expect(JSON.parse(await artifacts.read(result.artifact))).toEqual(result.themeSet);
+    expect(JSON.parse(await artifacts.read(result.artifact))).toEqual({
+      status: "complete",
+      rejected: [],
+      themeSet: result.themeSet,
+    });
     const doc = docs.get(`${THEME_INDEX_V1}/substack:example-pub:a-post`)!;
     expect(doc).toMatchObject({
       labels: ["mass surveillance", "democratic consent"],
@@ -201,6 +236,28 @@ describe("extractAndStoreThemes", () => {
     if (first.status === "stored" && second.status === "stored") {
       expect(second.artifact).toEqual(first.artifact);
     }
+  });
+
+  it("archives and restores an incomplete extraction's status and rejections", async () => {
+    const { p, requests } = provider([
+      json([
+        surveillance,
+        { wording: "Invented", confidence: "high", passages: [{ passage: "Not in the source." }] },
+      ]),
+    ]);
+    const { port } = index();
+    const extractor = new ThemeExtractor({ provider: p, now });
+    const first = await extractAndStoreThemes({ extractor, artifacts, index: port, post, source });
+    const second = await extractAndStoreThemes({ extractor, artifacts, index: port, post, source });
+    expect(requests).toHaveLength(1);
+    for (const result of [first, second]) {
+      expect(result).toMatchObject({
+        status: "stored",
+        incomplete: true,
+        rejected: [{ index: 1, reason: "passage-not-found" }],
+      });
+    }
+    expect(second).toMatchObject({ reused: true });
   });
 
   it("stores nothing when extraction fails", async () => {
