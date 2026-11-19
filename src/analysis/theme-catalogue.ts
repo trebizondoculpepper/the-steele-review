@@ -115,6 +115,15 @@ export function identityName(name: string): string {
     .join(" ");
 }
 
+/**
+ * Definition comparison key: Unicode, case and whitespace normalised only.
+ * Punctuation and operators (for example "<" versus ">") are kept, because
+ * they can be what distinguishes two scopes.
+ */
+export function definitionKey(definition: string): string {
+  return definition.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 /** Normalised names and aliases of a theme, for exact (never fuzzy) reuse. */
 function namesOf(t: Pick<CatalogueTheme, "name" | "aliases">): string[] {
   return [t.name, ...t.aliases].map(identityName).filter(Boolean);
@@ -159,12 +168,12 @@ export class ThemeCatalogueStore {
         // same-named proposal with a different definition is not assumed to
         // be the same theme. It gets its own identity, linked as a possible
         // match to the named one so the uncertainty stays visible.
-        const definition = identityName(valid.definition);
+        const definition = definitionKey(valid.definition);
         const sameName = (t: CatalogueTheme) => namesOf(t).some((n) => names.has(n));
         const same = themes.find(
           (t) =>
             sameName(t) &&
-            identityName(t.definition) === definition &&
+            definitionKey(t.definition) === definition &&
             t.possibleMatchOf === valid.possibleMatchOf,
         );
         if (same) {
@@ -179,7 +188,7 @@ export class ThemeCatalogueStore {
             ? themes.find(
                 (t) =>
                   sameName(t) &&
-                  identityName(t.definition) === definition &&
+                  definitionKey(t.definition) === definition &&
                   t.possibleMatchOf === namesake.id,
               )
             : undefined;
@@ -495,7 +504,7 @@ export async function detectThemes(input: {
         return rejected.push({ kind: "proposed", index, reason: "invalid-name" });
       // Same name with a different scope is a distinct proposal; only an
       // exact repeat (name and definition) is a duplicate.
-      const key = `${name}\n${identityName(p.definition)}`;
+      const key = `${name}\n${definitionKey(p.definition)}`;
       if (seenNames.has(key))
         return rejected.push({ kind: "proposed", index, reason: "duplicate-proposal" });
       if (p.possibleMatchOf !== undefined && !knownIds.has(p.possibleMatchOf)) {

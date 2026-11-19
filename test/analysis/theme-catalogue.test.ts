@@ -112,6 +112,11 @@ describe("theme catalogue", () => {
     void ids2;
     expect(themeSlug("Chemtrails & 5G!")).toBe("chemtrails-and-5g");
     expect(themeSlug("Dépopulation")).toBe("depopulation");
+    const ops = await catalogue.register([
+      { name: "Dose", definition: "Exposure > 10 mSv.", aliases: [], origin: "seed" },
+      { name: "Dose", definition: "Exposure < 10 mSv.", aliases: [], origin: "seed" },
+    ]);
+    expect(ops.ids[0]).not.toBe(ops.ids[1]);
     const long = await catalogue.register([
       { name: "one two three four five six seven", definition: "a", aliases: [], origin: "seed" },
       { name: "one two three four five six eight", definition: "b", aliases: [], origin: "seed" },
