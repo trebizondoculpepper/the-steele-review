@@ -24,6 +24,7 @@
     "inspect-post": "node --enable-source-maps dist/cli/inspect-post.js",
     "operation": "node --enable-source-maps dist/cli/operation.js",
     "status": "node --enable-source-maps dist/cli/status.js",
+    "post-trace": "node --enable-source-maps dist/cli/post-trace.js",
     "detect-themes": "node --enable-source-maps dist/cli/detect-themes.js",
     "retry-collection": "node --enable-source-maps dist/cli/retry-collection.js"
   },

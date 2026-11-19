@@ -16,11 +16,7 @@
  * Output is allowlisted: no credentials, connection URLs, hosts, filesystem
  * paths or raw exception text.
  */
-import {
-  CredentialError,
-  elasticsearchConnection,
-  natsConnection,
-} from "../config/credentials.js";
+import { CredentialError, elasticsearchConnection, natsConnection } from "../config/credentials.js";
 import {
   collectRuntimeStatus,
   elasticsearchProbe,
