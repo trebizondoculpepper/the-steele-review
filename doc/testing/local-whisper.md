@@ -35,7 +35,7 @@ Set `STEELE_TRANSCRIPTION_PROVIDER=whisper.cpp` to enable it. Omit the variable 
 | `STEELE_TRANSCRIPTION_WORKSPACE`     | Absolute path on the writable media volume                                   |
 | `STEELE_TRANSCRIPTION_ALLOWED_HOSTS` | Explicit comma-separated download hosts; URLs and wildcards are not accepted |
 
-Optional variables are `STEELE_WHISPER_BINARY`, `STEELE_FFMPEG_BINARY`, `STEELE_FFPROBE_BINARY` (absolute executable paths), `STEELE_WHISPER_THREADS` (default 2), `STEELE_TRANSCRIPTION_MAX_DURATION_SECONDS` (default 14400), and `STEELE_TRANSCRIPTION_TIMEOUT_MS` (default six hours). Configuration is validated and model/executable/workspace access checked before consuming messages. The adapter sweeps abandoned jobs older than 24 hours on startup and processes only one transcription at a time.
+Optional variables are `STEELE_WHISPER_BINARY`, `STEELE_FFMPEG_BINARY`, `STEELE_FFPROBE_BINARY` (absolute executable paths), `STEELE_WHISPER_THREADS` (default 2), `STEELE_TRANSCRIPTION_MAX_DURATION_SECONDS` (default 14400), and `STEELE_TRANSCRIPTION_TIMEOUT_MS` (default six hours). Configuration is validated and model/executable/workspace access checked before consuming messages. The adapter sweeps abandoned jobs older than 24 hours on startup and on the collector maintenance interval, and processes only one transcription at a time.
 
 The existing destination guard still checks allowed download hosts and redirects. Do not enable unrestricted downloads merely to get a failed media URL through. Missing access, invalid configuration and cleanup errors are visible failures; raw media or model paths are never printed by the configuration error path.
 

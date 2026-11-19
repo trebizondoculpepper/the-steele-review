@@ -108,8 +108,7 @@ async function main(): Promise<number> {
       // One pass at a time, so passes never publish the same events twice.
       if (dispatching || abort.signal.aborted) return;
       dispatching = true;
-      worker
-        .dispatchPending(abort.signal)
+      Promise.all([worker.dispatchPending(abort.signal), transcriber?.sweepExpired()])
         .catch(() => undefined)
         .finally(() => {
           dispatching = false;
