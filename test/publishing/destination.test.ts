@@ -179,6 +179,31 @@ describe("SubstackDestinationController", () => {
     expect(client.drafts.size).toBe(1);
   });
 
+  it("treats an unparseable vendor publication date as unavailable", async () => {
+    const destination = new SubstackDestinationController({
+      createDraft: async () => ({ id: 1 }),
+      getDraft: async () => ({
+        id: 1,
+        is_published: true,
+        canonical_url: "https://destination.example/p/x",
+        post_date: "not-a-date",
+      }),
+      publishDraft: async () => ({}),
+    });
+    await expect(destination.getStatus("1")).rejects.toMatchObject({ category: "unavailable" });
+  });
+
+  it("does not dispatch publication when already cancelled", async () => {
+    const { client, destination } = setup();
+    const { draftId } = await destination.createDraft(content);
+    const abort = new AbortController();
+    abort.abort();
+    await expect(destination.publish(draftId, { signal: abort.signal })).rejects.toMatchObject({
+      category: "cancelled",
+    });
+    expect(client.drafts.get(draftId)!.is_published).toBe(false);
+  });
+
   it("never surfaces vendor error text", async () => {
     const destination = new SubstackDestinationController({
       createDraft: async () => {

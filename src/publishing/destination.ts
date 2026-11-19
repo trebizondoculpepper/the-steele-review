@@ -127,6 +127,13 @@ const VendorDraftSchema = z.looseObject({
   post_date: z.string().nullable().optional(),
 });
 
+/** ISO timestamp for a vendor date, or undefined when absent or unparseable. */
+function isoOrUndefined(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? undefined : new Date(time).toISOString();
+}
+
 /** Render the agreed simple draft body: article, then the original-post link. */
 export function renderDraftBody(content: DraftContent): string {
   return `${content.bodyMarkdown.trim()}\n\n---\n\nOriginal post: ${content.sourceUrl}\n`;
@@ -193,9 +200,7 @@ export class SubstackDestinationController implements PublicationDestination {
         state: "published",
         draftId,
         url: parsed.data.canonical_url,
-        publishedAt: parsed.data.post_date
-          ? new Date(parsed.data.post_date).toISOString()
-          : undefined,
+        publishedAt: isoOrUndefined(parsed.data.post_date),
       });
       if (!status.success) throw new DestinationError("unavailable", true);
       return status.data;
@@ -205,6 +210,8 @@ export class SubstackDestinationController implements PublicationDestination {
 
   async publish(draftId: string, options: PublishOptions = {}): Promise<PublishedReceipt> {
     if (!draftId) throw new DestinationError("rejected", false);
+    // Nothing has been sent yet, so an abort here is a clean cancellation.
+    if (options.signal?.aborted) throw new DestinationError("cancelled", false);
     try {
       await this.client.publishDraft(
         draftId,
