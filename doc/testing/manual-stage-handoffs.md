@@ -55,9 +55,9 @@ An HTTP/auth/credit/timeout failure remains an operational pending/error outcome
 
 ## Corpus age is not automatic expiry
 
-The owner chose no scheduled refresh and no automatic evidence expiry. The delivered `ApplicabilityAssessor` currently defaults to excluding evidence whose `lastCheckedAt` is more than 365 days old. #166 is the small policy correction before #147 composes the manual research path.
+The owner chose no scheduled refresh and no automatic evidence expiry. `ApplicabilityAssessor` therefore applies no age rule by default: an otherwise applicable independent source is reused however old its last check is. #166 made that correction ahead of #147 composing the manual research path.
 
-Keep dates and exact source references, and allow an explicit gap for a time-sensitive claim, changed circumstances or conflicting evidence. Do not discard an otherwise applicable older explanation solely on elapsed age. Preserve the independent-versus-monitored distinction. Existing callers/tests of `staleAfterDays` must be inspected so compatibility is handled explicitly rather than silently changing a caller's policy.
+The one-year cut-off remains available only as the explicit, deprecated `staleAfterDays` option, so a caller that asks for it still gets it rather than having the request silently discarded; its tests stay as compatibility evidence. Keep published/retrieved/checked dates as provenance, allow an explicit gap for a time-sensitive claim, changed circumstances or conflicting evidence, and preserve the independent-versus-monitored distinction.
 
 ## Partial and wholly missing evidence
 
