@@ -307,6 +307,8 @@ export class PublicPageFetcher implements PageFetcher {
       response = await this.transport(url, {
         headers: {
           accept: "text/html,text/plain;q=0.9",
+          // Ask for uncompressed bytes; a compressed reply is refused below.
+          "accept-encoding": "identity",
           "user-agent": this.config.userAgent ?? "steele-review-research/1",
         },
         signal: combined,
@@ -322,6 +324,11 @@ export class PublicPageFetcher implements PageFetcher {
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       throw new WebAdapterError(statusCode(response.status), response.status);
+    }
+    const encoding = (response.headers.get("content-encoding") ?? "identity").trim().toLowerCase();
+    if (encoding !== "identity" && encoding !== "") {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError("unsupported-content");
     }
     const type = (response.headers.get("content-type") ?? "").toLowerCase();
     const html = type.includes("html");

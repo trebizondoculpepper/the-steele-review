@@ -150,6 +150,15 @@ describe("PublicPageFetcher", () => {
         new Response("x".repeat(100), { headers: { "content-type": "text/plain" } }),
     });
     expect((await failure(big.fetch("https://big.example/", live()))).code).toBe("too-large");
+    const gz = fetcher({
+      "https://z.example/": () =>
+        new Response("\x1f\x8b", {
+          headers: { "content-type": "text/html", "content-encoding": "gzip" },
+        }),
+    });
+    expect((await failure(gz.fetch("https://z.example/", live()))).code).toBe(
+      "unsupported-content",
+    );
     const pdf = fetcher({
       "https://p.example/": () =>
         new Response("%PDF", { headers: { "content-type": "application/pdf" } }),
