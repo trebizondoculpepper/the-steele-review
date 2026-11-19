@@ -223,6 +223,24 @@ describe("verifyDraft", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("accepts evidence passages with CRLF line endings", () => {
+    const crlf = {
+      ...brief,
+      citations: [
+        {
+          ...brief.citations[0]!,
+          evidence: { ...brief.citations[0]!.evidence, passage: "Line one.\r\nLine two." },
+        },
+      ],
+    };
+    const md = renderDraft(crlf, {
+      summary: "s",
+      themes: [],
+      errors: [{ claimId, explanation: "x", citationIds: ["E1"], uncertainty: "low" }],
+    });
+    expect(checkDraftReferences(md, crlf)).toEqual([]);
+  });
+
   it("refuses altered draft or brief hashes", async () => {
     const { p } = verifier([]);
     expect(await verify(p, { markdown: `${markdown}extra` })).toEqual({
@@ -314,6 +332,37 @@ describe("VerificationWorker", () => {
     });
     expect(await worker.handle(message(draftReady()))).toEqual({ kind: "already-verified" });
     expect(calls).toHaveLength(1);
+  });
+
+  it("counts earlier redrafts of the same brief and skips on the final attempt", async () => {
+    const issue = { passage: "Uncertainty: medium.", problem: "p", requiredChange: "c" };
+    const worker = (responses: unknown[]) =>
+      new VerificationWorker({
+        artifacts,
+        verifier: verifier(responses).p,
+        operations,
+        owner: "v",
+        maxAttempts: 2,
+        retryDelayMs: 0,
+      });
+    expect(
+      await worker([{ verdict: "redraft", issues: [issue] }]).handle(message(draftReady())),
+    ).toMatchObject({ verdict: "redraft" });
+    // A second, different draft of the same brief.
+    const second = `${markdown}\n`;
+    const secondRef = await artifacts.write("drafts/pub/p/d2.md", second);
+    const secondMeta = await artifacts.write(
+      "drafts/pub/p/d2.json",
+      `${JSON.stringify({ ...metadata, draftHash: `sha256:${secondRef.sha256}` }, null, 2)}\n`,
+    );
+    const event = {
+      ...draftReady(),
+      id: "evt-2",
+      data: { ...draftReady().data, draft: reference(secondRef), metadata: reference(secondMeta) },
+    };
+    expect(
+      await worker([{ verdict: "redraft", issues: [issue] }]).handle(message(event)),
+    ).toMatchObject({ verdict: "skip" });
   });
 
   it("keeps work pending when the verifier is unavailable", async () => {

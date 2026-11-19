@@ -131,7 +131,8 @@ export function checkDraftReferences(markdown: string, brief: DraftingBrief): Ve
     const quoted: string[] = [];
     for (let j = i + 1; j < lines.length && /^ {2}>/.test(lines[j]!); j++)
       quoted.push(lines[j]!.replace(/^ {2}> ?/, ""));
-    if (quoted.join("\n") !== c.evidence.passage) {
+    // Compared with line endings normalised the same way the renderer splits them.
+    if (quoted.join("\n") !== c.evidence.passage.replace(/\r\n?/g, "\n")) {
       issues.push({
         source: "deterministic",
         passage: lines[i]!,
@@ -302,7 +303,7 @@ export type VerificationWorkerOutcome =
 export class VerificationWorker {
   constructor(
     private readonly config: {
-      artifacts: Pick<GitArtifactStore, "read" | "write" | "lookup">;
+      artifacts: Pick<GitArtifactStore, "read" | "write" | "lookup" | "list">;
       verifier: ExtractionModelProvider;
       operations: OperationStore;
       owner: string;
@@ -311,6 +312,34 @@ export class VerificationWorker {
       retryDelayMs?: number;
     },
   ) {}
+
+  /**
+   * This draft's attempt number for its brief: one more than the earlier,
+   * different drafts of the same brief that were sent back for redraft.
+   */
+  private async attemptFor(
+    publicationId: string,
+    postId: string,
+    briefHash: string,
+    draftHash: string,
+  ): Promise<number> {
+    let previous = 0;
+    for (const path of await this.config.artifacts.list(
+      `verifications/${publicationId}/${postId}`,
+      1_000,
+    )) {
+      const ref = await this.config.artifacts.lookup(path);
+      if (!ref) continue;
+      try {
+        const r = JSON.parse(await this.config.artifacts.read(ref)) as VerificationReport;
+        if (r.brief?.hash === briefHash && r.draft?.hash !== draftHash && r.verdict === "redraft")
+          previous++;
+      } catch {
+        // An unreadable report is not counted.
+      }
+    }
+    return previous + 1;
+  }
 
   async handle(
     message: DeliveredMessage,
@@ -344,7 +373,8 @@ export class VerificationWorker {
       return { kind: "failed", reason: "unreadable-artifact" };
     }
 
-    const key = `verify:${sha(`${d.draft.hash}\n${this.config.verifier.modelVersion}\n${prompt.version}`)}`;
+    // The same text verified against a different brief is different work.
+    const key = `verify:${sha(`${d.draft.hash}\n${metadata.brief.hash}\n${this.config.verifier.modelVersion}\n${prompt.version}`)}`;
     const claimed = operations.claim(key, this.config.owner, 10 * 60_000, 1_000);
     if (claimed.kind === "completed") {
       await message.ack();
@@ -367,6 +397,7 @@ export class VerificationWorker {
       metadata,
       verifier: this.config.verifier,
       prompt,
+      attempt: await this.attemptFor(d.publicationId, d.postId, metadata.brief.hash, d.draft.hash),
       ...(this.config.maxAttempts ? { maxAttempts: this.config.maxAttempts } : {}),
       ...(signal ? { signal } : {}),
     });
