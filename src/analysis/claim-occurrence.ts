@@ -290,6 +290,15 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
   if (o.claimId !== expectedClaimId) {
     throw new InvalidClaimOccurrenceError("claim ID does not match the claim fields");
   }
+  // A text-derived grouping key must be the one its statement produces;
+  // model-assisted keys are revisable and validated where they are assigned.
+  if (
+    o.grouping.method === "normalised-text" &&
+    o.grouping.version === "1" &&
+    o.grouping.key !== normalisedClaimKey(o.statement)
+  ) {
+    throw new InvalidClaimOccurrenceError("grouping key does not match the statement");
+  }
   // Transcript time is derived from the supplied timings, never stored freely.
   const expectedTime = transcriptTimeFor(source, o.span);
   if (JSON.stringify(o.transcriptTime ?? null) !== JSON.stringify(expectedTime ?? null)) {

@@ -239,6 +239,13 @@ describe("parseClaimOccurrence", () => {
       (o: Record<string, unknown>) => ({ ...o, claimId: `sha256:${"7".repeat(64)}` }),
     ],
     [
+      "forged grouping key",
+      (o: Record<string, unknown>) => ({
+        ...o,
+        grouping: { ...(o.grouping as object), key: `sha256:${"8".repeat(64)}` },
+      }),
+    ],
+    [
       "changed statement",
       (o: Record<string, unknown>) => ({ ...o, statement: "Something different." }),
     ],
