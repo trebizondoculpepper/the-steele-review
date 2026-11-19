@@ -493,15 +493,18 @@ export async function detectThemes(input: {
       const name = identityName(p.name);
       if (!name || !themeSlug(p.name))
         return rejected.push({ kind: "proposed", index, reason: "invalid-name" });
-      if (seenNames.has(name))
-        return rejected.push({ kind: "proposed", index, reason: "duplicate-name" });
+      // Same name with a different scope is a distinct proposal; only an
+      // exact repeat (name and definition) is a duplicate.
+      const key = `${name}\n${identityName(p.definition)}`;
+      if (seenNames.has(key))
+        return rejected.push({ kind: "proposed", index, reason: "duplicate-proposal" });
       if (p.possibleMatchOf !== undefined && !knownIds.has(p.possibleMatchOf)) {
         return rejected.push({ kind: "proposed", index, reason: "unknown-possible-match" });
       }
       const evidence = locate(p.passages);
       if (typeof evidence === "string")
         return rejected.push({ kind: "proposed", index, reason: `passage-${evidence}` });
-      seenNames.add(name);
+      seenNames.add(key);
       proposed.push({
         name: p.name,
         definition: p.definition,

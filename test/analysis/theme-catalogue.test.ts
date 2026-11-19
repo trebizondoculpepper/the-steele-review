@@ -205,6 +205,34 @@ describe("detectThemes", () => {
     expect((await catalogue.load()).catalogue.themes).toHaveLength(2);
   });
 
+  it("keeps two same-named proposals with different scopes as separate themes", async () => {
+    const proposal = (definition: string, passage: string) => ({
+      name: "Spraying",
+      definition,
+      confidence: "low",
+      passages: [{ passage }],
+    });
+    const out = await detectThemes({
+      provider: model(
+        JSON.stringify({
+          existing: [],
+          proposed: [
+            proposal("Aircraft spraying claims.", "They are spraying the skies again."),
+            proposal("Pesticide use on crops.", "Also the bins were late."),
+            proposal("Aircraft spraying claims.", "They are spraying the skies again."),
+          ],
+        }),
+      ),
+      catalogue,
+      artifacts: content,
+      post: { ...post, postId: "two-sprayings" },
+      source,
+    });
+    if (out.status !== "detected") throw new Error(out.status);
+    expect(out.themeIds).toHaveLength(2);
+    expect(out.detection.rejected.map((r) => r.reason)).toEqual(["duplicate-proposal"]);
+  });
+
   it("accepts no themes and rejects unknown IDs and ungrounded passages", async () => {
     await seed();
     const none = await detectThemes({
