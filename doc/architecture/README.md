@@ -28,3 +28,5 @@ The [milestone sequence](13-milestones.md) is the current acceptance scope. See 
 See the [manual research and drafting demo](15-manual-research-demo.md) for the agreed three-post acceptance slice, epic hierarchy and small delivery contracts.
 
 See [runtime diagnostic CLI](16-diagnostic-cli.md) for the incremental troubleshooting-tool principle and initial read-only command contracts.
+
+See [extraction-first checkpoint](17-extraction-first-contract.md) for the latest owner-refined theme/claim contracts and ten-post research-handoff target.
