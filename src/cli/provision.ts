@@ -16,6 +16,11 @@
  *
  * Output is one JSON line naming each resource and whether it was created.
  */
+import {
+  describeSetupError,
+  elasticsearchConnection,
+  natsConnection,
+} from "../config/credentials.js";
 import { z } from "zod";
 import { FULLTEXT_INDEX_MAPPING, FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
@@ -28,10 +33,6 @@ import { NatsController } from "../controllers/nats.js";
 import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
 
 const EnvSchema = z.object({
-  NATS_URL: z.string().min(1),
-  NATS_TOKEN: z.string().optional(),
-  ELASTICSEARCH_URL: z.string().min(1),
-  ELASTICSEARCH_API_KEY: z.string().optional(),
   STEELE_DISCOVERY_STREAM: z.string().min(1).default("STEELE_DISCOVERY"),
   STEELE_CONTENT_STREAM: z.string().min(1).default("STEELE_CONTENT"),
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
@@ -47,11 +48,21 @@ async function main(): Promise<number> {
     return 2;
   }
   const c = env.data;
-  const nats = new NatsController(c.NATS_URL, c.NATS_TOKEN || undefined);
+  let natsConn;
+  let esConn;
+  try {
+    natsConn = natsConnection();
+    esConn = elasticsearchConnection();
+  } catch (error) {
+    console.error(`provision: ${describeSetupError(error)}`);
+    return 2;
+  }
+
+  const nats = new NatsController(natsConn.url, natsConn.token);
   let es: ElasticsearchController | undefined;
   const report: Record<string, string> = {};
   try {
-    es = new ElasticsearchController(c.ELASTICSEARCH_URL, c.ELASTICSEARCH_API_KEY || undefined);
+    es = new ElasticsearchController(esConn.url, esConn.apiKey);
     await nats.connect("steele-provision");
     report.discoveryStream = await provisionDiscoveryStream(nats, {
       name: c.STEELE_DISCOVERY_STREAM,

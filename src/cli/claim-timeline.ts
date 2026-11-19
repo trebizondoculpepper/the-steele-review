@@ -12,6 +12,7 @@
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
  *   STEELE_CLAIM_OCCURRENCE_INDEX?    logical index (alias); defaults to steele-claim-occurrences-v1
  */
+import { describeSetupError, elasticsearchConnection } from "../config/credentials.js";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import {
@@ -64,14 +65,17 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`claim-timeline: ${message}`);
     return 2;
   }
-  const url = process.env.ELASTICSEARCH_URL;
-  if (!url) {
-    console.error("claim-timeline: ELASTICSEARCH_URL is required");
+  let esConn;
+  try {
+    esConn = elasticsearchConnection();
+  } catch (error) {
+    console.error(`claim-timeline: ${describeSetupError(error)}`);
     return 2;
   }
+
   let es: ElasticsearchController;
   try {
-    es = new ElasticsearchController(url, process.env.ELASTICSEARCH_API_KEY || undefined);
+    es = new ElasticsearchController(esConn.url, esConn.apiKey);
   } catch {
     // Never echo the configured URL: it may carry credentials.
     console.error("claim-timeline: ELASTICSEARCH_URL is not a valid URL");

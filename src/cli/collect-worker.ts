@@ -20,6 +20,7 @@
  * transcription are recorded visibly as transcription-unavailable.
  * Output is one JSON line per outcome; no URLs with credentials are printed.
  */
+import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { hostname } from "node:os";
 import { z } from "zod";
 import { CollectionStore } from "../collection/collection-store.js";
@@ -31,8 +32,6 @@ import { SubstackContentCollector } from "../controllers/substack/collect.js";
 import { parseDiscoveryEvent } from "../events/discovery-event.js";
 
 const EnvSchema = z.object({
-  NATS_URL: z.string().min(1),
-  NATS_TOKEN: z.string().optional(),
   STEELE_PUBLICATION_URL: z.url({ protocol: /^https$/ }),
   STEELE_PUBLICATION_ID: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
   STEELE_ARCHIVE_PATH: z.string().min(1),
@@ -52,13 +51,21 @@ async function main(): Promise<number> {
     return 2;
   }
   const c = env.data;
+  let natsConn;
+  try {
+    natsConn = natsConnection();
+  } catch (error) {
+    console.error(`collect-worker: ${describeSetupError(error)}`);
+    return 2;
+  }
+
   const artifacts = new GitArtifactStore({
     repoPath: c.STEELE_ARCHIVE_PATH,
     repository: c.STEELE_ARCHIVE_REPOSITORY,
   });
   await artifacts.initialise();
   const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
-  const nats = new NatsController(c.NATS_URL, c.NATS_TOKEN || undefined);
+  const nats = new NatsController(natsConn.url, natsConn.token);
   const worker = new CollectionWorker({
     store: new CollectionStore(operations, artifacts),
     operations,

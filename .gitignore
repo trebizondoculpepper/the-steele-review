@@ -5,3 +5,8 @@ dist/
 !.env.example
 pdb.toml
 .firecrawl/
+
+# Local credential pointer notes (never committed)
+secret.md
+*.secret
+secrets/
