@@ -296,6 +296,7 @@ describe("CollectionWorker", () => {
           provider: "fake",
           model: "fake-1",
           mediaKind: "audio",
+          confidence: 0.82,
           complete: true,
           machineGenerated: true,
         },
@@ -319,6 +320,23 @@ describe("CollectionWorker", () => {
     expect(parseTextReadyEvent(published[0]!.body).data?.acquisitionMethod).toBe(
       "machine-transcript",
     );
+    const ref = parseTextReadyEvent(published[0]!.body).data!.artifact;
+    const stored = JSON.parse(
+      await artifacts.read({
+        repository: ref.repository,
+        commit: ref.commit,
+        path: ref.path,
+        sha256: ref.hash.slice(7),
+      }),
+    );
+    expect(stored.provenance).toMatchObject({
+      method: "machine-transcript",
+      transcriptionProvider: "fake",
+      transcriptionModel: "fake-1",
+      transcriptionConfidence: 0.82,
+      transcriptionComplete: true,
+      machineGenerated: true,
+    });
   });
 
   it("reports failed transcription and frees media", async () => {
