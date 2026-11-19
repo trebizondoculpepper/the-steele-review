@@ -117,6 +117,13 @@ export async function replayArchiveToIndex(input: {
       fail("unreadable-record");
       continue;
     }
+    // The record must belong to the post its archive path names.
+    const [, pathPublication, pathPost] = path.split("/");
+    if (record.item.publicationId !== pathPublication || record.item.postId !== pathPost) {
+      report.selected++;
+      fail("identity-mismatch");
+      continue;
+    }
     if (sel.from || sel.to) {
       const at = record.item.publishedAt;
       // Compared as instants: offsets differ between sources.

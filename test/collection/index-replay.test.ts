@@ -193,6 +193,23 @@ describe("replayArchiveToIndex", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects a record whose identity differs from its archive path", async () => {
+    await artifacts.write(
+      "substack/example-pub/a/collected.json",
+      `${JSON.stringify(record("other"))}\n`,
+    );
+    const { port, docs } = versionedIndex();
+    const result = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 5 },
+      artifacts,
+      index: port,
+    });
+    expect(result.failed).toEqual([
+      { path: "substack/example-pub/a/collected.json", reason: "identity-mismatch" },
+    ]);
+    expect(docs.size).toBe(0);
+  });
+
   it("reports interruption instead of success", async () => {
     await archive(record("a"), record("b"));
     const abort = new AbortController();
