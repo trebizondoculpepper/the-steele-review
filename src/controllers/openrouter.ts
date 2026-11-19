@@ -120,7 +120,12 @@ export class OpenRouterProvider implements ExtractionModelProvider {
     if (base.protocol !== "https:" || base.username || base.password) {
       throw new Error("model provider base URL must be https without user info");
     }
-    this.endpoint = new URL(`${base.pathname.replace(/\/$/, "")}/chat/completions`, base);
+    // Copy the base and set only its path, so the configured origin can
+    // never be replaced by a path that parses as a different host.
+    this.endpoint = new URL(base.href);
+    this.endpoint.pathname = `${base.pathname.replace(/\/+$/, "")}/chat/completions`;
+    this.endpoint.search = "";
+    this.endpoint.hash = "";
     this.modelVersion = `openrouter/${model}`;
     this.timeoutMs = config.timeoutMs ?? 120_000;
     this.maxResponseBytes = config.maxResponseBytes ?? 2 * 1024 * 1024;

@@ -121,6 +121,21 @@ describe("OpenRouterProvider", () => {
     ).toThrow(/^model provider base URL is invalid$/);
   });
 
+  it("keeps the configured origin for a base path beginning with //", async () => {
+    const calls: string[] = [];
+    const p = new OpenRouterProvider({
+      apiKey: KEY,
+      model: "m",
+      baseUrl: "https://api.example//evil.example/v1",
+      fetch: (async (url: URL) => {
+        calls.push(String(url));
+        return ok("x");
+      }) as typeof fetch,
+    });
+    await p.complete(req, new AbortController().signal);
+    expect(new URL(calls[0]).host).toBe("api.example");
+  });
+
   it("refuses a non-https base URL", () => {
     expect(
       () => new OpenRouterProvider({ apiKey: KEY, model: "m", baseUrl: "http://x.example/v1" }),
