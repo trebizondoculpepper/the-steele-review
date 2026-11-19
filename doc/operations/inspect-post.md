@@ -4,7 +4,7 @@
 
 ```sh
 STEELE_PUBLICATION_ID=<publication> STEELE_CONTENT_PATH=<content repository path> STEELE_CONTENT_REPOSITORY=<logical name> \
-  npm run inspect-post -- --post-id <slug> [--limit <n>] [--json]
+  npm run -s inspect-post -- --post-id <slug> [--limit <n>] [--json]
 ```
 
 The content repository path is private configuration; keep it in the private deployment notes.
@@ -13,4 +13,5 @@ The content repository path is private configuration; keep it in the private dep
 - Every saved result version is listed with its logical reference (short commit and repository path), model and prompt versions. A claim result linked to a theme result for different source text is flagged.
 - "No saved theme or claim results" means nothing exists for that post. An empty result (for example zero themes) is shown as such.
 - Each list is capped by `--limit` (default 50, maximum 500), and truncation is stated.
-- Read-only: it never initialises or writes the repository, calls a model or sends events. Exit 0 when shown, 1 when the repository is unavailable, 2 for bad usage.
+- Read-only: it never initialises or writes the repository, calls a model or sends events. Exit 0 when shown; 1 when the repository is unavailable or some saved results are unreadable, incompatible or unresolved (everything readable is still printed); 2 for bad usage.
+- Use `npm run -s` (silent) so `--json` output is not preceded by the npm script banner.

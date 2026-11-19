@@ -8,11 +8,17 @@
  * content repository, calls a model or sends events. Shows source quotations
  * and summaries on purpose; do not route this output to public logs.
  *
- * Exit: 0 shown (including "no saved results"); 1 repository unavailable;
+ * Exit: 0 shown (including "no saved results"); 1 repository unavailable or
+ * some saved results unreadable/incompatible (everything readable still printed);
  * 2 invalid usage or configuration.
  */
 import { z } from "zod";
-import { MAX_ITEM_LIMIT, inspectPost, renderInspection } from "../analysis/inspect-results.js";
+import {
+  MAX_ITEM_LIMIT,
+  inspectPost,
+  isPartial,
+  renderInspection,
+} from "../analysis/inspect-results.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 
 const USAGE = "Usage: inspect-post --post-id <slug> [--limit <n>] [--json]";
@@ -70,7 +76,9 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   }
   console.log(json ? JSON.stringify(report) : renderInspection(report));
-  return 0;
+  // Partial inspections (unreadable, incompatible or unresolved results, or
+  // a truncated scan) still print everything readable, but fail the command.
+  return isPartial(report) ? 1 : 0;
 }
 
 process.exitCode = await main(process.argv.slice(2));
