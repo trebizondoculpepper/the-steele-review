@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -156,6 +157,19 @@ describe("read-only open", () => {
     expect(existsSync(`${path}-wal`)).toBe(true);
   });
 
+  it("handles '?' and '#' in the database path without ambiguity", () => {
+    const dir = directory();
+    const path = join(dir, "operations?draft#1.db");
+    const store = new OperationStore({ path, now: () => NOW });
+    store.claim("op-special", "worker", 60_000);
+    store.close();
+    const info = openInspector(path).inspect("op-special");
+    expect(info?.key).toBe("op-special");
+    expect(readdirSync(dir).filter((f) => f.includes("?draft#1"))).toEqual([
+      "operations?draft#1.db",
+    ]);
+  });
+
   it("refuses a database whose schema is newer than this build", () => {
     const dir = directory();
     const path = join(dir, "newer.db");
@@ -182,7 +196,9 @@ describe("read-only open", () => {
     store.close();
 
     const snapshot = () => {
-      const db = new DatabaseSync(`file:${encodeURI(path)}?immutable=1`, { readOnly: true });
+      const db = new DatabaseSync(`${pathToFileURL(path).href}?immutable=1`, {
+        readOnly: true,
+      });
       const state = {
         bytes: createHash("sha256").update(readFileSync(path)).digest("hex"),
         files: readdirSync(dir).sort(),

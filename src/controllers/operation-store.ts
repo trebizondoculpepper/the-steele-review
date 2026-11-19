@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
 
@@ -1023,10 +1024,11 @@ export class OperationInspector {
       if (!statSync(path).isFile()) return { status: "unavailable" };
       // `immutable=1` reads without locking or creating `-wal`/`-shm`
       // sidecars, which a plain read-only connection would create.
-      db = new DatabaseSync(`file:${encodeURI(path)}?immutable=1`, {
-        readOnly: true,
-        timeout: busy,
-      });
+      // A file URL encodes `?` and `#` in a path, which encodeURI would leave
+      // ambiguous; the query parameter then selects immutable mode.
+      const fileUrl = pathToFileURL(path);
+      fileUrl.searchParams.set("immutable", "1");
+      db = new DatabaseSync(fileUrl.href, { readOnly: true, timeout: busy });
       const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
