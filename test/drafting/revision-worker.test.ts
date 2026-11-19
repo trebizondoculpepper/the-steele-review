@@ -283,6 +283,52 @@ describe("RevisionWorker", () => {
     expect(writer.calls).toHaveLength(1);
   });
 
+  it("records a terminal skip when there is nothing supported to write", async () => {
+    const empty = JSON.stringify({ summary: "s", themes: [], errors: [] });
+    const r = await worker(fake("writer", [empty]).p, fake("verifier", []).p).handle(
+      await briefMessage(),
+    );
+    expect(r).toEqual({ kind: "no-supported-errors" });
+    expect(decisions()).toMatchObject([{ revision: 0, action: "skip" }]);
+  });
+
+  it("bounds malformed writer output and then records an explicit skip", async () => {
+    const writer = fake("writer", Array(9).fill("not json"));
+    const w = new RevisionWorker({
+      artifacts,
+      operations,
+      writer: writer.p,
+      verifier: fake("v", []).p,
+      owner: "rev",
+      retryDelayMs: 0,
+      maxInconclusive: 1,
+    });
+    expect(await w.handle(await briefMessage())).toMatchObject({
+      kind: "pending",
+      reason: "writer:inconclusive",
+    });
+    expect(await w.handle(await briefMessage())).toMatchObject({
+      kind: "skipped",
+      reason: "writer-inconclusive",
+    });
+    expect(decisions().map((d) => d.action)).toEqual(["skip"]);
+  });
+
+  it("links each revision to the preceding attempt record", async () => {
+    await worker(
+      fake("writer", [draftJson("medium"), draftJson("high")]).p,
+      fake("verifier", [REDRAFT, APPROVE]).p,
+    ).handle(await briefMessage());
+    const [first, second] = decisions();
+    const record = JSON.parse(
+      await artifacts.read({
+        ...second!.record,
+        sha256: second!.record.hash.replace("sha256:", ""),
+      }),
+    );
+    expect(record.previous).toEqual(first!.record);
+  });
+
   it("answers a duplicate event from stored state with no model calls", async () => {
     await worker(fake("writer", [draftJson("medium")]).p, fake("verifier", [APPROVE]).p).handle(
       await briefMessage(),

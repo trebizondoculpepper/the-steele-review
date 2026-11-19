@@ -132,7 +132,8 @@ export class RevisionWorker {
       if (begun.kind === "already-recorded") {
         // Resume: reuse the stored attempt without calling any model.
         record = begun.record;
-        markdown = await artifacts.read(toArchiveRef(record.draft));
+        // A skip recorded without a draft needs no text.
+        markdown = record.draft ? await artifacts.read(toArchiveRef(record.draft)) : "";
       } else {
         const step = await this.attempt(
           brief,
@@ -195,7 +196,7 @@ export class RevisionWorker {
             draft: step.draft,
             report: refOf(reportRef),
             decision: { action: "skip", reason: "verifier-inconclusive" },
-            ...(previous ? { previous: previous.record.draft } : {}),
+            ...(begun.previous ? { previous: begun.previous } : {}),
           });
           if (finished.kind !== "recorded") {
             message.nak(Math.min(retryDelay, 30_000));
@@ -213,9 +214,27 @@ export class RevisionWorker {
             message.nak(retryDelay);
             return { kind: "pending", reason: step.reason };
           }
-          operations.fail(begun.claim, "revision:no-supported-errors", false);
+          // A terminal outcome, recorded like any other decision.
+          const reason =
+            step.kind === "no-supported-errors" ? "no-supported-errors" : "writer-inconclusive";
+          const finished = await this.attempts.finish(begun.claim, {
+            ...post,
+            brief: event.data.brief,
+            revision,
+            decision: { action: "skip", reason },
+            ...(begun.previous ? { previous: begun.previous } : {}),
+          });
+          if (finished.kind !== "recorded") {
+            message.nak(Math.min(retryDelay, 30_000));
+            return {
+              kind: "pending",
+              reason: finished.kind === "stale-owner" ? "stale-owner" : finished.reason,
+            };
+          }
           await message.ack();
-          return { kind: "no-supported-errors" };
+          return step.kind === "no-supported-errors"
+            ? { kind: "no-supported-errors" }
+            : { kind: "skipped", revision, reason };
         }
         const finished = await this.attempts.finish(begun.claim, {
           ...post,
@@ -224,7 +243,7 @@ export class RevisionWorker {
           draft: step.draft,
           report: step.report,
           decision: step.decision,
-          ...(previous ? { previous: previous.record.draft } : {}),
+          ...(begun.previous ? { previous: begun.previous } : {}),
         });
         if (finished.kind !== "recorded") {
           message.nak(Math.min(retryDelay, 30_000));
@@ -245,7 +264,7 @@ export class RevisionWorker {
         };
         markdown = step.markdown;
       }
-      if (record.decision.action === "approve") {
+      if (record.decision.action === "approve" && record.draft) {
         await message.ack();
         return { kind: "approved", revision, draft: record.draft };
       }
@@ -311,6 +330,7 @@ export class RevisionWorker {
     | { kind: "pending"; reason: string }
     | { kind: "inconclusive"; draft: ArtifactReference; markdown: string; base: string }
     | { kind: "no-supported-errors" }
+    | { kind: "writer-inconclusive" }
   > {
     const { artifacts } = this.config;
     const feedback =
@@ -349,7 +369,22 @@ export class RevisionWorker {
           : {}),
         ...(signal ? { signal } : {}),
       });
-      if (drafted.kind === "failed") return { kind: "pending", reason: `writer:${drafted.reason}` };
+      if (drafted.kind === "failed") {
+        if (drafted.reason !== "malformed-output")
+          return { kind: "pending", reason: `writer:${drafted.reason}` };
+        // Answered, but not usably: bounded separately from outages.
+        const counter = this.config.operations.claim(
+          `revision-writer-inconclusive:${sha(briefText).slice(0, 32)}:${revision}`,
+          this.config.owner,
+          1,
+          this.config.maxInconclusive ?? 3,
+        );
+        if (counter.kind === "claimed") {
+          this.config.operations.fail(counter.claim, "inconclusive", true);
+          return { kind: "pending", reason: "writer:inconclusive" };
+        }
+        return { kind: "writer-inconclusive" };
+      }
       if (drafted.kind === "no-supported-errors") return { kind: "no-supported-errors" };
       markdown = drafted.markdown;
       draftRef = await write(draftPath, markdown);

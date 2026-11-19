@@ -46,8 +46,8 @@ export const AttemptRecordSchema = z
     /** The original evidence brief every revision is drafted from. */
     brief: ArtifactReferenceSchema,
     revision: z.number().int().min(0).max(10),
-    draft: ArtifactReferenceSchema,
-    report: ArtifactReferenceSchema,
+    draft: ArtifactReferenceSchema.optional(),
+    report: ArtifactReferenceSchema.optional(),
     decision: z.discriminatedUnion("action", [
       z.object({ action: z.literal("approve"), draftHash: Hash, briefHash: Hash }).strict(),
       z
@@ -62,7 +62,15 @@ export const AttemptRecordSchema = z
     /** The previous attempt's record, for revisions after the first. */
     previous: ArtifactReferenceSchema.optional(),
   })
-  .strict();
+  .strict()
+  // Only a skip may lack a draft and report (for example, when there was
+  // nothing supported to write, or the writer never gave usable output).
+  .refine(
+    (r) => r.decision.action === "skip" || (r.draft !== undefined && r.report !== undefined),
+    {
+      message: "draft and report are required unless the decision is skip",
+    },
+  );
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
 
 /** Versioned payload of the `revision.decided` handoff. */
@@ -73,8 +81,8 @@ export const RevisionDecidedDataSchema = z
     revision: z.number().int().min(0).max(10),
     action: z.enum(["approve", "redraft", "skip"]),
     brief: ArtifactReferenceSchema,
-    draft: ArtifactReferenceSchema,
-    report: ArtifactReferenceSchema,
+    draft: ArtifactReferenceSchema.optional(),
+    report: ArtifactReferenceSchema.optional(),
     record: ArtifactReferenceSchema,
   })
   .strict();
