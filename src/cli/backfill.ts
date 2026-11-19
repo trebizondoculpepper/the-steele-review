@@ -7,6 +7,7 @@
  * from the environment. Output is a single sanitised JSON report; connection
  * details are never printed.
  */
+import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { NatsDiscoveryPublisher } from "../controllers/nats-discovery.js";
 import { NatsController } from "../controllers/nats.js";
 import { SubstackArchiveDiscovery } from "../controllers/substack/archive.js";
@@ -33,9 +34,11 @@ async function main(argv: string[]): Promise<number> {
     }
     throw error;
   }
-  const natsUrl = process.env.NATS_URL;
-  if (!natsUrl) {
-    console.error("backfill: NATS_URL is required");
+  let natsConn;
+  try {
+    natsConn = natsConnection();
+  } catch (error) {
+    console.error(`backfill: ${describeSetupError(error)}`);
     return 2;
   }
 
@@ -44,7 +47,7 @@ async function main(argv: string[]): Promise<number> {
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
-  const nats = new NatsController(natsUrl, process.env.NATS_TOKEN);
+  const nats = new NatsController(natsConn.url, natsConn.token);
   try {
     await nats.connect("steele-backfill");
     const report = await runBackfill({

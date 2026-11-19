@@ -14,6 +14,7 @@
  * Exit status: 0 when every selected record was indexed, unchanged or
  * incomplete; 1 when any failed; 2 for usage or configuration errors.
  */
+import { CredentialError, elasticsearchConnection } from "../config/credentials.js";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { replayArchiveToIndex, ReplaySelectionSchema } from "../collection/index-replay.js";
@@ -21,8 +22,6 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 
 const EnvSchema = z.object({
-  ELASTICSEARCH_URL: z.string().min(1),
-  ELASTICSEARCH_API_KEY: z.string().optional(),
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
   STEELE_FULLTEXT_INDEX: z.string().min(1).optional(),
@@ -31,6 +30,7 @@ const EnvSchema = z.object({
 export async function main(argv: string[]): Promise<number> {
   let selection;
   let env;
+  let esConn;
   try {
     const { values } = parseArgs({
       args: argv,
@@ -51,11 +51,14 @@ export async function main(argv: string[]): Promise<number> {
       limit: values.limit === undefined ? undefined : Number(values.limit),
     });
     env = EnvSchema.parse(process.env);
+    esConn = elasticsearchConnection();
   } catch (error) {
     const message =
-      error instanceof z.ZodError
-        ? error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")
-        : String(error);
+      error instanceof CredentialError
+        ? error.message
+        : error instanceof z.ZodError
+          ? error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")
+          : String(error);
     console.error(`replay-index: ${message}`);
     return 2;
   }
@@ -69,7 +72,7 @@ export async function main(argv: string[]): Promise<number> {
   });
   let es: ElasticsearchController;
   try {
-    es = new ElasticsearchController(env.ELASTICSEARCH_URL, env.ELASTICSEARCH_API_KEY || undefined);
+    es = new ElasticsearchController(esConn.url, esConn.apiKey);
   } catch {
     // Never echo the configured URL: it may carry credentials.
     console.error("replay-index: ELASTICSEARCH_URL is not a valid URL");
