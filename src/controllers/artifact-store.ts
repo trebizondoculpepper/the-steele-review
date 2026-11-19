@@ -53,6 +53,7 @@ export type ArtifactErrorCode =
   | "invalid-path"
   | "hash-mismatch"
   | "immutable-conflict"
+  | "stale-revision"
   | "too-large"
   | "concurrent-update"
   | "interrupted-commit"
@@ -77,6 +78,16 @@ export function assertArtifactPath(path: string): string {
     segments.every((s) => SEGMENT.test(s) && s !== ".." && s.toLowerCase() !== ".git");
   if (!valid) throw new ArtifactStoreError("invalid-path");
   return path;
+}
+
+/**
+ * The only path prefixes that may be revised in place. Everything else,
+ * including captured sources and saved evidence, is write-once.
+ */
+export const REVISABLE_PREFIXES: readonly string[] = ["dossier/"];
+
+export function isRevisablePath(path: string): boolean {
+  return REVISABLE_PREFIXES.some((p) => path.startsWith(p));
 }
 
 export function sha256(content: string): string {
@@ -204,6 +215,8 @@ export class GitArtifactStore {
     expectedSha256?: string,
   ): Promise<ArtifactRef> {
     assertArtifactPath(path);
+    // Revisable documents never go through the write-once path.
+    if (isRevisablePath(path)) throw new ArtifactStoreError("invalid-path");
     if (Buffer.byteLength(content, "utf8") > this.maxBytes) {
       throw new ArtifactStoreError("too-large");
     }
@@ -230,6 +243,17 @@ export class GitArtifactStore {
       }
     }
 
+    const commit = await this.commitBlob(path, content, parent, `Add ${path}`);
+    return { repository: this.config.repository, commit, path, sha256: digest };
+  }
+
+  /** Commit one blob at a path on top of `parent` with a compare-and-swap ref update. */
+  private async commitBlob(
+    path: string,
+    content: string,
+    parent: string | undefined,
+    message: string,
+  ): Promise<string> {
     const index = join(tmpdir(), `steele-artifact-index-${randomUUID()}`);
     const env = { GIT_INDEX_FILE: index };
     try {
@@ -240,13 +264,13 @@ export class GitArtifactStore {
       else await this.run(["read-tree", "--empty"], { env });
       await this.run(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
       const tree = (await this.run(["write-tree"], { env })).stdout.trim();
-      const commitArgs = ["commit-tree", tree, "-m", `Add ${path}`];
+      const commitArgs = ["commit-tree", tree, "-m", message];
       if (parent) commitArgs.push("-p", parent);
       const commit = (await this.run(commitArgs)).stdout.trim();
       // Compare-and-swap: fails if the branch moved or a stale lock remains.
       const expectedOld = parent ?? "0".repeat(40);
       await this.run(["update-ref", "-m", `artifact ${path}`, this.ref, commit, expectedOld]);
-      return { repository: this.config.repository, commit, path, sha256: digest };
+      return commit;
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       const stderr = String((error as { stderr?: string }).stderr ?? "");
@@ -257,6 +281,74 @@ export class GitArtifactStore {
       throw new ArtifactStoreError("git-failed");
     } finally {
       await rm(index, { force: true });
+    }
+  }
+
+  /**
+   * Revise a document at a revisable path (see {@link REVISABLE_PREFIXES}).
+   * Single writer with an expected prior version: `expectedSha256` is the
+   * content hash the caller last read, or null when creating the document. A
+   * mismatch fails with `stale-revision`, so a concurrent change is never
+   * overwritten; the caller must reload and retry. Identical content returns
+   * the current reference without a new commit. Earlier versions stay
+   * readable by their commit-pinned references.
+   */
+  revise(path: string, content: string, expectedSha256: string | null): Promise<ArtifactRef> {
+    const task = this.queue.then(() => this.reviseNow(path, content, expectedSha256));
+    this.queue = task.catch(() => undefined);
+    return task;
+  }
+
+  private async reviseNow(
+    path: string,
+    content: string,
+    expectedSha256: string | null,
+  ): Promise<ArtifactRef> {
+    assertArtifactPath(path);
+    if (!isRevisablePath(path)) throw new ArtifactStoreError("invalid-path");
+    if (Buffer.byteLength(content, "utf8") > this.maxBytes) {
+      throw new ArtifactStoreError("too-large");
+    }
+    const digest = sha256(content);
+    const parent = await this.head();
+    const blob = parent ? await this.entryAt(parent, path) : undefined;
+    const current = blob === undefined ? null : sha256(await this.blobContent(blob));
+    if (current !== expectedSha256) {
+      // Retrying an identical write that already landed is not a conflict.
+      if (current === digest && parent) {
+        return {
+          repository: this.config.repository,
+          commit: await this.latestCommit(parent, path),
+          path,
+          sha256: digest,
+        };
+      }
+      throw new ArtifactStoreError("stale-revision");
+    }
+    if (current === digest && parent) {
+      return {
+        repository: this.config.repository,
+        commit: await this.latestCommit(parent, path),
+        path,
+        sha256: digest,
+      };
+    }
+    const commit = await this.commitBlob(
+      path,
+      content,
+      parent,
+      `${current ? "Revise" : "Add"} ${path}`,
+    );
+    return { repository: this.config.repository, commit, path, sha256: digest };
+  }
+
+  /** Newest commit on the branch that changed the path. */
+  private async latestCommit(head: string, path: string): Promise<string> {
+    try {
+      const { stdout } = await this.run(["log", "-1", "--format=%H", head, "--", path]);
+      return stdout.trim() || head;
+    } catch {
+      throw new ArtifactStoreError("git-failed");
     }
   }
 
@@ -284,7 +376,9 @@ export class GitArtifactStore {
     const blob = await this.entryAt(head, path);
     if (blob === undefined) return undefined;
     const content = await this.blobContent(blob);
-    const commit = await this.introducingCommit(head, path);
+    const commit = isRevisablePath(path)
+      ? await this.latestCommit(head, path)
+      : await this.introducingCommit(head, path);
     return { repository: this.config.repository, commit, path, sha256: sha256(content) };
   }
 
