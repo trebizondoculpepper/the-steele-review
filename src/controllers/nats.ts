@@ -36,6 +36,21 @@ export class NatsPublishError extends Error {
   }
 }
 
+/** One delivered JetStream message, with acknowledgment controls. */
+export interface DeliveredMessage {
+  data: Uint8Array;
+  /** 1 on first delivery, incremented on each redelivery. */
+  deliveryCount: number;
+  /** Acknowledge and wait for the server to confirm. */
+  ack(): Promise<void>;
+  /** Ask for redelivery after a delay. */
+  nak(delayMs?: number): void;
+  /** Stop redelivering this message. */
+  term(): void;
+  /** Extend the acknowledgment deadline while work continues. */
+  working(): void;
+}
+
 export interface PublishReceipt {
   stream: string;
   seq: number;
@@ -133,6 +148,8 @@ export async function publishWithRetry(
 export class NatsController {
   private connection?: NatsConnection;
   private connecting?: Promise<void>;
+  private connectionName?: string;
+  private closedDeliberately = false;
 
   constructor(
     private readonly servers: string,
@@ -157,12 +174,19 @@ export class NatsController {
 
   /** Open the long-lived connection used for publishing. Idempotent and safe to call concurrently. */
   async connect(name = "steele-discovery"): Promise<void> {
+    this.connectionName = name;
+    this.closedDeliberately = false;
     if (this.connection && !this.connection.isClosed()) return;
     this.connecting ??= connect({
       servers: this.servers,
       token: this.token,
       timeout: 5000,
       name,
+      // Keep trying through long broker outages instead of giving up after
+      // the client's default reconnect budget.
+      reconnect: true,
+      maxReconnectAttempts: -1,
+      reconnectTimeWait: 2_000,
     })
       .then((connection) => {
         this.connection = connection;
@@ -178,6 +202,7 @@ export class NatsController {
 
   /** Drain in-flight work and close. Safe to call more than once. */
   async close(): Promise<void> {
+    this.closedDeliberately = true;
     await this.connecting?.catch(() => undefined);
     const connection = this.connection;
     this.connection = undefined;
@@ -187,6 +212,17 @@ export class NatsController {
     } catch {
       await connection.close().catch(() => undefined);
     }
+  }
+
+  /**
+   * Re-establish a long-lived connection that closed unexpectedly (for
+   * example after an outage outlasted reconnection). A deliberate close() is
+   * respected.
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.connection && !this.connection.isClosed()) return;
+    if (this.closedDeliberately || this.connectionName === undefined) return;
+    await this.connect(this.connectionName);
   }
 
   private requireConnection(): NatsConnection {
@@ -202,8 +238,62 @@ export class NatsController {
     payload: Uint8Array,
     options: PublishOptions,
   ): Promise<PublishReceipt> {
+    await this.ensureConnected();
     const js = jetstream(this.requireConnection());
     return publishWithRetry(js, assertPublishSubject(subject), payload, options);
+  }
+
+  /**
+   * Consume a provisioned durable consumer one message at a time until the
+   * signal aborts. The handler owns acknowledgment; a handler error naks the
+   * message for redelivery. Never creates the stream or consumer.
+   */
+  async consume(
+    stream: string,
+    durable: string,
+    handler: (message: DeliveredMessage) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted) return;
+    const js = jetstream(this.requireConnection());
+    let consumer;
+    try {
+      consumer = await js.consumers.get(stream, durable);
+    } catch {
+      throw new NatsPublishError("no-stream", false);
+    }
+    if (signal.aborted) return;
+    const messages = await consumer.consume({ max_messages: 1 });
+    // The signal may have aborted while the subscription was being set up.
+    if (signal.aborted) {
+      await messages.close().catch(() => undefined);
+      return;
+    }
+    const stop = () => void messages.stop();
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      for await (const m of messages) {
+        const delivered: DeliveredMessage = {
+          data: m.data,
+          deliveryCount: m.info.deliveryCount,
+          ack: async () => {
+            await m.ackAck();
+          },
+          nak: (delayMs) => m.nak(delayMs),
+          term: () => m.term(),
+          working: () => m.working(),
+        };
+        try {
+          await handler(delivered);
+        } catch {
+          m.nak(1_000);
+        }
+        if (signal.aborted) break;
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+      stop();
+    }
   }
 
   /** JetStream manager for explicit provisioning tools; never used by publish(). */

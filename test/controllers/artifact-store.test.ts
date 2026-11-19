@@ -136,6 +136,54 @@ describe("GitArtifactStore", () => {
     await expect(small.write("big.txt", "12345")).rejects.toSatisfy((e) => code(e) === "too-large");
   });
 
+  it("fails closed when an existing artifact is larger than this instance reads", async () => {
+    const big = "x".repeat(2 * 1024 * 1024);
+    await store.write("big/artifact.txt", big);
+    const small = new GitArtifactStore({ repoPath: dir, repository: "test-archive", maxBytes: 4 });
+    await expect(small.write("big/artifact.txt", "new")).rejects.toSatisfy(
+      (e) => code(e) === "immutable-conflict",
+    );
+    // The identical large content is still recognised without being read.
+    const same = await store.write("big/artifact.txt", big);
+    expect(same.sha256).toBe(sha256(big));
+  });
+
+  it("rejects instead of crashing when git cannot read a large input", async () => {
+    const missing = new GitArtifactStore({
+      repoPath: join(dir, "does-not-exist"),
+      repository: "test-archive",
+    });
+    const error = await missing.write("a/x.txt", "y".repeat(2 * 1024 * 1024)).catch((e) => e);
+    expect(error).toBeInstanceOf(ArtifactStoreError);
+    expect(String(error)).not.toContain(dir);
+  });
+
+  it("sanitises history lookup failures on an identical retry", async () => {
+    const ref = await store.write("a/x.txt", "content");
+    const broken = new GitArtifactStore({
+      repoPath: dir,
+      repository: "test-archive",
+      gitBinary: join(dir, "fake-git.sh"),
+    });
+    // A git wrapper that fails only for `log`, standing in for a damaged history.
+    await writeFile(
+      join(dir, "fake-git.sh"),
+      `#!/bin/sh\nfor a in "$@"; do [ "$a" = log ] && { echo "fatal: bad object in ${dir}" >&2; exit 128; }; done\nexec git "$@"\n`,
+      { mode: 0o755 },
+    );
+    const error = await broken.write(ref.path, "content").catch((e) => e);
+    expect(error).toBeInstanceOf(ArtifactStoreError);
+    expect((error as ArtifactStoreError).code).toBe("git-failed");
+    expect(String(error)).not.toContain(dir);
+  });
+
+  it("reports an unknown commit as not found", async () => {
+    const ref = await store.write("a/x.txt", "content");
+    await expect(store.read({ ...ref, commit: "f".repeat(40) })).rejects.toSatisfy(
+      (e) => code(e) === "not-found",
+    );
+  });
+
   it("does not leak the repository path in errors", async () => {
     const error = await store.write("../x", "y").catch((e: unknown) => e);
     expect(String(error)).not.toContain(dir);

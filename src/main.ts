@@ -1,19 +1,26 @@
 import { createServer } from "node:http";
+import {
+  describeSetupError,
+  elasticsearchConnection,
+  natsConnection,
+  type ElasticsearchConnection,
+  type NatsConnection,
+} from "./config/credentials.js";
 import { ElasticsearchController } from "./controllers/elasticsearch.js";
 import { NatsController } from "./controllers/nats.js";
 
-const elasticsearchUrl = process.env.ELASTICSEARCH_URL;
-const natsUrl = process.env.NATS_URL;
-if (!elasticsearchUrl || !natsUrl) {
-  console.error("ELASTICSEARCH_URL and NATS_URL are required");
+let esConn: ElasticsearchConnection;
+let natsConn: NatsConnection;
+try {
+  esConn = elasticsearchConnection();
+  natsConn = natsConnection();
+} catch (error) {
+  console.error(`connectivity: ${describeSetupError(error)}`);
   process.exit(1);
 }
 
-const elasticsearch = new ElasticsearchController(
-  elasticsearchUrl,
-  process.env.ELASTICSEARCH_API_KEY,
-);
-const nats = new NatsController(natsUrl, process.env.NATS_TOKEN);
+const elasticsearch = new ElasticsearchController(esConn.url, esConn.apiKey);
+const nats = new NatsController(natsConn.url, natsConn.token);
 let report = { ready: false, elasticsearch: "pending", nats: "pending" };
 let checking = false;
 
