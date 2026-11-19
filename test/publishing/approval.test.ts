@@ -146,6 +146,19 @@ describe("verifyApprovedArtifact", () => {
     });
   });
 
+  it("rejects a report with an invalid shape", async () => {
+    const bogus = await artifacts.write(
+      "verifications/pub/p/bogus.json",
+      `${JSON.stringify({ verdict: "approve", draft: "anything" })}\n`,
+    );
+    const r = { ...request(), report: reference(bogus) };
+    expect(await verifyApprovedArtifact(r, artifacts)).toEqual({
+      ok: false,
+      reason: "invalid-report",
+      retryable: false,
+    });
+  });
+
   it("refuses a report that does not approve", async () => {
     const redraft = await artifacts.write(
       "verifications/pub/p/redraft.json",

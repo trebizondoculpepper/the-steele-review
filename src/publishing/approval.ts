@@ -72,7 +72,35 @@ export type ApprovalRejection =
   | "missing-artifact"
   | "tampered-content"
   | "stale-approval"
+  | "invalid-report"
   | "archive-unavailable";
+
+const ReportRefSchema = z
+  .object({
+    path: z.string().min(1),
+    commit: z.string().regex(/^[0-9a-f]{40}$/),
+    hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  })
+  .strict();
+
+/** The fields of a verification report this gate relies on, validated at runtime. */
+const ApprovalReportSchema = z.looseObject({
+  schemaVersion: z.literal(1),
+  verdict: z.enum(["approve", "redraft", "skip"]),
+  draft: ReportRefSchema,
+  brief: ReportRefSchema,
+  issues: z.array(
+    z.looseObject({
+      source: z.enum(["deterministic", "verifier"]),
+      passage: z.string().optional(),
+      problem: z.string(),
+      requiredChange: z.string(),
+    }),
+  ),
+  attempt: z.number().int().min(1),
+  maxAttempts: z.number().int().min(1),
+  rejectedIssues: z.number().int().min(0),
+});
 
 export type ParseOutcome =
   | { ok: true; request: PublishRequest }
@@ -135,11 +163,12 @@ export async function verifyApprovedArtifact(
   if (`sha256:${createHash("sha256").update(markdown).digest("hex")}` !== request.draft.hash) {
     return { ok: false, reason: "tampered-content", retryable: false };
   }
+  // The archived report crosses a trust boundary: validate its shape.
   let report: VerificationReport;
   try {
-    report = JSON.parse(reportText) as VerificationReport;
+    report = ApprovalReportSchema.parse(JSON.parse(reportText)) as unknown as VerificationReport;
   } catch {
-    return { ok: false, reason: "not-approved", retryable: false };
+    return { ok: false, reason: "invalid-report", retryable: false };
   }
   if (report.verdict !== "approve") return { ok: false, reason: "not-approved", retryable: false };
   // The approval must be for exactly this draft, at exactly this path and commit.
