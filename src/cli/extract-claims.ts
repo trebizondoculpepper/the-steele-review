@@ -17,6 +17,11 @@
  * Output is one JSON line with identities, counts and versions only.
  */
 import { z } from "zod";
+import {
+  CLAIM_OCCURRENCE_INDEX_MAPPING,
+  CLAIM_OCCURRENCE_INDEX_V1,
+  CLAIM_OCCURRENCE_MAPPING_ADDITIONS,
+} from "../analysis/claim-occurrence.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
 import {
   DEFAULT_CATALOGUE_THEME_PROMPT,
@@ -62,6 +67,9 @@ async function main(argv: string[]): Promise<number> {
     if (process.env.ELASTICSEARCH_URL) {
       const conn = elasticsearchConnection();
       es = new ElasticsearchController(conn.url, conn.apiKey);
+      // Create the occurrence index if needed, then apply additive field upgrades.
+      await es.provisionIndex(CLAIM_OCCURRENCE_INDEX_V1, CLAIM_OCCURRENCE_INDEX_MAPPING);
+      await es.addMappingFields(CLAIM_OCCURRENCE_INDEX_V1, CLAIM_OCCURRENCE_MAPPING_ADDITIONS);
     }
   } catch (error) {
     console.error(`extract-claims: ${describeSetupError(error)}`);

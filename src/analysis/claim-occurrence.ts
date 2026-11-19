@@ -351,6 +351,11 @@ export function claimOccurrenceJsonSchema(): Record<string, unknown> {
 }
 
 /** Explicit strict Elasticsearch mapping for {@link CLAIM_OCCURRENCE_INDEX_V1}. */
+/** Fields added after the first occurrence index version; applied additively to existing indices. */
+export const CLAIM_OCCURRENCE_MAPPING_ADDITIONS = {
+  assertionKind: { type: "keyword" },
+} as const;
+
 export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
   dynamic: "strict",
   properties: {

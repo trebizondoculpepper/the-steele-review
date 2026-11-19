@@ -108,6 +108,14 @@ function model(...responses: string[]): ExtractionModelProvider {
   };
 }
 
+describe("claimRecordId", () => {
+  it("keeps signs and operators distinct but ignores case and spacing", () => {
+    expect(claimRecordId("Prices rose +2%")).not.toBe(claimRecordId("Prices rose -2%"));
+    expect(claimRecordId("Dose > 10 mSv")).not.toBe(claimRecordId("Dose < 10 mSv"));
+    expect(claimRecordId("Dose  > 10 MSV")).toBe(claimRecordId("dose > 10 mSv"));
+  });
+});
+
 describe("extractGroundedClaims", () => {
   it("extracts grounded, attributed, theme-linked claims and keeps unclassified ones explicit", async () => {
     const indexed: Array<{ id: string; doc: { themes: string[] } }> = [];

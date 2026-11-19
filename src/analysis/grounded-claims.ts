@@ -9,7 +9,6 @@ import { createClaim, ClaimTypeSchema, DateMentionSchema, type Claim } from "./c
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
   createClaimOccurrence,
-  normalisedClaimKey,
   type ClaimOccurrence,
   type OccurrenceSource,
   type Speaker,
@@ -139,8 +138,19 @@ export const ClaimRecordSchema = z
   .strict();
 export type ClaimRecord = z.infer<typeof ClaimRecordSchema>;
 
+/**
+ * Strict normalisation for reusable claim identity: Unicode, case and
+ * whitespace only. Signs, operators, decimal points and other punctuation
+ * are kept, because "+2%" and "-2%", or "> 10" and "< 10", are different
+ * claims. Looser equivalence is #145's job, with comparison evidence.
+ */
+export function claimIdentityKey(statement: string): string {
+  const text = statement.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
+}
+
 export function claimRecordId(statement: string): string {
-  return `claim-${normalisedClaimKey(statement).slice(7, 39)}`;
+  return `claim-${claimIdentityKey(statement).slice(7, 39)}`;
 }
 
 export function claimExtractionPath(
@@ -392,7 +402,7 @@ async function upsertClaimRecord(
           schemaVersion: 1,
           id,
           statement: first.statement,
-          groupingKey: normalisedClaimKey(first.statement),
+          groupingKey: claimIdentityKey(first.statement),
           themeIds: [],
           occurrences: [],
         };
