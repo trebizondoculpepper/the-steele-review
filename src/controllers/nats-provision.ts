@@ -1,3 +1,4 @@
+import { AckPolicy } from "@nats-io/jetstream";
 import type { NatsController } from "./nats.js";
 
 /**
@@ -51,6 +52,63 @@ export async function provisionDiscoveryStream(
     name: config.name,
     subjects: config.subjects,
     duplicate_window: (config.duplicateWindowMs ?? 2 * 60 * 1000) * 1_000_000,
+  });
+  return "created";
+}
+
+export interface DurableConsumerConfig {
+  stream: string;
+  /** Durable consumer name, e.g. steele-collector. */
+  name: string;
+  filterSubject: string;
+  /** How long a delivered message may stay unacknowledged before redelivery. */
+  ackWaitMs?: number;
+  /** Bound on deliveries per message. */
+  maxDeliver?: number;
+}
+
+export class ConsumerConflictError extends Error {
+  constructor() {
+    super("existing consumer has a different filter or ack policy; refusing to modify it");
+    this.name = "ConsumerConflictError";
+  }
+}
+
+/**
+ * Explicitly create a durable pull consumer with explicit acknowledgment if
+ * it does not exist. An existing consumer is never modified.
+ */
+export async function provisionDurableConsumer(
+  nats: Pick<NatsController, "manager">,
+  config: DurableConsumerConfig,
+): Promise<ProvisionResult> {
+  if (!STREAM_NAME.test(config.stream) || !STREAM_NAME.test(config.name)) {
+    throw new Error("invalid stream or consumer name");
+  }
+  const jsm = await nats.manager();
+  let existing;
+  try {
+    existing = await jsm.consumers.info(config.stream, config.name);
+  } catch (error) {
+    if (!(error instanceof Error) || !/not found/i.test(error.message)) throw error;
+  }
+  if (existing) {
+    // The worker acknowledges each message only after durable state; any other
+    // ack policy would let unprocessed messages be treated as handled.
+    if (
+      existing.config.filter_subject !== config.filterSubject ||
+      existing.config.ack_policy !== AckPolicy.Explicit
+    ) {
+      throw new ConsumerConflictError();
+    }
+    return "unchanged";
+  }
+  await jsm.consumers.add(config.stream, {
+    durable_name: config.name,
+    filter_subject: config.filterSubject,
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: (config.ackWaitMs ?? 5 * 60 * 1000) * 1_000_000,
+    max_deliver: config.maxDeliver ?? 10,
   });
   return "created";
 }
