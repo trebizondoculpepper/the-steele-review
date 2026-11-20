@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { watch as watchPath, type FSWatcher } from "node:fs";
+import { isAbsolute, join as joinPath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -383,6 +385,108 @@ export class GitArtifactStore {
       ? await this.latestCommit(head, path)
       : await this.introducingCommit(head, path);
     return { repository: this.config.repository, commit, path, sha256: sha256(content) };
+  }
+
+  /**
+   * Paths changed on the branch since `from` (read-only). Without a usable
+   * `from` (absent, unknown, or no longer an ancestor of the head), every
+   * current path is returned with `full: true` so the caller reconciles from
+   * scratch. Paths are artifact paths; renames appear as delete plus upsert.
+   */
+  async changesSince(from?: string): Promise<{
+    head?: string;
+    full: boolean;
+    changes: { path: string; change: "upsert" | "delete" }[];
+  }> {
+    try {
+      await this.run(["rev-parse", "--git-dir"]);
+    } catch {
+      throw new ArtifactStoreError("git-failed");
+    }
+    const head = await this.head();
+    if (!head) return { full: true, changes: [] };
+    let incremental = false;
+    if (from && /^[0-9a-f]{40,64}$/.test(from) && (await this.commitExists(from))) {
+      try {
+        await this.run(["merge-base", "--is-ancestor", from, head]);
+        incremental = true;
+      } catch {
+        incremental = false;
+      }
+    }
+    if (!incremental) {
+      const { stdout } = await this.run(["ls-tree", "-r", "-z", "--name-only", head]);
+      const changes = stdout
+        .split("\0")
+        .filter(Boolean)
+        .map((path) => ({ path, change: "upsert" as const }));
+      return { head, full: true, changes };
+    }
+    const { stdout } = await this.run(["diff", "--name-status", "-z", "--no-renames", from!, head]);
+    const parts = stdout.split("\0").filter(Boolean);
+    const changes: { path: string; change: "upsert" | "delete" }[] = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      changes.push({ path: parts[i + 1], change: parts[i].startsWith("D") ? "delete" : "upsert" });
+    }
+    return { head, full: false, changes };
+  }
+
+  /**
+   * Like `lookup`, but resolved against a specific branch commit (for
+   * example the head a reconciliation pass is applying), so later commits
+   * cannot leak into that pass. Undefined when the path is absent there.
+   */
+  async lookupAt(
+    at: string,
+    path: string,
+  ): Promise<{ ref: ArtifactRef; content: string } | undefined> {
+    assertArtifactPath(path);
+    if (!/^[0-9a-f]{40,64}$/.test(at) || !(await this.commitExists(at))) {
+      throw new ArtifactStoreError("git-failed");
+    }
+    const blob = await this.entryAt(at, path);
+    if (blob === undefined) return undefined;
+    const content = await this.blobContent(blob);
+    const commit = isRevisablePath(path)
+      ? await this.latestCommit(at, path)
+      : await this.introducingCommit(at, path);
+    return {
+      ref: { repository: this.config.repository, commit, path, sha256: sha256(content) },
+      content,
+    };
+  }
+
+  /**
+   * Notify when the branch may have moved (a wake-up hint only: callers must
+   * still read committed revisions). Watches the repository's own ref
+   * storage, wherever Git keeps it for this layout. `active` is false when
+   * notifications are unavailable, in which case callers rely on polling.
+   */
+  async watchBranch(onChange: () => void): Promise<{ active: boolean; close(): void }> {
+    let gitDir: string;
+    try {
+      gitDir = (await this.run(["rev-parse", "--git-dir"])).stdout.trim();
+    } catch {
+      return { active: false, close: () => undefined };
+    }
+    if (!isAbsolute(gitDir)) gitDir = joinPath(this.config.repoPath, gitDir);
+    const watchers: FSWatcher[] = [];
+    try {
+      watchers.push(watchPath(joinPath(gitDir, "refs", "heads"), () => onChange()));
+    } catch {
+      // No loose refs directory: packed refs below, or polling.
+    }
+    try {
+      watchers.push(watchPath(gitDir, (_event, name) => name === "packed-refs" && onChange()));
+    } catch {
+      // Polling covers it.
+    }
+    return {
+      active: watchers.length > 0,
+      close: () => {
+        for (const w of watchers) w.close();
+      },
+    };
   }
 
   private async commitExists(commit: string): Promise<boolean> {
