@@ -76,7 +76,7 @@ export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
   ].join("\n"),
 };
 
-const AssertionKindSchema = z.enum(["assertion", "quotation", "question", "speculation"]);
+export const AssertionKindSchema = z.enum(["assertion", "quotation", "question", "speculation"]);
 
 const ModelClaimSchema = z
   .object({
