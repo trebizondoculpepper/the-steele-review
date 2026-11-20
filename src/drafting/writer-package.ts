@@ -66,6 +66,72 @@ export const WriterPackageSchema = z
         .strict(),
     ),
     dossiers: z.array(z.object({ dossierId: z.string(), ref: Ref }).strict()),
+    /**
+     * Narrative and wider-movement context (#176). Optional so earlier packages
+     * stay valid. Quoted evidence, generated comparison and gaps are distinct.
+     */
+    context: z
+      .object({
+        history: z
+          .object({
+            status: z.enum(["available", "gap"]),
+            reason: z.string().optional(),
+            comparisons: z.array(
+              z
+                .object({
+                  /** The saved comparison result this entry comes from, pinned. */
+                  result: Ref,
+                  claimId: z.string(),
+                  kind: z.string(),
+                  uncertainty: z.enum(["low", "medium", "high"]),
+                  /** Quoted evidence: the current post's passage. */
+                  current: z.object({ quote: z.string(), artifact: Ref }).strict(),
+                  /** Quoted evidence: exact earlier passages with dates, links and archive refs. */
+                  earlier: z.array(
+                    z
+                      .object({
+                        postId: z.string(),
+                        publishedAt: z.string(),
+                        url: z.string().optional(),
+                        quote: z.string(),
+                        artifact: Ref,
+                        start: z.number().int(),
+                        end: z.number().int(),
+                      })
+                      .strict(),
+                  ),
+                  /** Generated comparison text; never evidence. */
+                  comparison: z.object({ text: z.string(), isEvidence: z.literal(false) }).strict(),
+                  conflictRationale: z.string().optional(),
+                  changedCircumstances: z.string().optional(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+        background: z
+          .object({
+            status: z.enum(["available", "gap"]),
+            reason: z.string().optional(),
+            /** Independently sourced passages from the mapped dossiers' pinned versions. */
+            passages: z.array(
+              z
+                .object({
+                  dossierId: z.string(),
+                  dossier: Ref,
+                  url: z.string(),
+                  title: z.string(),
+                  passage: z.string(),
+                  checkedAt: z.string(),
+                  sourceDate: z.string().optional(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type WriterPackage = z.infer<typeof WriterPackageSchema>;
@@ -97,11 +163,42 @@ async function readPinned(
 }
 
 /** Build and validate the package from a saved coverage record (pure apart from pinned reads). */
+/** Bounds on context carried into a package (#176). */
+export const MAX_COMPARISONS = 20;
+export const MAX_BACKGROUND_PASSAGES = 30;
+
+const ComparisonResultSchema = z.looseObject({
+  claimId: z.string(),
+  findings: z.array(
+    z.looseObject({
+      kind: z.string(),
+      explanation: z.looseObject({ text: z.string(), isEvidence: z.literal(false) }),
+      uncertainty: z.enum(["low", "medium", "high"]),
+      changedCircumstances: z.string().optional(),
+      conflictRationale: z.string().optional(),
+      current: z.looseObject({ quote: z.string(), artifact: Ref, sourceVersion: z.string() }),
+      earlier: z.array(
+        z.looseObject({
+          postId: z.string(),
+          publishedAt: z.string(),
+          url: z.string().optional(),
+          quote: z.string(),
+          artifact: Ref,
+          start: z.number().int(),
+          end: z.number().int(),
+        }),
+      ),
+    }),
+  ),
+});
+
 export async function buildWriterPackage(input: {
   content: GitArtifactStore;
   /** Archive holding the source post; when given, the pinned source is verified too. */
   archive?: GitArtifactStore;
   coverage: ArtifactRef;
+  /** Saved historical comparison results for this post (#36), by exact reference. */
+  comparisons?: ArtifactRef[];
 }): Promise<WriterPackage> {
   let record: CoverageRecord;
   try {
@@ -148,9 +245,79 @@ export async function buildWriterPackage(input: {
     }
   }
   // Every dossier version the package relies on must still be readable as pinned.
+  const background: NonNullable<WriterPackage["context"]>["background"]["passages"] = [];
   for (const d of record.dossiers) {
-    parseDossier(await readPinned(input.content, d.ref, `dossier ${d.dossierId}`));
+    const dossier = parseDossier(await readPinned(input.content, d.ref, `dossier ${d.dossierId}`));
+    for (const c of dossier.metadata.citations) {
+      if (background.length >= MAX_BACKGROUND_PASSAGES) break;
+      background.push({
+        dossierId: d.dossierId,
+        dossier: d.ref,
+        url: c.url,
+        title: c.title,
+        passage: c.passage,
+        checkedAt: c.checkedAt,
+        ...(c.sourceDate ? { sourceDate: c.sourceDate } : {}),
+      });
+    }
   }
+
+  // Historical comparisons: only findings about this exact source version.
+  const history: NonNullable<WriterPackage["context"]>["history"]["comparisons"] = [];
+  for (const ref of input.comparisons ?? []) {
+    const result = ComparisonResultSchema.parse(
+      JSON.parse(await readPinned(input.content, toRefRecord(ref), "comparison result")),
+    );
+    for (const f of result.findings) {
+      if (history.length >= MAX_COMPARISONS) break;
+      if (
+        !sameRef(f.current.artifact, record.source) ||
+        f.current.sourceVersion !== themes.sourceVersion
+      ) {
+        throw new PackageInputError("comparison result describes another source version");
+      }
+      history.push({
+        result: toRefRecord(ref),
+        claimId: result.claimId,
+        kind: f.kind,
+        uncertainty: f.uncertainty,
+        current: { quote: f.current.quote, artifact: f.current.artifact },
+        earlier: f.earlier.map((e) => ({
+          postId: e.postId,
+          publishedAt: e.publishedAt,
+          ...(e.url ? { url: e.url } : {}),
+          quote: e.quote,
+          artifact: e.artifact,
+          start: e.start,
+          end: e.end,
+        })),
+        comparison: { text: f.explanation.text, isEvidence: false },
+        ...(f.conflictRationale ? { conflictRationale: f.conflictRationale } : {}),
+        ...(f.changedCircumstances ? { changedCircumstances: f.changedCircumstances } : {}),
+      });
+    }
+  }
+  const context: WriterPackage["context"] = {
+    history:
+      history.length > 0
+        ? { status: "available", comparisons: history }
+        : {
+            status: "gap",
+            reason:
+              (input.comparisons ?? []).length === 0
+                ? "no historical comparison was supplied"
+                : "the supplied comparisons found no earlier passages",
+            comparisons: [],
+          },
+    background:
+      background.length > 0
+        ? { status: "available", passages: background }
+        : {
+            status: "gap",
+            reason: "the mapped dossiers hold no independently cited background",
+            passages: [],
+          },
+  };
 
   const packageClaims: WriterPackage["claims"] = record.claims
     .filter((c) => c.status !== "pending")
@@ -205,14 +372,23 @@ export async function buildWriterPackage(input: {
     })),
     claims: packageClaims,
     dossiers: record.dossiers,
+    context,
   });
 }
+
+const toRefRecord = (r: ArtifactRef) => ({
+  repository: r.repository,
+  commit: r.commit,
+  path: r.path,
+  hash: `sha256:${r.sha256}`,
+});
 
 /** Build, then save write-once at a content-addressed path. Reruns reuse the same artifact. */
 export async function saveWriterPackage(input: {
   content: GitArtifactStore;
   archive?: GitArtifactStore;
   coverage: ArtifactRef;
+  comparisons?: ArtifactRef[];
 }): Promise<{ package: WriterPackage; ref: ArtifactRef }> {
   const pkg = await buildWriterPackage(input);
   const key = createHash("sha256").update(JSON.stringify(pkg)).digest("hex").slice(0, 32);

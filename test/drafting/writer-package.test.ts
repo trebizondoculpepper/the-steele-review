@@ -124,4 +124,136 @@ describe("writer evidence package (#148)", () => {
     );
     await expect(saveWriterPackage({ content, coverage: pending.ref })).rejects.toThrow("pending");
   });
+
+  describe("narrative and movement context (#176)", () => {
+    const comparison = (
+      source: { repository: string; commit: string; path: string; hash: string },
+      sourceVersion: string,
+      kind: string,
+      extra: Record<string, unknown> = {},
+    ) =>
+      JSON.stringify({
+        status: "complete",
+        claimId: `sha256:${"c".repeat(64)}`,
+        findings: [
+          {
+            kind,
+            explanation: {
+              text: "The 2023 post makes the same claim about the treaty.",
+              generatedBy: "m",
+              isEvidence: false,
+            },
+            uncertainty: "medium",
+            current: {
+              claimId: "x",
+              quote: "A treaty bans weather weapons.",
+              artifact: source,
+              sourceVersion,
+              start: 0,
+              end: 30,
+            },
+            earlier: [
+              {
+                passageId: "p",
+                postId: "earlier-post",
+                publishedAt: "2023-05-01",
+                url: "https://pub.example.com/p/earlier-post",
+                quote: "The treaty bans weather weapons.",
+                artifact: {
+                  repository: "archive",
+                  commit: "d".repeat(40),
+                  path: "substack/pub/earlier-post/collected.json",
+                  hash: `sha256:${"e".repeat(64)}`,
+                },
+                start: 0,
+                end: 32,
+              },
+            ],
+            ...extra,
+          },
+        ],
+        rejected: [],
+        modelVersion: "m",
+        promptVersion: "p",
+      });
+
+    it("carries dated earlier passages as quoted evidence and the comparison as generated text", async () => {
+      const { ref } = await coverageFor(() => ({
+        passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+      }));
+      const record = JSON.parse(await content.read(ref));
+      const themes = JSON.parse(
+        await content.read((await content.lookup(record.themeResult.path))!),
+      );
+      const rep = await content.write(
+        "comparisons/pub/p1/a.json",
+        comparison(record.source, themes.sourceVersion, "repetition"),
+      );
+      const contra = await content.write(
+        "comparisons/pub/p1/b.json",
+        comparison(record.source, themes.sourceVersion, "possible-contradiction", {
+          conflictRationale:
+            "Earlier the author said the treaty was irrelevant; wording differs in scope.",
+        }),
+      );
+      const { package: pkg } = await saveWriterPackage({
+        content,
+        coverage: ref,
+        comparisons: [rep, contra],
+      });
+      const history = pkg.context!.history;
+      expect(history.status).toBe("available");
+      expect(history.comparisons[0]).toMatchObject({
+        kind: "repetition",
+        earlier: [
+          {
+            publishedAt: "2023-05-01",
+            quote: "The treaty bans weather weapons.",
+            url: "https://pub.example.com/p/earlier-post",
+          },
+        ],
+        comparison: { isEvidence: false },
+      });
+      expect(history.comparisons[1]).toMatchObject({
+        kind: "possible-contradiction",
+        conflictRationale: expect.stringContaining("differs"),
+      });
+      // Movement background comes from the dossier's independently cited passages.
+      expect(pkg.context!.background).toMatchObject({
+        status: "available",
+        passages: [{ url: SHARED }],
+      });
+    });
+
+    it("records absent history and absent movement background as explicit gaps", async () => {
+      const { ref } = await coverageFor(() => ({ passages: [] }));
+      const { package: pkg } = await saveWriterPackage({ content, coverage: ref });
+      expect(pkg.context!.history).toMatchObject({ status: "gap", comparisons: [] });
+      expect(pkg.context!.background).toMatchObject({ status: "gap", passages: [] });
+    });
+
+    it("refuses a comparison about another source version, and changed context yields a new package", async () => {
+      const { ref } = await coverageFor(() => ({
+        passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+      }));
+      const record = JSON.parse(await content.read(ref));
+      const themes = JSON.parse(
+        await content.read((await content.lookup(record.themeResult.path))!),
+      );
+      const other = await content.write(
+        "comparisons/pub/p1/other.json",
+        comparison(record.source, `sha256:${"9".repeat(64)}`, "repetition"),
+      );
+      await expect(
+        saveWriterPackage({ content, coverage: ref, comparisons: [other] }),
+      ).rejects.toThrow("another source version");
+      const plain = await saveWriterPackage({ content, coverage: ref });
+      const rep = await content.write(
+        "comparisons/pub/p1/a.json",
+        comparison(record.source, themes.sourceVersion, "repetition"),
+      );
+      const withHistory = await saveWriterPackage({ content, coverage: ref, comparisons: [rep] });
+      expect(withHistory.ref.path).not.toBe(plain.ref.path);
+    });
+  });
 });
