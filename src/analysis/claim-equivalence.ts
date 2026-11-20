@@ -342,7 +342,7 @@ const MAX_REDIRECT_HOPS = 1_000;
  * compare a pending merge against the wrong target and silently skip its
  * occurrences.
  */
-async function canonicalOf(artifacts: GitArtifactStore, id: string): Promise<string> {
+export async function canonicalOf(artifacts: GitArtifactStore, id: string): Promise<string> {
   let current = id;
   const seen = new Set<string>([id]);
   for (let hops = 0; ; hops++) {
