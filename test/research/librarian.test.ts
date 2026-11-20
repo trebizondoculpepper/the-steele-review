@@ -35,6 +35,7 @@ async function analysis(
   postId: string,
   claims: { id: string; statement: string }[],
   title = "Weather warfare",
+  schemaVersion: 2 | 3 = 2,
 ) {
   const post = { publicationId: "pub", postId };
   await proposeThemes({
@@ -64,7 +65,7 @@ async function analysis(
   const claimResult = await artifacts.write(
     `claim-extractions/pub/${postId}/r.json`,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion,
       post,
       sourceVersion: sourceVersionFor(TEXT),
       themeIds: [proposalId],
@@ -638,5 +639,22 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
     ]);
     expect(hit.method).toBe("embedding");
     expect(hit.candidates[0]).toMatchObject({ themeId: "a", score: 1 });
+  });
+});
+
+describe("librarian coverage across extraction schema versions", () => {
+  it("accepts claims from a version 3 extraction", async () => {
+    const { themeResult, claimResult } = await analysis("p3", claims, "Weather warfare", 3);
+    const r = researcher(() => ({ passages: [{ claimRecordId: "claim-treaty", url: SHARED }] }));
+    const { record } = await assessPostCoverage({
+      artifacts,
+      themeResult,
+      claimResult,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      record.claims.map((c) => c.claimRecordId).sort(),
+    ).toEqual(["claim-payment", "claim-treaty"]);
   });
 });

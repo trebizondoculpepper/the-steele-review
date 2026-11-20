@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
   CandidateSnapshotSchema,
@@ -64,19 +65,16 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  * normalised key is exact normalised text.
  */
 
-export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
-  version: "grounded-claims-v5",
-  instructions: [
-    'claimType must be factual, opinion, prediction or ambiguous. speaker.kind must be author-voice, quoted, unknown or uncertain. Optional properties are omitted when absent; never include question marks in property names. Use JSON arrays for qualifiers, entities, dates and themeIds. A valid empty result is {"claims":[]}.',
-    "Extract the specific claims the source text makes that a reader might want to check or respond to. Do not judge whether they are true.",
-    "For each claim copy one contiguous passage exactly as written, character for character, with no inserted ellipses or joined excerpts; if that passage occurs more than once, set `occurrence` to its 1-based position.",
-    "`statement` explains the intended meaning of this one assertion in self-contained ordinary language. Use the whole post to resolve they, it, that injection and similar references; make your best contextual interpretation even when uncertain, explicitly qualifying uncertain meaning and important assumptions in statement. Do not combine separate assertions or invent unsupported actors or details. Keep qualifiers, quantities and negation. Only statement may paraphrase: passage, qualifiers and dates[].text must be copied verbatim from the chosen quotation. Use empty arrays when no quoted qualifiers/dates occur; dates use {text, value?} with value only when unambiguous.",
-    "`kind` is assertion (the text asserts it), quotation (it reports someone else saying it), question (posed as a question), or speculation (explicitly floated as possible).",
-    "`speaker`: kind author-voice, quoted, unknown or uncertain. Give a `name` only for quoted/uncertain speakers named in the text, with `attribution`: the exact passage that names them.",
-    "`themeIds`: the ids of the listed post themes this claim belongs to, possibly several. Use an empty list when none applies; never invent ids.",
-    'Respond with JSON only: {"claims":[{"statement","claimType","kind","passage","occurrence?","qualifiers","entities","dates","speaker":{"kind","name?","attribution?"},"themeIds"}]}.',
-  ].join("\n"),
-};
+function loadAnalysisPrompt(name: string): ExtractionPrompt {
+  const instructions = readFileSync(
+    new URL(`../prompts/analysis/${name}.md`, import.meta.url),
+    "utf8",
+  ).trim();
+  const hash = createHash("sha256").update(instructions).digest("hex");
+  return { version: `analysis-${name}-sha256:${hash}`, instructions };
+}
+
+export const DEFAULT_GROUNDED_CLAIM_PROMPT = loadAnalysisPrompt("grounded-claims-v6");
 
 export const AssertionKindSchema = z.enum(["assertion", "quotation", "question", "speculation"]);
 
@@ -122,12 +120,18 @@ export const ExtractedClaimSchema = z
 /**
  * Record schema versions: 1 accepted every grounded claim (unthemed ones as
  * "unclassified"); 2 (#182) separates accepted claims from refinement
- * candidates. Version 1 records stay readable and are never re-certified.
+ * candidates; 3 (#212) adds the `not-self-contained` candidate reason. Earlier
+ * records stay readable and are never re-certified.
  */
-export const CLAIM_EXTRACTION_SCHEMA_VERSION = 2;
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = 3;
 
 /** Why a grounded assertion is a refinement candidate, not an accepted claim. */
-export const CandidateReasonSchema = z.enum(["no-theme", "question", "unclear-referent"]);
+export const CandidateReasonSchema = z.enum([
+  "no-theme",
+  "question",
+  "unclear-referent",
+  "not-self-contained",
+]);
 export type CandidateReason = z.infer<typeof CandidateReasonSchema>;
 
 export const ClaimCandidateSchema = z
@@ -146,7 +150,7 @@ export const ClaimCandidateSchema = z
 
 export const ClaimExtractionRecordSchema = z
   .object({
-    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     sourceVersion: z.string(),
     themeIds: z.array(z.string()),
@@ -259,11 +263,31 @@ export function claimRejectionStage(reason: string): RejectionStage {
 // and source inspection rather than rejected structurally.
 const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
 
+// A statement can restate a quotation without asserting anything checkable: a
+// rallying cry or instruction carries no proposition a reader can verify.
+// Exact equality with the passage is deliberately *not* a rejection reason,
+// because a short self-contained quotation is legitimate (#212).
+//
+// Only a closed vocabulary counts as a pure call to action: the imperative
+// followed by at most one object word and trailing adverbs. Anything else -
+// "Stop signs prevent accidents", "Stop spraying because aircraft contaminate
+// the soil" - carries a checkable clause and stays an accepted claim. A
+// general "does this sentence assert something" test is not decidable with a
+// pattern, so the rest is left to the prompt and to source inspection.
+const PURE_CALL_TO_ACTION =
+  /^(?:stop|do not|don'?t|wake up|stand up|act now)\s+(?:(?:\w+ing|\w+)\s+)?(?:us|them|it|this|that|now|today|everywhere|immediately)(?:\s+(?:now|today|everywhere|immediately))*[.!]*$/i;
+
+/** A pure call to action, with no asserted proposition to check. */
+function isCallToActionOnly(statement: string): boolean {
+  return PURE_CALL_TO_ACTION.test(statement.trim());
+}
+
 /**
  * Structural acceptance checks. Semantic self-containment also relies on the
- * prompt and on source inspection (#184); this catches the clear cases:
- * no theme link, a question, or a statement that opens with an unresolved
- * personal pronoun ("They are spraying us") instead of naming its subject.
+ * prompt and on source inspection (#184/#212); this catches the clear cases:
+ * no theme link, a question, a statement that opens with an unresolved
+ * personal pronoun ("They are spraying us") instead of naming its subject, or
+ * a pure call to action with no factual assertion.
  */
 export function candidateReasons(
   kind: z.infer<typeof AssertionKindSchema>,
@@ -274,6 +298,7 @@ export function candidateReasons(
   if (themeIds.length === 0) reasons.push("no-theme");
   if (kind === "question") reasons.push("question");
   if (LEADING_PRONOUN.test(statement.trim())) reasons.push("unclear-referent");
+  if (isCallToActionOnly(statement)) reasons.push("not-self-contained");
   return reasons;
 }
 

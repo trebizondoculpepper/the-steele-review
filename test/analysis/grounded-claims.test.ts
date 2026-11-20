@@ -134,7 +134,7 @@ describe("extractGroundedClaims", () => {
     });
     if (out.status !== "extracted") throw new Error(out.status);
     const { claims, rejected, candidates } = out.record;
-    expect(out.record.schemaVersion).toBe(2);
+    expect(out.record.schemaVersion).toBe(3);
     expect(claims.map((c) => [c.kind, c.classification])).toEqual([
       ["assertion", "themed"],
       ["quotation", "themed"],
@@ -249,7 +249,7 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: "grounded-claims-v5",
+      promptVersion: expect.stringMatching(/^analysis-grounded-claims-v6-sha256:[0-9a-f]{64}$/),
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
@@ -347,5 +347,43 @@ describe("record versions (#182)", () => {
     });
     // Dropping the negation is a material change, never recovered.
     expect(out.record.rejected.map((r) => r.reason)).toContain("passage-not-found");
+  });
+
+  it("keeps a pure call to action as a not-self-contained candidate", () => {
+    expect(candidateReasons("assertion", ["geoengineering"], "Stop spraying us now")).toEqual([
+      "not-self-contained",
+    ]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Do not spray us")).toEqual([
+      "not-self-contained",
+    ]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Wake up now")).toEqual([
+      "not-self-contained",
+    ]);
+    // A statement that carries a checkable clause is still an accepted claim.
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Stop spraying because the soil is toxic"),
+    ).toEqual([]);
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Stop spraying because aircraft contaminate the soil",
+      ),
+    ).toEqual([]);
+    // A noun that merely opens with an imperative word is not an imperative.
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Stop signs prevent accidents"),
+    ).toEqual([]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Vote rigging happened")).toEqual([]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Fight back was the headline")).toEqual(
+      [],
+    );
+  });
+
+  it("accepts a short exact quotation that is self-contained", () => {
+    // Exact equality with the passage is never on its own a rejection reason.
+    expect(
+      candidateReasons("quotation", ["geoengineering"], "The council raised fees by 3%"),
+    ).toEqual([]);
   });
 });

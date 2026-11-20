@@ -319,7 +319,8 @@ interface AcceptedClaim {
 }
 
 function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): AcceptedClaim[] {
-  if (record.schemaVersion !== 2) return [];
+  // Versions 2 and 3 share the accepted/candidate contract; version 1 is legacy.
+  if (record.schemaVersion < 2) return [];
   const seen = new Map<string, AcceptedClaim>();
   for (const c of record.claims) {
     const parsed = ClaimText.safeParse(c.claim);
