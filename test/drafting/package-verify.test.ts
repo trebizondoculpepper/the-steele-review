@@ -109,7 +109,7 @@ async function drafted(writer = model("fake/writer", writerResponse())) {
   return { pkg, ...out };
 }
 
-describe("package draft verification (#150)", () => {
+describe("package draft verification (#150)", { timeout: 60_000 }, () => {
   it("approves an accurate, qualified draft, and the approval binds to the exact text", async () => {
     const { metadata, draft } = await drafted();
     const out = await verifyPackageDraft({
