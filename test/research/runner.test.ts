@@ -186,6 +186,18 @@ describe("research runner", () => {
 });
 
 describe("review fixes", () => {
+  it("judges support against the discovery report's conclusions, not only the claims", async () => {
+    const seen: string[] = [];
+    const recording: SupportJudge = {
+      async judge(i) {
+        seen.push(i.report);
+        return [];
+      },
+    };
+    await run(sonar(["https://treaties.un.org/enmod"]), { judge: recording });
+    expect(seen).toEqual(["The ENMOD Convention (1977) prohibits hostile use."]);
+  });
+
   it("never accepts the monitored author's own material as support", async () => {
     const out = await run(sonar(["https://author.substack.com/p/post"]), {
       monitoredHosts: ["author.substack.com"],
@@ -315,13 +327,16 @@ describe("model support judge", () => {
     });
     expect(
       await ok.judge(
-        { findings: [{ id: "request", statement: "s" }], url: "u", source: TREATY },
+        { findings: [{ id: "request", statement: "s" }], report: "r", url: "u", source: TREATY },
         new AbortController().signal,
       ),
     ).toEqual([{ findingId: "request", passage: "Article I" }]);
     const bad = new ModelSupportJudge({ modelVersion: "m", complete: async () => "no json here" });
     expect(
-      await bad.judge({ findings: [], url: "u", source: "" }, new AbortController().signal),
+      await bad.judge(
+        { findings: [], report: "", url: "u", source: "" },
+        new AbortController().signal,
+      ),
     ).toEqual([]);
   });
 });

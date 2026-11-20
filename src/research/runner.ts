@@ -43,7 +43,13 @@ export interface Finding {
 export interface SupportJudge {
   /** Passages from `source` that directly support a finding; [] when none do. */
   judge(
-    input: { findings: Finding[]; url: string; source: string },
+    input: {
+      findings: Finding[];
+      /** The discovery report: support is judged for what it says about each finding, citing this source. */
+      report: string;
+      url: string;
+      source: string;
+    },
     signal: AbortSignal,
   ): Promise<{ findingId: string; passage: string }[]>;
 }
@@ -242,7 +248,10 @@ export async function runResearchJob(input: {
     } else if (input.judge) {
       try {
         const source = normalise(text);
-        const proposed = await input.judge.judge({ findings, url, source: text }, signal);
+        const proposed = await input.judge.judge(
+          { findings, report: report.report, url, source: text },
+          signal,
+        );
         passages = proposed
           .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
           .filter((p) => source.includes(normalise(p.passage)))

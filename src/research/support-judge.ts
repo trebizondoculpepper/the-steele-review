@@ -16,7 +16,10 @@ const Answer = z.object({
 });
 
 const SYSTEM = [
-  "You check whether a source document directly supports specific findings.",
+  "You check a research report against one of the sources it cites.",
+  "For each finding, consider what the report concludes about it while citing this source.",
+  "Return a passage only if it directly supports that specific conclusion as the report states it;",
+  "if the report overstates, adds to or misrepresents the source, return nothing for that finding.",
   'Return JSON only: {"passages":[{"findingId":"...","passage":"..."}]}.',
   "Quote each passage exactly as it appears in the source, at most a few sentences.",
   "Include a passage only if its text directly supports or directly refutes the specific finding.",
@@ -33,12 +36,15 @@ export class ModelSupportJudge implements SupportJudge {
   ) {}
 
   async judge(
-    input: { findings: Finding[]; url: string; source: string },
+    input: { findings: Finding[]; report: string; url: string; source: string },
     signal: AbortSignal,
   ): Promise<{ findingId: string; passage: string }[]> {
     const user = [
       "Findings:",
       ...input.findings.map((f) => `- [${f.id}] ${f.statement}`),
+      "",
+      "Research report:",
+      input.report.slice(0, 30_000),
       "",
       `Source (${input.url}):`,
       input.source.slice(0, this.maxSourceChars),
