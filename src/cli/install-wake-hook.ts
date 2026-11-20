@@ -39,7 +39,14 @@ async function main(): Promise<number> {
     repoPath: env.data.STEELE_CONTENT_PATH,
     repository: env.data.STEELE_CONTENT_REPOSITORY,
   });
-  const outcome = await store.installWakeHook();
+  let outcome;
+  try {
+    outcome = await store.installWakeHook();
+  } catch {
+    // Never echo Git or filesystem errors: they can carry private paths.
+    console.error(JSON.stringify({ event: "install-wake-hook", outcome: "failed" }));
+    return 1;
+  }
   console.log(JSON.stringify({ event: "install-wake-hook", outcome }));
   return outcome === "foreign-hook" ? 1 : 0;
 }

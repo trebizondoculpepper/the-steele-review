@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe("Git wake hook (#251)", () => {
-  it("signals committed updates to the branch, and the watcher wakes", async () => {
+  it("signals committed updates, and the watcher wakes", async () => {
     expect(await store.installWakeHook()).toBe("installed");
     let wakes = 0;
     const watcher = await store.watchBranch(() => wakes++);
@@ -37,12 +37,9 @@ describe("Git wake hook (#251)", () => {
     expect(wakes).toBeGreaterThan(0);
   });
 
-  it("ignores updates to other refs", async () => {
-    await store.installWakeHook();
-    await store.revise("dossier/a.md", "# A\n", null);
-    await rm(join(gitDir(), WAKE_SIGNAL));
-    execFileSync("git", ["-C", dir, "tag", "v1"]);
-    expect(await signalTime()).toBeUndefined();
+  it("keeps the hook minimal: no branch filtering in shell", async () => {
+    const { wakeHookScript } = await import("../../src/controllers/artifact-store.js");
+    expect(wakeHookScript()).not.toMatch(/refs\/heads|while read/);
   });
 
   it("is idempotent and never replaces someone else's hook", async () => {
