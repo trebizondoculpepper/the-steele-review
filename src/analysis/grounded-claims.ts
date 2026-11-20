@@ -27,6 +27,8 @@ import {
 } from "./claim-occurrence.js";
 import {
   locatePassage,
+  PASSAGE_MATCHING_VERSION,
+  recoverPassage,
   type ExtractionModelProvider,
   type ExtractionPrompt,
 } from "./extraction.js";
@@ -109,6 +111,11 @@ export const ExtractedClaimSchema = z
     classification: z.enum(["themed", "unclassified"]),
     /** Normalised claim record this occurrence belongs to; absent for questions. */
     claimRecordId: z.string().optional(),
+    /** Present when the quotation was recovered by a non-exact rule (#202). */
+    match: z
+      .object({ method: z.literal("formatting"), candidate: z.string().max(4000) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -130,6 +137,10 @@ export const ClaimCandidateSchema = z
     kind: AssertionKindSchema,
     themeIds: z.array(z.string()),
     reasons: z.array(CandidateReasonSchema).min(1),
+    match: z
+      .object({ method: z.literal("formatting"), candidate: z.string().max(4000) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -160,7 +171,13 @@ export const ClaimExtractionRecordSchema = z
     /** Malformed responses from earlier attempts of a successful run. */
     malformedAttempts: z.array(MalformedResponseSchema).optional(),
     extraction: z
-      .object({ modelVersion: z.string(), promptVersion: z.string(), extractedAt: z.string() })
+      .object({
+        modelVersion: z.string(),
+        promptVersion: z.string(),
+        extractedAt: z.string(),
+        /** Quotation-matching rules used (#202); absent on older records (exact only). */
+        matchingVersion: z.string().optional(),
+      })
       .strict(),
   })
   .strict();
@@ -417,9 +434,16 @@ export async function extractGroundedClaims(input: {
       const m = parsed.data;
       const unknown = m.themeIds.filter((id) => !themeIds.has(id));
       if (unknown.length > 0) return rejected.push({ index, reason: "unknown-theme-id" });
-      const at = locatePassage(source.text, m.passage, m.occurrence);
-      if (at === "absent") return rejected.push({ index, reason: "passage-not-found" });
-      if (at === "ambiguous") return rejected.push({ index, reason: "ambiguous-passage" });
+      // #202: recover a quotation that differs only in formatting; save the
+      // unchanged source text and keep the model's candidate for diagnosis.
+      const found = recoverPassage(source.text, m.passage, m.occurrence);
+      if (found === "absent") return rejected.push({ index, reason: "passage-not-found" });
+      if (found === "ambiguous") return rejected.push({ index, reason: "ambiguous-passage" });
+      const at = { start: found.start, end: found.end };
+      const match =
+        found.method === "exact"
+          ? undefined
+          : { method: found.method, candidate: m.passage.slice(0, 4000) };
       let speaker: Speaker = { kind: m.speaker.kind };
       if (m.speaker.name) {
         const where = m.speaker.attribution
@@ -440,7 +464,7 @@ export async function extractGroundedClaims(input: {
             claimType: m.claimType,
             sourceVersion: source.sourceVersion,
             span: at,
-            passage: m.passage,
+            passage: found.text,
             qualifiers: m.qualifiers,
             entities: m.entities,
             dates: m.dates,
@@ -475,7 +499,14 @@ export async function extractGroundedClaims(input: {
       // self-contained statement. Anything else is kept as a candidate.
       const reasons = candidateReasons(m.kind, linked, claim.statement);
       if (reasons.length > 0) {
-        candidates.push({ claim, occurrence, kind: m.kind, themeIds: linked, reasons });
+        candidates.push({
+          claim,
+          occurrence,
+          kind: m.kind,
+          themeIds: linked,
+          reasons,
+          ...(match ? { match } : {}),
+        });
         return;
       }
       claims.push({
@@ -485,6 +516,7 @@ export async function extractGroundedClaims(input: {
         themeIds: linked,
         classification: "themed",
         claimRecordId: claimRecordId(claim.statement),
+        ...(match ? { match } : {}),
       });
     });
     const detailed = rejected.map((r) => ({
@@ -503,7 +535,7 @@ export async function extractGroundedClaims(input: {
       candidates,
       rejected: detailed,
       ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
-      extraction,
+      extraction: { ...extraction, matchingVersion: PASSAGE_MATCHING_VERSION },
     });
     const content = `${JSON.stringify(record, null, 2)}\n`;
     for (let attempt = 0; ; attempt++) {
