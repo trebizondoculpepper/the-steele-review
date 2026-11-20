@@ -3,6 +3,11 @@ import {
   CAPTURED_CONTENT_SUBJECT,
 } from "./captured-content-event.js";
 import {
+  ARTICLE_APPROVED_EVENT_TYPE_V1,
+  ARTICLE_APPROVED_SUBJECT,
+  PUBLICATION_STREAM,
+} from "./article-approved-event.js";
+import {
   RESEARCH_REINDEX_EVENT_TYPE_V1,
   RESEARCH_REINDEX_SUBJECT,
 } from "./research-reindex-event.js";
@@ -113,6 +118,12 @@ export const STREAMS: readonly StreamDefinition[] = [
       "Research job completions (complete, complete with gaps, failed) and research-index reconciliation requests.",
     subjects: [RESEARCH_COMPLETED_SUBJECT, RESEARCH_REINDEX_SUBJECT],
   },
+  {
+    name: PUBLICATION_STREAM,
+    overrideEnv: "STEELE_PUBLICATION_STREAM",
+    purpose: "Approved articles, consumed independently by each configured destination (#262).",
+    subjects: [ARTICLE_APPROVED_SUBJECT],
+  },
 ];
 
 export const MESSAGES: readonly MessageDefinition[] = [
@@ -171,6 +182,14 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: "STEELE_CONTENT",
     producer: "collect-worker (Substack); any ingestion source",
     description: "Source-neutral captured item revision for the writing engine (#269).",
+  },
+  {
+    subject: ARTICLE_APPROVED_SUBJECT,
+    eventType: ARTICLE_APPROVED_EVENT_TYPE_V1,
+    stream: PUBLICATION_STREAM,
+    producer: "recordApproval (package verification approval)",
+    description:
+      "An exact article revision was approved; each destination consumes it independently.",
   },
   // Declared by existing stages but not yet retained by any provisioned stream.
   {
