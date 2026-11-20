@@ -270,6 +270,14 @@ export async function buildWriterPackage(input: {
     );
     for (const f of result.findings) {
       if (history.length >= MAX_COMPARISONS) break;
+      // A finding without earlier passages (for example "insufficient-context")
+      // is not historical evidence; it never makes history available.
+      if (f.earlier.length === 0) {
+        if (f.current.sourceVersion !== themes.sourceVersion) {
+          throw new PackageInputError("comparison result describes another source version");
+        }
+        continue;
+      }
       if (
         !sameRef(f.current.artifact, record.source) ||
         f.current.sourceVersion !== themes.sourceVersion

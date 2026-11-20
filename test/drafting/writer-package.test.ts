@@ -229,6 +229,23 @@ describe("writer evidence package (#148)", () => {
       const { ref } = await coverageFor(() => ({ passages: [] }));
       const { package: pkg } = await saveWriterPackage({ content, coverage: ref });
       expect(pkg.context!.history).toMatchObject({ status: "gap", comparisons: [] });
+      // A comparison that found no earlier coverage is still a gap.
+      const record = JSON.parse(await content.read(ref));
+      const themes = JSON.parse(
+        await content.read((await content.lookup(record.themeResult.path))!),
+      );
+      const none = await content.write(
+        "comparisons/pub/p1/none.json",
+        comparison(record.source, themes.sourceVersion, "insufficient-context").replace(
+          /"earlier":\[[\s\S]*?\],"conflict|"earlier":\[\{[\s\S]*?\}\]/,
+          '"earlier":[]',
+        ),
+      );
+      const withEmpty = await saveWriterPackage({ content, coverage: ref, comparisons: [none] });
+      expect(withEmpty.package.context!.history).toMatchObject({
+        status: "gap",
+        reason: expect.stringContaining("no earlier"),
+      });
       expect(pkg.context!.background).toMatchObject({ status: "gap", passages: [] });
     });
 
