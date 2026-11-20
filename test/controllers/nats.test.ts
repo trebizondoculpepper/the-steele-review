@@ -182,18 +182,12 @@ describe("provisionDiscoveryStream upgrades", () => {
     const { nats, updates } = fakeNats(["steele.v1.post.analysed"]);
     const result = await provisionDiscoveryStream(
       nats,
-      {
-        name: "STEELE_ANALYSIS",
-        subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"],
-      },
+      { name: "STEELE_ANALYSIS", subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"] },
       { allowAdditiveSubjects: true },
     );
     expect(result).toBe("updated");
     expect(updates).toEqual([
-      {
-        name: "STEELE_ANALYSIS",
-        subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"],
-      },
+      { name: "STEELE_ANALYSIS", subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"] },
     ]);
   });
 

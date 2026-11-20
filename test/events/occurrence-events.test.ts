@@ -84,9 +84,7 @@ describe("claim occurrence event", () => {
     delete (question as { claimId?: string }).claimId;
     expect(
       parseClaimOccurredEvent(
-        JSON.stringify(
-          createClaimOccurredEvent(question, { id: "e3", now: () => new Date(0) }).toJSON(),
-        ),
+        JSON.stringify(createClaimOccurredEvent(question, { id: "e3", now: () => new Date(0) }).toJSON()),
       ),
     ).toEqual(question);
   });
