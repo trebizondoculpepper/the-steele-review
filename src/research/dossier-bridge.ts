@@ -319,7 +319,8 @@ export interface ResolveDossierInput {
 /**
  * Validate a dossier together with the committed evidence it cites. Rejects
  * unknown citations, citations whose recorded text or dates disagree with the
- * committed evidence, and any citation that is not independent.
+ * committed evidence, citations whose ID does not derive from the entry and
+ * revision they claim, and any citation that is not independent.
  */
 export function resolveDossier(input: ResolveDossierInput): ResolvedDossier {
   const metadata = DossierMetadataSchema.parse(input.metadata);
@@ -368,6 +369,20 @@ export function resolveDossier(input: ResolveDossierInput): ResolvedDossier {
       throw new DossierBridgeError(
         "unknown-citation",
         `evidence ${id} is not cited by this dossier`,
+      );
+    }
+  }
+
+  // The citation ID is a hash of the entry, its revision and the cited
+  // passage. Pairing a recorded ID with a different entry or revision would
+  // cite a source version this dossier never reviewed, even when the quoted
+  // text happens to match. Checked after the text comparison so a genuine
+  // wording disagreement still reports as a wording disagreement.
+  for (const link of citations.values()) {
+    if (dossierCitationId(link) !== link.citationId) {
+      throw new DossierBridgeError(
+        "citation-mismatch",
+        `citation ${link.citationId} does not derive from entry ${link.entryId} at revision ${link.revision}`,
       );
     }
   }

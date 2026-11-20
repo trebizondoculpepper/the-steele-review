@@ -370,6 +370,25 @@ describe("resolveDossier rejects broken references", () => {
     );
   });
 
+  it("rejects a citation reattributed to a different revision", () => {
+    const { metadata, citations } = built();
+    const drifted = structuredClone(citations[0]!);
+    drifted.revision = drifted.revision + 1;
+    // Same quoted text, so only the derived citation identity can catch this.
+    expect(() => resolveDossier({ metadata, citations: [drifted], links })).toThrow(
+      /does not derive from entry/,
+    );
+  });
+
+  it("rejects a citation reattributed to a different entry", () => {
+    const { metadata, citations } = built();
+    const drifted = structuredClone(citations[0]!);
+    drifted.entryId = "research-synthetic-other";
+    expect(() => resolveDossier({ metadata, citations: [drifted], links })).toThrow(
+      /does not derive from entry/,
+    );
+  });
+
   it("rejects monitored material used as dossier coverage", () => {
     const { metadata, citations } = built();
     const promoted = structuredClone(citations[0]!);
