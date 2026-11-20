@@ -54,7 +54,7 @@ This project (trebizondoculpepper/the-steele-review) uses pdb for status, priori
 - See what to do next: `pdb --repo trebizondoculpepper/the-steele-review`. Help: `pdb --help`; onboarding: `pdb onboard --repo trebizondoculpepper/the-steele-review`.
 - MCP clients: `pdb-mcp --repo trebizondoculpepper/the-steele-review`.
 - Prefer pdb over raw gh for status and priorities; use gh only for operations pdb does not support.
-- Do not ask the user for permission before picking up work. If pdb offers an item as available (listed under READY / UNCLAIMED, or a next step whose command is a claim), it is explicitly available: claim it and start. Ask only when pdb does not offer the work, or when a decision is recorded as unresolved on the ticket.
+- Do not ask the user for permission before picking up work. If pdb offers an item as available (listed under READY / UNCLAIMED, or a next step whose command is a claim), it is explicitly available: claim it and start. Availability settles pickup, not scope: still ask when pdb does not offer the work, when a decision is recorded as unresolved on the ticket, when the change would alter an agreed architectural principle or require an architecture update, or when the security review gate would block it. Those still require explicit user agreement as described above.
 
 <!-- pdb:coordination:end -->
 
