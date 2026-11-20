@@ -261,6 +261,7 @@ export class CollectionWorker {
               ? { transcriptDocument: acquired.supplied.transcriptDocument }
               : {}),
           },
+          ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
           provenance: { ...acquired.provenance },
         };
       } else if (acquired.kind === "transcription-required") {
@@ -312,6 +313,7 @@ export class CollectionWorker {
               text: s.text,
             })),
           },
+          ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
           provenance: {
             ...acquired.provenance,
             method,

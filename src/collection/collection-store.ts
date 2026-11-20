@@ -41,6 +41,16 @@ const SegmentSchema = z
   })
   .strict();
 
+/** Post-specific preview image reference; never the publication's own branding. */
+export const PreviewImageSchema = z
+  .object({
+    url: z.url({ protocol: /^https$/ }),
+    source: z.literal("cover_image"),
+    kind: z.enum(["video-frame", "uploaded"]),
+  })
+  .strict();
+export type PreviewImage = z.infer<typeof PreviewImageSchema>;
+
 /** Retained collection record: text and provenance, never media. */
 export const CollectionRecordSchema = z
   .object({
@@ -55,6 +65,8 @@ export const CollectionRecordSchema = z
         transcriptDocument: z.string().optional(),
       })
       .strict(),
+    /** The post's own preview image (#277); absent when it is not post-specific. */
+    previewImage: PreviewImageSchema.optional(),
     provenance: z.looseObject({
       sourceUrl: z.url(),
       acquiredAt: z.iso.datetime({ offset: true }),

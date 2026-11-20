@@ -270,3 +270,110 @@ describe.skipIf(!liveUrl || !liveId || !livePost)("live collection", () => {
     expect(["text", "transcription-required"]).toContain(result.kind);
   }, 90_000);
 });
+
+describe("preview image (#277)", () => {
+  const PUBLICATION_PATH = "/api/v1/publication";
+  const generic = "https://substack.com/img/podcast/generic.png";
+  const videoFrame =
+    "https://substackcdn.com/video_upload/post/a-post/uuid/transcoded-00001.png";
+  const uploaded = "https://substackcdn.com/public/images/uuid_1200x800.png";
+
+  const collectWith = async (post: object, publication?: object) =>
+    collector({ [POST_PATH]: { ...basePost, ...post }, ...(publication ? { [PUBLICATION_PATH]: publication } : {}) })
+      .c.collect(item);
+
+  it("keeps a post-specific video frame", async () => {
+    const result = await collectWith({ type: "video", cover_image: videoFrame });
+    expect(result).toMatchObject({
+      kind: "text",
+      previewImage: { url: videoFrame, source: "cover_image", kind: "video-frame" },
+    });
+  });
+
+  it("keeps an uploaded image and marks it uploaded", async () => {
+    const result = await collectWith({ cover_image: uploaded });
+    expect(result).toMatchObject({ previewImage: { url: uploaded, kind: "uploaded" } });
+  });
+
+  it("omits a null cover", async () => {
+    const result = await collectWith({ cover_image: null });
+    expect(result).toMatchObject({ kind: "text" });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits Substack's generic podcast art", async () => {
+    const result = await collectWith({ type: "podcast", cover_image: generic });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits the publication logo and cover photo", async () => {
+    const logo = await collectWith({ cover_image: uploaded }, { logo_url: uploaded });
+    expect((logo as { previewImage?: unknown }).previewImage).toBeUndefined();
+    const cover = await collectWith({ cover_image: videoFrame }, { cover_photo_url: videoFrame });
+    expect((cover as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits an explicit-flagged cover", async () => {
+    const result = await collectWith({ cover_image: uploaded, cover_image_is_explicit: true });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+});
+
+describe("preview image validation (#277)", () => {
+  const POST = "/api/v1/posts/a-post";
+  it("omits a malformed or non-HTTPS cover instead of failing collection", async () => {
+    for (const cover_image of ["not-a-url", "http://example.test/art.png"]) {
+      const result = await collector({ [POST]: { ...basePost, cover_image } }).c.collect(item);
+      expect(result).toMatchObject({ kind: "text" });
+      expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+    }
+  });
+
+  it("keeps the image when the post needs transcription", async () => {
+    const cover = "https://substackcdn.com/public/images/uuid_1200x800.png";
+    const result = await collector({
+      [POST]: {
+        ...basePost,
+        type: "podcast",
+        cover_image: cover,
+        podcast_url: "https://api.substack.com/audio/1.mp3",
+        podcastUpload: { id: "u9", duration: 30, transcription: { status: "pending" } },
+      },
+    }).c.collect(item);
+    expect(result).toMatchObject({
+      kind: "transcription-required",
+      previewImage: { url: cover, kind: "uploaded" },
+    });
+  });
+});
+
+describe("publication lookup retry (#277)", () => {
+  it("retries the publication lookup after a transient failure", async () => {
+    // First publication read fails, the second succeeds with the logo.
+    let publications = 0;
+    const brand = "https://substackcdn.com/public/images/logo_500x500.png";
+    const fetch = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v1/posts/a-post") {
+        return new Response(JSON.stringify({ ...basePost, cover_image: brand }));
+      }
+      if (url.pathname === "/api/v1/publication") {
+        publications++;
+        if (publications === 1) return new Response("", { status: 503 });
+        return new Response(JSON.stringify({ logo_url: brand }));
+      }
+      return new Response("", { status: 404 });
+    }) as typeof globalThis.fetch;
+    const c = new SubstackContentCollector({
+      publicationUrl: PUB,
+      fetch,
+      sleep: async () => {},
+      now: () => new Date("2026-02-01T00:00:00Z"),
+    });
+
+    await c.collect(item);
+    const second = await c.collect(item);
+    expect(publications).toBe(2);
+    expect((second as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+});
