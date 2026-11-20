@@ -32,3 +32,18 @@ Generated from `src/events/registry.ts` by `npm run events:reference`. Do not ed
 | `steele.v1.draft.verified` | `org.steele.draft.verified.v1` | not provisioned | verification-worker | Draft verification report saved. |
 | `steele.v1.revision.decided` | `org.steele.revision.decided.v1` | not provisioned | revision-worker | Revision decision recorded. |
 | `steele.v1.article.published` | `org.steele.article.published.v1` | not provisioned | publisher-worker | Article published. |
+
+## Message contracts
+
+The standard these follow is in doc/architecture/20-messaging-contract.md.
+
+| Subject | Emitted when | Consumer guarantees |
+| --- | --- | --- |
+| `steele.v1.source.detected` | A feed poll, backfill or retry finds a post to capture. | Deduplicated by the collection operation key; redelivery is safe (already-collected). Invalid payloads are terminated. |
+| `steele.v1.content.extracted` | The collector commits an archived post (outbox, same step as the archive operation). | Exact archived artifact reference; consumers re-read and verify the hash. Redelivery is idempotent for indexing. Invalid payloads are terminated. |
+| `steele.v1.post.analysed` | Theme and claim results for one post are saved (outbox). | Stable event ID per (theme result, claim result) pair; consumers deduplicate by it. |
+| `steele.v1.theme.occurred` | Fan-out of a post-analysed event: one per theme occurrence (outbox). | Stable occurrence ID; duplicate parent delivery is idempotent. |
+| `steele.v1.claim.occurred` | Fan-out of a post-analysed event: one per claim occurrence (outbox). | Stable occurrence ID; duplicate parent delivery is idempotent. |
+| `steele.v1.research.completed` | A research job reaches a terminal outcome (outbox, with the saved result). | Event ID is the job ID; a redelivered request never repeats the provider call. |
+| `steele.v1.research.reindex.requested` | An operator or scheduler requests reconciliation of a route. | Idempotent from the index checkpoint; acked after the pass, redelivered while busy or failed, terminated and recorded when malformed, for an unknown route or when retries are exhausted. |
+| `steele.v1.article.approved` | The package verifier approves an exact draft revision (outbox). | Stable event ID per (draft, approval); each destination keeps its own keyed intent and receipt, reuses it on redelivery and reconciles uncertain deliveries before retrying. |

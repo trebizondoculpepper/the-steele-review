@@ -74,4 +74,12 @@ describe("stream and message registry", () => {
     const saved = readFileSync("doc/architecture/generated/streams-and-messages.md", "utf8");
     expect(saved, "run npm run events:reference").toBe(renderRegistryReference());
   });
+
+  it("requires every streamed message to state when it is emitted and what consumers can rely on", () => {
+    const streams = [{ name: "STEELE_A", overrideEnv: "A", purpose: "a", subjects: ["steele.v1.a.done"] }];
+    const bare = [{ subject: "steele.v1.a.done", stream: "STEELE_A", producer: "x", description: "x" }];
+    expect(registryProblems(streams, bare).join()).toContain("does not state when it is emitted");
+    const full = [{ ...bare[0], emittedWhen: "a happens", guarantees: "stable ID" }];
+    expect(registryProblems(streams, full)).toEqual([]);
+  });
 });
