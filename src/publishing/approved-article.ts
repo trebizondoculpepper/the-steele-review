@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
 import {
@@ -194,14 +198,35 @@ export async function handleApprovedArticle(input: {
     if (!approvalValidFor(report, markdown) || report.draft.hash !== event.draft.hash) {
       return { action: "term", reason: "approval-mismatch" };
     }
-  } catch {
-    return { action: "term", reason: "approval-mismatch" };
+  } catch (error) {
+    // Only a confirmed mismatch or missing artifact is final; anything else is transient.
+    if (
+      error instanceof ArtifactStoreError &&
+      (error.code === "hash-mismatch" || error.code === "not-found")
+    ) {
+      return { action: "term", reason: "approval-mismatch" };
+    }
+    if (error instanceof z.ZodError || error instanceof SyntaxError) {
+      return { action: "term", reason: "approval-mismatch" };
+    }
+    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
   }
 
   const { destination } = input;
   const revision = event.draft.hash.replace(/^sha256:/, "").slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
-  const dir = `publications/${destination.name}/${event.publicationId}/${event.postId}/${revision}`;
+  const dir = `publications/${destination.name}/${destination.action}/${event.publicationId}/${event.postId}/${revision}`;
+  // A receipt committed before a crash is the durable result: record completion
+  // from it rather than delivering again or giving up on attempt limits.
+  const committed = await input.content.lookup(`${dir}/receipt.json`);
+  if (committed) {
+    input.operations.reconcileCompleted(
+      key,
+      { path: committed.path, commit: committed.commit },
+      [],
+    );
+    return { action: "ack", outcome: "reused", receipt: committed };
+  }
   const claim = input.operations.claim(key, input.owner, 10 * 60_000, 5);
   if (claim.kind === "completed") {
     const saved = await input.content.lookup(`${dir}/receipt.json`);

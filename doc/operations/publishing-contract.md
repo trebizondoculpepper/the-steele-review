@@ -13,7 +13,7 @@ Each destination runs its own durable consumer and calls `handleApprovedArticle`
 - It re-reads the draft and approval report from the artifact store and refuses the event (`term`) unless the approval matches those exact bytes.
 - It waits for its own schedule (`delayMs` after approval) by asking for redelivery.
 - It keeps its own intent, status and receipt under the key `publish:<destination>:<action>:<revision>`, so one destination's failure or retry never touches another's.
-- It saves a preview (`publications/<destination>/<publication>/<post>/<revision>/preview.json`) before delivery and a receipt (`receipt.json`) after. Duplicate delivery reuses the saved receipt.
+- It saves a preview (`publications/<destination>/<action>/<publication>/<post>/<revision>/preview.json`) before delivery and a receipt (`receipt.json`) after. Duplicate delivery reuses the saved receipt.
 - A delivery whose outcome is unknown is recorded with an `uncertain.json` marker; the next attempt asks the adapter to reconcile before sending again, so an uncertain delivery is never repeated blindly.
 
 Adapters implement `DestinationAdapter`: `render` (own format and capabilities), idempotent `deliver`, and `reconcile`. `SimulatedDestination` is the placeholder used for the end-to-end proof: it makes no external call and needs no credentials, and its receipt is marked `simulated: true`, which is the terminal publishing result for that test.

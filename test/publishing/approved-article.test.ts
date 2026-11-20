@@ -232,4 +232,51 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     });
     expect(out).toEqual({ action: "term", reason: "approval-mismatch" });
   });
+
+  it("recovers a receipt committed before a crash, and keeps actions of one destination apart", async () => {
+    const report = await approved();
+    await recordApproval({ content, operations, report });
+    const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0].payload;
+    base = Date.parse(JSON.parse(payload).time);
+    const draftAction = new SimulatedDestination("site", "draft");
+    const first = await handleApprovedArticle({
+      payload,
+      destination: draftAction,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+      now: at(0),
+    });
+    expect(first).toMatchObject({ action: "ack", outcome: "delivered" });
+    // A different action for the same destination has its own record and artifacts.
+    const publishAction = new SimulatedDestination("site", "publish");
+    const second = await handleApprovedArticle({
+      payload,
+      destination: publishAction,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+      now: at(0),
+    });
+    expect(second).toMatchObject({ action: "ack", outcome: "delivered" });
+    if (first.action === "ack" && second.action === "ack")
+      expect(second.receipt.path).not.toBe(first.receipt.path);
+    // Crash after the receipt commit but before completion: a fresh state store
+    // still finds the receipt and reuses it instead of delivering again.
+    operations.close();
+    operations = new OperationStore({ path: join(dir, "state-after-crash.sqlite") });
+    const again = await handleApprovedArticle({
+      payload,
+      destination: draftAction,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+      now: at(0),
+    });
+    expect(again).toMatchObject({ action: "ack", outcome: "reused" });
+    expect(draftAction.deliveries).toHaveLength(1);
+  });
 });
