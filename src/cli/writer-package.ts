@@ -1,7 +1,7 @@
 /**
  * Build the writer's evidence package from a saved librarian coverage record (#148).
  *
- *   writer-package --coverage <librarian/coverage/... path> [--json]
+ *   writer-package --coverage <librarian/coverage/... path> [--comparison <comparisons/... path>]... [--json]
  *
  * Reads every pinned input by its exact version, saves the package write-once
  * under writer-packages/, and prints its reference for the writer (#149).
@@ -16,7 +16,8 @@ import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { PackageInputError, saveWriterPackage } from "../drafting/writer-package.js";
 
-const USAGE = "Usage: writer-package --coverage <librarian/coverage/... path> [--json]";
+const USAGE =
+  "Usage: writer-package --coverage <librarian/coverage/... path> [--comparison <comparisons/... path>]... [--json]";
 const Env = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
@@ -30,6 +31,7 @@ async function main(): Promise<number> {
     ({ values } = parseArgs({
       options: {
         coverage: { type: "string" },
+        comparison: { type: "string", multiple: true },
         json: { type: "boolean" },
         help: { type: "boolean" },
       },
@@ -71,11 +73,25 @@ async function main(): Promise<number> {
     console.error(JSON.stringify({ event: "writer-package", outcome: "coverage-not-found" }));
     return 1;
   }
+  const comparisons = [];
+  for (const path of values.comparison ?? []) {
+    if (!/^comparisons\/[A-Za-z0-9/._-]+\.json$/.test(path)) {
+      console.error(USAGE);
+      return 2;
+    }
+    const found = await content.lookup(path);
+    if (!found) {
+      console.error(JSON.stringify({ event: "writer-package", outcome: "comparison-not-found" }));
+      return 1;
+    }
+    comparisons.push(found);
+  }
   try {
     const { package: pkg, ref } = await saveWriterPackage({
       content,
       ...(archive ? { archive } : {}),
       coverage,
+      ...(comparisons.length > 0 ? { comparisons } : {}),
     });
     const out = {
       event: "writer-package",
