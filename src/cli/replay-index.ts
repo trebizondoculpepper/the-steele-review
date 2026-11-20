@@ -5,6 +5,12 @@
  *
  * Usage:
  *   replay-index --publication ID --limit N [--post ID ...] [--from ISO] [--to ISO]
+ *                [--commit SHA] [--checkpoint PATH]
+ *
+ * --commit replays the archive exactly as committed at that revision instead of
+ * reading the current tree. --checkpoint writes a JSON marker of the completed
+ * load, and only after every selected record was indexed successfully, so a
+ * failed or truncated run never advances it.
  *
  * Configuration (environment):
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
@@ -17,7 +23,13 @@
 import { CredentialError, elasticsearchConnection } from "../config/credentials.js";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { replayArchiveToIndex, ReplaySelectionSchema } from "../collection/index-replay.js";
+import { writeFile, rename } from "node:fs/promises";
+import {
+  replayArchiveToIndex,
+  ReplaySelectionSchema,
+  type ReplayCheckpoint,
+  type ReplayCheckpointState,
+} from "../collection/index-replay.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 
@@ -30,6 +42,7 @@ const EnvSchema = z.object({
 export async function main(argv: string[]): Promise<number> {
   let selection;
   let env;
+  let checkpointPath: string | undefined;
   let esConn;
   try {
     const { values } = parseArgs({
@@ -41,6 +54,8 @@ export async function main(argv: string[]): Promise<number> {
         from: { type: "string" },
         to: { type: "string" },
         limit: { type: "string" },
+        commit: { type: "string" },
+        checkpoint: { type: "string" },
       },
     });
     selection = ReplaySelectionSchema.parse({
@@ -49,7 +64,9 @@ export async function main(argv: string[]): Promise<number> {
       ...(values.from ? { from: values.from } : {}),
       ...(values.to ? { to: values.to } : {}),
       limit: values.limit === undefined ? undefined : Number(values.limit),
+      ...(values.commit ? { commit: values.commit } : {}),
     });
+    checkpointPath = values.checkpoint;
     env = EnvSchema.parse(process.env);
     esConn = elasticsearchConnection();
   } catch (error) {
@@ -78,12 +95,24 @@ export async function main(argv: string[]): Promise<number> {
     console.error("replay-index: ELASTICSEARCH_URL is not a valid URL");
     return 2;
   }
+  // Written atomically, and only when the replay reports a complete success.
+  const checkpoint: ReplayCheckpoint | undefined = checkpointPath
+    ? {
+        async save(state: ReplayCheckpointState) {
+          const target = checkpointPath as string;
+          const temporary = `${target}.tmp`;
+          await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+          await rename(temporary, target);
+        },
+      }
+    : undefined;
   try {
     const report = await replayArchiveToIndex({
       selection,
       artifacts,
       index: es,
       ...(env.STEELE_FULLTEXT_INDEX ? { indexName: env.STEELE_FULLTEXT_INDEX } : {}),
+      ...(checkpoint ? { checkpoint } : {}),
       signal: abort.signal,
     });
     console.log(JSON.stringify({ event: "replay-index", ...report }));
