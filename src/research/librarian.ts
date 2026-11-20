@@ -344,7 +344,6 @@ function assess(
         if (c.sourceType === "monitored-source") claimantOnly = true;
         else independent.push({ url: c.url, passage: p.passage });
       }
-      if (c.sourceType === "monitored-source" && c.retrieval === "archived") claimantOnly = true;
     }
     if (independent.length > 0)
       out.set(claim.claimRecordId, { status: "evidence-found", citations: independent });
@@ -592,7 +591,10 @@ export async function assessPostCoverage(input: {
         pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${titles.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
-      corpusRefs: existing.get(dossierId) ? [toRef(existing.get(dossierId)!.ref)] : [],
+      // Request identity depends only on the saved analysis and claims, never on
+      // the dossier version this run may itself revise, so reassessing the same
+      // analysis reuses the same job instead of commissioning new research.
+      corpusRefs: [],
     };
     const job = await input.commission(request);
     let manifest: ResearchManifest | undefined;
@@ -643,9 +645,13 @@ export async function assessPostCoverage(input: {
         outcomes.set(claim.claimRecordId, {
           ...prior,
           jobIds: [...prior.jobIds, second.job.jobId],
+          // Evidence from the second pass replaces the gap; a pending or failed
+          // second pass is recorded as such rather than hidden behind pass 1.
           ...(a.status === "evidence-found"
             ? { status: a.status, citations: a.citations, reason: undefined }
-            : {}),
+            : a.status === "pending" || a.status === "research-failed"
+              ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
+              : {}),
         });
       }
     }

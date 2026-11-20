@@ -300,6 +300,61 @@ describe("librarian coverage", () => {
     expect(payment.jobIds).toHaveLength(2);
   });
 
+  it("reassessing the same analysis reuses its jobs instead of commissioning new research", async () => {
+    const a = await analysis("p1", claims);
+    const r = researcher(() => "failed");
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(new Set(r.requests.map((q) => researchJobId(q))).size).toBe(1);
+  });
+
+  it("records a pending second pass instead of keeping the first-pass gap", async () => {
+    const a = await analysis("p1", claims);
+    const r = researcher((req) =>
+      req.pass === 1 ? { passages: [{ claimRecordId: "claim-treaty", url: SHARED }] } : "busy",
+    );
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      consequential: (c) => c.claimRecordId === "claim-payment",
+    });
+    expect(out.record.claims.find((c) => c.claimRecordId === "claim-payment")?.status).toBe(
+      "pending",
+    );
+  });
+
+  it("marks claimant-only per claim, not for every claim in a grouped job", async () => {
+    const a = await analysis("p1", claims);
+    const r = researcher(() => ({
+      passages: [
+        { claimRecordId: "claim-payment", url: "https://pub.substack.com/p/x", monitored: true },
+      ],
+    }));
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const by = Object.fromEntries(out.record.claims.map((c) => [c.claimRecordId, c.status]));
+    expect(by).toEqual({
+      "claim-payment": "claimant-only",
+      "claim-treaty": "no-independent-evidence",
+    });
+  });
+
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {
     const shortlister = new EmbeddingShortlister(
       { vectorSpace: "other/space#3", embed: async () => [] },
