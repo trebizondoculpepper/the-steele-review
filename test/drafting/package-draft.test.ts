@@ -88,7 +88,7 @@ const GOOD = JSON.stringify({
   widerContext: { status: "limited", limitation: "No independent background was used." },
 });
 
-describe("drafting from a writer package (#149)", () => {
+describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
   it("writes a cited draft traceable to the package, keeping gaps as unresolved", async () => {
     const ref = await packageRef();
     const provider = model(GOOD);

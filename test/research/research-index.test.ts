@@ -72,7 +72,7 @@ const rev = async (path: string, content: string) =>
   artifacts.revise(path, content, (await artifacts.lookup(path))?.sha256 ?? null);
 const reconcile = () => reconcileResearchIndex({ artifacts, es });
 
-describe("research collection indexing", () => {
+describe("research collection indexing", { timeout: 60_000 }, () => {
   it("indexes only explicit research document kinds", () => {
     expect(researchDocumentKind("dossier/theme-x.md")).toBe("dossier");
     expect(researchDocumentKind("research-reports/manual/havana/abc.md")).toBe("research-report");

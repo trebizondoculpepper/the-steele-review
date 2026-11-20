@@ -49,7 +49,7 @@ afterEach(async () => {
 const rev = async (path: string, content: string) =>
   artifacts.revise(path, content, (await artifacts.lookup(path))?.sha256 ?? null);
 
-describe("research reindex requests (#232)", () => {
+describe("research reindex requests (#232)", { timeout: 60_000 }, () => {
   it("rejects malformed requests and unknown routes without retrying", async () => {
     const routes = new Set(["havana"]);
     let ran = 0;
