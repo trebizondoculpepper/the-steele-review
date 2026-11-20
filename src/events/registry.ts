@@ -89,6 +89,16 @@ export interface MessageDefinition {
   stream: string | null;
   producer: string;
   description: string;
+  /**
+   * When the message is emitted (the producing state change). Required for
+   * every message retained by a provisioned stream.
+   */
+  emittedWhen?: string;
+  /**
+   * What consumers can rely on: identity and deduplication, and how
+   * redelivery and invalid payloads are handled.
+   */
+  guarantees?: string;
 }
 
 export const STREAMS: readonly StreamDefinition[] = [
@@ -133,6 +143,9 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: "STEELE_DISCOVERY",
     producer: "discover, backfill, retry-collection",
     description: "A source post to capture.",
+    emittedWhen: "A feed poll, backfill or retry finds a post to capture.",
+    guarantees:
+      "Deduplicated by the collection operation key; redelivery is safe (already-collected). Invalid payloads are terminated.",
   },
   {
     subject: TEXT_READY_SUBJECT,
@@ -140,6 +153,10 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: "STEELE_CONTENT",
     producer: "collect-worker",
     description: "Captured text archived and ready.",
+    emittedWhen:
+      "The collector commits an archived post (outbox, same step as the archive operation).",
+    guarantees:
+      "Exact archived artifact reference; consumers re-read and verify the hash. Redelivery is idempotent for indexing. Invalid payloads are terminated.",
   },
   {
     subject: POST_ANALYSED_SUBJECT,
@@ -147,6 +164,9 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: ANALYSIS_STREAM,
     producer: "announce-post",
     description: "Theme proposals and claims saved for one post.",
+    emittedWhen: "Theme and claim results for one post are saved (outbox).",
+    guarantees:
+      "Stable event ID per (theme result, claim result) pair; consumers deduplicate by it.",
   },
   {
     subject: THEME_OCCURRED_SUBJECT,
@@ -154,6 +174,8 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: ANALYSIS_STREAM,
     producer: "fan-out-worker",
     description: "One detected theme occurrence in a saved analysis.",
+    emittedWhen: "Fan-out of a post-analysed event: one per theme occurrence (outbox).",
+    guarantees: "Stable occurrence ID; duplicate parent delivery is idempotent.",
   },
   {
     subject: CLAIM_OCCURRED_SUBJECT,
@@ -161,6 +183,8 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: ANALYSIS_STREAM,
     producer: "fan-out-worker",
     description: "One extracted claim occurrence in a saved analysis.",
+    emittedWhen: "Fan-out of a post-analysed event: one per claim occurrence (outbox).",
+    guarantees: "Stable occurrence ID; duplicate parent delivery is idempotent.",
   },
   {
     subject: RESEARCH_COMPLETED_SUBJECT,
@@ -168,6 +192,8 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: RESEARCH_STREAM,
     producer: "research jobs (#215)",
     description: "A research job reached a terminal outcome.",
+    emittedWhen: "A research job reaches a terminal outcome (outbox, with the saved result).",
+    guarantees: "Event ID is the job ID; a redelivered request never repeats the provider call.",
   },
   {
     subject: RESEARCH_REINDEX_SUBJECT,
@@ -175,6 +201,9 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: RESEARCH_STREAM,
     producer: "research-reindex CLI, external schedulers (#232)",
     description: "Reconcile one configured research-index route from its checkpoint.",
+    emittedWhen: "An operator or scheduler requests reconciliation of a route.",
+    guarantees:
+      "Idempotent from the index checkpoint; acked after the pass, redelivered while busy or failed, terminated and recorded when malformed, for an unknown route or when retries are exhausted.",
   },
   {
     subject: CAPTURED_CONTENT_SUBJECT,
@@ -182,6 +211,10 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: "STEELE_CONTENT",
     producer: "collect-worker (Substack); any ingestion source",
     description: "Source-neutral captured item revision for the writing engine (#269).",
+    emittedWhen:
+      "An ingestion source archives an item revision (outbox, same step as the archive operation; the collector emits it with text-ready).",
+    guarantees:
+      "Stable event ID per (namespace, item, exact artifact); re-emitting the same revision is deduplicated. Consumers re-read the archived text by reference. Invalid payloads are terminated.",
   },
   {
     subject: ARTICLE_APPROVED_SUBJECT,
@@ -190,6 +223,9 @@ export const MESSAGES: readonly MessageDefinition[] = [
     producer: "recordApproval (package verification approval)",
     description:
       "An exact article revision was approved; each destination consumes it independently.",
+    emittedWhen: "The package verifier approves an exact draft revision (outbox).",
+    guarantees:
+      "Stable event ID per (draft, approval); each destination keeps its own keyed intent and receipt, reuses it on redelivery and reconciles uncertain deliveries before retrying.",
   },
   // Declared by existing stages but not yet retained by any provisioned stream.
   {
@@ -287,6 +323,13 @@ export function registryProblems(
       );
     }
   }
+  for (const m of messages) {
+    if (m.stream && (!m.emittedWhen || !m.guarantees)) {
+      problems.push(
+        `subject ${m.subject} is retained by a stream but does not state when it is emitted and what consumers can rely on`,
+      );
+    }
+  }
   for (const subject of owner.keys()) {
     if (!declared.has(subject))
       problems.push(`stream subject ${subject} has no message definition`);
@@ -327,6 +370,16 @@ export function renderRegistryReference(): string {
     ...MESSAGES.map(
       (m) =>
         `| \`${m.subject}\` | ${m.eventType ? `\`${m.eventType}\`` : "—"} | ${m.stream ? `\`${m.stream}\`` : "not provisioned"} | ${m.producer} | ${m.description} |`,
+    ),
+    "",
+    "## Message contracts",
+    "",
+    "The standard these follow is in doc/architecture/20-messaging-contract.md.",
+    "",
+    "| Subject | Emitted when | Consumer guarantees |",
+    "| --- | --- | --- |",
+    ...MESSAGES.filter((m) => m.emittedWhen).map(
+      (m) => `| \`${m.subject}\` | ${m.emittedWhen} | ${m.guarantees} |`,
     ),
     "",
   ];
