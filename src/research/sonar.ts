@@ -22,6 +22,8 @@ export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = 4_000;
 export interface SonarReport {
   report: string;
   citations: string[];
+  /** Valid distinct citations beyond the manifest limit, which are counted rather than dropped silently. */
+  omittedCitations?: number;
   model: string;
   costUsd?: number;
 }
@@ -71,7 +73,7 @@ const ResponseSchema = z.object({
 });
 
 /** http(s) citation URLs in first-seen order, without duplicates. */
-export function citationUrls(candidates: readonly string[], max = 50): string[] {
+export function citationUrls(candidates: readonly string[], max = 500): string[] {
   const seen = new Set<string>();
   for (const raw of candidates) {
     let url: URL;
@@ -174,9 +176,12 @@ export class OpenRouterSonarClient implements SonarClient {
     const annotated = (message.annotations ?? []).flatMap((a) =>
       a.url_citation ? [a.url_citation.url] : [],
     );
+    const all = citationUrls([...(parsed.citations ?? []), ...annotated], Number.MAX_SAFE_INTEGER);
+    const kept = all.slice(0, 500);
     return {
       report,
-      citations: citationUrls([...(parsed.citations ?? []), ...annotated]),
+      citations: kept,
+      ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
       model: parsed.model ?? this.model,
       ...(parsed.usage?.cost !== undefined ? { costUsd: parsed.usage.cost } : {}),
     };

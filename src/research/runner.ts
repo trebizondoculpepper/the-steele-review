@@ -40,6 +40,14 @@ export interface Finding {
   statement: string;
 }
 
+export interface SupportJudgement {
+  passages: { findingId: string; passage: string }[];
+  /** e.g. "treaty", "government record", "news report", "blog". */
+  sourceType?: string;
+  /** Why the source is or is not reliable support for these findings. */
+  rationale?: string;
+}
+
 export interface SupportJudge {
   /** Passages from `source` that directly support a finding; [] when none do. */
   judge(
@@ -51,7 +59,7 @@ export interface SupportJudge {
       source: string;
     },
     signal: AbortSignal,
-  ): Promise<{ findingId: string; passage: string }[]>;
+  ): Promise<SupportJudgement>;
 }
 
 export interface RunnerLimits {
@@ -91,7 +99,8 @@ export function researchPrompt(request: ResearchRequest): { system: string; user
 }
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
-const normalise = (s: string) => s.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+/** Whitespace-only normalisation: a kept passage must match the source's exact wording and case. */
+const normalise = (s: string) => s.normalize("NFKC").replace(/\s+/g, " ").trim();
 
 function retrievalOf(error: unknown): {
   retrieval: "inaccessible" | "unsupported";
@@ -189,6 +198,7 @@ export async function runResearchJob(input: {
     model: report.model,
     report: report.report,
     citations: report.citations,
+    ...(report.omittedCitations ? { omittedCitations: report.omittedCitations } : {}),
   });
 
   // 2. Retrieve, archive and check each cited source within bounds.
@@ -242,17 +252,21 @@ export async function runResearchJob(input: {
     );
     let passages: ResearchManifest["citations"][number]["passages"] = [];
     let support: "supported" | "unverified" | "not-checked" = "not-checked";
+    let sourceType: string | undefined;
+    let rationale: string | undefined;
     const own = monitored(url);
     if (own) {
       support = "unverified";
     } else if (input.judge) {
       try {
         const source = normalise(text);
-        const proposed = await input.judge.judge(
+        const judgement = await input.judge.judge(
           { findings, report: report.report, url, source: text },
           signal,
         );
-        passages = proposed
+        sourceType = judgement.sourceType?.slice(0, 100);
+        rationale = judgement.rationale?.slice(0, 2000);
+        passages = judgement.passages
           .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
           .filter((p) => source.includes(normalise(p.passage)))
           .slice(0, 50)
@@ -270,7 +284,16 @@ export async function runResearchJob(input: {
             sourceType: "monitored-source",
             confidenceRationale: "The claimant's own material; not independent support.",
           }
-        : {}),
+        : {
+            sourceType: sourceType ?? "web-page",
+            confidenceRationale:
+              rationale ??
+              (support === "not-checked"
+                ? "Support was not checked."
+                : support === "supported"
+                  ? "Contains a verbatim passage supporting the report's conclusion."
+                  : "No passage directly supports the report's conclusion."),
+          }),
       archivedArtifact: {
         repository: archived.repository,
         commit: archived.commit,
@@ -285,6 +308,11 @@ export async function runResearchJob(input: {
   // 3. Gaps and outcome.
   const count = (pred: (c: (typeof citations)[number]) => boolean) => citations.filter(pred).length;
   if (citations.length === 0) gaps.push("The report cited no retrievable sources.");
+  if (report.omittedCitations) {
+    gaps.push(
+      `${report.omittedCitations} further cited source(s) exceeded the manifest limit and were not recorded.`,
+    );
+  }
   const notArchived = count((c) => c.retrieval !== "archived");
   if (notArchived > 0)
     gaps.push(`${notArchived} cited source(s) could not be archived (see retrieval reasons).`);

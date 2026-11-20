@@ -74,13 +74,15 @@ const fetcher: PageFetcher = {
 };
 const judge: SupportJudge = {
   async judge({ source }) {
-    return [
+    const passages = [
       ...(source.includes("Article I")
         ? [{ findingId: "request", passage: "not to engage in military or any other hostile use" }]
         : []),
       { findingId: "request", passage: "a passage that is not in the source" },
       { findingId: "claim-from-elsewhere", passage: "Article I" },
+      { findingId: "request", passage: "NOT TO ENGAGE IN MILITARY" },
     ];
+    return { passages, sourceType: "treaty", rationale: "Primary treaty text." };
   },
 };
 const run = (s: SonarClient, extra: Record<string, unknown> = {}) =>
@@ -108,6 +110,10 @@ describe("research runner", () => {
     expect(manifest.citations[0].passages).toEqual([
       { claimRecordId: "request", passage: "not to engage in military or any other hostile use" },
     ]);
+    expect(manifest.citations[0]).toMatchObject({
+      sourceType: "treaty",
+      confidenceRationale: "Primary treaty text.",
+    });
     expect(manifest.provider).toEqual({ model: "perplexity/sonar-deep-research", costUsd: 0.4 });
     expect(
       await artifacts.read(
@@ -191,7 +197,7 @@ describe("review fixes", () => {
     const recording: SupportJudge = {
       async judge(i) {
         seen.push(i.report);
-        return [];
+        return { passages: [] };
       },
     };
     await run(sonar(["https://treaties.un.org/enmod"]), { judge: recording });
@@ -305,6 +311,21 @@ describe("OpenRouter Sonar client", () => {
     ).toThrow();
   });
 
+  it("counts citations beyond the manifest limit instead of dropping them silently", async () => {
+    const many = Array.from({ length: 503 }, (_, i) => `https://s${i}.example/`);
+    const client = new OpenRouterSonarClient({
+      apiKey: "k",
+      timeoutMs: 5_000,
+      maxOutputTokens: 10,
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({ citations: many, choices: [{ message: { content: "R" } }] }),
+        )) as unknown as typeof fetch,
+    });
+    const out = await client.research({ system: "s", user: "u" }, new AbortController().signal);
+    expect([out.citations.length, out.omittedCitations]).toEqual([500, 3]);
+  });
+
   it("deduplicates and filters citation URLs", () => {
     expect(
       citationUrls([
@@ -330,13 +351,13 @@ describe("model support judge", () => {
         { findings: [{ id: "request", statement: "s" }], report: "r", url: "u", source: TREATY },
         new AbortController().signal,
       ),
-    ).toEqual([{ findingId: "request", passage: "Article I" }]);
+    ).toEqual({ passages: [{ findingId: "request", passage: "Article I" }] });
     const bad = new ModelSupportJudge({ modelVersion: "m", complete: async () => "no json here" });
     expect(
       await bad.judge(
         { findings: [], report: "", url: "u", source: "" },
         new AbortController().signal,
       ),
-    ).toEqual([]);
+    ).toEqual({ passages: [] });
   });
 });
