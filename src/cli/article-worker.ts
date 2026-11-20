@@ -1,0 +1,111 @@
+/**
+ * Restate worker for unattended article runs (#243).
+ *
+ *   article-worker
+ *
+ * Serves the `ArticleRun` workflow and the `Research` service over HTTP for a
+ * Restate server to call. Register it once with the server (see
+ * doc/operations/article-pipeline.md). Stages reuse the delivered modules.
+ *
+ * Configuration (environment):
+ *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
+ *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
+ *   STEELE_STATE_PATH                                state controller (research job leases)
+ *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
+ *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?
+ *                                                    per-stage overrides
+ *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_OUTPUT_TOKENS?
+ *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
+ *   STEELE_ARTICLE_WORKER_PORT?                      default 9080
+ */
+import { hostname } from "node:os";
+import * as restate from "@restatedev/restate-sdk";
+import { z } from "zod";
+import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { OperationStore } from "../controllers/operation-store.js";
+import { openRouterFromEnv } from "../controllers/openrouter.js";
+import { PublicPageFetcher } from "../controllers/research-web.js";
+import { LexicalShortlister } from "../research/librarian.js";
+import { sonarFromEnv } from "../research/sonar.js";
+import { ModelSupportJudge } from "../research/support-judge.js";
+import { articleRunWorkflow, researchService } from "../workflow/article-run.js";
+import { articleStages } from "../workflow/stages.js";
+
+const Env = z.object({
+  STEELE_ARCHIVE_PATH: z.string().min(1),
+  STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
+  STEELE_CONTENT_PATH: z.string().min(1),
+  STEELE_CONTENT_REPOSITORY: z.string().min(1),
+  STEELE_STATE_PATH: z.string().min(1),
+  STEELE_MONITORED_HOSTS: z.string().optional(),
+  STEELE_ARTICLE_WORKER_PORT: z.coerce.number().int().min(1).max(65_535).default(9080),
+});
+
+function main(): number {
+  const env = Env.safeParse(process.env);
+  if (!env.success) {
+    console.error(
+      `article-worker: invalid or missing configuration: ${[...new Set(env.error.issues.map((i) => i.path.join(".")))].join(", ")}`,
+    );
+    return 2;
+  }
+  const c = env.data;
+  // Per-stage model choices, defaulting to STEELE_MODEL.
+  const model = (override: string) =>
+    openRouterFromEnv({
+      env: {
+        ...process.env,
+        ...(process.env[override] ? { STEELE_MODEL: process.env[override] } : {}),
+      },
+    });
+  let stages;
+  try {
+    stages = articleStages({
+      archive: new GitArtifactStore({
+        repoPath: c.STEELE_ARCHIVE_PATH,
+        repository: c.STEELE_ARCHIVE_REPOSITORY,
+      }),
+      content: new GitArtifactStore({
+        repoPath: c.STEELE_CONTENT_PATH,
+        repository: c.STEELE_CONTENT_REPOSITORY,
+      }),
+      operations: new OperationStore({ path: c.STEELE_STATE_PATH }),
+      models: {
+        themes: model("STEELE_MODEL_THEMES"),
+        claims: model("STEELE_MODEL_CLAIMS"),
+        writer: model("STEELE_MODEL_WRITER"),
+      },
+      shortlister: new LexicalShortlister(),
+      research: {
+        sonar: sonarFromEnv(),
+        fetcher: new PublicPageFetcher(),
+        judge: new ModelSupportJudge(model("STEELE_MODEL_SUPPORT")),
+        ...(c.STEELE_MONITORED_HOSTS
+          ? {
+              monitoredHosts: c.STEELE_MONITORED_HOSTS.split(",")
+                .map((h) => h.trim())
+                .filter(Boolean),
+            }
+          : {}),
+      },
+      owner: `article-worker@${hostname()}:${process.pid}`,
+    });
+  } catch {
+    console.error("article-worker: model or research provider is not configured");
+    return 2;
+  }
+  restate.serve({
+    services: [articleRunWorkflow(stages), researchService(stages)],
+    port: c.STEELE_ARTICLE_WORKER_PORT,
+  });
+  console.log(
+    JSON.stringify({
+      event: "article-worker",
+      state: "serving",
+      port: c.STEELE_ARTICLE_WORKER_PORT,
+    }),
+  );
+  return 0;
+}
+
+process.exitCode = main();

@@ -1,0 +1,45 @@
+# Restate proof of concept for unattended article runs (#243).
+# A pinned Restate server with a persistent volume, and the TypeScript
+# article worker on the internal network. Paths and credentials come from
+# the environment (.env next to this file, never committed); see
+# doc/operations/article-pipeline.md.
+services:
+  restate:
+    image: docker.restate.dev/restatedev/restate:1.8.1
+    restart: unless-stopped
+    volumes:
+      - restate-data:/restate-data
+    ports:
+      - "127.0.0.1:8080:8080" # ingress
+      - "127.0.0.1:9070:9070" # admin API
+    networks: [steele]
+
+  article-worker:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/article-worker.js"]
+    restart: unless-stopped
+    environment:
+      STEELE_ARCHIVE_PATH: /data/archive
+      STEELE_ARCHIVE_REPOSITORY: ${STEELE_ARCHIVE_REPOSITORY}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
+      STEELE_MODEL: ${STEELE_MODEL}
+      OPENROUTER_API_KEY_FILE: /run/secrets/openrouter
+      STEELE_MONITORED_HOSTS: ${STEELE_MONITORED_HOSTS:-}
+    volumes:
+      - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
+      - ${STEELE_CONTENT_DIR}:/data/content
+      - ${STEELE_STATE_DIR}:/data/state
+    secrets: [openrouter]
+    networks: [steele]
+
+volumes:
+  restate-data:
+
+networks:
+  steele:
+
+secrets:
+  openrouter:
+    file: ${OPENROUTER_KEY_FILE}
