@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
   CandidateSnapshotSchema,
@@ -64,20 +65,16 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  * normalised key is exact normalised text.
  */
 
-export const DEFAULT_GROUNDED_CLAIM_PROMPT: ExtractionPrompt = {
-  version: "grounded-claims-v6",
-  instructions: [
-    'claimType must be factual, opinion, prediction or ambiguous. speaker.kind must be author-voice, quoted, unknown or uncertain. Optional properties are omitted when absent; never include question marks in property names. Use JSON arrays for qualifiers, entities, dates and themeIds. A valid empty result is {"claims":[]}.',
-    "Extract the specific claims the source text makes that a reader might want to check or respond to. Do not judge whether they are true.",
-    "For each claim copy one contiguous passage exactly as written, character for character, with no inserted ellipses or joined excerpts; if that passage occurs more than once, set `occurrence` to its 1-based position.",
-    "`statement` explains the intended meaning of this one assertion in self-contained ordinary language. Use the whole post to resolve they, it, that injection and similar references; make your best contextual interpretation even when uncertain, explicitly qualifying uncertain meaning and important assumptions in statement. Do not combine separate assertions or invent unsupported actors or details. Keep qualifiers, quantities and negation. Only statement may paraphrase: passage, qualifiers and dates[].text must be copied verbatim from the chosen quotation. Use empty arrays when no quoted qualifiers/dates occur; dates use {text, value?} with value only when unambiguous.",
-    "`kind` is assertion (the text asserts it), quotation (it reports someone else saying it), question (posed as a question), or speculation (explicitly floated as possible).",
-    "A statement must assert something a reader can check on its own. Where the wording depends on missing context, add only context the post actually supports and keep the original quotation. If it still cannot stand alone, or it is only a call to action with no factual assertion, do not emit it as a claim.",
-    "`speaker`: kind author-voice, quoted, unknown or uncertain. Give a `name` only for quoted/uncertain speakers named in the text, with `attribution`: the exact passage that names them.",
-    "`themeIds`: the ids of the listed post themes this claim belongs to, possibly several. Use an empty list when none applies; never invent ids.",
-    'Respond with JSON only: {"claims":[{"statement","claimType","kind","passage","occurrence?","qualifiers","entities","dates","speaker":{"kind","name?","attribution?"},"themeIds"}]}.',
-  ].join("\n"),
-};
+function loadAnalysisPrompt(name: string): ExtractionPrompt {
+  const instructions = readFileSync(
+    new URL(`../prompts/analysis/${name}.md`, import.meta.url),
+    "utf8",
+  ).trim();
+  const hash = createHash("sha256").update(instructions).digest("hex");
+  return { version: `analysis-${name}-sha256:${hash}`, instructions };
+}
+
+export const DEFAULT_GROUNDED_CLAIM_PROMPT = loadAnalysisPrompt("grounded-claims-v6");
 
 export const AssertionKindSchema = z.enum(["assertion", "quotation", "question", "speculation"]);
 
@@ -267,24 +264,22 @@ export function claimRejectionStage(reason: string): RejectionStage {
 const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
 
 // A statement can restate a quotation without asserting anything checkable: a
-// rallying cry or instruction ("Stop spraying us") carries no proposition a
-// reader can verify. Exact equality with the passage is deliberately *not* a
-// rejection reason, because a short self-contained quotation is legitimate
-// (#212). The pattern stays deliberately narrow - unambiguous imperatives
-// only, no nouns that double as verbs ("vote", "fight", "share") and a word
-// limit - so a short factual assertion such as "Vote rigging happened" is
-// never misclassified. The prompt asks for self-contained statements and
-// source inspection covers the rest.
-const CALL_TO_ACTION = /^(?:stop|don'?t|do not|let'?s|let us|wake up|stand up|act now)\b/i;
-const FINITE_VERB =
-  /\b(?:is|are|was|were|has|have|had|does|do|did|will|would|can|could|may|might|must|shall|should|seems?|appears?)\b/i;
-const MAX_CALL_TO_ACTION_WORDS = 12;
+// rallying cry or instruction carries no proposition a reader can verify.
+// Exact equality with the passage is deliberately *not* a rejection reason,
+// because a short self-contained quotation is legitimate (#212).
+//
+// Only a closed vocabulary counts as a pure call to action: the imperative
+// followed by at most one object word and trailing adverbs. Anything else -
+// "Stop signs prevent accidents", "Stop spraying because aircraft contaminate
+// the soil" - carries a checkable clause and stays an accepted claim. A
+// general "does this sentence assert something" test is not decidable with a
+// pattern, so the rest is left to the prompt and to source inspection.
+const PURE_CALL_TO_ACTION =
+  /^(?:stop|do not|don'?t|wake up|stand up|act now)\s+(?:(?:\w+ing|\w+)\s+)?(?:us|them|it|this|that|now|today|everywhere|immediately)(?:\s+(?:now|today|everywhere|immediately))*[.!]*$/i;
 
 /** A pure call to action, with no asserted proposition to check. */
 function isCallToActionOnly(statement: string): boolean {
-  const trimmed = statement.trim();
-  if (trimmed.split(/\s+/).length > MAX_CALL_TO_ACTION_WORDS) return false;
-  return CALL_TO_ACTION.test(trimmed) && !FINITE_VERB.test(trimmed);
+  return PURE_CALL_TO_ACTION.test(statement.trim());
 }
 
 /**

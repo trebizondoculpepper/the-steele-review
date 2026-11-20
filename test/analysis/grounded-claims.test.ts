@@ -249,7 +249,7 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: "grounded-claims-v6",
+      promptVersion: expect.stringMatching(/^analysis-grounded-claims-v6-sha256:[0-9a-f]{64}$/),
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
@@ -353,14 +353,27 @@ describe("record versions (#182)", () => {
     expect(candidateReasons("assertion", ["geoengineering"], "Stop spraying us now")).toEqual([
       "not-self-contained",
     ]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Wake up and share this")).toEqual([
+    expect(candidateReasons("assertion", ["geoengineering"], "Do not spray us")).toEqual([
       "not-self-contained",
     ]);
-    // An instruction that carries a checkable proposition is still a claim.
+    expect(candidateReasons("assertion", ["geoengineering"], "Wake up now")).toEqual([
+      "not-self-contained",
+    ]);
+    // A statement that carries a checkable clause is still an accepted claim.
     expect(
       candidateReasons("assertion", ["geoengineering"], "Stop spraying because the soil is toxic"),
     ).toEqual([]);
-    // A short factual assertion is never read as a pure imperative.
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Stop spraying because aircraft contaminate the soil",
+      ),
+    ).toEqual([]);
+    // A noun that merely opens with an imperative word is not an imperative.
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Stop signs prevent accidents"),
+    ).toEqual([]);
     expect(candidateReasons("assertion", ["geoengineering"], "Vote rigging happened")).toEqual([]);
     expect(candidateReasons("assertion", ["geoengineering"], "Fight back was the headline")).toEqual(
       [],
