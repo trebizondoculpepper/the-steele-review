@@ -22,6 +22,10 @@ import {
   ARTICLE_PUBLISHED_EVENT_TYPE_V1,
   ARTICLE_PUBLISHED_SUBJECT,
 } from "../publishing/publisher-worker.js";
+import {
+  CLAIM_OCCURRED_EVENT_TYPE_V1,
+  CLAIM_OCCURRED_SUBJECT,
+} from "./claim-occurred-event.js";
 import { DISCOVERY_EVENT_TYPE_V1 } from "./discovery-event.js";
 import {
   ANALYSIS_STREAM,
@@ -34,6 +38,10 @@ import {
   RESEARCH_STREAM,
 } from "./research-completed-event.js";
 import { TEXT_READY_EVENT_TYPE_V1, TEXT_READY_SUBJECT } from "./text-ready-event.js";
+import {
+  THEME_OCCURRED_EVENT_TYPE_V1,
+  THEME_OCCURRED_SUBJECT,
+} from "./theme-occurred-event.js";
 
 /**
  * Shared stream and message registry (#209).
@@ -92,8 +100,9 @@ export const STREAMS: readonly StreamDefinition[] = [
   {
     name: ANALYSIS_STREAM,
     overrideEnv: "STEELE_ANALYSIS_STREAM",
-    purpose: "Analysis-stage completions: one post-analysed event per post and analysis version.",
-    subjects: [POST_ANALYSED_SUBJECT],
+    purpose:
+      "Analysis-stage handoffs: one post-analysed completion per post and analysis version, plus its per-theme and per-claim occurrence events.",
+    subjects: [POST_ANALYSED_SUBJECT, THEME_OCCURRED_SUBJECT, CLAIM_OCCURRED_SUBJECT],
   },
   {
     name: RESEARCH_STREAM,
@@ -124,6 +133,20 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: ANALYSIS_STREAM,
     producer: "announce-post",
     description: "Theme proposals and claims saved for one post.",
+  },
+  {
+    subject: THEME_OCCURRED_SUBJECT,
+    eventType: THEME_OCCURRED_EVENT_TYPE_V1,
+    stream: ANALYSIS_STREAM,
+    producer: "fan-out-worker",
+    description: "One detected theme occurrence in a saved analysis.",
+  },
+  {
+    subject: CLAIM_OCCURRED_SUBJECT,
+    eventType: CLAIM_OCCURRED_EVENT_TYPE_V1,
+    stream: ANALYSIS_STREAM,
+    producer: "fan-out-worker",
+    description: "One extracted claim occurrence in a saved analysis.",
   },
   {
     subject: RESEARCH_COMPLETED_SUBJECT,

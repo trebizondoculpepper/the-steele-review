@@ -77,12 +77,21 @@ const EnvelopeSchema = z.looseObject({
   subject: z.string().min(1),
 });
 
-/** Validate a received post-analysed event; throws on anything malformed. */
-export function parsePostAnalysedEvent(input: string): PostAnalysedData {
+function parseEnvelope(input: string) {
   const envelope = EnvelopeSchema.parse(JSON.parse(input));
   const data = PostAnalysedDataSchema.parse(envelope.data);
   if (envelope.subject !== `substack/${data.publicationId}/${data.postId}`) {
     throw new Error("subject does not match payload");
   }
-  return data;
+  return { id: envelope.id, data };
+}
+
+/** Validate a received post-analysed event; throws on anything malformed. */
+export function parsePostAnalysedEvent(input: string): PostAnalysedData {
+  return parseEnvelope(input).data;
+}
+
+/** Envelope identity plus payload, for consumers that record causation. */
+export function parsePostAnalysedEnvelope(input: string): { id: string; data: PostAnalysedData } {
+  return parseEnvelope(input);
 }

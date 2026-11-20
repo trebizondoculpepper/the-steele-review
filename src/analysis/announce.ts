@@ -6,8 +6,7 @@ import {
   createPostAnalysedEvent,
   type PostAnalysedData,
 } from "../events/post-analysed-event.js";
-import { ClaimExtractionRecordSchema } from "./grounded-claims.js";
-import { parseThemeProposalResult } from "./theme-proposals.js";
+import { readAnalysisPair } from "./analysis-pair.js";
 
 /**
  * Record and (optionally) dispatch one post-analysed completion event (#178).
@@ -47,7 +46,8 @@ export type AnnounceOutcome =
         | "legacy-claim-result"
         | "post-mismatch"
         | "source-version-mismatch"
-        | "theme-result-not-linked";
+        | "theme-result-not-linked"
+        | "results-unavailable";
     }
   | { status: "busy" };
 
@@ -76,32 +76,10 @@ export async function announcePost(input: {
   owner: string;
   now?: () => Date;
 }): Promise<AnnounceOutcome> {
-  let theme;
-  try {
-    theme = parseThemeProposalResult(JSON.parse(await input.content.read(input.themeRef)));
-  } catch {
-    return { status: "refused", reason: "unreadable-theme-result" };
-  }
-  let claims;
-  try {
-    claims = ClaimExtractionRecordSchema.parse(
-      JSON.parse(await input.content.read(input.claimRef)),
-    );
-  } catch {
-    return { status: "refused", reason: "unreadable-claim-result" };
-  }
-  // Only results under the current accepted/candidate contract complete a post.
-  if (claims.schemaVersion !== 2) return { status: "refused", reason: "legacy-claim-result" };
-  const samePost = (p: { publicationId: string; postId: string }) =>
-    p.publicationId === input.post.publicationId && p.postId === input.post.postId;
-  if (!samePost(theme.post) || !samePost(claims.post))
-    return { status: "refused", reason: "post-mismatch" };
-  if (theme.sourceVersion !== claims.sourceVersion) {
-    return { status: "refused", reason: "source-version-mismatch" };
-  }
-  if (claims.themeResult !== short(input.themeRef)) {
-    return { status: "refused", reason: "theme-result-not-linked" };
-  }
+  const pair = await readAnalysisPair(input.content, input.post, input.themeRef, input.claimRef);
+  if (pair.status === "unavailable") return { status: "refused", reason: "results-unavailable" };
+  if (pair.status === "refused") return { status: "refused", reason: pair.reason };
+  const { theme, claims } = pair;
 
   const data: PostAnalysedData = {
     ...input.post,

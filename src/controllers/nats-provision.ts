@@ -18,7 +18,15 @@ export interface DiscoveryStreamConfig {
   duplicateWindowMs?: number;
 }
 
-export type ProvisionResult = "created" | "unchanged";
+export type ProvisionResult = "created" | "unchanged" | "updated";
+
+export interface ProvisionOptions {
+  /**
+   * Allow adding subjects to an existing stream. Only strictly additive
+   * changes are applied; removing or replacing a subject still conflicts.
+   */
+  allowAdditiveSubjects?: boolean;
+}
 
 export class StreamConflictError extends Error {
   constructor() {
@@ -32,6 +40,7 @@ const STREAM_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 export async function provisionDiscoveryStream(
   nats: Pick<NatsController, "manager">,
   config: DiscoveryStreamConfig,
+  options: ProvisionOptions = {},
 ): Promise<ProvisionResult> {
   if (!STREAM_NAME.test(config.name)) throw new Error("invalid stream name");
   if (config.subjects.length === 0) throw new Error("stream needs at least one subject");
@@ -45,8 +54,14 @@ export async function provisionDiscoveryStream(
   if (existing) {
     const current = [...(existing.config.subjects ?? [])].sort();
     const wanted = [...config.subjects].sort();
-    if (current.join("\n") !== wanted.join("\n")) throw new StreamConflictError();
-    return "unchanged";
+    if (current.join("\n") === wanted.join("\n")) return "unchanged";
+    // A registry-defined stream may grow: an upgrade adds the new subject and
+    // keeps every existing one and its retained messages. Anything else is a
+    // conflict, so unrelated or repurposed streams are never modified.
+    const addsOnly = current.every((subject) => wanted.includes(subject));
+    if (!options.allowAdditiveSubjects || !addsOnly) throw new StreamConflictError();
+    await jsm.streams.update(config.name, { subjects: [...config.subjects] });
+    return "updated";
   }
   await jsm.streams.add({
     name: config.name,

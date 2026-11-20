@@ -2,8 +2,9 @@
  * Explicit, opt-in provisioning of the capture pipeline's own resources:
  * the discovery and text-ready JetStream streams, the collector's and
  * indexer's durable consumers, and the full-text index alias. Never run
- * implicitly. Existing resources are left unchanged; a conflicting stream or
- * consumer is refused, never modified, and nothing unrelated is touched.
+ * implicitly. A registry stream may gain a new subject (additive only, keeping
+ * retained messages); any other conflicting stream or consumer is refused,
+ * never modified, and nothing unrelated is touched.
  *
  * Configuration (environment):
  *   NATS_URL, NATS_TOKEN?
@@ -17,7 +18,8 @@
  *   STEELE_INDEX_CONSUMER?     default steele-indexer
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
  *
- * Output is one JSON line naming each resource and whether it was created.
+ * Output is one JSON line naming each resource and whether it was created,
+ * unchanged or updated.
  */
 import {
   describeSetupError,
@@ -77,10 +79,16 @@ async function main(): Promise<number> {
     await nats.connect("steele-provision");
     // Streams come from the shared registry (#209); names honour configured overrides.
     for (const def of STREAMS) {
-      report[`stream:${def.name}`] = await provisionDiscoveryStream(nats, {
-        name: names.get(def.name)!,
-        subjects: [...def.subjects],
-      });
+      report[`stream:${def.name}`] = await provisionDiscoveryStream(
+        nats,
+        {
+          name: names.get(def.name)!,
+          subjects: [...def.subjects],
+        },
+        // Registry streams are ours: adding a new subject is a non-destructive
+        // upgrade that keeps retained messages. Removal still conflicts.
+        { allowAdditiveSubjects: true },
+      );
     }
     report.collectConsumer = await provisionDurableConsumer(nats, {
       stream: names.get("STEELE_DISCOVERY")!,
