@@ -421,6 +421,8 @@ export function mergeCoverage(
     }
     const ids: string[] = [];
     for (const c of claim.citations) {
+      // Stop at the per-claim limit before adding anything to the dossier.
+      if (ids.length >= MAX_CLAIM_CITATIONS) break;
       if (!c.url.startsWith("https://")) continue;
       const id = citationId(c.url, c.passage);
       if (!citations.has(id) && citations.size >= MAX_DOSSIER_ENTRIES) continue;

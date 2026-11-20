@@ -464,6 +464,7 @@ describe("librarian coverage", () => {
     );
     const c1 = merged.claims[0];
     expect(c1.status === "covered" && c1.citations.length).toBe(50);
+    expect(merged.citations).toHaveLength(50);
   });
 
   it("falls back when an embedding response is malformed", async () => {
