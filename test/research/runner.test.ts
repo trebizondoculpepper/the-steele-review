@@ -62,6 +62,7 @@ const pages: Record<string, string | WebAdapterError> = {
   "https://example.org/report.pdf": new WebAdapterError("unsupported-content"),
   "https://example.org/moved": new WebAdapterError("redirected"),
   "https://example.org/gone": new WebAdapterError("not-found"),
+  "https://author.substack.com/p/post": TREATY,
 };
 const fetcher: PageFetcher = {
   async fetch(url) {
@@ -181,6 +182,47 @@ describe("research runner", () => {
       retrieval: "not-attempted",
       retrievalReason: "source-limit",
     });
+  });
+});
+
+describe("review fixes", () => {
+  it("never accepts the monitored author's own material as support", async () => {
+    const out = await run(sonar(["https://author.substack.com/p/post"]), {
+      monitoredHosts: ["author.substack.com"],
+    });
+    if (out.status !== "finished") throw new Error("expected finished");
+    expect(out.result.outcome).toBe("complete-with-gaps");
+    const manifest = ResearchManifestSchema.parse(
+      JSON.parse(await artifacts.read((await artifacts.lookup(out.result.manifest!.path))!)),
+    );
+    expect(manifest.citations[0]).toMatchObject({
+      retrieval: "archived",
+      support: "unverified",
+      sourceType: "monitored-source",
+      passages: [],
+    });
+  });
+
+  it("renews the run lease while processing sources", async () => {
+    let clock = 1_000_000;
+    operations.close();
+    operations = new OperationStore({ path: join(dir, "state.sqlite"), now: () => clock });
+    const slow: PageFetcher = {
+      async fetch(url) {
+        clock += 40 * 60_000; // each source takes longer than the 30-minute lease
+        return { url, title: "t", text: TREATY };
+      },
+    };
+    const out = await runResearchJob({
+      artifacts,
+      operations,
+      request,
+      owner: "t",
+      fetcher: slow,
+      judge,
+      sonar: sonar(["https://treaties.un.org/enmod", "https://example.org/blog"]),
+    });
+    expect(out.status === "finished" && out.result.outcome).toBe("complete");
   });
 });
 

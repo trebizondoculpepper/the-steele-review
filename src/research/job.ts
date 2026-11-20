@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
-import type { OperationStore } from "../controllers/operation-store.js";
+import type { OperationClaim, OperationStore } from "../controllers/operation-store.js";
 import {
   RESEARCH_COMPLETED_SUBJECT,
   createResearchCompletedEvent,
@@ -250,7 +250,14 @@ export async function writeOnce(
 export const DEFAULT_RUN_LEASE_MS = 30 * 60_000;
 
 export type OpenedResearchJob =
-  | { status: "run"; jobId: string; requestRef: ArtifactRef; owner: string }
+  | {
+      status: "run";
+      jobId: string;
+      requestRef: ArtifactRef;
+      owner: string;
+      claim: OperationClaim;
+      leaseMs: number;
+    }
   | { status: "finished"; jobId: string; requestRef: ArtifactRef; existing: ResearchResult }
   | { status: "busy"; jobId: string; requestRef: ArtifactRef };
 
@@ -286,7 +293,16 @@ export async function openResearchJob(input: {
     input.leaseMs ?? DEFAULT_RUN_LEASE_MS,
     1,
   );
-  if (claim.kind === "claimed") return { status: "run", jobId, requestRef, owner: input.owner };
+  if (claim.kind === "claimed") {
+    return {
+      status: "run",
+      jobId,
+      requestRef,
+      owner: input.owner,
+      claim: claim.claim,
+      leaseMs: input.leaseMs ?? DEFAULT_RUN_LEASE_MS,
+    };
+  }
   if (claim.kind === "busy") return { status: "busy", jobId, requestRef };
   // Exhausted (the single attempt's holder vanished) or a stale completion
   // without a saved result: record an interrupted failure, never re-run.

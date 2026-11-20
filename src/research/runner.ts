@@ -126,6 +126,12 @@ export async function runResearchJob(input: {
   fetcher: PageFetcher;
   judge?: SupportJudge;
   limits?: RunnerLimits;
+  /**
+   * Hosts of the monitored publication(s). Their pages are the claimant's
+   * own material: archived for provenance, but never accepted as
+   * independent support for a finding.
+   */
+  monitoredHosts?: readonly string[];
   now?: () => Date;
   signal?: AbortSignal;
 }): Promise<RunOutcome> {
@@ -142,6 +148,9 @@ export async function runResearchJob(input: {
     return { status: "finished", jobId: opened.jobId, result: opened.existing, reused: true };
   }
   const { jobId } = opened;
+  // Keep the run lease alive through slow source processing; losing it means
+  // another caller has already recorded this run as interrupted, so stop.
+  const keepLease = () => input.operations.renew(opened.claim, opened.leaseMs);
   const request = JSON.parse(await input.artifacts.read(opened.requestRef)) as ResearchRequest;
   const signal = input.signal ?? new AbortController().signal;
   const fail = async (failure: NonNullable<ResearchResult["failure"]>) => {
@@ -187,7 +196,14 @@ export async function runResearchJob(input: {
   const findingIds = new Set(findings.map((f) => f.id));
   const citations: ResearchManifest["citations"] = [];
   const gaps: string[] = [];
+  const monitored = (url: string) => {
+    const host = new URL(url).hostname.toLowerCase();
+    return (input.monitoredHosts ?? []).some(
+      (h) => host === h.toLowerCase() || host.endsWith(`.${h.toLowerCase()}`),
+    );
+  };
   for (const [index, url] of report.citations.entries()) {
+    keepLease();
     if (index >= limits.maxSources) {
       citations.push({
         url,
@@ -220,7 +236,10 @@ export async function runResearchJob(input: {
     );
     let passages: ResearchManifest["citations"][number]["passages"] = [];
     let support: "supported" | "unverified" | "not-checked" = "not-checked";
-    if (input.judge) {
+    const own = monitored(url);
+    if (own) {
+      support = "unverified";
+    } else if (input.judge) {
       try {
         const source = normalise(text);
         const proposed = await input.judge.judge({ findings, url, source: text }, signal);
@@ -237,6 +256,12 @@ export async function runResearchJob(input: {
     citations.push({
       url,
       retrieval: "archived",
+      ...(own
+        ? {
+            sourceType: "monitored-source",
+            confidenceRationale: "The claimant's own material; not independent support.",
+          }
+        : {}),
       archivedArtifact: {
         repository: archived.repository,
         commit: archived.commit,
@@ -293,6 +318,7 @@ export async function runResearchJob(input: {
       ...(report.costUsd !== undefined ? { costUsd: report.costUsd } : {}),
     },
   });
+  keepLease();
   const manifestRef = await writeOnce(input.artifacts, `${dir}/manifest.json`, manifest);
   const done = await finishResearchJob({
     artifacts: input.artifacts,
