@@ -1,7 +1,7 @@
 /**
  * Draft one article from a saved writer package (#149).
  *
- *   draft-package --package <writer-packages/... path> --source-url <https url> [--json]
+ *   draft-package --package <writer-packages/... path> --source-url <https url> [--model <openrouter model id>] [--json]
  *
  * Uses the configured model (STEELE_MODEL via OpenRouter). Reads the pinned
  * source text from the archive, validates the model's draft against the
@@ -21,7 +21,7 @@ import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 
 const USAGE =
-  "Usage: draft-package --package <writer-packages/... path> --source-url <https url> [--json]";
+  "Usage: draft-package --package <writer-packages/... path> --source-url <https url> [--model <openrouter model id>] [--json]";
 const Env = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
@@ -36,6 +36,7 @@ async function main(): Promise<number> {
       options: {
         package: { type: "string" },
         "source-url": { type: "string" },
+        model: { type: "string" },
         json: { type: "boolean" },
         help: { type: "boolean" },
       },
@@ -65,9 +66,25 @@ async function main(): Promise<number> {
     );
     return 2;
   }
+  // Any OpenRouter model ID may be requested; omission uses the configured default.
+  const requested =
+    values.model === undefined
+      ? undefined
+      : z
+          .string()
+          .regex(/^[A-Za-z0-9._:/-]{1,200}$/)
+          .safeParse(values.model);
+  if (requested && !requested.success) {
+    console.error(USAGE);
+    return 2;
+  }
+  let resolved: string | undefined;
   let provider;
   try {
-    provider = openRouterFromEnv();
+    provider = openRouterFromEnv(
+      requested?.success ? { env: { ...process.env, STEELE_MODEL: requested.data } } : {},
+      { onUsage: (u) => (resolved = u.model) },
+    );
   } catch {
     console.error("draft-package: model provider is not configured");
     return 2;
@@ -92,6 +109,8 @@ async function main(): Promise<number> {
     package: pkg,
     provider,
     sourceUrl: url.data,
+    ...(requested?.success ? { requestedModel: requested.data } : {}),
+    resolvedModel: () => resolved,
   });
   const report =
     out.status === "drafted"
@@ -104,7 +123,12 @@ async function main(): Promise<number> {
         }
       : {
           event: "draft-package",
-          outcome: out.status,
+          // An unknown or unavailable requested model is reported, never swapped for another.
+          outcome:
+            out.status === "failed" && out.providerError === "bad-request"
+              ? "model-unavailable"
+              : out.status,
+          ...(requested?.success ? { model: requested.data } : {}),
           ...("reason" in out ? { reason: out.reason } : {}),
           ...("problems" in out && out.problems ? { problems: out.problems } : {}),
         };

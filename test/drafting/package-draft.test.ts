@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import { draftFromPackage, draftProblems } from "../../src/drafting/package-draft.js";
 import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/writer-package.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
@@ -376,6 +377,76 @@ describe("drafting from a writer package (#149)", () => {
         widerContext: { status: "supported", text: "t", background: [99] },
       };
       expect(draftProblems(pkg, bad)).toEqual([expect.stringContaining("unknown background")]);
+    });
+  });
+
+  describe("writer model override (#260)", () => {
+    it("records requested and resolved models, keeps distinct models' drafts apart, and reuses on replay", async () => {
+      const ref = await packageRef();
+      const a = model(GOOD);
+      const one = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: { ...a, modelVersion: "openrouter/vendor/model-a", complete: a.complete },
+        sourceUrl: "https://x/p",
+        requestedModel: "vendor/model-a",
+        resolvedModel: () => "vendor/model-a-2026-01",
+      });
+      const b = model(GOOD);
+      const two = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: { ...b, modelVersion: "openrouter/vendor/model-b", complete: b.complete },
+        sourceUrl: "https://x/p",
+        requestedModel: "vendor/model-b",
+      });
+      if (one.status !== "drafted" || two.status !== "drafted") throw new Error("expected drafts");
+      expect(two.draft.path).not.toBe(one.draft.path);
+      expect(JSON.parse(await content.read(one.metadata))).toMatchObject({
+        modelVersion: "openrouter/vendor/model-a",
+        requestedModel: "vendor/model-a",
+        resolvedModel: "vendor/model-a-2026-01",
+      });
+      const again = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: {
+          modelVersion: "openrouter/vendor/model-a",
+          complete: async () => {
+            throw new Error("must not be called");
+          },
+        },
+        sourceUrl: "https://x/p",
+      });
+      expect(again).toMatchObject({ status: "drafted", reused: true });
+    });
+
+    it("reports an unknown model without retrying or switching models", async () => {
+      const ref = await packageRef();
+      let calls = 0;
+      const out = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: {
+          modelVersion: "openrouter/vendor/does-not-exist",
+          complete: async () => {
+            calls++;
+            throw new ModelProviderError("bad-request", 400);
+          },
+        },
+        sourceUrl: "https://x/p",
+        requestedModel: "vendor/does-not-exist",
+      });
+      expect(out).toMatchObject({
+        status: "failed",
+        reason: "provider-failed",
+        providerError: "bad-request",
+      });
+      expect(calls).toBe(1);
     });
   });
 });

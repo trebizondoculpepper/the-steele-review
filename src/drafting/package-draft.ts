@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
@@ -59,33 +60,31 @@ const ModelDraftSchema = z
      * How the post develops the author's narrative (#176): "supported" only
      * with cited earlier passages from the package; otherwise "limited".
      */
-    narrative: z
-      .discriminatedUnion("status", [
-        z
-          .object({
-            status: z.literal("supported"),
-            text: z.string().trim().min(1).max(3000),
-            history: z.array(z.number().int().min(0)).min(1).max(20),
-          })
-          .strict(),
-        z
-          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
-          .strict(),
-      ]),
+    narrative: z.discriminatedUnion("status", [
+      z
+        .object({
+          status: z.literal("supported"),
+          text: z.string().trim().min(1).max(3000),
+          history: z.array(z.number().int().min(0)).min(1).max(20),
+        })
+        .strict(),
+      z
+        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .strict(),
+    ]),
     /** Significance within the wider movement (#176): "supported" only with cited background. */
-    widerContext: z
-      .discriminatedUnion("status", [
-        z
-          .object({
-            status: z.literal("supported"),
-            text: z.string().trim().min(1).max(3000),
-            background: z.array(z.number().int().min(0)).min(1).max(30),
-          })
-          .strict(),
-        z
-          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
-          .strict(),
-      ]),
+    widerContext: z.discriminatedUnion("status", [
+      z
+        .object({
+          status: z.literal("supported"),
+          text: z.string().trim().min(1).max(3000),
+          background: z.array(z.number().int().min(0)).min(1).max(30),
+        })
+        .strict(),
+      z
+        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .strict(),
+    ]),
   })
   .strict();
 export type PackageModelDraft = z.infer<typeof ModelDraftSchema>;
@@ -103,6 +102,10 @@ export const PackageDraftMetadataSchema = z
     templateVersion: z.string(),
     promptVersion: z.string(),
     modelVersion: z.string(),
+    /** Model the caller asked for (#260); absent when the configured default was used. */
+    requestedModel: z.string().optional(),
+    /** Model the provider reports it actually served. */
+    resolvedModel: z.string().optional(),
     draft: z.string(),
     draftedAt: z.string(),
   })
@@ -236,7 +239,8 @@ export function renderPackageDraft(
           "",
         );
         if (c.conflictRationale) lines.push(`_Qualification: ${c.conflictRationale}_`, "");
-        if (c.changedCircumstances) lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
+        if (c.changedCircumstances)
+          lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
       }
     }
   }
@@ -290,6 +294,8 @@ export type PackageDraftOutcome =
       status: "failed";
       reason: "provider-failed" | "malformed-output" | "invalid-draft";
       problems?: string[];
+      /** Sanitised provider error code, e.g. "bad-request" for an unknown model. */
+      providerError?: string;
     };
 
 export async function draftFromPackage(input: {
@@ -299,6 +305,10 @@ export async function draftFromPackage(input: {
   provider: ExtractionModelProvider;
   /** Public link to the original post. */
   sourceUrl: string;
+  /** Model ID the caller requested (#260); recorded as provenance. */
+  requestedModel?: string;
+  /** Reports the model the provider actually served, once a call has succeeded. */
+  resolvedModel?: () => string | undefined;
   prompt?: ExtractionPrompt;
   maxAttempts?: number;
   now?: () => Date;
@@ -364,7 +374,7 @@ export async function draftFromPackage(input: {
             earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
             comparison: c.comparison.text,
             ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
-          ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
+            ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
           }))
         : { gap: pkg.context?.history.reason ?? "no historical comparison" },
     background:
@@ -379,6 +389,7 @@ export async function draftFromPackage(input: {
   let draft: PackageModelDraft | undefined;
   let lastProblems: string[] = [];
   let lastFailure: "provider-failed" | "malformed-output" | "invalid-draft" = "malformed-output";
+  let providerError: string | undefined;
   for (let attempt = 0; attempt < (input.maxAttempts ?? 2) && !draft; attempt++) {
     let raw: string;
     try {
@@ -386,8 +397,11 @@ export async function draftFromPackage(input: {
         { system: prompt.instructions, user, maxOutputChars: 40_000 },
         AbortSignal.timeout(180_000),
       );
-    } catch {
+    } catch (error) {
       lastFailure = "provider-failed";
+      providerError = error instanceof ModelProviderError ? error.code : "unavailable";
+      // An unknown or rejected model is not retried with the same request.
+      if (providerError === "bad-request" || providerError === "unauthorised") break;
       continue;
     }
     let parsed;
@@ -412,6 +426,7 @@ export async function draftFromPackage(input: {
       status: "failed",
       reason: lastFailure,
       ...(lastProblems.length > 0 ? { problems: lastProblems } : {}),
+      ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
     };
   }
   const markdown = renderPackageDraft(pkg, draft, input.sourceUrl);
@@ -424,6 +439,8 @@ export async function draftFromPackage(input: {
     templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
     promptVersion: prompt.version,
     modelVersion: input.provider.modelVersion,
+    ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+    ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
     draft: `${draftRef.commit}:${draftRef.path}`,
     draftedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
