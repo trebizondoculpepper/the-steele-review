@@ -343,6 +343,9 @@ describe("unattended article run on Restate (#243)", () => {
     expect(literal.postId).not.toBe(encoded.postId);
     // Substack keeps its raw post ID so a replay shares the key.
     expect(articleRunTarget("substack/pub", "2026-11-20_a.post").postId).toBe("2026-11-20_a.post");
+    // A 200-character slug-safe ID stays within the workflow's limit.
+    const long = articleRunTarget("blog/example-site", "a".repeat(200));
+    expect(long.postId.length).toBeLessThanOrEqual(200);
     const wf = ingress.workflowClient(Workflow, articleRunKey(runInput));
     await wf.workflowSubmit(runInput);
     expect(await wf.workflowAttach()).toMatchObject({ outcome: "verified" });

@@ -151,8 +151,10 @@ export function articleRunTarget(namespace: string, itemId: string) {
       ? itemId
       : SLUG.test(itemId)
         ? // A raw ID that is already slug-safe would otherwise pass through
-          // unchanged and equal an encoded ID. Encoding always adds a hash.
-          `${itemId}-${createHash("sha256").update(itemId).digest("hex").slice(0, 12)}`
+          // unchanged and equal an encoded ID. Encoding always adds a hash,
+          // and the base is bounded so the result stays within the 200
+          // character limit ArticleRunInputSchema enforces.
+          `${itemId.slice(0, 180)}-${createHash("sha256").update(itemId).digest("hex").slice(0, 12)}`
         : slugFor(itemId),
   };
 }
