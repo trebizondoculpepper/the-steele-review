@@ -185,6 +185,11 @@ describe("article stages composed (#243)", () => {
       "covered",
       "gap",
     ]);
+    // The package pins the archived capture's URL (#276); a different one is refused.
+    expect(packageJson.source.originalUrl).toBe(input.sourceUrl);
+    expect(await stages.draft(pkg.ref, "https://elsewhere.example.com/p/x")).toEqual({
+      failure: "source-url-mismatch",
+    });
     const draft = await stages.draft(pkg.ref, input.sourceUrl);
     expect(draft.ref).toBeDefined();
     const md = await content.read(draft.ref!);

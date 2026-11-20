@@ -54,6 +54,26 @@ async function packageRef(
   return (await saveWriterPackage({ content, coverage: coverage.ref })).ref;
 }
 
+/** A package built with the archive: it pins the capture's original URL and title (#276). */
+async function pinnedPackageRef() {
+  const a = await fx.analysis("p1", CLAIMS);
+  const coverage = await assessPostCoverage({
+    artifacts: content,
+    ...a,
+    commission: fx.researcher(() => ({
+      passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+    })).commission,
+    shortlister: new LexicalShortlister(),
+  });
+  return (
+    await saveWriterPackage({
+      content,
+      archive: archive as unknown as Parameters<typeof saveWriterPackage>[0]["archive"],
+      coverage: coverage.ref,
+    })
+  ).ref;
+}
+
 const model = (...responses: string[]) => {
   let calls = 0;
   return {
@@ -101,7 +121,10 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     });
     if (out.status !== "drafted") throw new Error(out.status);
     const md = await content.read(out.draft);
-    expect(md).toContain("Original post: https://pub.example.com/p/p1");
+    // A package without a pinned URL takes the caller's, as an explicit link.
+    expect(md).toContain(
+      "Original post: [https://pub.example.com/p/p1](<https://pub.example.com/p/p1>)",
+    );
     expect(md).toContain("**Supported by the evidence.**");
     expect(md).toContain("[1]");
     expect(md).toContain(`1. ${SHARED}`);
@@ -448,5 +471,45 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       });
       expect(calls).toBe(1);
     });
+  });
+
+  it("takes the original post's link from the pinned capture and refuses a different one (#276)", async () => {
+    const ref = await pinnedPackageRef();
+    const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(ref)));
+    expect(pkg.source).toMatchObject({ originalUrl: "https://pub.example.com/p/p1", title: "T" });
+    // No URL from the caller: the package's is used, as an explicit titled link.
+    const out = await draftFromPackage({ content, archive, package: ref, provider: model(GOOD) });
+    if (out.status !== "drafted") throw new Error(out.status);
+    expect(await content.read(out.draft)).toContain(
+      "Original post: [T](<https://pub.example.com/p/p1>)",
+    );
+    // A matching URL is accepted and reuses the same draft.
+    expect(
+      await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: model(GOOD),
+        sourceUrl: "https://pub.example.com/p/p1",
+      }),
+    ).toMatchObject({ status: "drafted", reused: true });
+    // A different URL is refused before any model call.
+    const provider = model(GOOD);
+    expect(
+      await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider,
+        sourceUrl: "https://elsewhere.example.com/p/other",
+      }),
+    ).toEqual({ status: "failed", reason: "source-url-mismatch" });
+  });
+
+  it("needs a link from somewhere for a package without a pinned URL", async () => {
+    const ref = await packageRef();
+    expect(
+      await draftFromPackage({ content, archive, package: ref, provider: model(GOOD) }),
+    ).toEqual({ status: "failed", reason: "no-source-url" });
   });
 });

@@ -1,3 +1,4 @@
+import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
@@ -35,7 +36,18 @@ export const WriterPackageSchema = z
     status: z.enum(["ready", "evidence-gap"]),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     /** Exact source post and version; the writer reads the full text from here. */
-    source: z.object({ artifact: Ref, sourceVersion: z.string() }).strict(),
+    source: z
+      .object({
+        artifact: Ref,
+        sourceVersion: z.string(),
+        /**
+         * Public link to the original post, from the archived capture (#276).
+         * Absent only in packages built before #276 or without the archive.
+         */
+        originalUrl: z.url({ protocol: /^https$/ }).optional(),
+        title: z.string().max(500).optional(),
+      })
+      .strict(),
     coverage: Ref,
     themeResult: Ref,
     claimResult: Ref,
@@ -228,7 +240,19 @@ export async function buildWriterPackage(input: {
   if (!sameRef(themes.artifact, record.source)) {
     throw new PackageInputError("coverage record cites a different source version");
   }
-  if (input.archive) await readPinned(input.archive, record.source, "source post");
+  // The original post's link and title come from the pinned capture itself.
+  let original: { originalUrl?: string; title?: string } = {};
+  if (input.archive) {
+    const captured = CollectionRecordSchema.safeParse(
+      JSON.parse(await readPinned(input.archive, record.source, "source post")),
+    );
+    if (captured.success) {
+      original = {
+        originalUrl: captured.data.item.url,
+        ...(captured.data.item.title ? { title: captured.data.item.title.slice(0, 500) } : {}),
+      };
+    }
+  }
 
   // Archived snapshots per (job, cited URL), from each job's pinned manifest:
   // a claim's evidence is resolved from the jobs that supported it, never from
@@ -364,7 +388,7 @@ export async function buildWriterPackage(input: {
     // With no independently supported claim there is nothing to cite: an explicit gap outcome.
     status: packageClaims.some((c) => c.status === "covered") ? "ready" : "evidence-gap",
     post: record.post,
-    source: { artifact: record.source, sourceVersion: themes.sourceVersion },
+    source: { artifact: record.source, sourceVersion: themes.sourceVersion, ...original },
     coverage: {
       repository: input.coverage.repository,
       commit: input.coverage.commit,

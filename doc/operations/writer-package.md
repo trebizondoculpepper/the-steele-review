@@ -42,3 +42,8 @@ The report is saved under `verifications/<publication>/<post>/` and names the dr
 ### Choosing the writer model (#260)
 
 `draft-package --model <openrouter model id>` requests any OpenRouter model for that run; without it the configured `STEELE_MODEL` is used. The model is part of the draft's identity, so different models produce separate drafts and a replay with the same model reuses its draft without a model call. The draft metadata records `requestedModel` and the model OpenRouter reports it served (`resolvedModel`). An unknown or rejected model is reported as `model-unavailable` and is not retried or swapped for another model.
+
+## Original post link (#276)
+
+When the package is built with the archive (as the Restate pipeline and `writer-package` do), `source.originalUrl` and `source.title` are copied from the pinned capture record, the same bytes the analysis used. `draftFromPackage` takes the link from the package: a caller-supplied URL (`draft-package --source-url`, or the workflow's `sourceUrl`) is optional and must match, otherwise the draft fails as `source-url-mismatch` before any model call. Packages built before #276 have no pinned URL; for those the caller's URL is required (`no-source-url` otherwise) and is part of the draft identity. The article opens with an explicit Markdown link, `Original post: [<title>](<url>)`.
+

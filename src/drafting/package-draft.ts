@@ -188,6 +188,7 @@ export function renderPackageDraft(
   draft: PackageModelDraft,
   sourceUrl: string,
 ): string {
+  const linkText = (pkg.source.title ?? sourceUrl).replace(/[\\[\]]/g, (c) => `\\${c}`);
   const claims = new Map(pkg.claims.map((c) => [c.claimRecordId, c]));
   const sources: { url: string; passage: string; archived?: string }[] = [];
   const index = new Map<string, number>();
@@ -200,7 +201,7 @@ export function renderPackageDraft(
     return index.get(key)!;
   };
   const lines = [
-    `Original post: ${sourceUrl}`,
+    `Original post: [${linkText}](<${sourceUrl}>)`,
     "",
     "## Summary of the post",
     "",
@@ -300,7 +301,14 @@ export type PackageDraftOutcome =
   | { status: "context-unavailable"; reason: string }
   | {
       status: "failed";
-      reason: "provider-failed" | "malformed-output" | "invalid-draft";
+      reason:
+        | "provider-failed"
+        | "malformed-output"
+        | "invalid-draft"
+        /** The caller's link differs from the package's pinned original URL (#276). */
+        | "source-url-mismatch"
+        /** Neither the package nor the caller supplies the original post's link. */
+        | "no-source-url";
       problems?: string[];
       /** Sanitised provider error code, e.g. "bad-request" for an unknown model. */
       providerError?: string;
@@ -311,8 +319,11 @@ export async function draftFromPackage(input: {
   archive: Pick<GitArtifactStore, "read">;
   package: ArtifactRef;
   provider: ExtractionModelProvider;
-  /** Public link to the original post. */
-  sourceUrl: string;
+  /**
+   * Public link to the original post. Packages from #276 on carry it; then it
+   * is optional here and refused when it differs. Required for older packages.
+   */
+  sourceUrl?: string;
   /** Model ID the caller requested (#260); recorded as provenance. */
   requestedModel?: string;
   /** Reports the model the provider actually served, once a call has succeeded. */
@@ -329,6 +340,11 @@ export async function draftFromPackage(input: {
   const prompt = input.prompt ?? DEFAULT_PACKAGE_DRAFT_PROMPT;
   const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(input.package)));
   if (pkg.status !== "ready") return { status: "evidence-gap" };
+  const pinnedUrl = pkg.source.originalUrl;
+  if (pinnedUrl && input.sourceUrl && input.sourceUrl !== pinnedUrl)
+    return { status: "failed", reason: "source-url-mismatch" };
+  const sourceUrl = pinnedUrl ?? input.sourceUrl;
+  if (!sourceUrl) return { status: "failed", reason: "no-source-url" };
 
   const key = createHash("sha256")
     .update(
@@ -338,6 +354,8 @@ export async function draftFromPackage(input: {
         prompt.version,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
         ...(input.revision ? [input.revision, PACKAGE_REVISION_PROMPT_VERSION] : []),
+        // A package without a pinned URL takes it from the caller: part of the identity.
+        ...(pinnedUrl ? [] : [sourceUrl]),
       ]),
     )
     .digest("hex")
@@ -356,7 +374,7 @@ export async function draftFromPackage(input: {
       source: {
         publicationId: pkg.post.publicationId,
         postId: pkg.post.postId,
-        url: input.sourceUrl,
+        url: sourceUrl,
         sourceVersion: pkg.source.sourceVersion,
         artifact: pkg.source.artifact,
         ingestionReason: "backfill",
@@ -367,7 +385,7 @@ export async function draftFromPackage(input: {
   if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
 
   const user = JSON.stringify({
-    post: { url: input.sourceUrl, text: loaded.context.source.text },
+    post: { url: sourceUrl, text: loaded.context.source.text },
     themes: loaded.context.themes.proposals.map((t) => ({
       title: t.title,
       description: t.description,
@@ -452,7 +470,7 @@ export async function draftFromPackage(input: {
       ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
     };
   }
-  const markdown = renderPackageDraft(pkg, draft, input.sourceUrl);
+  const markdown = renderPackageDraft(pkg, draft, sourceUrl);
   const draftRef = await writeOnce(input.content, `${base}.md`, markdown);
   const metadata = PackageDraftMetadataSchema.parse({
     schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
