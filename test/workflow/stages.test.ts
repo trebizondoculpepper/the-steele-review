@@ -1,3 +1,4 @@
+import { ARTICLE_APPROVED_SUBJECT } from "../../src/events/article-approved-event.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +170,28 @@ describe("article stages composed (#243)", () => {
       researchDeadlineMs: 1_000,
     };
     const themes = await stages.themes(input);
+    // Started from a captured-content event (#270): the exact archived artifact
+    // is read, and an altered or unknown reference fails permanently.
+    const captured = await archive.lookup(collectionArtifactPath(post));
+    const viaEvent = {
+      ...input,
+      source: {
+        namespace: `substack/${post.publicationId}`,
+        itemId: post.postId,
+        artifact: captured!,
+      },
+    };
+    expect(await stages.themes(viaEvent)).toMatchObject({ path: themes.path });
+    await expect(
+      stages.themes({
+        ...viaEvent,
+        source: { ...viaEvent.source, artifact: { ...captured!, sha256: "0".repeat(64) } },
+      }),
+    ).rejects.toThrow(/capture-unavailable/);
+    // A valid capture of another post must not be analysed under this identity.
+    await expect(stages.themes({ ...viaEvent, postId: "other-post" })).rejects.toThrow(
+      /capture-identity-mismatch/,
+    );
     const claims = await stages.claims(input, themes);
     const requests = await stages.planResearch(themes, claims);
     expect(requests).toHaveLength(1);
@@ -224,10 +247,14 @@ describe("article stages composed (#243)", () => {
       },
       owner: "test",
     });
-    expect(await verifying.verify(draft.ref!, pkg.ref, input.sourceUrl)).toMatchObject({
-      approved: true,
-      draft: { path: draft.ref!.path },
-    });
+    const approved = await verifying.verify(draft.ref!, pkg.ref, input.sourceUrl);
+    expect(approved).toMatchObject({ approved: true, draft: { path: draft.ref!.path } });
+    // The approval is handed to publishing as one approved-article event (#262).
+    const handoff = await verifying.approve!(approved.ref!);
+    expect(await verifying.approve!(approved.ref!)).toEqual(handoff);
+    expect(operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT).map((e) => e.eventId)).toEqual(
+      [handoff.eventId],
+    );
 
     // Reassessing with the job timed out: no new evidence is invented.
     const timedOut = await stages.coverage(themes, claims, [

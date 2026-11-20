@@ -1,4 +1,5 @@
 import * as restate from "@restatedev/restate-sdk";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { researchJobId, type ResearchRequest } from "../research/job.js";
 import type { CommissionedJob } from "../research/librarian.js";
@@ -32,9 +33,21 @@ export interface Ref {
   sha256: string;
 }
 
+/** The exact captured item a run was started from (#270). */
+export interface CapturedSource {
+  /** `<kind>/<instance>`, e.g. `substack/saveusnow` or `blog/example-site`. */
+  namespace: string;
+  itemId: string;
+  /** The exact archived capture record; stages read these bytes, hash-verified. */
+  artifact: Ref;
+}
+
 export interface ArticleRunInput {
+  /** Work identity used by the analysis stages; see `articleRunTarget`. */
   publicationId: string;
   postId: string;
+  /** Present when started from a captured-content event; absent for Substack replay. */
+  source?: CapturedSource;
   sourceVersion: string;
   /** Public link to the original post (for the article). */
   sourceUrl: string;
@@ -52,6 +65,8 @@ export interface ArticleRunResult {
   draft?: Ref;
   verification?: Ref;
   research: { jobId: string; outcome: PinnedResearch["outcome"] }[];
+  /** The approved-article event recorded for a verified draft (#262). */
+  approvalEvent?: string;
 }
 
 /**
@@ -77,6 +92,11 @@ export interface ArticleStages {
     pkg: Ref,
     sourceUrl: string,
   ): Promise<{ ref?: Ref; approved: boolean; unavailable?: string; draft?: Ref; reason?: string }>;
+  /**
+   * Hand an approving verification report to publishing: records one
+   * approved-article event in the outbox (#262). Only called for approvals.
+   */
+  approve?(report: Ref): Promise<{ eventId: string }>;
 }
 
 /** A research job as pinned at the batch deadline. */
@@ -93,6 +113,51 @@ export const RESEARCH_CONCURRENCY_RULE = [
     description: "Active Sonar research jobs (#243)",
   },
 ];
+
+const SLUG = /^[a-z0-9][a-z0-9-]{0,199}$/;
+const slugFor = (raw: string): string => {
+  if (SLUG.test(raw)) return raw;
+  const base = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 150);
+  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 12);
+  return `${base || "item"}-${hash}`;
+};
+
+/**
+ * Work identity for a captured item. Substack keeps its publication and post
+ * IDs, so a run started from a captured-content event and a replay from the
+ * CLI share one workflow key. Other sources are prefixed with their kind
+ * and suffixed with a hash of the whole namespace
+ * (`blog/example-site` becomes `blog-example-site-<hash>`), so they cannot
+ * collide with a Substack publication or with each other; item IDs outside the slug alphabet get a
+ * stable hash suffix.
+ */
+export function articleRunTarget(namespace: string, itemId: string) {
+  const [kind, instance] = namespace.split("/") as [string, string];
+  const substack = kind === "substack";
+  return {
+    publicationId: substack
+      ? instance
+      : // The namespace hash keeps `blog/x` and `substack/blog-x` apart.
+        `${`${kind}-${instance}`.slice(0, 180)}-${createHash("sha256").update(namespace).digest("hex").slice(0, 12)}`,
+    // Substack keeps its post IDs so a captured-content run and a CLI replay
+    // share one key. Every other source is encoded, and always with a hash, so
+    // an encoded ID can never equal an item ID that needed no encoding:
+    // `2026-11-20_a.post` and `2026-11-20-a-post-<hash>` stay distinct.
+    postId: substack
+      ? itemId
+      : SLUG.test(itemId)
+        ? // A raw ID that is already slug-safe would otherwise pass through
+          // unchanged and equal an encoded ID. Encoding always adds a hash,
+          // and the base is bounded so the result stays within the 200
+          // character limit ArticleRunInputSchema enforces.
+          `${itemId.slice(0, 180)}-${createHash("sha256").update(itemId).digest("hex").slice(0, 12)}`
+        : slugFor(itemId),
+  };
+}
 
 /** Stable workflow key for one captured post revision. */
 export function articleRunKey(post: {
@@ -133,8 +198,28 @@ export const ArticleRunInputSchema = z
     sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     sourceUrl: z.url({ protocol: /^https$/ }),
     researchDeadlineMs: z.number().int().min(1_000).max(86_400_000),
+    source: z
+      .object({
+        namespace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}\/[a-z0-9][a-z0-9-]{0,99}$/),
+        itemId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,199}$/),
+        artifact: z
+          .object({
+            repository: z.string().min(1),
+            commit: z.string().regex(/^[0-9a-f]{40,64}$/),
+            path: z.string().min(1).max(500),
+            sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => {
+    if (!input.source) return true;
+    const target = articleRunTarget(input.source.namespace, input.source.itemId);
+    return target.publicationId === input.publicationId && target.postId === input.postId;
+  }, "publication and post must match the captured source");
 
 /** Transient stage failures are retried a bounded number of times. */
 const STEP_RETRY = { maxRetryAttempts: 5 } as const;
@@ -240,8 +325,14 @@ export function articleRunWorkflow(stages: ArticleStages) {
         research,
       };
     }
+    // Only an approving verification is handed to publishing.
+    const approval =
+      verified.approved && verified.ref && stages.approve
+        ? await step("record-approval", () => stages.approve!(verified.ref!))
+        : undefined;
     return {
       outcome: verified.approved ? "verified" : "rejected",
+      ...(approval ? { approvalEvent: approval.eventId } : {}),
       ...(verified.reason ? { reason: verified.reason } : {}),
       themes,
       claims,

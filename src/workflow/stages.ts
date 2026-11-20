@@ -4,7 +4,11 @@ import { parseThemeProposalResult, proposeThemes } from "../analysis/theme-propo
 import { collectionArtifactPath, CollectionRecordSchema } from "../collection/collection-store.js";
 import { transcriptTimingsFor } from "../content/embedding-consumer.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 import { verifyWithRevisions } from "../drafting/package-verify.js";
@@ -18,7 +22,14 @@ import {
 } from "../research/librarian.js";
 import { runResearchJob, type SupportJudge } from "../research/runner.js";
 import type { SonarClient } from "../research/sonar.js";
-import { StageError, type ArticleStages, type PinnedResearch, type Ref } from "./article-run.js";
+import { recordApproval } from "../publishing/approved-article.js";
+import {
+  StageError,
+  type ArticleRunInput,
+  type ArticleStages,
+  type PinnedResearch,
+  type Ref,
+} from "./article-run.js";
 
 /**
  * The real stages for an unattended article run (#243), composed from the
@@ -55,10 +66,32 @@ export function articleStages(deps: {
   };
   owner: string;
 }): ArticleStages {
-  const loadSource = async (post: { publicationId: string; postId: string }) => {
-    const ref = await deps.archive.lookup(collectionArtifactPath(post));
+  const loadSource = async (post: ArticleRunInput) => {
+    // A run started from a captured-content event reads exactly that archived
+    // revision (hash-verified); a Substack replay looks up the current capture.
+    const ref: ArtifactRef | undefined = post.source
+      ? post.source.artifact
+      : await deps.archive.lookup(collectionArtifactPath(post));
     if (!ref) throw new StageError("source", "not-captured");
-    const record = CollectionRecordSchema.parse(JSON.parse(await deps.archive.read(ref)));
+    let raw: string;
+    try {
+      raw = await deps.archive.read(ref);
+    } catch (error) {
+      // A missing or altered capture is permanent; other read failures retry.
+      if (
+        error instanceof ArtifactStoreError &&
+        (error.code === "not-found" || error.code === "hash-mismatch")
+      )
+        throw new StageError("source", "capture-unavailable");
+      throw error;
+    }
+    const parsed = CollectionRecordSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) throw new StageError("source", "unsupported-capture-format");
+    const record = parsed.data;
+    // Hash verification authenticates the bytes, not the identity: a caller
+    // supplied reference could point at a valid capture of a different post.
+    if (record.item.publicationId !== post.publicationId || record.item.postId !== post.postId)
+      throw new StageError("source", "capture-identity-mismatch");
     if (!record.complete) throw new StageError("source", "incomplete-capture");
     return { ref, record, sourceVersion: sourceVersionFor(record.text) };
   };
@@ -240,6 +273,15 @@ export function articleStages(deps: {
         };
       }
       throw new Error(`verify: ${out.reason}`);
+    },
+
+    async approve(report) {
+      const { eventId } = await recordApproval({
+        content: deps.content,
+        operations: deps.operations,
+        report,
+      });
+      return { eventId };
     },
   };
 }
