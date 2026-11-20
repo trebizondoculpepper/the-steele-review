@@ -17,8 +17,6 @@
  *
  * Output is sanitised JSON lines: counts and commits only.
  */
-import { watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import { describeSetupError, elasticsearchConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
@@ -112,27 +110,10 @@ async function main(): Promise<number> {
       clearTimeout(timer);
       timer = setTimeout(() => wake("notification"), 2_000);
     };
-    const watchers: FSWatcher[] = [];
-    for (const dir of [
-      join(c.STEELE_CONTENT_PATH, "refs", "heads"),
-      join(c.STEELE_CONTENT_PATH, ".git", "refs", "heads"),
-    ]) {
-      try {
-        watchers.push(watch(dir, notified));
-      } catch {
-        // Not this layout; the periodic pass still reconciles.
-      }
-    }
-    try {
-      watchers.push(
-        watch(c.STEELE_CONTENT_PATH, (_event, name) => name === "packed-refs" && notified()),
-      );
-    } catch {
-      // Periodic reconciliation covers it.
-    }
+    const watcher = await artifacts.watchBranch(notified);
     log({
       state: "watching",
-      notifications: watchers.length > 0,
+      notifications: watcher.active,
       intervalMs: c.STEELE_RESEARCH_COLLECTION_INTERVAL_MS,
     });
     wake("startup");
@@ -143,7 +124,7 @@ async function main(): Promise<number> {
     });
     clearInterval(interval);
     clearTimeout(timer);
-    for (const w of watchers) w.close();
+    watcher.close();
     log({ state: "stopped" });
     return 0;
   } finally {

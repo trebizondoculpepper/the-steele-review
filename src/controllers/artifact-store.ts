@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { watch as watchPath, type FSWatcher } from "node:fs";
+import { isAbsolute, join as joinPath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -451,6 +453,39 @@ export class GitArtifactStore {
     return {
       ref: { repository: this.config.repository, commit, path, sha256: sha256(content) },
       content,
+    };
+  }
+
+  /**
+   * Notify when the branch may have moved (a wake-up hint only: callers must
+   * still read committed revisions). Watches the repository's own ref
+   * storage, wherever Git keeps it for this layout. `active` is false when
+   * notifications are unavailable, in which case callers rely on polling.
+   */
+  async watchBranch(onChange: () => void): Promise<{ active: boolean; close(): void }> {
+    let gitDir: string;
+    try {
+      gitDir = (await this.run(["rev-parse", "--git-dir"])).stdout.trim();
+    } catch {
+      return { active: false, close: () => undefined };
+    }
+    if (!isAbsolute(gitDir)) gitDir = joinPath(this.config.repoPath, gitDir);
+    const watchers: FSWatcher[] = [];
+    try {
+      watchers.push(watchPath(joinPath(gitDir, "refs", "heads"), () => onChange()));
+    } catch {
+      // No loose refs directory: packed refs below, or polling.
+    }
+    try {
+      watchers.push(watchPath(gitDir, (_event, name) => name === "packed-refs" && onChange()));
+    } catch {
+      // Polling covers it.
+    }
+    return {
+      active: watchers.length > 0,
+      close: () => {
+        for (const w of watchers) w.close();
+      },
     };
   }
 

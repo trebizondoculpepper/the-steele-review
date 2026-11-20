@@ -193,6 +193,16 @@ describe("research collection indexing", () => {
     expect(es.text("dossier/a.md")).toBe("# A2 committed mid-pass\n");
   });
 
+  it("notifies through the artifact store when the branch moves", async () => {
+    let calls = 0;
+    const watcher = await artifacts.watchBranch(() => calls++);
+    expect(watcher.active).toBe(true);
+    await rev("dossier/a.md", "# A\n");
+    await new Promise((r) => setTimeout(r, 300));
+    watcher.close();
+    expect(calls).toBeGreaterThan(0);
+  });
+
   it("skips unreadable source snapshots without leaving stale copies", async () => {
     await artifacts.write(`${JOB}/sources/2.json`, "not json");
     expect(await reconcile()).toMatchObject({ skipped: 1, indexed: 0 });
