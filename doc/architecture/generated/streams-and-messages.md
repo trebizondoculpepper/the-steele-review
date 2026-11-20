@@ -10,6 +10,7 @@ Generated from `src/events/registry.ts` by `npm run events:reference`. Do not ed
 | `STEELE_CONTENT` | `STEELE_CONTENT_STREAM` | `steele.v1.content.extracted` | Captured source text ready for indexing and analysis. |
 | `STEELE_ANALYSIS` | `STEELE_ANALYSIS_STREAM` | `steele.v1.post.analysed`, `steele.v1.theme.occurred`, `steele.v1.claim.occurred` | Analysis-stage handoffs: one post-analysed completion per post and analysis version, plus its per-theme and per-claim occurrence events. |
 | `STEELE_RESEARCH` | `STEELE_RESEARCH_STREAM` | `steele.v1.research.completed`, `steele.v1.research.reindex.requested` | Research job completions (complete, complete with gaps, failed) and research-index reconciliation requests. |
+| `STEELE_PUBLICATION` | `STEELE_PUBLICATION_STREAM` | `steele.v1.article.approved` | Approved articles, consumed independently by each configured destination (#262). |
 
 ## Messages
 
@@ -22,6 +23,7 @@ Generated from `src/events/registry.ts` by `npm run events:reference`. Do not ed
 | `steele.v1.claim.occurred` | `org.steele.claim.occurred.v1` | `STEELE_ANALYSIS` | fan-out-worker | One extracted claim occurrence in a saved analysis. |
 | `steele.v1.research.completed` | `org.steele.research.completed.v1` | `STEELE_RESEARCH` | research jobs (#215) | A research job reached a terminal outcome. |
 | `steele.v1.research.reindex.requested` | `org.steele.research.reindex.requested.v1` | `STEELE_RESEARCH` | research-reindex CLI, external schedulers (#232) | Reconcile one configured research-index route from its checkpoint. |
+| `steele.v1.article.approved` | `org.steele.article.approved.v1` | `STEELE_PUBLICATION` | recordApproval (package verification approval) | An exact article revision was approved; each destination consumes it independently. |
 | `steele.v1.claims.extracted` | `org.steele.claims.extracted.v1` | not provisioned | claim-worker | Claims extracted by the automatic worker. |
 | `steele.v1.content.embedded` | `org.steele.content.embedded.v1` | not provisioned | embedding-consumer | Passages embedded. |
 | `steele.v1.research.requested` | `org.steele.research.requested.v1` | not provisioned | research-coordinator | Research requested for an analysed post. |
