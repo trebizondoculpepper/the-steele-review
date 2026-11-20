@@ -144,13 +144,15 @@ export function substackCapturedContent(input: {
     typeof record.provenance.transcriptVariant === "string"
       ? record.provenance.transcriptVariant
       : undefined;
-  const transcript: TranscriptProvenance = /transcri|whisper/i.test(record.provenance.method)
-    ? /whisper|local|hosted|generated/i.test(record.provenance.method)
-      ? { kind: "generated", engine: record.provenance.method }
-      : { kind: "supplied", ...(variant ? { variant } : {}) }
-    : variant
-      ? { kind: "supplied", variant }
-      : { kind: "none" };
+  // The collector records its own audio transcription as "machine-transcript";
+  // anything else naming a transcript is the platform's supplied transcript.
+  const method = record.provenance.method;
+  const transcript: TranscriptProvenance =
+    method === "machine-transcript" || /whisper|hosted-transcri|local-transcri/i.test(method)
+      ? { kind: "generated", engine: method }
+      : /transcri/i.test(method) || variant
+        ? { kind: "supplied", ...(variant ? { variant } : {}) }
+        : { kind: "none" };
   return CapturedContentDataSchema.parse({
     source: { namespace: `substack/${record.item.publicationId}`, kind: "substack" },
     itemId: record.item.postId,

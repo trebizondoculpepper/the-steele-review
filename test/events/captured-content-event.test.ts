@@ -54,6 +54,12 @@ describe("captured-content contract (#269)", () => {
       },
     });
     expect(article.transcript).toEqual({ kind: "none" });
+    const machine = substackCapturedContent({
+      artifact,
+      sourceVersion,
+      record: { item: { publicationId: "saveusnow", postId: "r", url: "https://saveusnow.substack.com/p/r" }, ingestionReason: "live", complete: true, provenance: { method: "machine-transcript" } },
+    });
+    expect(machine.transcript).toEqual({ kind: "generated", engine: "machine-transcript" });
   });
 
   it("serves a second, non-Substack source with the same contract", () => {
