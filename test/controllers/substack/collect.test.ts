@@ -346,3 +346,34 @@ describe("preview image validation (#277)", () => {
     });
   });
 });
+
+describe("publication lookup retry (#277)", () => {
+  it("retries the publication lookup after a transient failure", async () => {
+    // First publication read fails, the second succeeds with the logo.
+    let publications = 0;
+    const brand = "https://substackcdn.com/public/images/logo_500x500.png";
+    const fetch = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v1/posts/a-post") {
+        return new Response(JSON.stringify({ ...basePost, cover_image: brand }));
+      }
+      if (url.pathname === "/api/v1/publication") {
+        publications++;
+        if (publications === 1) return new Response("", { status: 503 });
+        return new Response(JSON.stringify({ logo_url: brand }));
+      }
+      return new Response("", { status: 404 });
+    }) as typeof globalThis.fetch;
+    const c = new SubstackContentCollector({
+      publicationUrl: PUB,
+      fetch,
+      sleep: async () => {},
+      now: () => new Date("2026-02-01T00:00:00Z"),
+    });
+
+    await c.collect(item);
+    const second = await c.collect(item);
+    expect(publications).toBe(2);
+    expect((second as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+});

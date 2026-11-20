@@ -337,26 +337,30 @@ export class SubstackContentCollector {
   }
 
   /** Publication branding, fetched once: only used to suppress non-specific images. */
-  private publicationCache?: { logo?: string; cover?: string } | null;
+  private publicationCache?: { logo?: string; cover?: string };
 
   private async publicationImages(
     signal?: AbortSignal,
   ): Promise<{ logo?: string; cover?: string }> {
-    if (this.publicationCache !== undefined) return this.publicationCache ?? {};
+    if (this.publicationCache !== undefined) return this.publicationCache;
     try {
       const url = new URL("/api/v1/publication", this.base);
       const body = await boundedFetchText(url, this.publicationOptions, signal);
       const parsed = PublicationSchema.safeParse(JSON.parse(body));
+      // A readable payload is cached even when it names no branding, so a long
+      // running collector does not refetch it per post.
       this.publicationCache = parsed.success
         ? {
             ...(parsed.data.logo_url ? { logo: parsed.data.logo_url } : {}),
             ...(parsed.data.cover_photo_url ? { cover: parsed.data.cover_photo_url } : {}),
           }
-        : null;
+        : {};
     } catch {
-      this.publicationCache = null;
+      // A transient outage must not disable the suppression rules for the rest
+      // of the collector's lifetime; the next post tries again.
+      return {};
     }
-    return this.publicationCache ?? {};
+    return this.publicationCache;
   }
 
   /** Fetch supplied transcript segments, or undefined if the document is unusable. */
