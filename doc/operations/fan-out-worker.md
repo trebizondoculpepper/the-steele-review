@@ -11,8 +11,11 @@ STEELE_ANALYSIS_STREAM=<stream> STEELE_ANALYSIS_CONSUMER=<durable consumer> \
 
 Paths and broker settings are private configuration; keep them in the private deployment notes.
 
+Before starting the worker on a deployment that already has an analysis stream, run `npm run -s provision`. Registry streams accept an additive subject upgrade (the new occurrence subjects are added and retained messages are kept); any other difference is still refused.
+
 - Subjects `steele.v1.theme.occurred` and `steele.v1.claim.occurred`, both retained by the analysis stream (registered before this worker ships). Payloads carry only exact artifact references, the occurrence identity, the stable claim identity and the linked theme proposal IDs — no source prose.
 - The worker re-reads and validates the referenced theme and claim results before fan-out. Unreadable, legacy, mismatched or unlinked results are refused and recorded as a permanent failure; nothing is published.
-- One operation covers one exact parent analysis, so a duplicate parent delivery records nothing new. Completion and all occurrence events are written in one state transaction; a publish failure leaves the events pending with the same IDs and the next dispatch (or a restart) sends them.
+- One operation covers one exact parent analysis, so a duplicate parent delivery records nothing new. Completion and all occurrence events are written in one state transaction; a publish failure leaves the events pending with the same IDs.
+- Pending events are drained at start-up and on a periodic interval (default 30s, `STEELE_FAN_OUT_DISPATCH_INTERVAL_MS`), not only while handling another parent: a crash or outage after acknowledging the parent cannot strand downstream work.
 - A repeated theme or claim in a later post is a new occurrence of the same identity: deduplication uses the stable theme/claim identity plus input versions, never the event count.
 - Read-only with respect to sources: no model calls, retrieval, research or drafting.

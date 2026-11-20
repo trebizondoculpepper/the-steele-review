@@ -159,6 +159,60 @@ describe("NatsDiscoveryPublisher", () => {
   });
 });
 
+describe("provisionDiscoveryStream upgrades", () => {
+  const fakeNats = (subjects: string[]) => {
+    const updates: Array<{ name: string; subjects?: string[] }> = [];
+    const manager = {
+      streams: {
+        async info(name: string) {
+          return { config: { name, subjects } };
+        },
+        async update(name: string, config: { subjects?: string[] }) {
+          updates.push({ name, ...config });
+        },
+        async add() {
+          throw new Error("must not recreate an existing stream");
+        },
+      },
+    };
+    return { nats: { manager: async () => manager } as never, updates };
+  };
+
+  it("adds a new subject to an opted-in stream without removing any", async () => {
+    const { nats, updates } = fakeNats(["steele.v1.post.analysed"]);
+    const result = await provisionDiscoveryStream(
+      nats,
+      { name: "STEELE_ANALYSIS", subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"] },
+      { allowAdditiveSubjects: true },
+    );
+    expect(result).toBe("updated");
+    expect(updates).toEqual([
+      { name: "STEELE_ANALYSIS", subjects: ["steele.v1.post.analysed", "steele.v1.theme.occurred"] },
+    ]);
+  });
+
+  it("still refuses to drop or replace a subject", async () => {
+    const { nats } = fakeNats(["steele.v1.post.analysed", "steele.v1.theme.occurred"]);
+    await expect(
+      provisionDiscoveryStream(
+        nats,
+        { name: "STEELE_ANALYSIS", subjects: ["steele.v1.theme.occurred"] },
+        { allowAdditiveSubjects: true },
+      ),
+    ).rejects.toBeInstanceOf(StreamConflictError);
+  });
+
+  it("refuses an additive change unless the stream opted in", async () => {
+    const { nats } = fakeNats(["steele.v1.post.analysed"]);
+    await expect(
+      provisionDiscoveryStream(nats, {
+        name: "STEELE_ANALYSIS",
+        subjects: ["steele.v1.post.analysed", "steele.v1.claim.occurred"],
+      }),
+    ).rejects.toBeInstanceOf(StreamConflictError);
+  });
+});
+
 // Controlled integration tests against a disposable JetStream server.
 // Start one with scripts/nats-test-server.sh and set STEELE_TEST_NATS_URL.
 const testUrl = process.env.STEELE_TEST_NATS_URL;

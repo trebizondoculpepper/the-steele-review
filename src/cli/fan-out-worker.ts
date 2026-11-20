@@ -11,7 +11,8 @@
  *   STEELE_STATE_PATH               absolute path of the SQLite state file
  *   STEELE_ANALYSIS_STREAM          stream holding post-analysed events
  *   STEELE_ANALYSIS_CONSUMER        durable consumer name (provisioned separately)
- *   STEELE_FAN_OUT_RETRY_DELAY_MS?  redelivery delay after a retryable failure
+ *   STEELE_FAN_OUT_RETRY_DELAY_MS?     redelivery delay after a retryable failure
+ *   STEELE_FAN_OUT_DISPATCH_INTERVAL_MS?  pending-event drain interval (default 30000)
  *
  * Read-only with respect to source content: it never calls a model, retrieves
  * sources or starts research. Status lines are sanitised JSON. SIGTERM/SIGINT
@@ -32,6 +33,7 @@ const EnvSchema = z.object({
   STEELE_ANALYSIS_STREAM: z.string().min(1),
   STEELE_ANALYSIS_CONSUMER: z.string().min(1),
   STEELE_FAN_OUT_RETRY_DELAY_MS: z.coerce.number().int().positive().optional(),
+  STEELE_FAN_OUT_DISPATCH_INTERVAL_MS: z.coerce.number().int().positive().optional(),
 });
 
 async function main(): Promise<number> {
@@ -68,13 +70,25 @@ async function main(): Promise<number> {
   process.once("SIGINT", () => abort.abort());
   try {
     await nats.connect("steele-fan-out-worker");
-    console.log(JSON.stringify({ event: "fan-out", state: "consuming" }));
-    await nats.consume(
-      c.STEELE_ANALYSIS_STREAM,
-      c.STEELE_ANALYSIS_CONSUMER,
-      (m) => fanOut.handle(m).then(() => undefined),
-      abort.signal,
-    );
+    // Drain events stranded by an earlier crash or broker outage before
+    // consuming: a parent acknowledged after recording may never be redelivered.
+    const drained = await fanOut.dispatchPending();
+    const intervalMs = c.STEELE_FAN_OUT_DISPATCH_INTERVAL_MS ?? 30_000;
+    const timer = setInterval(() => {
+      void fanOut.dispatchPending();
+    }, intervalMs);
+    timer.unref();
+    console.log(JSON.stringify({ event: "fan-out", state: "consuming", drained }));
+    try {
+      await nats.consume(
+        c.STEELE_ANALYSIS_STREAM,
+        c.STEELE_ANALYSIS_CONSUMER,
+        (m) => fanOut.handle(m).then(() => undefined),
+        abort.signal,
+      );
+    } finally {
+      clearInterval(timer);
+    }
     return 0;
   } catch {
     console.error(JSON.stringify({ event: "fan-out", state: "failed" }));

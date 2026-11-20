@@ -233,11 +233,11 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
     const recorded = operations.operationStatus(fanOutOperationKey(data));
     expect(recorded?.status).toBe("completed");
 
-    // A restarted worker with a working broker republishes the same event IDs
-    // once the retry delay has elapsed.
+    // A restarted worker drains the pending events without any parent
+    // redelivery once the retry delay has elapsed.
     clock += 61_000;
     const pub = publisher();
-    expect(await worker(pub).handle(parentMessage(data))).toBe("already-fanned-out");
+    expect(await worker(pub).dispatchPending()).toBe(2);
     expect(pub.sent).toHaveLength(2);
     expect(new Set(pub.sent.map((s) => s.msgId)).size).toBe(2);
   });
