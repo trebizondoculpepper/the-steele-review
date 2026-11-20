@@ -10,13 +10,13 @@ import { ResearchRequestSchema } from "../research/job.js";
 import { runSonarResearch } from "../research/sonar-runner.js";
 
 const usage =
-  "Usage: research-subject --subject <subject> [--question <question>] [--brief <brief>] [--dossier <id>] [--json]";
+  "Usage: research-subject --subject <subject> [--question <question>] [--brief <brief>] [--dossier <id>] [--model <id>] [--timeout-ms <1..900000>] [--json]";
 const Config = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
   STEELE_RESEARCH_MODEL: z.string().min(1).default("perplexity/sonar-deep-research"),
-  STEELE_RESEARCH_TIMEOUT_MS: z.coerce.number().int().min(1).max(600_000).default(180_000),
+  STEELE_RESEARCH_TIMEOUT_MS: z.coerce.number().int().min(1).max(900_000).default(180_000),
   STEELE_RESEARCH_MAX_TOKENS: z.coerce.number().int().min(1).max(16_000).default(4000),
 });
 
@@ -27,6 +27,8 @@ async function main(): Promise<number> {
       question: { type: "string" },
       brief: { type: "string" },
       dossier: { type: "string" },
+      model: { type: "string" },
+      "timeout-ms": { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean" },
     },
@@ -45,7 +47,11 @@ async function main(): Promise<number> {
     claims: [],
     corpusRefs: [],
   });
-  const configuration = Config.safeParse(process.env);
+  const configuration = Config.safeParse({
+    ...process.env,
+    STEELE_RESEARCH_MODEL: values.model ?? process.env.STEELE_RESEARCH_MODEL,
+    STEELE_RESEARCH_TIMEOUT_MS: values["timeout-ms"] ?? process.env.STEELE_RESEARCH_TIMEOUT_MS,
+  });
   if (!parsed.success || !configuration.success) {
     console.error(parsed.success ? "Research configuration is invalid or incomplete." : usage);
     return 2;

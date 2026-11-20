@@ -13,4 +13,11 @@ Pass an optional `--question` or `--brief` for a more specific request. Pass `--
 
 The command saves `report.md`, `manifest.json`, and available source snapshots in the private Git directory `research-jobs/<job-id>/`. Open the manifest at the commit and path printed by the command. Each archived citation has a snapshot reference. Snapshot JSON retains the original response text and its readable extraction. PDFs and redirects that the current fetcher cannot handle are recorded individually. Citation relevance, source type, and factual support still need review.
 
-The defaults are Sonar Deep Research, a 180-second provider timeout, and 4,000 output tokens. Override with `STEELE_RESEARCH_MODEL`, `STEELE_RESEARCH_TIMEOUT_MS`, and `STEELE_RESEARCH_MAX_TOKENS`. Retrieval is bounded separately. The completion event remains in the local outbox for dispatch. The manual run requires no broker connection.
+The defaults are Sonar Deep Research, a 180-second provider timeout, and 4,000 output tokens. Override with `STEELE_RESEARCH_MODEL`, `STEELE_RESEARCH_TIMEOUT_MS`, and `STEELE_RESEARCH_MAX_TOKENS`. For a one-off run, `--model <id>` and `--timeout-ms <milliseconds>` take precedence over the environment. The timeout must be an integer from 1 to 900,000 milliseconds.
+
+```sh
+npm run research-subject -- --subject 'Example research subject' \
+  --model perplexity/sonar-deep-research --timeout-ms 900000
+```
+
+Retrieval is bounded separately. The completion event remains in the local outbox for dispatch. The manual run requires no broker connection.
