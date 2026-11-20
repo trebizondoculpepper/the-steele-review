@@ -15,6 +15,9 @@
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
  *   STEELE_RESEARCH_COLLECTION_INDEX?               logical index (alias); default steele-research-collection-v1
  *   STEELE_RESEARCH_COLLECTION_INTERVAL_MS?   periodic reconciliation; default 300000
+ *   STEELE_RESEARCH_INDEX_ROUTE?         route name this worker serves; default "default"
+ *   STEELE_RESEARCH_REINDEX_CONSUMER?    durable consumer for reindex requests (#232); when set,
+ *                                         the broker (NATS_URL or NATS_URL_FILE) is required
  *
  * Output is sanitised JSON lines: counts and commits only.
  */
@@ -23,6 +26,11 @@ import { describeSetupError, elasticsearchConnection } from "../config/credentia
 import { hostname } from "node:os";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { OperationStore } from "../controllers/operation-store.js";
+import { NatsController } from "../controllers/nats.js";
+import { natsConnection } from "../config/credentials.js";
+import { RESEARCH_STREAM } from "../events/research-completed-event.js";
+import { RouteName } from "../events/research-reindex-event.js";
+import { handleReindexRequest } from "../research/reindex-consumer.js";
 import { ElasticsearchController, IndexingError } from "../controllers/elasticsearch.js";
 import {
   RESEARCH_COLLECTION_INDEX_V1,
@@ -33,6 +41,9 @@ const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
+  STEELE_RESEARCH_INDEX_ROUTE: RouteName.default("default"),
+  STEELE_RESEARCH_REINDEX_CONSUMER: z.string().min(1).optional(),
+  STEELE_RESEARCH_STREAM: z.string().min(1).optional(),
   STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
   STEELE_RESEARCH_COLLECTION_INTERVAL_MS: z.coerce
     .number()
@@ -76,6 +87,13 @@ async function main(): Promise<number> {
   const owner = `research-index-worker@${hostname()}:${process.pid}`;
   const LEASE_MS = 10 * 60_000;
   const pass = async (reason: string): Promise<boolean> => {
+    const result = await runPass(reason);
+    return result !== false;
+  };
+  const runPass = async (
+    reason: string,
+    onProgress?: () => void,
+  ): Promise<true | false | "busy"> => {
     // One reconciler at a time per index: a second worker or a --once run
     // alongside the daemon skips instead of interleaving checkpoint writes.
     const claim = operations.claim(
@@ -90,12 +108,13 @@ async function main(): Promise<number> {
         reason,
         why: claim.kind === "busy" ? "another reconciler holds the lease" : claim.kind,
       });
-      return claim.kind === "busy";
+      return claim.kind === "busy" ? "busy" : false;
     }
     try {
       const report = await reconcileResearchIndex({
         keepAlive: () => {
           operations.renew(claim.claim, LEASE_MS);
+          onProgress?.();
         },
         artifacts,
         es,
@@ -115,6 +134,36 @@ async function main(): Promise<number> {
       } catch {
         // Another reconciler took over after our lease expired.
       }
+    }
+  };
+
+  /**
+   * Run a pass for a request, waiting (bounded) while another pass holds the
+   * lease. `keepAlive` extends the message's acknowledgment deadline.
+   */
+  /** Matches the provisioned consumer's max_deliver. */
+  const REQUEST_MAX_DELIVER = 10;
+  /** Record a request that will not be retried, under its full request ID. */
+  const recordRejected = (requestId: string, reason: string) => {
+    const claim = operations.claim(`research-reindex:${requestId}`, owner, 60_000, 1);
+    if (claim.kind === "claimed") operations.fail(claim.claim, reason, false);
+  };
+
+  const passWhenFree = async (
+    keepAlive: () => void,
+    signal: AbortSignal,
+  ): Promise<true | false | "busy"> => {
+    const deadline = Date.now() + LEASE_MS;
+    for (;;) {
+      // Enforce the deadline and shutdown during a pass as well: the progress
+      // callback runs before each write and abandons the pass when exceeded.
+      const result = await runPass("request", () => {
+        if (signal.aborted || Date.now() >= deadline) throw new Error("request deadline exceeded");
+        keepAlive();
+      });
+      if (result !== "busy" || Date.now() >= deadline || signal.aborted) return result;
+      keepAlive();
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
   };
 
@@ -151,15 +200,87 @@ async function main(): Promise<number> {
     });
     wake("startup");
     const interval = setInterval(() => wake("periodic"), c.STEELE_RESEARCH_COLLECTION_INTERVAL_MS);
-    await new Promise<void>((resolve) => {
+
+    // Reindex requests (#232): an operator or external scheduler asks for a
+    // reconciliation of this worker's route through the broker.
+    const stop = new AbortController();
+    let consuming: Promise<void> | undefined;
+    let nats: NatsController | undefined;
+    let consumerFailed = false;
+    let stopRunning: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      stopRunning = resolve;
       process.once("SIGTERM", resolve);
       process.once("SIGINT", resolve);
     });
+    if (c.STEELE_RESEARCH_REINDEX_CONSUMER) {
+      // The broker address may come from NATS_URL or NATS_URL_FILE; a missing
+      // broker is a configuration error when request consumption is enabled.
+      let conn;
+      try {
+        conn = natsConnection();
+      } catch (error) {
+        console.error(`research-index-worker: ${describeSetupError(error)}`);
+        stop.abort();
+        clearInterval(interval);
+        clearTimeout(timer);
+        watcher.close();
+        return 2;
+      }
+      nats = new NatsController(conn.url, conn.token);
+      await nats.connect("steele-research-index");
+      const routes = new Set([c.STEELE_RESEARCH_INDEX_ROUTE]);
+      consuming = nats
+        .consume(
+          c.STEELE_RESEARCH_STREAM ?? RESEARCH_STREAM,
+          c.STEELE_RESEARCH_REINDEX_CONSUMER,
+          async (message) => {
+            const decision = await handleReindexRequest(
+              message.data,
+              routes,
+              // Wait for an active pass rather than burning redeliveries.
+              // Extend the delivery deadline while waiting and while reconciling.
+              () => passWhenFree(() => message.working(), stop.signal),
+              30_000,
+              5_000,
+              { count: message.deliveryCount, max: REQUEST_MAX_DELIVER },
+            );
+            log({ state: "request", ...decision });
+            if (decision.action === "term") {
+              // Persist every rejection in the state controller so it stays
+              // visible (operation <key>) after the broker stops delivering.
+              recordRejected(decision.requestId ?? "unknown", decision.reason);
+            }
+            if (decision.action === "ack") await message.ack();
+            else if (decision.action === "term") message.term();
+            else message.nak(decision.delayMs);
+          },
+          stop.signal,
+        )
+        .then(() => {
+          // The consumer only returns early if it stopped on its own.
+          if (!stop.signal.aborted) {
+            consumerFailed = true;
+            stopRunning();
+          }
+        })
+        .catch(() => {
+          consumerFailed = true;
+          stopRunning();
+        });
+      log({ state: "consuming-requests", route: c.STEELE_RESEARCH_INDEX_ROUTE });
+    }
+    await stopped;
+    if (consumerFailed) log({ state: "request-consumer-stopped" });
+    stop.abort();
+    await consuming;
+    await nats?.close();
     clearInterval(interval);
     clearTimeout(timer);
     watcher.close();
     log({ state: "stopped" });
-    return 0;
+    // Exit non-zero so the supervisor restarts a worker whose request consumer failed.
+    return consumerFailed ? 1 : 0;
   } finally {
     operations.close();
     await es.close();

@@ -1,4 +1,8 @@
 import {
+  RESEARCH_REINDEX_EVENT_TYPE_V1,
+  RESEARCH_REINDEX_SUBJECT,
+} from "./research-reindex-event.js";
+import {
   CLAIMS_EXTRACTED_EVENT_TYPE_V1,
   CLAIMS_EXTRACTED_SUBJECT,
 } from "../analysis/claim-worker.js";
@@ -22,10 +26,7 @@ import {
   ARTICLE_PUBLISHED_EVENT_TYPE_V1,
   ARTICLE_PUBLISHED_SUBJECT,
 } from "../publishing/publisher-worker.js";
-import {
-  CLAIM_OCCURRED_EVENT_TYPE_V1,
-  CLAIM_OCCURRED_SUBJECT,
-} from "./claim-occurred-event.js";
+import { CLAIM_OCCURRED_EVENT_TYPE_V1, CLAIM_OCCURRED_SUBJECT } from "./claim-occurred-event.js";
 import { DISCOVERY_EVENT_TYPE_V1 } from "./discovery-event.js";
 import {
   ANALYSIS_STREAM,
@@ -38,10 +39,7 @@ import {
   RESEARCH_STREAM,
 } from "./research-completed-event.js";
 import { TEXT_READY_EVENT_TYPE_V1, TEXT_READY_SUBJECT } from "./text-ready-event.js";
-import {
-  THEME_OCCURRED_EVENT_TYPE_V1,
-  THEME_OCCURRED_SUBJECT,
-} from "./theme-occurred-event.js";
+import { THEME_OCCURRED_EVENT_TYPE_V1, THEME_OCCURRED_SUBJECT } from "./theme-occurred-event.js";
 
 /**
  * Shared stream and message registry (#209).
@@ -107,8 +105,9 @@ export const STREAMS: readonly StreamDefinition[] = [
   {
     name: RESEARCH_STREAM,
     overrideEnv: "STEELE_RESEARCH_STREAM",
-    purpose: "Research job completions (complete, complete with gaps, failed).",
-    subjects: [RESEARCH_COMPLETED_SUBJECT],
+    purpose:
+      "Research job completions (complete, complete with gaps, failed) and research-index reconciliation requests.",
+    subjects: [RESEARCH_COMPLETED_SUBJECT, RESEARCH_REINDEX_SUBJECT],
   },
 ];
 
@@ -154,6 +153,13 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: RESEARCH_STREAM,
     producer: "research jobs (#215)",
     description: "A research job reached a terminal outcome.",
+  },
+  {
+    subject: RESEARCH_REINDEX_SUBJECT,
+    eventType: RESEARCH_REINDEX_EVENT_TYPE_V1,
+    stream: RESEARCH_STREAM,
+    producer: "research-reindex CLI, external schedulers (#232)",
+    description: "Reconcile one configured research-index route from its checkpoint.",
   },
   // Declared by existing stages but not yet retained by any provisioned stream.
   {
