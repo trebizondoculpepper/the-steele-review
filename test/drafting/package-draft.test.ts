@@ -83,6 +83,8 @@ const GOOD = JSON.stringify({
     },
   ],
   limitations: ["The payment claim could not be checked against any record."],
+  narrative: { status: "limited", limitation: "No earlier posts were compared." },
+  widerContext: { status: "limited", limitation: "No independent background was used." },
 });
 
 describe("drafting from a writer package (#149)", () => {

@@ -71,8 +71,7 @@ const ModelDraftSchema = z
         z
           .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
           .strict(),
-      ])
-      .optional(),
+      ]),
     /** Significance within the wider movement (#176): "supported" only with cited background. */
     widerContext: z
       .discriminatedUnion("status", [
@@ -86,8 +85,7 @@ const ModelDraftSchema = z
         z
           .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
           .strict(),
-      ])
-      .optional(),
+      ]),
   })
   .strict();
 export type PackageModelDraft = z.infer<typeof ModelDraftSchema>;
@@ -238,6 +236,7 @@ export function renderPackageDraft(
           "",
         );
         if (c.conflictRationale) lines.push(`_Qualification: ${c.conflictRationale}_`, "");
+        if (c.changedCircumstances) lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
       }
     }
   }
@@ -365,6 +364,7 @@ export async function draftFromPackage(input: {
             earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
             comparison: c.comparison.text,
             ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
+          ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
           }))
         : { gap: pkg.context?.history.reason ?? "no historical comparison" },
     background:
