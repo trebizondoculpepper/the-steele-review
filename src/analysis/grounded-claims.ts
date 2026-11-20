@@ -270,16 +270,20 @@ const LEADING_PRONOUN = /^(?:they|them|he|she|we|you)\b/i;
 // rallying cry or instruction ("Stop spraying us") carries no proposition a
 // reader can verify. Exact equality with the passage is deliberately *not* a
 // rejection reason, because a short self-contained quotation is legitimate
-// (#212); only the clear imperative cases are caught here. The prompt asks for
-// self-contained statements and source inspection covers the rest.
-const CALL_TO_ACTION =
-  /^(?:stop|don'?t|do not|let'?s|let us|share|join|sign up|wake up|stand up|fight|act now|spread|demand|vote|resist)\b/i;
+// (#212). The pattern stays deliberately narrow - unambiguous imperatives
+// only, no nouns that double as verbs ("vote", "fight", "share") and a word
+// limit - so a short factual assertion such as "Vote rigging happened" is
+// never misclassified. The prompt asks for self-contained statements and
+// source inspection covers the rest.
+const CALL_TO_ACTION = /^(?:stop|don'?t|do not|let'?s|let us|wake up|stand up|act now)\b/i;
 const FINITE_VERB =
   /\b(?:is|are|was|were|has|have|had|does|do|did|will|would|can|could|may|might|must|shall|should|seems?|appears?)\b/i;
+const MAX_CALL_TO_ACTION_WORDS = 12;
 
 /** A pure call to action, with no asserted proposition to check. */
 function isCallToActionOnly(statement: string): boolean {
   const trimmed = statement.trim();
+  if (trimmed.split(/\s+/).length > MAX_CALL_TO_ACTION_WORDS) return false;
   return CALL_TO_ACTION.test(trimmed) && !FINITE_VERB.test(trimmed);
 }
 

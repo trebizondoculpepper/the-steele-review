@@ -324,7 +324,7 @@ export async function tracePost(input: {
                   : {}),
             model: value.extraction.modelVersion,
             prompt: value.extraction.promptVersion,
-            accepted: value.schemaVersion === 2 ? value.claims.length : 0,
+            accepted: value.schemaVersion >= 2 ? value.claims.length : 0,
             candidates: value.candidates?.length ?? 0,
             rejected: value.rejected.length,
             announcement,

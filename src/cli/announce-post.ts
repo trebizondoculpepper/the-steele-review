@@ -105,7 +105,7 @@ async function main(argv: string[]): Promise<number> {
       if (!ref) continue;
       try {
         const record = ClaimExtractionRecordSchema.parse(JSON.parse(await content.read(ref)));
-        if (record.schemaVersion === 2 && record.themeResult)
+        if (record.schemaVersion >= 2 && record.themeResult)
           v2.push({ ref, themeResult: record.themeResult });
       } catch {
         // Unreadable results are skipped here; announcePost re-validates the chosen one.

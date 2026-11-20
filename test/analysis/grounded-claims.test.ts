@@ -353,13 +353,18 @@ describe("record versions (#182)", () => {
     expect(candidateReasons("assertion", ["geoengineering"], "Stop spraying us now")).toEqual([
       "not-self-contained",
     ]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Share this everywhere")).toEqual([
+    expect(candidateReasons("assertion", ["geoengineering"], "Wake up and share this")).toEqual([
       "not-self-contained",
     ]);
     // An instruction that carries a checkable proposition is still a claim.
     expect(
       candidateReasons("assertion", ["geoengineering"], "Stop spraying because the soil is toxic"),
     ).toEqual([]);
+    // A short factual assertion is never read as a pure imperative.
+    expect(candidateReasons("assertion", ["geoengineering"], "Vote rigging happened")).toEqual([]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Fight back was the headline")).toEqual(
+      [],
+    );
   });
 
   it("accepts a short exact quotation that is self-contained", () => {
