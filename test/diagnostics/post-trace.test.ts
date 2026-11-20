@@ -9,6 +9,7 @@ import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import type { OperationInspection } from "../../src/controllers/operation-store.js";
 import { renderPostTrace, traceIncomplete, tracePost } from "../../src/diagnostics/post-trace.js";
+import { postAnalysedEventId } from "../../src/analysis/announce.js";
 
 const SENTINEL = "SENTINEL-secret-token-9f2a";
 const TEXT = "The towers emit radiation. This is the current text.";
@@ -287,5 +288,73 @@ describe("tracePost", () => {
     if (trace.claims.state === "recorded")
       expect(trace.claims.results[0].linkedThemeResult).toBe("invalid-reference");
     expect(JSON.stringify(trace)).not.toContain(SENTINEL);
+  });
+  it("traces the post-analysed announcement for a claim result linked to a readable theme result", async () => {
+    await proposeThemes({
+      provider: model('{"themes":[{"title":"5G"}]}'),
+      artifacts: content,
+      post,
+      source: {
+        text: TEXT,
+        sourceVersion: sourceVersionFor(TEXT),
+        artifact: {
+          repository: "archive",
+          commit: "a".repeat(40),
+          path: "x",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+      },
+    });
+    const [themePath] = await content.list("theme-proposals/pub/p", 10);
+    const themeRef = (await content.lookup(themePath))!;
+    const claimRef = await content.write(
+      "claim-extractions/pub/p/c.json",
+      JSON.stringify({
+        schemaVersion: 2,
+        post,
+        sourceVersion: sourceVersionFor(TEXT),
+        themeIds: [],
+        themeResult: `${themeRef.commit}:${themeRef.path}`,
+        claims: [],
+        candidates: [],
+        rejected: [],
+        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      }),
+    );
+    const key = `analysed:pub/p:${postAnalysedEventId(themeRef, claimRef)}`;
+    const seen: string[] = [];
+    const trace = await tracePost({
+      post,
+      content,
+      state: {
+        readOperation: async (k) => {
+          seen.push(k);
+          return k === key ? op("completed") : null;
+        },
+      },
+    });
+    expect(seen).toContain(key);
+    expect(trace.claims.state === "recorded" && trace.claims.results[0].announcement).toMatchObject(
+      {
+        state: "recorded",
+        status: "completed",
+      },
+    );
+    expect(traceIncomplete(trace)).toBe(false);
+    // A failed announcement lookup makes the trace incomplete even when other stages succeed.
+    const failing = await tracePost({
+      post,
+      content,
+      state: {
+        readOperation: async (k) => {
+          if (k === key) throw new Error("state unavailable");
+          return null;
+        },
+      },
+    });
+    expect(failing.claims.state === "recorded" && failing.claims.results[0].announcement).toEqual({
+      state: "unavailable",
+    });
+    expect(traceIncomplete(failing)).toBe(true);
   });
 });
