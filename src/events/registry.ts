@@ -1,4 +1,9 @@
 import {
+  ARTICLE_APPROVED_EVENT_TYPE_V1,
+  ARTICLE_APPROVED_SUBJECT,
+  PUBLICATION_STREAM,
+} from "./article-approved-event.js";
+import {
   RESEARCH_REINDEX_EVENT_TYPE_V1,
   RESEARCH_REINDEX_SUBJECT,
 } from "./research-reindex-event.js";
@@ -109,6 +114,12 @@ export const STREAMS: readonly StreamDefinition[] = [
       "Research job completions (complete, complete with gaps, failed) and research-index reconciliation requests.",
     subjects: [RESEARCH_COMPLETED_SUBJECT, RESEARCH_REINDEX_SUBJECT],
   },
+  {
+    name: PUBLICATION_STREAM,
+    overrideEnv: "STEELE_PUBLICATION_STREAM",
+    purpose: "Approved articles, consumed independently by each configured destination (#262).",
+    subjects: [ARTICLE_APPROVED_SUBJECT],
+  },
 ];
 
 export const MESSAGES: readonly MessageDefinition[] = [
@@ -160,6 +171,14 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: RESEARCH_STREAM,
     producer: "research-reindex CLI, external schedulers (#232)",
     description: "Reconcile one configured research-index route from its checkpoint.",
+  },
+  {
+    subject: ARTICLE_APPROVED_SUBJECT,
+    eventType: ARTICLE_APPROVED_EVENT_TYPE_V1,
+    stream: PUBLICATION_STREAM,
+    producer: "recordApproval (package verification approval)",
+    description:
+      "An exact article revision was approved; each destination consumes it independently.",
   },
   // Declared by existing stages but not yet retained by any provisioned stream.
   {
