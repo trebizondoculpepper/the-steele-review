@@ -6,12 +6,14 @@ import type { DeliveredMessage } from "../controllers/nats.js";
 import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
 import {
   CLAIM_OCCURRED_SUBJECT,
+  ClaimOccurredDataSchema,
   createClaimOccurredEvent,
   type ClaimOccurredData,
 } from "../events/claim-occurred-event.js";
 import { parsePostAnalysedEnvelope } from "../events/post-analysed-event.js";
 import {
   THEME_OCCURRED_SUBJECT,
+  ThemeOccurredDataSchema,
   createThemeOccurredEvent,
   type ThemeOccurredData,
 } from "../events/theme-occurred-event.js";
@@ -41,7 +43,18 @@ import type { ThemeProposalResult } from "./theme-proposals.js";
 const HEX = /^sha256:[0-9a-f]{64}$/;
 const OccurrenceIdentity = z.looseObject({ occurrenceId: z.string().min(1).max(200) });
 
-export type FanOutRefusal = AnalysisRefusal | "unidentified-claim-occurrence";
+export type FanOutRefusal =
+  | AnalysisRefusal
+  | "unidentified-claim-occurrence"
+  | "invalid-claim-occurrence"
+  | "invalid-theme-occurrence"
+  | "parent-source-mismatch";
+
+const sameReference = (a: ArtifactReference, b: ArtifactReference): boolean =>
+  a.repository === b.repository &&
+  a.commit === b.commit &&
+  a.path === b.path &&
+  a.hash === b.hash;
 
 const toRef = (reference: ArtifactReference): ArtifactRef => ({
   repository: reference.repository,
@@ -88,6 +101,14 @@ export function buildOccurrenceEvents(input: OccurrenceInputs): OccurrenceEvents
   if (!HEX.test(input.sourceVersion)) {
     return { status: "refused", reason: "unreadable-claim-result" };
   }
+  // The parent must describe the same source as the saved results: otherwise a
+  // stale completion could attach occurrences to a different captured version.
+  if (
+    input.theme.sourceVersion !== input.sourceVersion ||
+    !sameReference(input.theme.artifact, input.sourceArtifact)
+  ) {
+    return { status: "refused", reason: "parent-source-mismatch" };
+  }
   const themeBase = {
     publicationId: input.post.publicationId,
     postId: input.post.postId,
@@ -108,6 +129,11 @@ export function buildOccurrenceEvents(input: OccurrenceInputs): OccurrenceEvents
         ...(proposal.description ? { description: proposal.description } : {}),
       },
     };
+    // Validate the whole payload before construction: a saved value the event
+    // contract rejects is a refusal, never an exception that naks forever.
+    if (!ThemeOccurredDataSchema.safeParse(data).success) {
+      return { status: "refused", reason: "invalid-theme-occurrence" };
+    }
     events.push({
       eventId: occurrenceEventId("theme", input.parentId, occurrenceId),
       subject: THEME_OCCURRED_SUBJECT,
@@ -133,6 +159,9 @@ export function buildOccurrenceEvents(input: OccurrenceInputs): OccurrenceEvents
       kind: claim.kind,
       themeIds: claim.themeIds,
     };
+    if (!ClaimOccurredDataSchema.safeParse(data).success) {
+      return { status: "refused", reason: "invalid-claim-occurrence" };
+    }
     events.push({
       eventId: occurrenceEventId("claim", input.parentId, occurrenceId),
       subject: CLAIM_OCCURRED_SUBJECT,
@@ -231,50 +260,10 @@ export class AnalysisFanOut {
     const { id: parentId, data: parent } = event;
     const retryDelay = this.config.retryDelayMs ?? 60_000;
     const key = fanOutOperationKey(parent);
-    const now = this.config.now ?? (() => new Date());
-    const existing = this.config.operations.operationStatus(key);
-    if (existing?.status === "completed") {
-      await message.ack();
-      await this.dispatchPending();
-      return this.report("already-fanned-out", parent.postId);
-    }
 
-    const pair = await readAnalysisPair(
-      this.config.content,
-      { publicationId: parent.publicationId, postId: parent.postId },
-      toRef(parent.themeResult),
-      toRef(parent.claimResult),
-    );
-    if (pair.status === "unavailable") {
-      // An operational repository failure may clear: retry rather than
-      // permanently failing a valid analysis.
-      message.nak(retryDelay);
-      return this.report("retry", parent.postId);
-    }
-    if (pair.status === "refused") {
-      // Saved results that cannot complete an analysis are permanent: never
-      // research or fan out on unvalidated material.
-      this.config.operations.recordPermanentFailure(key, `fan-out:${pair.reason}`);
-      await message.ack();
-      return this.report("refused", parent.postId);
-    }
-    const built = buildOccurrenceEvents({
-      post: { publicationId: parent.publicationId, postId: parent.postId },
-      parentId,
-      sourceVersion: pair.theme.sourceVersion,
-      sourceArtifact: parent.sourceArtifact,
-      themeResult: parent.themeResult,
-      claimResult: parent.claimResult,
-      theme: pair.theme,
-      claims: pair.claims,
-      now,
-    });
-    if (built.status === "refused") {
-      this.config.operations.recordPermanentFailure(key, `fan-out:${built.reason}`);
-      await message.ack();
-      return this.report("refused", parent.postId);
-    }
-
+    // Claim first: a transient failure must leave an inspectable, retryable
+    // record rather than strand the parent when the broker's delivery budget
+    // runs out.
     const claimed = this.config.operations.claim(
       key,
       this.config.owner,
@@ -293,6 +282,43 @@ export class AnalysisFanOut {
     if (claimed.kind === "exhausted") {
       await message.ack();
       return this.report("exhausted", parent.postId);
+    }
+
+    const pair = await readAnalysisPair(
+      this.config.content,
+      { publicationId: parent.publicationId, postId: parent.postId },
+      toRef(parent.themeResult),
+      toRef(parent.claimResult),
+    );
+    if (pair.status === "unavailable") {
+      // Operational failure: release the claim so the redelivery can retry,
+      // and leave a recorded failure code for inspection.
+      this.config.operations.fail(claimed.claim, "fan-out:artifact-unavailable", true);
+      message.nak(retryDelay);
+      return this.report("retry", parent.postId);
+    }
+    if (pair.status === "refused") {
+      // Saved results that cannot complete this analysis are permanent: never
+      // research or fan out on unvalidated material.
+      this.config.operations.fail(claimed.claim, `fan-out:${pair.reason}`, false);
+      await message.ack();
+      return this.report("refused", parent.postId);
+    }
+    const built = buildOccurrenceEvents({
+      post: { publicationId: parent.publicationId, postId: parent.postId },
+      parentId,
+      sourceVersion: parent.sourceVersion,
+      sourceArtifact: parent.sourceArtifact,
+      themeResult: parent.themeResult,
+      claimResult: parent.claimResult,
+      theme: pair.theme,
+      claims: pair.claims,
+      now: this.config.now ?? (() => new Date()),
+    });
+    if (built.status === "refused") {
+      this.config.operations.fail(claimed.claim, `fan-out:${built.reason}`, false);
+      await message.ack();
+      return this.report("refused", parent.postId);
     }
 
     // Completion and every occurrence event are recorded in one transaction,

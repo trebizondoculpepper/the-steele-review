@@ -380,8 +380,70 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
     expect(await fanOut.handle(message)).toBe("retry");
     expect(naked).toBe(true);
     expect(operations.duePendingEvents(10)).toEqual([]);
-    // The operation is not terminally failed: a later attempt can complete it.
-    expect(operations.operationStatus(fanOutOperationKey(data))).toBeUndefined();
+    // Retry ownership is persisted: the operation is released, not stranded.
+    expect(operations.operationStatus(fanOutOperationKey(data))).toMatchObject({
+      status: "released",
+      errorCode: "fan-out:artifact-unavailable",
+    });
+  });
+
+  it("reports exhaustion after repeated transient failures", async () => {
+    const { themeRef, claimRef } = await savePair(themeResult(), claimResult);
+    const data = parentData({ themeRef, claimRef });
+    const failing = {
+      read: async () => {
+        const { ArtifactStoreError } = await import("../../src/controllers/artifact-store.js");
+        throw new ArtifactStoreError("git-failed");
+      },
+    };
+    const fanOut = new AnalysisFanOut({
+      content: failing as never,
+      operations,
+      publisher: publisher(),
+      owner: "test",
+      now,
+    });
+    const outcomes: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      outcomes.push(await fanOut.handle(parentMessage(data)));
+    }
+    expect(outcomes).toEqual(["retry", "retry", "retry"]);
+    // The final attempt spends the last budget: the next delivery is exhausted
+    // and the failure is inspectable rather than silently dropped.
+    expect(await fanOut.handle(parentMessage(data))).toBe("exhausted");
+    expect(operations.operationStatus(fanOutOperationKey(data))?.status).toBe("failed");
+  });
+
+  it("refuses a claim occurrence the event contract rejects", async () => {
+    const broken = await savePair(themeResult(), claimResult, {
+      claimOverrides: {
+        claims: [
+          {
+            claim: { statement: "x" },
+            occurrence: { occurrenceId: "occ-1" },
+            kind: "assertion",
+            themeIds: [],
+            classification: "themed",
+            claimRecordId: "not-a-claim-id",
+          },
+        ],
+      },
+    });
+    const pub = publisher();
+    expect(await worker(pub).handle(parentMessage(parentData(broken)))).toBe("refused");
+    expect(pub.sent).toEqual([]);
+  });
+
+  it("refuses a parent whose source provenance differs from the saved results", async () => {
+    const { themeRef, claimRef } = await savePair(themeResult(), claimResult);
+    const data = parentData({ themeRef, claimRef });
+    const mismatched: PostAnalysedData = {
+      ...data,
+      sourceArtifact: { ...data.sourceArtifact, path: "substack/pub/p1/other.json" },
+    };
+    const pub = publisher();
+    expect(await worker(pub).handle(parentMessage(mismatched))).toBe("refused");
+    expect(pub.sent).toEqual([]);
   });
 
   it("rejects a malformed parent event without acking it", async () => {

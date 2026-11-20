@@ -72,10 +72,22 @@ async function main(): Promise<number> {
     await nats.connect("steele-fan-out-worker");
     // Drain events stranded by an earlier crash or broker outage before
     // consuming: a parent acknowledged after recording may never be redelivered.
-    const drained = await fanOut.dispatchPending();
+    // One tracked dispatch pass at a time: a slow broker outage must not stack
+    // overlapping passes or duplicate publication attempts.
+    let dispatching: Promise<number> | undefined;
+    const dispatch = (): Promise<number> => {
+      dispatching ??= fanOut
+        .dispatchPending()
+        .catch(() => 0)
+        .finally(() => {
+          dispatching = undefined;
+        });
+      return dispatching;
+    };
+    const drained = await dispatch();
     const intervalMs = c.STEELE_FAN_OUT_DISPATCH_INTERVAL_MS ?? 30_000;
     const timer = setInterval(() => {
-      void fanOut.dispatchPending();
+      void dispatch();
     }, intervalMs);
     timer.unref();
     console.log(JSON.stringify({ event: "fan-out", state: "consuming", drained }));
@@ -88,6 +100,8 @@ async function main(): Promise<number> {
       );
     } finally {
       clearInterval(timer);
+      // Let an in-flight dispatch finish before its dependencies close.
+      await dispatching;
     }
     return 0;
   } catch {
