@@ -564,6 +564,36 @@ describe("librarian coverage", () => {
     ).rejects.toThrow("different source versions");
   });
 
+  it("accounts for a merged claim under its canonical record", async () => {
+    const canonical = `claim-${"a".repeat(32)}`;
+    const merged = `claim-${"b".repeat(32)}`;
+    const record = (id: string, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        id,
+        statement: "s",
+        groupingKey: "g",
+        themeIds: [],
+        occurrences: [],
+        ...extra,
+      });
+    await artifacts.revise(`claims/${canonical}.json`, record(canonical), null);
+    await artifacts.revise(`claims/${merged}.json`, record(merged, { canonical }), null);
+    const a = await analysis("p1", [{ id: merged, statement: "A merged claim" }]);
+    const r = researcher(() => ({ passages: [{ claimRecordId: canonical, url: SHARED }] }));
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(r.requests[0].claims.map((c) => c.claimRecordId)).toEqual([canonical]);
+    expect(out.record.claims[0]).toMatchObject({
+      claimRecordId: canonical,
+      status: "evidence-found",
+    });
+  });
+
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {
     const shortlister = new EmbeddingShortlister(
       { vectorSpace: "other/space#3", embed: async () => [] },

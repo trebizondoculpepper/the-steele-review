@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
+import { canonicalOf } from "../analysis/claim-equivalence.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import {
@@ -446,6 +447,8 @@ export function mergeCoverage(
       }
       ids.push(id);
     }
+    // New evidence that cannot be stored (capacity) never downgrades saved coverage.
+    if (saved?.status === "covered" && ids.length === 0) continue;
     coverage.set(
       claim.claimRecordId,
       claim.status === "evidence-found" && ids.length > 0
@@ -604,7 +607,21 @@ export async function assessPostCoverage(input: {
   }
 
   // 2. Account for every accepted claim: reuse, or group by dossier for research.
-  const claims = acceptedClaims(claimRecord);
+  // Account for claims under their current canonical identity: an extracted
+  // claim later merged into an earlier one is covered by the canonical record.
+  const claims: AcceptedClaim[] = [];
+  const byCanonical = new Map<string, AcceptedClaim>();
+  for (const c of acceptedClaims(claimRecord)) {
+    const canonical = await canonicalOf(input.artifacts, c.claimRecordId);
+    const prior = byCanonical.get(canonical);
+    if (prior) {
+      prior.proposalIds = [...new Set([...prior.proposalIds, ...c.proposalIds])];
+      continue;
+    }
+    const entry = { ...c, claimRecordId: canonical };
+    byCanonical.set(canonical, entry);
+    claims.push(entry);
+  }
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
   const groups = new Map<string, AcceptedClaim[]>();
   for (const claim of claims) {
