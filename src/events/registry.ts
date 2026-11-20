@@ -1,12 +1,27 @@
-import { CLAIMS_EXTRACTED_SUBJECT } from "../analysis/claim-worker.js";
-import { CONTENT_EMBEDDED_SUBJECT } from "../content/embedding-consumer.js";
+import {
+  CLAIMS_EXTRACTED_EVENT_TYPE_V1,
+  CLAIMS_EXTRACTED_SUBJECT,
+} from "../analysis/claim-worker.js";
+import {
+  CONTENT_EMBEDDED_EVENT_TYPE_V1,
+  CONTENT_EMBEDDED_SUBJECT,
+} from "../content/embedding-consumer.js";
 import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
-import { BRIEF_READY_SUBJECT } from "../drafting/brief.js";
-import { DRAFT_READY_SUBJECT } from "../drafting/draft.js";
-import { RESEARCH_REQUESTED_SUBJECT } from "../drafting/research-coordinator.js";
-import { REVISION_DECIDED_SUBJECT } from "../drafting/revision-attempts.js";
-import { DRAFT_VERIFIED_SUBJECT } from "../drafting/verify.js";
-import { ARTICLE_PUBLISHED_SUBJECT } from "../publishing/publisher-worker.js";
+import { BRIEF_READY_EVENT_TYPE_V1, BRIEF_READY_SUBJECT } from "../drafting/brief.js";
+import { DRAFT_READY_EVENT_TYPE_V1, DRAFT_READY_SUBJECT } from "../drafting/draft.js";
+import {
+  RESEARCH_REQUESTED_EVENT_TYPE_V1,
+  RESEARCH_REQUESTED_SUBJECT,
+} from "../drafting/research-coordinator.js";
+import {
+  REVISION_DECIDED_EVENT_TYPE_V1,
+  REVISION_DECIDED_SUBJECT,
+} from "../drafting/revision-attempts.js";
+import { DRAFT_VERIFIED_EVENT_TYPE_V1, DRAFT_VERIFIED_SUBJECT } from "../drafting/verify.js";
+import {
+  ARTICLE_PUBLISHED_EVENT_TYPE_V1,
+  ARTICLE_PUBLISHED_SUBJECT,
+} from "../publishing/publisher-worker.js";
 import { DISCOVERY_EVENT_TYPE_V1 } from "./discovery-event.js";
 import {
   ANALYSIS_STREAM,
@@ -120,48 +135,56 @@ export const MESSAGES: readonly MessageDefinition[] = [
   // Declared by existing stages but not yet retained by any provisioned stream.
   {
     subject: CLAIMS_EXTRACTED_SUBJECT,
+    eventType: CLAIMS_EXTRACTED_EVENT_TYPE_V1,
     stream: null,
     producer: "claim-worker",
     description: "Claims extracted by the automatic worker.",
   },
   {
     subject: CONTENT_EMBEDDED_SUBJECT,
+    eventType: CONTENT_EMBEDDED_EVENT_TYPE_V1,
     stream: null,
     producer: "embedding-consumer",
     description: "Passages embedded.",
   },
   {
     subject: RESEARCH_REQUESTED_SUBJECT,
+    eventType: RESEARCH_REQUESTED_EVENT_TYPE_V1,
     stream: null,
     producer: "research-coordinator",
     description: "Research requested for an analysed post.",
   },
   {
     subject: BRIEF_READY_SUBJECT,
+    eventType: BRIEF_READY_EVENT_TYPE_V1,
     stream: null,
     producer: "brief",
     description: "Drafting brief saved.",
   },
   {
     subject: DRAFT_READY_SUBJECT,
+    eventType: DRAFT_READY_EVENT_TYPE_V1,
     stream: null,
     producer: "drafting-worker",
     description: "Draft saved.",
   },
   {
     subject: DRAFT_VERIFIED_SUBJECT,
+    eventType: DRAFT_VERIFIED_EVENT_TYPE_V1,
     stream: null,
     producer: "verification-worker",
     description: "Draft verification report saved.",
   },
   {
     subject: REVISION_DECIDED_SUBJECT,
+    eventType: REVISION_DECIDED_EVENT_TYPE_V1,
     stream: null,
     producer: "revision-worker",
     description: "Revision decision recorded.",
   },
   {
     subject: ARTICLE_PUBLISHED_SUBJECT,
+    eventType: ARTICLE_PUBLISHED_EVENT_TYPE_V1,
     stream: null,
     producer: "publisher-worker",
     description: "Article published.",
@@ -170,6 +193,8 @@ export const MESSAGES: readonly MessageDefinition[] = [
 
 const SUBJECT = /^steele\.v1\.[a-z]+(?:\.[a-z]+)+$/;
 const STREAM = /^STEELE_[A-Z]+$/;
+/** Deployments may use any valid JetStream name, but never an empty one. */
+const STREAM_OVERRIDE = /^[A-Za-z0-9_-]+$/;
 
 /** Problems in the registry: uncovered subjects, overlaps, bad names. Empty when consistent. */
 export function registryProblems(
@@ -178,7 +203,10 @@ export function registryProblems(
 ): string[] {
   const problems: string[] = [];
   const owner = new Map<string, string>();
+  const names = new Set<string>();
   for (const s of streams) {
+    if (names.has(s.name)) problems.push(`stream ${s.name} is defined twice`);
+    names.add(s.name);
     if (!STREAM.test(s.name))
       problems.push(`stream ${s.name} does not follow STEELE_<RESPONSIBILITY>`);
     for (const subject of s.subjects) {
@@ -210,7 +238,11 @@ export function registryProblems(
 /** Stream name to provision, honouring the configured override. */
 export function streamName(def: StreamDefinition, env: NodeJS.ProcessEnv = process.env): string {
   const override = env[def.overrideEnv];
-  return override && override.length > 0 ? override : def.name;
+  if (override === undefined) return def.name;
+  if (!STREAM_OVERRIDE.test(override)) {
+    throw new Error(`${def.overrideEnv} must be a non-empty stream name`);
+  }
+  return override;
 }
 
 /** Markdown reference generated from the registry (checked in; tests catch drift). */

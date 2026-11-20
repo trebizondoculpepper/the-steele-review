@@ -50,6 +50,15 @@ async function main(): Promise<number> {
     return 2;
   }
   const c = env.data;
+  let names: Map<string, string>;
+  try {
+    names = new Map(STREAMS.map((def) => [def.name, streamName(def)]));
+  } catch (error) {
+    console.error(
+      `provision: ${error instanceof Error ? error.message : "invalid stream configuration"}`,
+    );
+    return 2;
+  }
   let natsConn;
   let esConn;
   try {
@@ -67,10 +76,9 @@ async function main(): Promise<number> {
     es = new ElasticsearchController(esConn.url, esConn.apiKey);
     await nats.connect("steele-provision");
     // Streams come from the shared registry (#209); names honour configured overrides.
-    const names = new Map(STREAMS.map((def) => [def.name, streamName(def)]));
     for (const def of STREAMS) {
       report[`stream:${def.name}`] = await provisionDiscoveryStream(nats, {
-        name: streamName(def),
+        name: names.get(def.name)!,
         subjects: [...def.subjects],
       });
     }

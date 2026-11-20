@@ -46,12 +46,28 @@ describe("stream and message registry", () => {
     expect(problems).toContain("does not follow STEELE_");
     expect(problems).toContain("steele.v1.b.done has no message definition");
     expect(problems).toContain("Bad.Subject does not follow");
+    const twice = registryProblems(
+      [
+        { name: "STEELE_A", overrideEnv: "A", purpose: "a", subjects: ["steele.v1.a.done"] },
+        { name: "STEELE_A", overrideEnv: "A", purpose: "a", subjects: ["steele.v1.b.done"] },
+      ],
+      [
+        { subject: "steele.v1.a.done", stream: "STEELE_A", producer: "x", description: "x" },
+        { subject: "steele.v1.b.done", stream: "STEELE_A", producer: "x", description: "x" },
+      ],
+    );
+    expect(twice.join()).toContain("defined twice");
+  });
+
+  it("records the event type of every message with a published contract", () => {
+    expect(MESSAGES.filter((m) => !m.eventType)).toEqual([]);
   });
 
   it("honours a configured stream override", () => {
     const def = STREAMS.find((s) => s.name === "STEELE_ANALYSIS")!;
     expect(streamName(def, { STEELE_ANALYSIS_STREAM: "CUSTOM" })).toBe("CUSTOM");
     expect(streamName(def, {})).toBe("STEELE_ANALYSIS");
+    expect(() => streamName(def, { STEELE_ANALYSIS_STREAM: "" })).toThrow("non-empty");
   });
 
   it("matches the checked-in generated reference", () => {
