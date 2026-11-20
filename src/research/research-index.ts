@@ -23,7 +23,8 @@ import type { ElasticsearchController } from "../controllers/elasticsearch.js";
  * removed. The checkpoint only advances after every change is applied.
  */
 
-export const RESEARCH_INDEX_V1 = "steele-research-v1";
+/** Distinct from the research-entry store's `steele-research-v1`, whose mapping differs. */
+export const RESEARCH_COLLECTION_INDEX_V1 = "steele-research-collection-v1";
 export const RESEARCH_INDEX_SCHEMA_VERSION = 1;
 const CHECKPOINT_ID = "checkpoint";
 const MAX_TEXT_CHARS = 1_000_000;
@@ -34,7 +35,7 @@ export type ResearchDocumentKind =
   | "covering-note"
   | "source-snapshot";
 
-export const RESEARCH_INDEX_MAPPING: ElasticsearchIndexMapping = {
+export const RESEARCH_COLLECTION_INDEX_MAPPING: ElasticsearchIndexMapping = {
   dynamic: "strict",
   properties: {
     schemaVersion: { type: "integer" },
@@ -50,6 +51,8 @@ export const RESEARCH_INDEX_MAPPING: ElasticsearchIndexMapping = {
     /** Commit of the reconciliation pass that last wrote the document. */
     generation: { type: "keyword" },
     checkpoint: { type: "keyword" },
+    /** Head of a pass that started but has not yet completed. */
+    pending: { type: "keyword" },
   },
 };
 
@@ -60,7 +63,7 @@ export function researchDocumentKind(path: string): ResearchDocumentKind | undef
   if (/^dossier\/[^/]+\.md$/.test(path)) return "dossier";
   if (/^research-reports\/.+\.md$/.test(path)) return "research-report";
   if (/^research-jobs\/research-[0-9a-f]{32}\/report\.md$/.test(path)) return "research-report";
-  if (/^research-jobs\/research-[0-9a-f]{32}\/covering-note\.md$/.test(path))
+  if (/^research-jobs\/research-[0-9a-f]{32}\/(covering-note|coverage)\.md$/.test(path))
     return "covering-note";
   if (/^research-jobs\/research-[0-9a-f]{32}\/sources\/[^/]+\.json$/.test(path))
     return "source-snapshot";
@@ -122,10 +125,13 @@ export interface ReconcileReport {
 export async function readResearchCheckpoint(
   es: Pick<ElasticsearchController, "search">,
   index: string,
-): Promise<string | undefined> {
+): Promise<{ checkpoint?: string; pending?: string }> {
   const hits = await es.search(index, { ids: { values: [CHECKPOINT_ID] } }, { size: 1 });
-  const source = hits[0]?.source as { checkpoint?: unknown } | undefined;
-  return typeof source?.checkpoint === "string" ? source.checkpoint : undefined;
+  const source = hits[0]?.source as { checkpoint?: unknown; pending?: unknown } | undefined;
+  return {
+    ...(typeof source?.checkpoint === "string" ? { checkpoint: source.checkpoint } : {}),
+    ...(typeof source?.pending === "string" ? { pending: source.pending } : {}),
+  };
 }
 
 /**
@@ -142,14 +148,30 @@ export async function reconcileResearchIndex(input: {
   index?: string;
   refresh?: boolean;
 }): Promise<ReconcileReport> {
-  const index = input.index ?? RESEARCH_INDEX_V1;
+  const index = input.index ?? RESEARCH_COLLECTION_INDEX_V1;
   const options = input.refresh ? { refresh: "wait_for" as const } : {};
-  const checkpoint = await readResearchCheckpoint(input.es, index);
+  const marker = await readResearchCheckpoint(input.es, index);
+  // A pass that started but never completed may have written documents from a
+  // newer head than the checkpoint; diffing from the checkpoint could then miss
+  // a later revert. Reconcile everything in that case.
+  const checkpoint = marker.pending ? undefined : marker.checkpoint;
   const { head, full, changes } = await input.artifacts.changesSince(checkpoint);
   if (!head) return { full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
   if (!full && head === checkpoint)
     return { head, full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
 
+  // Record that a pass is in progress before writing anything.
+  await input.es.indexDocument(
+    index,
+    CHECKPOINT_ID,
+    {
+      schemaVersion: RESEARCH_INDEX_SCHEMA_VERSION,
+      kind: "checkpoint",
+      ...(marker.checkpoint ? { checkpoint: marker.checkpoint } : {}),
+      pending: head,
+    },
+    options,
+  );
   let indexed = 0;
   let removed = 0;
   let skipped = 0;

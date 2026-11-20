@@ -12,8 +12,8 @@
  * Configuration (environment):
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository (read only)
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
- *   STEELE_RESEARCH_INDEX?               logical index (alias); default steele-research-v1
- *   STEELE_RESEARCH_INDEX_INTERVAL_MS?   periodic reconciliation; default 300000
+ *   STEELE_RESEARCH_COLLECTION_INDEX?               logical index (alias); default steele-research-collection-v1
+ *   STEELE_RESEARCH_COLLECTION_INTERVAL_MS?   periodic reconciliation; default 300000
  *
  * Output is sanitised JSON lines: counts and commits only.
  */
@@ -23,13 +23,16 @@ import { z } from "zod";
 import { describeSetupError, elasticsearchConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController, IndexingError } from "../controllers/elasticsearch.js";
-import { RESEARCH_INDEX_V1, reconcileResearchIndex } from "../research/research-index.js";
+import {
+  RESEARCH_COLLECTION_INDEX_V1,
+  reconcileResearchIndex,
+} from "../research/research-index.js";
 
 const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
-  STEELE_RESEARCH_INDEX: z.string().min(1).default(RESEARCH_INDEX_V1),
-  STEELE_RESEARCH_INDEX_INTERVAL_MS: z.coerce
+  STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
+  STEELE_RESEARCH_COLLECTION_INTERVAL_MS: z.coerce
     .number()
     .int()
     .min(5_000)
@@ -72,7 +75,7 @@ async function main(): Promise<number> {
       const report = await reconcileResearchIndex({
         artifacts,
         es,
-        index: c.STEELE_RESEARCH_INDEX,
+        index: c.STEELE_RESEARCH_COLLECTION_INDEX,
       });
       if (!report.unchanged || reason === "startup")
         log({ state: "reconciled", reason, ...report });
@@ -130,10 +133,10 @@ async function main(): Promise<number> {
     log({
       state: "watching",
       notifications: watchers.length > 0,
-      intervalMs: c.STEELE_RESEARCH_INDEX_INTERVAL_MS,
+      intervalMs: c.STEELE_RESEARCH_COLLECTION_INTERVAL_MS,
     });
     wake("startup");
-    const interval = setInterval(() => wake("periodic"), c.STEELE_RESEARCH_INDEX_INTERVAL_MS);
+    const interval = setInterval(() => wake("periodic"), c.STEELE_RESEARCH_COLLECTION_INTERVAL_MS);
     await new Promise<void>((resolve) => {
       process.once("SIGTERM", resolve);
       process.once("SIGINT", resolve);

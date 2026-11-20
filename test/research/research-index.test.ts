@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import {
-  RESEARCH_INDEX_V1,
+  RESEARCH_COLLECTION_INDEX_V1,
   reconcileResearchIndex,
   researchDocumentId,
   researchDocumentKind,
@@ -27,7 +27,7 @@ class FakeIndex {
     }
     this.writes++;
     this.docs.set(id, document as Record<string, unknown>);
-    return { index: RESEARCH_INDEX_V1, id, result: "created" as const, version: 1 };
+    return { index: RESEARCH_COLLECTION_INDEX_V1, id, result: "created" as const, version: 1 };
   }
   async deleteDocument(_index: string, id: string) {
     this.docs.delete(id);
@@ -74,6 +74,7 @@ describe("research collection indexing", () => {
     expect(researchDocumentKind("research-reports/manual/havana/abc.md")).toBe("research-report");
     expect(researchDocumentKind(`${JOB}/report.md`)).toBe("research-report");
     expect(researchDocumentKind(`${JOB}/covering-note.md`)).toBe("covering-note");
+    expect(researchDocumentKind(`${JOB}/coverage.md`)).toBe("covering-note");
     expect(researchDocumentKind(`${JOB}/sources/1.json`)).toBe("source-snapshot");
     for (const excluded of [
       `${JOB}/request.json`,
@@ -148,6 +149,27 @@ describe("research collection indexing", () => {
     const out = await reconcile();
     expect(out).toMatchObject({ full: true, indexed: 1, removed: 1 });
     expect(es.text("dossier/ghost.md")).toBeUndefined();
+  });
+
+  it("reconciles in full after an interrupted pass, so a later revert is not missed", async () => {
+    await rev("dossier/a.md", "# A1\n");
+    await reconcile();
+    await rev("dossier/a.md", "# A2\n");
+    await rev("dossier/b.md", "# B\n");
+    // Fail after A2 is written but before the checkpoint advances.
+    const original = es.indexDocument.bind(es);
+    let calls = 0;
+    es.indexDocument = async (i, id, d) => {
+      if (++calls === 3) throw new Error("unavailable");
+      return original(i, id, d);
+    };
+    await expect(reconcile()).rejects.toThrow();
+    es.indexDocument = original;
+    expect(es.text("dossier/a.md")).toBe("# A2\n");
+    await rev("dossier/a.md", "# A1\n"); // reverted to the checkpointed content
+    const out = await reconcile();
+    expect(out.full).toBe(true);
+    expect(es.text("dossier/a.md")).toBe("# A1\n");
   });
 
   it("skips unreadable source snapshots without leaving stale copies", async () => {

@@ -17,7 +17,7 @@
  *   STEELE_COLLECT_CONSUMER?   default steele-collector
  *   STEELE_INDEX_CONSUMER?     default steele-indexer
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
- *   STEELE_RESEARCH_INDEX?     default steele-research-v1 (research collection, #225)
+ *   STEELE_RESEARCH_COLLECTION_INDEX?     default steele-research-collection-v1 (#225)
  *
  * Output is one JSON line naming each resource and whether it was created,
  * unchanged or updated.
@@ -29,7 +29,10 @@ import {
 } from "../config/credentials.js";
 import { z } from "zod";
 import { FULLTEXT_INDEX_MAPPING, FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
-import { RESEARCH_INDEX_MAPPING, RESEARCH_INDEX_V1 } from "../research/research-index.js";
+import {
+  RESEARCH_COLLECTION_INDEX_MAPPING,
+  RESEARCH_COLLECTION_INDEX_V1,
+} from "../research/research-index.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
 import {
@@ -44,7 +47,7 @@ const EnvSchema = z.object({
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
   STEELE_FULLTEXT_INDEX: z.string().min(1).default(FULLTEXT_INDEX_V1),
-  STEELE_RESEARCH_INDEX: z.string().min(1).default(RESEARCH_INDEX_V1),
+  STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
 });
 
 async function main(): Promise<number> {
@@ -104,7 +107,10 @@ async function main(): Promise<number> {
       filterSubject: TEXT_READY_SUBJECT,
     });
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
-    report.researchIndex = await es.provisionIndex(c.STEELE_RESEARCH_INDEX, RESEARCH_INDEX_MAPPING);
+    report.researchIndex = await es.provisionIndex(
+      c.STEELE_RESEARCH_COLLECTION_INDEX,
+      RESEARCH_COLLECTION_INDEX_MAPPING,
+    );
     // "unchanged" can mean a backing index without its alias: confirm the
     // alias itself answers before reporting success.
     await es.search(c.STEELE_FULLTEXT_INDEX, { match_all: {} }, { size: 1 });
