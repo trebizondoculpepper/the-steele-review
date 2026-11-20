@@ -24,6 +24,13 @@ export type ReindexDecision =
     }
   | { action: "nak"; route: string; delayMs: number; why: "busy" | "failed" };
 
+/** Request identity for failure records: CloudEvents identity is (source, id). */
+export const requestKey = (r: { source: string; id: string }) =>
+  `req-${createHash("sha256")
+    .update(JSON.stringify([r.source, r.id]))
+    .digest("hex")
+    .slice(0, 40)}`;
+
 export async function handleReindexRequest(
   payload: Uint8Array,
   routes: ReadonlySet<string>,
@@ -42,7 +49,12 @@ export async function handleReindexRequest(
     return { action: "term", reason: "malformed-request", requestId };
   }
   if (!routes.has(request.route)) {
-    return { action: "term", reason: "unknown-route", route: request.route, requestId: request.id };
+    return {
+      action: "term",
+      reason: "unknown-route",
+      route: request.route,
+      requestId: requestKey(request),
+    };
   }
   const result = await reconcile(request.route);
   if (result === true) return { action: "ack", route: request.route, outcome: "reconciled" };
@@ -51,7 +63,7 @@ export async function handleReindexRequest(
       action: "term",
       reason: "retries-exhausted",
       route: request.route,
-      requestId: request.id,
+      requestId: requestKey(request),
     };
   }
   if (result === "busy")

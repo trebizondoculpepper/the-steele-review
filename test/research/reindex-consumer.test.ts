@@ -7,7 +7,7 @@ import {
   createResearchReindexEvent,
   researchReindexDataJsonSchema,
 } from "../../src/events/research-reindex-event.js";
-import { handleReindexRequest } from "../../src/research/reindex-consumer.js";
+import { handleReindexRequest, requestKey } from "../../src/research/reindex-consumer.js";
 import { reconcileResearchIndex, researchDocumentId } from "../../src/research/research-index.js";
 
 const encode = (route: string, id = "r1") =>
@@ -61,11 +61,11 @@ describe("research reindex requests (#232)", () => {
       reason: "malformed-request",
       requestId: expect.stringMatching(/^payload-/),
     });
-    expect(await handleReindexRequest(encode("other"), routes, reconcile)).toEqual({
+    expect(await handleReindexRequest(encode("other"), routes, reconcile)).toMatchObject({
       action: "term",
       reason: "unknown-route",
       route: "other",
-      requestId: "r1",
+      requestId: expect.stringMatching(/^req-[0-9a-f]{40}$/),
     });
     // A request without the required CloudEvents source is malformed.
     const noSource = JSON.parse(new TextDecoder().decode(encode("havana")));
@@ -78,6 +78,8 @@ describe("research reindex requests (#232)", () => {
       ),
     ).toMatchObject({ reason: "malformed-request" });
     expect(ran).toBe(0);
+    // Same ID from two sources: distinct failure identities.
+    expect(requestKey({ source: "a", id: "x" })).not.toBe(requestKey({ source: "b", id: "x" }));
     expect(researchReindexDataJsonSchema()).toMatchObject({ type: "object" });
   });
 
@@ -103,7 +105,12 @@ describe("research reindex requests (#232)", () => {
         5_000,
         { count: 10, max: 10 },
       ),
-    ).toEqual({ action: "term", reason: "retries-exhausted", route: "havana", requestId: "req-9" });
+    ).toMatchObject({
+      action: "term",
+      reason: "retries-exhausted",
+      route: "havana",
+      requestId: expect.stringMatching(/^req-/),
+    });
   });
 
   it("indexes a revision with no filesystem notification exactly once, and replays safely", async () => {

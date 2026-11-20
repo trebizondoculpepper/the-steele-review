@@ -51,9 +51,15 @@ const EnvelopeSchema = z.looseObject({
 });
 
 /** Parse a delivered request; throws on anything that is not a valid v1 request. */
-export function parseResearchReindexEvent(input: string): ResearchReindexData & { id: string } {
+export function parseResearchReindexEvent(
+  input: string,
+): ResearchReindexData & { id: string; source: string } {
   const envelope = EnvelopeSchema.parse(JSON.parse(input));
-  return { id: envelope.id, ...ResearchReindexDataSchema.parse(envelope.data) };
+  return {
+    id: envelope.id,
+    source: envelope.source,
+    ...ResearchReindexDataSchema.parse(envelope.data),
+  };
 }
 
 export function researchReindexDataJsonSchema(): Record<string, unknown> {

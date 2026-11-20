@@ -155,7 +155,12 @@ async function main(): Promise<number> {
   ): Promise<true | false | "busy"> => {
     const deadline = Date.now() + LEASE_MS;
     for (;;) {
-      const result = await runPass("request", keepAlive);
+      // Enforce the deadline and shutdown during a pass as well: the progress
+      // callback runs before each write and abandons the pass when exceeded.
+      const result = await runPass("request", () => {
+        if (signal.aborted || Date.now() >= deadline) throw new Error("request deadline exceeded");
+        keepAlive();
+      });
       if (result !== "busy" || Date.now() >= deadline || signal.aborted) return result;
       keepAlive();
       await new Promise((resolve) => setTimeout(resolve, 5_000));
