@@ -14,6 +14,14 @@
 | Automatic Substack publication                    | Minimise routine human interaction                                                                         |
 | Skip cases that fail verification                 | Manual review is deferred                                                                                  |
 
+## Prompt files and provenance
+
+Keep all model-facing prompt templates in version-controlled Markdown under `src/prompts/<service-name>/`, with one clearly named file per prompt. This gives operators a single place to read, edit, and review the prompts they tune against the end-to-end demo. Put fixed system instructions, reusable user-message templates, and revision or verification instructions in the owning service's directory.
+
+Services load the templates and insert runtime data through explicit placeholders. TypeScript owns input validation, output schemas, and provider calls. Preserve the boundary between trusted instructions and source data, including retrieved text and previous model output. Keep credentials and private operational settings out of prompt files.
+
+Include the Markdown files in build and deployment artifacts and resolve them in the same way from compiled entry points and containers. Record the prompt version or content hash used for each model-backed run with its result. If the wording changes, reuse checks must distinguish the new prompt from the prior one. Keep earlier results and their prompt provenance readable.
+
 ## Message format decision
 
 CloudEvents structured JSON is the standard envelope. Zod defines payload validation and inferred TypeScript types; exported JSON Schema provides the shared data contract and dictionary. See [events and reliability](05-events-and-reliability.md).
