@@ -211,6 +211,10 @@ export const MESSAGES: readonly MessageDefinition[] = [
     stream: "STEELE_CONTENT",
     producer: "collect-worker (Substack); any ingestion source",
     description: "Source-neutral captured item revision for the writing engine (#269).",
+    emittedWhen:
+      "An ingestion source archives an item revision (outbox, same step as the archive operation; the collector emits it with text-ready).",
+    guarantees:
+      "Stable event ID per (namespace, item, exact artifact); re-emitting the same revision is deduplicated. Consumers re-read the archived text by reference. Invalid payloads are terminated.",
   },
   {
     subject: ARTICLE_APPROVED_SUBJECT,
