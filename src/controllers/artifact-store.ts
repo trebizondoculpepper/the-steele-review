@@ -385,6 +385,50 @@ export class GitArtifactStore {
     return { repository: this.config.repository, commit, path, sha256: sha256(content) };
   }
 
+  /**
+   * Paths changed on the branch since `from` (read-only). Without a usable
+   * `from` (absent, unknown, or no longer an ancestor of the head), every
+   * current path is returned with `full: true` so the caller reconciles from
+   * scratch. Paths are artifact paths; renames appear as delete plus upsert.
+   */
+  async changesSince(from?: string): Promise<{
+    head?: string;
+    full: boolean;
+    changes: { path: string; change: "upsert" | "delete" }[];
+  }> {
+    try {
+      await this.run(["rev-parse", "--git-dir"]);
+    } catch {
+      throw new ArtifactStoreError("git-failed");
+    }
+    const head = await this.head();
+    if (!head) return { full: true, changes: [] };
+    let incremental = false;
+    if (from && /^[0-9a-f]{40,64}$/.test(from) && (await this.commitExists(from))) {
+      try {
+        await this.run(["merge-base", "--is-ancestor", from, head]);
+        incremental = true;
+      } catch {
+        incremental = false;
+      }
+    }
+    if (!incremental) {
+      const { stdout } = await this.run(["ls-tree", "-r", "-z", "--name-only", head]);
+      const changes = stdout
+        .split("\0")
+        .filter(Boolean)
+        .map((path) => ({ path, change: "upsert" as const }));
+      return { head, full: true, changes };
+    }
+    const { stdout } = await this.run(["diff", "--name-status", "-z", "--no-renames", from!, head]);
+    const parts = stdout.split("\0").filter(Boolean);
+    const changes: { path: string; change: "upsert" | "delete" }[] = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      changes.push({ path: parts[i + 1], change: parts[i].startsWith("D") ? "delete" : "upsert" });
+    }
+    return { head, full: false, changes };
+  }
+
   private async commitExists(commit: string): Promise<boolean> {
     try {
       await this.run(["cat-file", "-e", `${commit}^{commit}`]);
