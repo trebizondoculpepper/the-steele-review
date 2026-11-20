@@ -77,6 +77,8 @@ export interface ElasticsearchClientLike {
     }): Promise<unknown>;
     existsAlias(params: { name: string }): Promise<boolean>;
     putMapping(params: { index: string; properties: Record<string, unknown> }): Promise<unknown>;
+    /** Optional for test doubles. */
+    refresh?(params: { index: string }): Promise<unknown>;
   };
   search(
     params: {
@@ -217,6 +219,16 @@ export class ElasticsearchController {
         { index, id, ...(options.refresh === undefined ? {} : { refresh: options.refresh }) },
         { requestTimeout: timeoutMs, maxRetries: 0, ignore: [404] },
       );
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /** Make every prior write to the index visible to search on all shards. */
+  async refreshIndex(index: string): Promise<void> {
+    if (!this.client.indices.refresh) throw new IndexingError("rejected", false);
+    try {
+      await this.client.indices.refresh({ index });
     } catch (error) {
       throw classifyIndexingError(error);
     }

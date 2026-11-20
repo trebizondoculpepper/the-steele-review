@@ -143,7 +143,7 @@ export async function reconcileResearchIndex(input: {
   artifacts: GitArtifactStore;
   es: Pick<
     ElasticsearchController,
-    "search" | "indexDocument" | "deleteDocument" | "deleteMatching"
+    "search" | "indexDocument" | "deleteDocument" | "deleteMatching" | "refreshIndex"
   >;
   index?: string;
   refresh?: boolean;
@@ -212,6 +212,8 @@ export async function reconcileResearchIndex(input: {
   }
   if (full) {
     // Anything not rewritten in a full pass is no longer in the collection.
+    // Refresh every shard first so the cleanup query sees this pass's writes.
+    await input.es.refreshIndex(index);
     removed += await input.es.deleteMatching(
       index,
       {

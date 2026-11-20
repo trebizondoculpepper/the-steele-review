@@ -29,6 +29,10 @@ class FakeIndex {
     this.docs.set(id, document as Record<string, unknown>);
     return { index: RESEARCH_COLLECTION_INDEX_V1, id, result: "created" as const, version: 1 };
   }
+  refreshes = 0;
+  async refreshIndex() {
+    this.refreshes++;
+  }
   async deleteDocument(_index: string, id: string) {
     this.docs.delete(id);
   }
@@ -148,6 +152,7 @@ describe("research collection indexing", () => {
     es.docs.delete("checkpoint");
     const out = await reconcile();
     expect(out).toMatchObject({ full: true, indexed: 1, removed: 1 });
+    expect(es.refreshes).toBeGreaterThan(0);
     expect(es.text("dossier/ghost.md")).toBeUndefined();
   });
 
