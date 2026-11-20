@@ -133,8 +133,8 @@ function researcher(
           url,
           retrieval: "archived",
           ...(outcome.passages.find((p) => p.url === url)?.monitored
-            ? { sourceType: "monitored-source" }
-            : {}),
+            ? { sourceType: "monitored-source", support: "unverified" }
+            : { support: "supported" }),
           passages: outcome.passages
             .filter((p) => p.url === url)
             .map((p) => ({
@@ -523,6 +523,45 @@ describe("librarian coverage", () => {
     });
     operations.close();
     expect(out.record.claims[0].status).toBe("claimant-only");
+  });
+
+  it("gives a theme its own dossier when the judge rejects a same-named one", async () => {
+    const a = await analysis("p1", [claims[0]], "Mercury");
+    const r = researcher(() => ({ passages: [] }));
+    const first = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const b = await analysis("p2", [claims[1]], "Mercury");
+    const rejecting = { decide: async () => ({ themeId: null, rationale: "different subject" }) };
+    const second = await assessPostCoverage({
+      artifacts,
+      ...b,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: rejecting,
+    });
+    expect(second.record.mappings[0].dossierId).not.toBe(first.record.mappings[0].dossierId);
+  });
+
+  it("refuses claim and theme results for different source versions", async () => {
+    const a = await analysis("p1", claims);
+    const text = (await artifacts.read(a.claimResult)).replace(
+      /"sourceVersion": ?"sha256:[0-9a-f]+"/,
+      `"sourceVersion":"sha256:${"0".repeat(64)}"`,
+    );
+    const other = await artifacts.write("claim-extractions/pub/p1/other.json", text);
+    await expect(
+      assessPostCoverage({
+        artifacts,
+        themeResult: a.themeResult,
+        claimResult: other,
+        commission: researcher(() => "failed").commission,
+        shortlister: new LexicalShortlister(),
+      }),
+    ).rejects.toThrow("different source versions");
   });
 
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {

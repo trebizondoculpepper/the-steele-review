@@ -178,7 +178,12 @@ export interface ThemeEquivalenceJudge {
 /** Threshold judge: the best candidate when its score clears the method's bar, else a new dossier. */
 export class ThresholdJudge implements ThemeEquivalenceJudge {
   constructor(private readonly bars = { embedding: 0.85, lexical: 0.5 }) {}
-  async decide(_theme: { title: string; description: string }, shortlist: Shortlist) {
+  async decide(theme: { title: string; description: string }, shortlist: Shortlist) {
+    // A dossier with the identical title is the same theme for this default judge;
+    // a judge that understands meaning may still reject a homonym.
+    const same = (x: string) => x.normalize("NFKC").trim().toLowerCase();
+    const identical = shortlist.candidates.find((c) => same(c.title) === same(theme.title));
+    if (identical) return { themeId: identical.themeId, rationale: "identical title" };
     const best = shortlist.candidates[0];
     if (best && best.score >= this.bars[shortlist.method]) {
       return {
@@ -271,6 +276,8 @@ export const CoverageRecordSchema = z
         .strict(),
     ),
     dossiers: z.array(z.object({ dossierId: z.string(), ref: Ref }).strict()),
+    /** Dossiers whose revision failed in this run; rerun to apply them. */
+    unsavedDossiers: z.array(z.string()).optional(),
     assessedAt: z.string(),
   })
   .strict();
@@ -357,7 +364,9 @@ function assess(
         if (p.claimRecordId !== claim.claimRecordId) continue;
         if (c.sourceType === "monitored-source") claimantOnly = true;
         // Dossier citations are https-only; plain-http support is not recorded as evidence.
-        else if (c.url.startsWith("https://")) independent.push({ url: c.url, passage: p.passage });
+        // Only passages the researcher verified as supporting count as evidence.
+        else if (c.url.startsWith("https://") && c.support === "supported")
+          independent.push({ url: c.url, passage: p.passage });
         else insecureOnly = true;
       }
     }
@@ -541,6 +550,9 @@ export async function assessPostCoverage(input: {
   ) {
     throw new Error("claim result was extracted against a different theme result");
   }
+  if (claimRecord.sourceVersion !== themes.sourceVersion) {
+    throw new Error("theme and claim results describe different source versions");
+  }
   const dossiers = new DossierStore(input.artifacts);
   const summaries: DossierSummary[] = [];
   const existing = new Map<string, StoredDossier>();
@@ -554,7 +566,9 @@ export async function assessPostCoverage(input: {
   for (const path of paths) {
     const id = /^dossier\/([^/]+)\.md$/.exec(path)?.[1];
     if (!id) continue;
-    const d = await dossiers.current(id).catch(() => undefined);
+    // An unreadable canonical dossier is a failure, not an absence: treating it
+    // as missing could duplicate the theme or commission needless research.
+    const d = await dossiers.current(id);
     if (!d) continue;
     existing.set(id, d);
     summaries.push({ themeId: id, title: d.metadata.title, scope: d.metadata.scope });
@@ -564,11 +578,18 @@ export async function assessPostCoverage(input: {
   const mappings: CoverageRecord["mappings"] = [];
   const dossierFor = new Map<string, string>();
   const titles = new Map<string, string>();
+  /** Research subject per dossier from this analysis's own proposals (never editable dossier titles). */
+  const subjects = new Map<string, string>();
   for (const proposal of themes.proposals) {
     const p = { ...proposal, description: proposal.description ?? "" };
     const shortlist = await input.shortlister.shortlist(p, summaries);
     const decision = await judge.decide(p, shortlist);
-    const dossierId = decision.themeId ?? newDossierId(p.title);
+    let dossierId = decision.themeId ?? newDossierId(p.title);
+    // A rejected equivalence must never land in the existing dossier it rejected.
+    for (let n = 2; decision.themeId === null && existing.has(dossierId); n++) {
+      dossierId = newDossierId(`${p.title}#${n}`);
+    }
+    if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
     dossierFor.set(p.id, dossierId);
     titles.set(dossierId, existing.get(dossierId)?.metadata.title ?? p.title);
     mappings.push({
@@ -650,7 +671,7 @@ export async function assessPostCoverage(input: {
       })),
       question:
         pass === 1
-          ? `What do independent, authoritative sources establish about these claims concerning ${titles.get(dossierId)}?`
+          ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
       // Request identity depends only on the saved analysis and claims, never on
       // the dossier version this run may itself revise, so reassessing the same
@@ -716,15 +737,17 @@ export async function assessPostCoverage(input: {
       });
     }
     // 4. One targeted second pass for consequential, unsupported claims.
+    // Derived from the pass-1 job's saved result only (never from reuse in
+    // the dossier), so reassessment rebuilds the identical pass-2 request.
     const followUp = group.filter(
       (c) =>
-        !outcomes.get(c.claimRecordId)?.reused &&
-        outcomes.get(c.claimRecordId)?.status === "no-independent-evidence" &&
+        first.assessed.get(c.claimRecordId)?.status === "no-independent-evidence" &&
         (input.consequential?.(c) ?? false),
     );
     if (followUp.length > 0 && first.job.status === "finished") {
       const second = await run(dossierId, followUp, 2, first.job.jobId);
       for (const claim of followUp) {
+        if (outcomes.get(claim.claimRecordId)?.reused) continue;
         const a = second.assessed.get(claim.claimRecordId)!;
         const prior = outcomes.get(claim.claimRecordId)!;
         outcomes.set(claim.claimRecordId, {
@@ -752,15 +775,25 @@ export async function assessPostCoverage(input: {
       byDossier.set(o.dossierId, [...(byDossier.get(o.dossierId) ?? []), o]);
     }
   }
+  // Save every affected dossier; a failure must not lose the job references
+  // already gathered, so the coverage record is still written, listing what
+  // was not saved, before the failure is reported.
+  const unsaved: string[] = [];
+  let saveError: unknown;
   for (const [dossierId, items] of byDossier) {
-    const saved = await saveDossier(
-      dossiers,
-      dossierId,
-      titles.get(dossierId) ?? dossierId,
-      (m) => mergeCoverage(m, items, now),
-      now,
-    );
-    dossierRefs.push({ dossierId, ref: toRef(saved.ref) });
+    try {
+      const saved = await saveDossier(
+        dossiers,
+        dossierId,
+        titles.get(dossierId) ?? dossierId,
+        (m) => mergeCoverage(m, items, now),
+        now,
+      );
+      dossierRefs.push({ dossierId, ref: toRef(saved.ref) });
+    } catch (error) {
+      unsaved.push(dossierId);
+      saveError ??= error;
+    }
   }
   for (const [id, d] of existing) {
     if (!byDossier.has(id) && [...outcomes.values()].some((o) => o.dossierId === id)) {
@@ -781,10 +814,19 @@ export async function assessPostCoverage(input: {
     }),
     jobs,
     dossiers: dossierRefs.sort((a, b) => a.dossierId.localeCompare(b.dossierId)),
+    ...(unsaved.length > 0 ? { unsavedDossiers: unsaved.sort() } : {}),
     assessedAt: now,
   });
   const key = createHash("sha256")
-    .update(JSON.stringify([record.themeResult, record.claimResult, record.jobs, record.dossiers]))
+    .update(
+      JSON.stringify([
+        record.themeResult,
+        record.claimResult,
+        record.mappings,
+        record.jobs,
+        record.dossiers,
+      ]),
+    )
     .digest("hex")
     .slice(0, 32);
   const ref = await writeOnce(
@@ -794,5 +836,6 @@ export async function assessPostCoverage(input: {
   );
   // An unchanged reassessment maps to an earlier record; return what is stored there.
   const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+  if (saveError) throw saveError;
   return { record: stored, ref };
 }

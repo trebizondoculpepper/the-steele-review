@@ -265,7 +265,9 @@ export async function runResearchJob(input: {
           { findings, report: report.report, url, source: text },
           signal,
         );
-        sourceType = judgement.sourceType?.slice(0, 100);
+        // "monitored-source" is reserved for the configured host decision.
+        const proposedType = judgement.sourceType?.slice(0, 100);
+        sourceType = proposedType === "monitored-source" ? undefined : proposedType;
         rationale = judgement.rationale?.slice(0, 2000);
         passages = judgement.passages
           .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
