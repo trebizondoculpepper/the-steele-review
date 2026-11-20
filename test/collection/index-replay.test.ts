@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CollectionRecord } from "../../src/collection/collection-store.js";
-import { MAX_REPLAY_SCAN, replayArchiveToIndex } from "../../src/collection/index-replay.js";
+import {
+  MAX_REPLAY_SCAN,
+  replayArchiveToIndex,
+  type ReplayCheckpointState,
+} from "../../src/collection/index-replay.js";
 import type { FulltextIndexPort } from "../../src/collection/indexing-handler.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { IndexingError } from "../../src/controllers/elasticsearch.js";
@@ -62,6 +66,19 @@ function versionedIndex(failIds: (id: string) => boolean = () => false) {
     },
   };
   return { port, docs };
+}
+
+/** Records each checkpoint it is asked to save. */
+function checkpointSink() {
+  const states: ReplayCheckpointState[] = [];
+  return {
+    states,
+    checkpoint: {
+      async save(state: ReplayCheckpointState) {
+        states.push(state);
+      },
+    },
+  };
 }
 
 describe("replayArchiveToIndex", () => {
@@ -291,4 +308,91 @@ describe("GitArtifactStore.list", () => {
     expect(await artifacts.list("substack/example-pub", 1)).toHaveLength(1);
     expect(await artifacts.list("substack/missing", 10)).toEqual([]);
   });
+  it("replays exactly the archive as pinned at a commit", async () => {
+    await archive(record("a", "2026-01-01T00:00:00Z"), record("b", "2026-02-01T00:00:00Z"));
+    // The last archived record carries the commit that contains both posts.
+    const pinnedRef = await artifacts.lookup("substack/example-pub/b/collected.json");
+    expect(pinnedRef).toBeDefined();
+    // Later work on the archive must not leak into a pinned load.
+    await archive(record("c", "2026-03-01T00:00:00Z"));
+
+    const { port, docs } = versionedIndex();
+    const { states, checkpoint } = checkpointSink();
+    const pinned = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10, commit: pinnedRef!.commit },
+      artifacts,
+      index: port,
+      checkpoint,
+    });
+    expect(pinned).toMatchObject({ ok: true, selected: 2, indexed: 2, checkpointSaved: true });
+    expect(docs.size).toBe(2);
+    expect(states).toHaveLength(1);
+    expect(states[0]).toMatchObject({ commit: pinnedRef!.commit, indexed: 2, unchanged: 0 });
+  });
+
+  it("enumerates paths from the pinned commit rather than the current tree", async () => {
+    await archive(record("a", "2026-01-01T00:00:00Z"), record("b", "2026-02-01T00:00:00Z"));
+    const head = (await artifacts.lookup("substack/example-pub/b/collected.json"))!.commit;
+    // A record committed after the pin must not appear in a pinned load.
+    await archive(record("late", "2026-04-01T00:00:00Z"));
+
+    const { port, docs } = versionedIndex();
+    const pinnedOnly = {
+      read: artifacts.read.bind(artifacts),
+      lookup: artifacts.lookup.bind(artifacts),
+      lookupAt: artifacts.lookupAt.bind(artifacts),
+      listAt: artifacts.listAt.bind(artifacts),
+      // Proves enumeration does not fall back to the current working tree.
+      list: async () => {
+        throw new Error("list() must not be used for a pinned replay");
+      },
+    };
+    const pinned = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10, commit: head },
+      artifacts: pinnedOnly,
+      index: port,
+    });
+    expect(pinned).toMatchObject({ ok: true, selected: 2, indexed: 2 });
+    expect(docs.size).toBe(2);
+  });
+
+  it("reruns the same pinned load without duplicates and re-saves a stable checkpoint", async () => {
+    await archive(record("a", "2026-01-01T00:00:00Z"), record("b", "2026-02-01T00:00:00Z"));
+    const head = (await artifacts.lookup("substack/example-pub/b/collected.json"))!.commit;
+    const { port, docs } = versionedIndex();
+    const first = checkpointSink();
+    await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10, commit: head },
+      artifacts,
+      index: port,
+      checkpoint: first.checkpoint,
+    });
+    const second = checkpointSink();
+    const rerun = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10, commit: head },
+      artifacts,
+      index: port,
+      checkpoint: second.checkpoint,
+    });
+    expect(rerun).toMatchObject({ ok: true, indexed: 0, unchanged: 2, checkpointSaved: true });
+    expect(docs.size).toBe(2);
+    expect(second.states[0]).toMatchObject({ indexed: 0, unchanged: 2, commit: head });
+  });
+
+  it("does not save a checkpoint when a write failed", async () => {
+    await archive(record("a"), record("b"));
+    const { port } = versionedIndex(() => true);
+    const { states, checkpoint } = checkpointSink();
+    const failed = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10 },
+      artifacts,
+      index: port,
+      checkpoint,
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.failed.length).toBeGreaterThan(0);
+    expect(failed.checkpointSaved).toBe(false);
+    expect(states).toEqual([]);
+  });
+
 });

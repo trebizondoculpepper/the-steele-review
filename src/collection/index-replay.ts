@@ -5,7 +5,7 @@ import {
   type FulltextIndexPort,
   type IndexingOutcome,
 } from "./indexing-handler.js";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 import { createTextReadyEvent } from "../events/text-ready-event.js";
 
 /**
@@ -38,6 +38,11 @@ export const ReplaySelectionSchema = z
     from: z.iso.datetime({ offset: true }).optional(),
     to: z.iso.datetime({ offset: true }).optional(),
     limit: z.number().int().min(1).max(MAX_REPLAY),
+    /** Replay the archive exactly as committed at this revision. */
+    commit: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/, "commit must be a full Git object ID")
+      .optional(),
   })
   .strict()
   .refine((s) => !s.from || !s.to || Date.parse(s.from) <= Date.parse(s.to), {
@@ -59,14 +64,34 @@ export interface ReplayReport {
   truncated: boolean;
   /** True when a shutdown signal stopped the replay before it finished. */
   interrupted: boolean;
+  /** True when a finished, fully successful replay saved its checkpoint. */
+  checkpointSaved: boolean;
+}
+
+/** Durable marker of a completed bulk load, saved only after every write succeeded. */
+export interface ReplayCheckpointState {
+  publicationId: string;
+  /** The archive revision the load read, when one was pinned. */
+  commit?: string;
+  indexed: number;
+  unchanged: number;
+  completedAt: string;
+}
+
+export interface ReplayCheckpoint {
+  save(state: ReplayCheckpointState): Promise<void>;
 }
 
 export async function replayArchiveToIndex(input: {
   selection: ReplaySelection;
-  artifacts: Pick<GitArtifactStore, "read" | "lookup" | "list">;
+  /** `lookupAt` is required only when the selection pins a commit. */
+  artifacts: Pick<GitArtifactStore, "read" | "lookup" | "list"> &
+    Partial<Pick<GitArtifactStore, "lookupAt" | "listAt">>;
   index: FulltextIndexPort;
   indexName?: string;
   signal?: AbortSignal;
+  /** Saved only when the replay finished and every write succeeded. */
+  checkpoint?: ReplayCheckpoint;
 }): Promise<ReplayReport> {
   const sel = ReplaySelectionSchema.parse(input.selection);
   const report: ReplayReport = {
@@ -79,9 +104,24 @@ export async function replayArchiveToIndex(input: {
     failed: [],
     truncated: false,
     interrupted: false,
+    checkpointSaved: false,
   };
   const wanted = sel.postIds ? new Set(sel.postIds) : undefined;
-  const listed = await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN);
+  // Enumerating the current tree would let a pinned load see records that did
+  // not exist at that revision, or miss ones removed since (#249).
+  let listed: string[];
+  if (sel.commit) {
+    const listAt = input.artifacts.listAt;
+    if (!listAt) throw new ArtifactStoreError("git-failed");
+    listed = await listAt.call(
+      input.artifacts,
+      sel.commit,
+      `substack/${sel.publicationId}`,
+      MAX_REPLAY_SCAN,
+    );
+  } else {
+    listed = await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN);
+  }
   // A full listing may have stopped at the scan cap before every record.
   if (listed.length >= MAX_REPLAY_SCAN) report.truncated = true;
   const paths = listed.filter((p) => {
@@ -109,9 +149,18 @@ export async function replayArchiveToIndex(input: {
     let record;
     let ref;
     try {
-      ref = await input.artifacts.lookup(path);
-      if (!ref) continue;
-      record = CollectionRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+      if (sel.commit) {
+        const lookupAt = input.artifacts.lookupAt;
+        if (!lookupAt) throw new ArtifactStoreError("git-failed");
+        const pinned = await lookupAt.call(input.artifacts, sel.commit, path);
+        if (!pinned) continue;
+        ref = pinned.ref;
+        record = CollectionRecordSchema.parse(JSON.parse(pinned.content));
+      } else {
+        ref = await input.artifacts.lookup(path);
+        if (!ref) continue;
+        record = CollectionRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+      }
     } catch {
       report.selected++;
       fail("unreadable-record");
@@ -169,6 +218,22 @@ export async function replayArchiveToIndex(input: {
     else if (outcome.kind === "stale") report.unchanged++;
     else if (outcome.kind === "incomplete") report.incomplete++;
     else fail(outcome.reason);
+  }
+  if (
+    input.checkpoint &&
+    report.ok &&
+    !report.interrupted &&
+    !report.truncated &&
+    report.failed.length === 0
+  ) {
+    await input.checkpoint.save({
+      publicationId: sel.publicationId,
+      ...(sel.commit ? { commit: sel.commit } : {}),
+      indexed: report.indexed,
+      unchanged: report.unchanged,
+      completedAt: new Date().toISOString(),
+    });
+    report.checkpointSaved = true;
   }
   return report;
 }

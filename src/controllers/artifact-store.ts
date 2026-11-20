@@ -559,7 +559,6 @@ export class GitArtifactStore {
    */
   async list(prefix: string, limit: number, after?: string): Promise<string[]> {
     assertArtifactPath(prefix);
-    const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
     // An unreadable or non-Git archive is a failure, not an empty archive.
     try {
       await this.run(["rev-parse", "--git-dir"]);
@@ -568,6 +567,29 @@ export class GitArtifactStore {
     }
     const head = await this.head();
     if (!head) return [];
+    return this.listFrom(head, prefix, limit, after);
+  }
+
+  /**
+   * Paths of artifacts stored under a prefix at one commit, sorted, at most
+   * `limit`. Enumerating the current tree would let a pinned load see paths
+   * that did not exist at that revision, or miss ones removed since (#249).
+   */
+  async listAt(at: string, prefix: string, limit: number, after?: string): Promise<string[]> {
+    assertArtifactPath(prefix);
+    if (!/^[0-9a-f]{40,64}$/.test(at) || !(await this.commitExists(at))) {
+      throw new ArtifactStoreError("git-failed");
+    }
+    return this.listFrom(at, prefix, limit, after);
+  }
+
+  private async listFrom(
+    revision: string,
+    prefix: string,
+    limit: number,
+    after?: string,
+  ): Promise<string[]> {
+    const bound = Math.max(1, Math.min(Math.trunc(limit), 100_000));
     // Streamed and stopped at the bound, so a large archive is never
     // buffered whole. Git lists tree entries in path order.
     const paths = await new Promise<string[]>((resolve, reject) => {
@@ -584,7 +606,7 @@ export class GitArtifactStore {
           "-z",
           "--name-only",
           "--full-tree",
-          head,
+          revision,
           "--",
           `${prefix}/`,
         ],
