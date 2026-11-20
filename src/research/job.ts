@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
-import type { OperationStore } from "../controllers/operation-store.js";
+import type { OperationClaim, OperationStore } from "../controllers/operation-store.js";
 import {
   RESEARCH_COMPLETED_SUBJECT,
   createResearchCompletedEvent,
@@ -109,7 +109,14 @@ export const CitationRecordSchema = z
   .object({
     url: z.url({ protocol: /^https?$/ }),
     retrieval: z.enum(["archived", "inaccessible", "unsupported", "not-attempted"]),
+    /** Sanitised reason when not archived, e.g. "redirected", "unsupported-content", "timeout". */
+    retrievalReason: z.string().max(100).optional(),
     archivedArtifact: Ref.optional(),
+    /**
+     * `supported`: an archived passage directly supports the attributed finding.
+     * `unverified`: retrieved, but only topical or uncertain. `not-checked`: no support check ran.
+     */
+    support: z.enum(["supported", "unverified", "not-checked"]).optional(),
     sourceType: z.string().max(100).optional(),
     confidenceRationale: z.string().max(2000).optional(),
     /** Claim-specific supporting passages in the archived source. */
@@ -212,12 +219,12 @@ const asReference = (r: ArtifactRef) => ({
   hash: `sha256:${r.sha256}`,
 });
 
-async function writeOnce(
+export async function writeOnce(
   store: GitArtifactStore,
   path: string,
   value: unknown,
 ): Promise<ArtifactRef> {
-  const content = `${JSON.stringify(value, null, 2)}\n`;
+  const content = typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`;
   for (let attempt = 0; ; attempt++) {
     try {
       return await store.write(path, content);
@@ -243,7 +250,14 @@ async function writeOnce(
 export const DEFAULT_RUN_LEASE_MS = 30 * 60_000;
 
 export type OpenedResearchJob =
-  | { status: "run"; jobId: string; requestRef: ArtifactRef; owner: string }
+  | {
+      status: "run";
+      jobId: string;
+      requestRef: ArtifactRef;
+      owner: string;
+      claim: OperationClaim;
+      leaseMs: number;
+    }
   | { status: "finished"; jobId: string; requestRef: ArtifactRef; existing: ResearchResult }
   | { status: "busy"; jobId: string; requestRef: ArtifactRef };
 
@@ -279,7 +293,16 @@ export async function openResearchJob(input: {
     input.leaseMs ?? DEFAULT_RUN_LEASE_MS,
     1,
   );
-  if (claim.kind === "claimed") return { status: "run", jobId, requestRef, owner: input.owner };
+  if (claim.kind === "claimed") {
+    return {
+      status: "run",
+      jobId,
+      requestRef,
+      owner: input.owner,
+      claim: claim.claim,
+      leaseMs: input.leaseMs ?? DEFAULT_RUN_LEASE_MS,
+    };
+  }
   if (claim.kind === "busy") return { status: "busy", jobId, requestRef };
   // Exhausted (the single attempt's holder vanished) or a stale completion
   // without a saved result: record an interrupted failure, never re-run.
