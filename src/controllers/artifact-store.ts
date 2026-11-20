@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { watch as watchPath, type FSWatcher } from "node:fs";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join as joinPath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
@@ -102,6 +103,28 @@ export function sha256(content: string): string {
 interface GitResult {
   stdout: string;
   stderr: string;
+}
+
+/** File in the Git directory touched by the wake hook. */
+export const WAKE_SIGNAL = "steele-wake";
+const WAKE_HOOK_MARKER = "steele-wake-hook v1";
+
+/**
+ * reference-transaction hook: on the "committed" state, if the transaction
+ * updated the given branch, touch the wake file. POSIX sh; no network; always
+ * exits 0 so it can never block or fail a ref update.
+ */
+export function wakeHookScript(ref: string): string {
+  return `#!/bin/sh
+# ${WAKE_HOOK_MARKER}: wake the research index worker on committed branch updates.
+[ "$1" = "committed" ] || exit 0
+while read -r old new name; do
+  if [ "$name" = "${ref}" ]; then
+    : > "$(git rev-parse --git-dir)/${WAKE_SIGNAL}" 2>/dev/null || true
+  fi
+done
+exit 0
+`;
 }
 
 export class GitArtifactStore {
@@ -477,7 +500,14 @@ export class GitArtifactStore {
       // No loose refs directory: packed refs below, or polling.
     }
     try {
-      watchers.push(watchPath(gitDir, (_event, name) => name === "packed-refs" && onChange()));
+      // packed-refs changes, and the wake signal written by the installed
+      // reference-transaction hook (see installWakeHook).
+      watchers.push(
+        watchPath(
+          gitDir,
+          (_event, name) => (name === "packed-refs" || name === WAKE_SIGNAL) && onChange(),
+        ),
+      );
     } catch {
       // Polling covers it.
     }
@@ -487,6 +517,34 @@ export class GitArtifactStore {
         for (const w of watchers) w.close();
       },
     };
+  }
+
+  /**
+   * Install a fast `reference-transaction` hook that signals only committed
+   * updates to this store's branch, by touching a wake file the watcher
+   * observes (#251). It does no other work and never blocks the update.
+   * An existing hook that is not ours is left alone and reported.
+   */
+  async installWakeHook(): Promise<"installed" | "unchanged" | "foreign-hook"> {
+    const { stdout } = await this.run(["rev-parse", "--git-dir"]);
+    let gitDir = stdout.trim();
+    if (!isAbsolute(gitDir)) gitDir = joinPath(this.config.repoPath, gitDir);
+    const { stdout: hooksOut } = await this.run(["rev-parse", "--git-path", "hooks"]);
+    let hooksDir = hooksOut.trim();
+    if (!isAbsolute(hooksDir)) hooksDir = joinPath(this.config.repoPath, hooksDir);
+    const path = joinPath(hooksDir, "reference-transaction");
+    const script = wakeHookScript(this.ref);
+    let existing: string | undefined;
+    try {
+      existing = await readFile(path, "utf8");
+    } catch {
+      existing = undefined;
+    }
+    if (existing === script) return "unchanged";
+    if (existing !== undefined && !existing.includes(WAKE_HOOK_MARKER)) return "foreign-hook";
+    await writeFile(path, script, "utf8");
+    await chmod(path, 0o755);
+    return "installed";
   }
 
   private async commitExists(commit: string): Promise<boolean> {
