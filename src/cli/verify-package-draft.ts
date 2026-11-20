@@ -1,7 +1,7 @@
 /**
  * Verify a package draft against its exact evidence package (#150).
  *
- *   verify-package-draft --metadata <articles/.../<key>.json> --source-url <https url> [--revise] [--json]
+ *   verify-package-draft --metadata <articles/.../<key>.json> [--source-url <https url>] [--revise] [--json]
  *
  * Checks the exact saved draft against the exact package and pinned source.
  * Without --revise it saves one report (approved or redraft with passages
@@ -21,7 +21,7 @@ import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
 import { verifyPackageDraft, verifyWithRevisions } from "../drafting/package-verify.js";
 
 const USAGE =
-  "Usage: verify-package-draft --metadata <articles/.../<key>.json> --source-url <https url> [--revise] [--json]";
+  "Usage: verify-package-draft --metadata <articles/.../<key>.json> [--source-url <https url>] [--revise] [--json]";
 const Env = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
@@ -50,7 +50,10 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  const url = z.url({ protocol: /^https$/ }).safeParse(values["source-url"]);
+  const url = z
+    .url({ protocol: /^https$/ })
+    .optional()
+    .safeParse(values["source-url"]);
   if (
     !values.metadata ||
     !/^articles\/[A-Za-z0-9/._-]+\.json$/.test(values.metadata) ||
@@ -111,7 +114,7 @@ async function main(): Promise<number> {
       metadata,
       writer: writer!,
       verifier,
-      sourceUrl: url.data,
+      ...(url.data ? { sourceUrl: url.data } : {}),
     });
     ok = out.outcome === "approved";
     report =

@@ -277,7 +277,7 @@ export async function verifyWithRevisions(input: {
   metadata: ArtifactRef;
   writer: ExtractionModelProvider;
   verifier: ExtractionModelProvider;
-  sourceUrl: string;
+  sourceUrl?: string;
   maxRevisions?: number;
   now?: () => Date;
 }): Promise<RevisionLoopOutcome> {
@@ -321,7 +321,7 @@ export async function verifyWithRevisions(input: {
       archive: input.archive,
       package: input.package,
       provider: input.writer,
-      sourceUrl: input.sourceUrl,
+      ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       revision: {
         number: revisions + 1,
         feedback: substantive.map((i) => ({ passage: i.passage, reason: i.reason })),

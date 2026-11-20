@@ -1,7 +1,7 @@
 /**
  * Draft one article from a saved writer package (#149).
  *
- *   draft-package --package <writer-packages/... path> --source-url <https url> [--model <openrouter model id>] [--json]
+ *   draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--json]
  *
  * Uses the configured model (STEELE_MODEL via OpenRouter). Reads the pinned
  * source text from the archive, validates the model's draft against the
@@ -21,7 +21,7 @@ import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 
 const USAGE =
-  "Usage: draft-package --package <writer-packages/... path> --source-url <https url> [--model <openrouter model id>] [--json]";
+  "Usage: draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--json]";
 const Env = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
@@ -50,7 +50,10 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  const url = z.url({ protocol: /^https$/ }).safeParse(values["source-url"]);
+  const url = z
+    .url({ protocol: /^https$/ })
+    .optional()
+    .safeParse(values["source-url"]);
   if (
     !values.package ||
     !/^writer-packages\/[A-Za-z0-9/._-]+\.json$/.test(values.package) ||
@@ -108,7 +111,7 @@ async function main(): Promise<number> {
     archive,
     package: pkg,
     provider,
-    sourceUrl: url.data,
+    ...(url.data ? { sourceUrl: url.data } : {}),
     ...(requested?.success ? { requestedModel: requested.data } : {}),
     resolvedModel: () => resolved,
   });
