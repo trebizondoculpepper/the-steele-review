@@ -16,8 +16,8 @@
  *   STEELE_RESEARCH_COLLECTION_INDEX?               logical index (alias); default steele-research-collection-v1
  *   STEELE_RESEARCH_COLLECTION_INTERVAL_MS?   periodic reconciliation; default 300000
  *   STEELE_RESEARCH_INDEX_ROUTE?         route name this worker serves; default "default"
- *   STEELE_RESEARCH_REINDEX_CONSUMER?    durable consumer for reindex requests (#232); with
- *                                         NATS_URL, the worker also reconciles on request
+ *   STEELE_RESEARCH_REINDEX_CONSUMER?    durable consumer for reindex requests (#232); when set,
+ *                                         the broker (NATS_URL or NATS_URL_FILE) is required
  *
  * Output is sanitised JSON lines: counts and commits only.
  */
@@ -133,6 +133,23 @@ async function main(): Promise<number> {
     }
   };
 
+  /**
+   * Run a pass for a request, waiting (bounded) while another pass holds the
+   * lease. `keepAlive` extends the message's acknowledgment deadline.
+   */
+  const passWhenFree = async (
+    keepAlive: () => void,
+    signal: AbortSignal,
+  ): Promise<true | false | "busy"> => {
+    const deadline = Date.now() + LEASE_MS;
+    for (;;) {
+      const result = await runPass("request");
+      if (result !== "busy" || Date.now() >= deadline || signal.aborted) return result;
+      keepAlive();
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+  };
+
   try {
     if (once) return (await pass("startup")) ? 0 : 1;
 
@@ -172,8 +189,27 @@ async function main(): Promise<number> {
     const stop = new AbortController();
     let consuming: Promise<void> | undefined;
     let nats: NatsController | undefined;
-    if (c.STEELE_RESEARCH_REINDEX_CONSUMER && process.env.NATS_URL) {
-      const conn = natsConnection();
+    let consumerFailed = false;
+    let stopRunning: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      stopRunning = resolve;
+      process.once("SIGTERM", resolve);
+      process.once("SIGINT", resolve);
+    });
+    if (c.STEELE_RESEARCH_REINDEX_CONSUMER) {
+      // The broker address may come from NATS_URL or NATS_URL_FILE; a missing
+      // broker is a configuration error when request consumption is enabled.
+      let conn;
+      try {
+        conn = natsConnection();
+      } catch (error) {
+        console.error(`research-index-worker: ${describeSetupError(error)}`);
+        stop.abort();
+        clearInterval(interval);
+        clearTimeout(timer);
+        watcher.close();
+        return 2;
+      }
       nats = new NatsController(conn.url, conn.token);
       await nats.connect("steele-research-index");
       const routes = new Set([c.STEELE_RESEARCH_INDEX_ROUTE]);
@@ -183,7 +219,8 @@ async function main(): Promise<number> {
           c.STEELE_RESEARCH_REINDEX_CONSUMER,
           async (message) => {
             const decision = await handleReindexRequest(message.data, routes, () =>
-              runPass("request"),
+              // Wait for an active pass rather than burning redeliveries.
+              passWhenFree(() => message.working(), stop.signal),
             );
             log({ state: "request", ...decision });
             if (decision.action === "ack") await message.ack();
@@ -192,13 +229,21 @@ async function main(): Promise<number> {
           },
           stop.signal,
         )
-        .catch(() => log({ state: "request-consumer-stopped" }));
+        .then(() => {
+          // The consumer only returns early if it stopped on its own.
+          if (!stop.signal.aborted) {
+            consumerFailed = true;
+            stopRunning();
+          }
+        })
+        .catch(() => {
+          consumerFailed = true;
+          stopRunning();
+        });
       log({ state: "consuming-requests", route: c.STEELE_RESEARCH_INDEX_ROUTE });
     }
-    await new Promise<void>((resolve) => {
-      process.once("SIGTERM", resolve);
-      process.once("SIGINT", resolve);
-    });
+    await stopped;
+    if (consumerFailed) log({ state: "request-consumer-stopped" });
     stop.abort();
     await consuming;
     await nats?.close();
@@ -206,7 +251,8 @@ async function main(): Promise<number> {
     clearTimeout(timer);
     watcher.close();
     log({ state: "stopped" });
-    return 0;
+    // Exit non-zero so the supervisor restarts a worker whose request consumer failed.
+    return consumerFailed ? 1 : 0;
   } finally {
     operations.close();
     await es.close();
