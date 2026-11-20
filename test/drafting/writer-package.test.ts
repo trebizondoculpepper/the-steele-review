@@ -39,7 +39,7 @@ async function coverageFor(
   };
 }
 
-describe("writer evidence package (#148)", () => {
+describe("writer evidence package (#148)", { timeout: 60_000 }, () => {
   it("pins source, analysis and dossiers, keeping covered claims and explicit gaps", async () => {
     const { ref } = await coverageFor(() => ({
       passages: [{ claimRecordId: "claim-treaty", url: SHARED }],

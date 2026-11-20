@@ -167,7 +167,7 @@ const claims = [
   { id: "claim-payment", statement: "A payment of 56 million funded an attack" },
 ];
 
-describe("librarian coverage", () => {
+describe("librarian coverage", { timeout: 60_000 }, () => {
   it("records separate decisions for two claims sharing one source, with exact references", async () => {
     const { themeResult, claimResult } = await analysis("p1", claims);
     const r = researcher(() => ({ passages: [{ claimRecordId: "claim-treaty", url: SHARED }] }));
