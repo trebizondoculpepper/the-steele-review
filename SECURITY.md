@@ -10,6 +10,8 @@ Generic configuration variable names, synthetic placeholders, controller interfa
 
 ## Local development exception
 
+The user also permits a root `secret.md` file containing local pointers to credential locations. Treat its contents as private configuration: owner-readable only, Git-ignored, excluded from builds/packages, and never uploaded or reproduced in logs or public collaboration. Prefer references to existing credential files rather than copying secret values. This is a narrow exception to the prohibition on local infrastructure information; tracked files may describe the convention but must not contain the private pointers themselves.
+
 The user explicitly permits an unversioned local `.env` containing development connection configuration. It must be Git-ignored, owner-readable only, and excluded from Docker build contexts and every distributed artifact. Do not upload it to CI, embed its values in compiled code, or expose it through frontend environment substitution. Runtime configuration must be supplied separately from application images.
 
 An ignore rule alone is insufficient: check whether sensitive files are already tracked and whether packaging scripts explicitly include them. Never force-add a private configuration file.

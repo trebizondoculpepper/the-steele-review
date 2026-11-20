@@ -34,6 +34,8 @@ This is a public, open-source repository. Do not create, copy, or commit confide
 
 Explicit user-authorised exception: a local, non-versioned `.env` may contain private development connection configuration. Keep it Git-ignored, excluded from Docker build contexts, readable only by its owner, and out of logs and public artifacts. This exception does not permit infrastructure documentation or committing private values.
 
+Additional user-authorised exception: root `secret.md` is a local, non-versioned credential-location pointer file. Consult it when authorised development or deployment requires private configuration. Prefer pointers to the existing private files over duplicated secret values. Keep it Git-ignored, owner-readable only, excluded from Docker builds and other packaged artifacts, and out of public documentation, logs, issues and pull requests. Never commit or force-add it. This exception does not permit copying the referenced infrastructure documentation or credentials into tracked files.
+
 Keep home lab infrastructure documentation and private connection information in the separate Mind of Steele project. Consult that project when authorised access is needed; do not duplicate its private details here.
 
 Prohibited material includes credentials, tokens, private keys, actual hostnames and addresses, SSH connection details, private service URLs, deployment inventories, and host-specific administration instructions. Do not reproduce these details in project tickets or other public collaboration surfaces.

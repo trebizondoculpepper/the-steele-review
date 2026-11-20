@@ -5,3 +5,16 @@ dist/
 !.env.example
 pdb.toml
 .firecrawl/
+/secret.md
+
+# agent-inbox: generated wake hook; carries this machine's interpreter path. Never commit.
+/.opencode/plugins/agent-inbox-wake.js
+
+# agent-inbox: per-machine wake state (what was announced, who is waiting). Never commit.
+/.agent-mailbox-seen*.json
+
+# agent-inbox: per-machine wake state (what was announced, who is waiting). Never commit.
+/.agent-mailbox-wake*.lock
+
+# agent-inbox: identity and possibly a device token. Never commit.
+agent-inbox.toml
