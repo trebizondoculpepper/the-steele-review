@@ -12,6 +12,7 @@ import {
   EmbeddingShortlister,
   LexicalShortlister,
   assessPostCoverage,
+  mergeCoverage,
 } from "../../src/research/librarian.js";
 
 const TEXT = "A treaty bans weather weapons. They paid 56 million for the attack.";
@@ -353,6 +354,100 @@ describe("librarian coverage", () => {
       "claim-payment": "claimant-only",
       "claim-treaty": "no-independent-evidence",
     });
+  });
+
+  it("keeps the same request after partial success, so reassessment never re-researches", async () => {
+    const a = await analysis("p1", claims);
+    const r = researcher(() => ({ passages: [{ claimRecordId: "claim-treaty", url: SHARED }] }));
+    const one = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const two = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(new Set(r.requests.map((q) => researchJobId(q))).size).toBe(1);
+    const treaty = two.record.claims.find((c) => c.claimRecordId === "claim-treaty")!;
+    expect(treaty).toMatchObject({ status: "evidence-found", reused: true });
+    expect(treaty.evidenceFrom?.dossier.path).toBe(
+      `dossier/${one.record.mappings[0].dossierId}.md`,
+    );
+  });
+
+  it("splits a dossier's claims into requests of at most 100", async () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      id: `claim-${String(i).padStart(3, "0")}`,
+      statement: `Claim number ${i}`,
+    }));
+    const a = await analysis("p1", many);
+    const r = researcher(() => ({ passages: [] }));
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(r.requests.map((q) => q.claims.length)).toEqual([100, 50]);
+  });
+
+  it("refuses a claim result extracted against a different theme result", async () => {
+    const a = await analysis("p1", claims);
+    const b = await analysis("p2", claims, "Something else");
+    const mixed = await artifacts.write(
+      "claim-extractions/pub/p1/mixed.json",
+      (await artifacts.read(b.claimResult)).replace('"postId":"p2"', '"postId":"p1"'),
+    );
+    await expect(
+      assessPostCoverage({
+        artifacts,
+        themeResult: a.themeResult,
+        claimResult: mixed,
+        commission: researcher(() => "failed").commission,
+        shortlister: new LexicalShortlister(),
+      }),
+    ).rejects.toThrow("different theme result");
+  });
+
+  it("never lets a later gap erase evidence already saved, and does not record http-only support", () => {
+    const base = {
+      schemaVersion: 1 as const,
+      themeId: "t",
+      title: "T",
+      scope: "S",
+      claims: [{ claimId: "c1", status: "covered" as const, citations: ["c-x"] }],
+      citations: [
+        { id: "c-x", url: "https://a.example/", title: "a", passage: "p", checkedAt: "2026-01-01" },
+      ],
+      gaps: [],
+      updatedAt: "2026-01-01",
+    };
+    const merged = mergeCoverage(
+      base,
+      [
+        { claimRecordId: "c1", status: "research-failed", citations: [], reason: "late failure" },
+        {
+          claimRecordId: "c2",
+          status: "evidence-found",
+          citations: [{ url: "http://insecure.example/", passage: "q" }],
+        },
+      ],
+      "2026-01-02",
+    );
+    expect(merged.claims.find((c) => c.claimId === "c1")).toMatchObject({ status: "covered" });
+    expect(merged.claims.find((c) => c.claimId === "c2")).toMatchObject({ status: "gap" });
+  });
+
+  it("falls back when an embedding response is malformed", async () => {
+    const bad = new EmbeddingShortlister({ vectorSpace: "s", embed: async () => [[1, 0]] }, "s");
+    const list = await bad.shortlist({ title: "x", description: "" }, [
+      { themeId: "a", title: "x", scope: "y" },
+    ]);
+    expect(list).toMatchObject({ method: "lexical", limitation: "embedding response invalid" });
   });
 
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {

@@ -13,6 +13,7 @@ import {
 import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
+  ResearchResultSchema,
   type ResearchManifest,
   type ResearchRequest,
   type ResearchResult,
@@ -149,6 +150,14 @@ export class EmbeddingShortlister implements ThemeShortlister {
     } catch {
       return new LexicalShortlister("embedding unavailable").shortlist(theme, dossiers);
     }
+    const width = vectors[0]?.length ?? 0;
+    const valid =
+      Array.isArray(vectors) &&
+      vectors.length === dossiers.length + 1 &&
+      width > 0 &&
+      vectors.every((v) => Array.isArray(v) && v.length === width && v.every(Number.isFinite));
+    if (!valid)
+      return new LexicalShortlister("embedding response invalid").shortlist(theme, dossiers);
     const [q, ...rest] = vectors;
     const candidates = dossiers
       .map((d, i) => ({ ...d, score: cosine(q, rest[i]) }))
@@ -241,6 +250,10 @@ export const CoverageRecordSchema = z
           reused: z.boolean(),
           jobIds: z.array(z.string()),
           citations: z.array(z.object({ url: z.string(), passage: z.string() }).strict()),
+          evidenceFrom: z
+            .object({ dossier: Ref, citationIds: z.array(z.string()) })
+            .strict()
+            .optional(),
           reason: z.string().optional(),
         })
         .strict(),
@@ -338,11 +351,14 @@ function assess(
     }
     const independent: { url: string; passage: string }[] = [];
     let claimantOnly = false;
+    let insecureOnly = false;
     for (const c of manifest.citations) {
       for (const p of c.passages) {
         if (p.claimRecordId !== claim.claimRecordId) continue;
         if (c.sourceType === "monitored-source") claimantOnly = true;
-        else independent.push({ url: c.url, passage: p.passage });
+        // Dossier citations are https-only; plain-http support is not recorded as evidence.
+        else if (c.url.startsWith("https://")) independent.push({ url: c.url, passage: p.passage });
+        else insecureOnly = true;
       }
     }
     if (independent.length > 0)
@@ -357,12 +373,19 @@ function assess(
       out.set(claim.claimRecordId, {
         status: "no-independent-evidence",
         citations: [],
-        reason: "no independent supporting source was found after a search",
+        reason: insecureOnly
+          ? "supporting passages were found only on non-https sources, which are not recorded"
+          : "no independent supporting source was found after a search",
       });
     }
   }
   return out;
 }
+
+/** Schema limit on claims and citations held by one dossier. */
+const MAX_DOSSIER_ENTRIES = 1000;
+/** The researcher's per-request claim limit. */
+const MAX_REQUEST_CLAIMS = 100;
 
 const citationId = (url: string, passage: string) =>
   `c-${createHash("sha256")
@@ -383,12 +406,22 @@ export function mergeCoverage(
 ): DossierMetadata {
   const citations = new Map(metadata.citations.map((c) => [c.id, c]));
   const coverage = new Map(metadata.claims.map((c) => [c.claimId, c]));
+  const overflow: string[] = [];
   for (const claim of claims) {
     if (claim.status === "pending") continue;
+    // Never let a later failed or unsupported assessment erase evidence another
+    // assessment has already saved for the same claim.
+    const saved = coverage.get(claim.claimRecordId);
+    if (saved?.status === "covered" && claim.status !== "evidence-found") continue;
+    if (!saved && coverage.size >= MAX_DOSSIER_ENTRIES) {
+      overflow.push(claim.claimRecordId);
+      continue;
+    }
     const ids: string[] = [];
     for (const c of claim.citations) {
       if (!c.url.startsWith("https://")) continue;
       const id = citationId(c.url, c.passage);
+      if (!citations.has(id) && citations.size >= MAX_DOSSIER_ENTRIES) continue;
       if (!citations.has(id)) {
         citations.set(id, {
           id,
@@ -411,10 +444,16 @@ export function mergeCoverage(
           },
     );
   }
-  const gaps = [...coverage.values()]
-    .filter((c) => c.status === "gap")
-    .map((c) => `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000))
-    .slice(0, 200);
+  const gaps = [
+    ...(overflow.length > 0
+      ? [
+          `Dossier capacity reached: ${overflow.length} claim(s) recorded only in their coverage records.`,
+        ]
+      : []),
+    ...[...coverage.values()]
+      .filter((c) => c.status === "gap")
+      .map((c) => `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000)),
+  ].slice(0, 200);
   return {
     ...metadata,
     citations: [...citations.values()],
@@ -487,10 +526,23 @@ export async function assessPostCoverage(input: {
   ) {
     throw new Error("theme and claim results belong to different posts");
   }
+  if (
+    claimRecord.themeResult &&
+    claimRecord.themeResult !== `${input.themeResult.commit}:${input.themeResult.path}`
+  ) {
+    throw new Error("claim result was extracted against a different theme result");
+  }
   const dossiers = new DossierStore(input.artifacts);
   const summaries: DossierSummary[] = [];
   const existing = new Map<string, StoredDossier>();
-  for (const path of await input.artifacts.list("dossier", 1000)) {
+  const paths: string[] = [];
+  for (let after: string | undefined; ;) {
+    const page = await input.artifacts.list("dossier", 1000, after);
+    paths.push(...page);
+    if (page.length < 1000) break;
+    after = page[page.length - 1];
+  }
+  for (const path of paths) {
     const id = /^dossier\/([^/]+)\.md$/.exec(path)?.[1];
     if (!id) continue;
     const d = await dossiers.current(id).catch(() => undefined);
@@ -540,13 +592,10 @@ export async function assessPostCoverage(input: {
       });
       continue;
     }
-    const prior = existing
-      .get(home)
-      ?.metadata.claims.find((c) => c.claimId === claim.claimRecordId);
-    if (prior?.status === "covered") {
-      const cites = existing
-        .get(home)!
-        .metadata.citations.filter((c) => prior.citations.includes(c.id));
+    const homeDossier = existing.get(home);
+    const prior = homeDossier?.metadata.claims.find((c) => c.claimId === claim.claimRecordId);
+    if (homeDossier && prior?.status === "covered") {
+      const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
       outcomes.set(claim.claimRecordId, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
@@ -555,9 +604,12 @@ export async function assessPostCoverage(input: {
         reused: true,
         jobIds: [],
         citations: cites.map((c) => ({ url: c.url, passage: c.passage })),
+        // The exact dossier version the reused evidence was read from.
+        evidenceFrom: { dossier: toRef(homeDossier.ref), citationIds: prior.citations },
       });
-      continue;
     }
+    // Every claim stays in its dossier's group, so the request for this
+    // analysis is identical on every assessment (reused claims included).
     groups.set(home, [...(groups.get(home) ?? []), claim]);
   }
 
@@ -596,15 +648,28 @@ export async function assessPostCoverage(input: {
       // analysis reuses the same job instead of commissioning new research.
       corpusRefs: [],
     };
-    const job = await input.commission(request);
+    const commissioned = await input.commission(request);
+    // Assess the saved result and manifest through their exact pinned
+    // references, never an in-memory copy or whatever a path holds now.
+    const job: CommissionedJob = commissioned.resultRef
+      ? {
+          ...commissioned,
+          result: ResearchResultSchema.parse(
+            JSON.parse(await input.artifacts.read(commissioned.resultRef)),
+          ),
+        }
+      : commissioned;
     let manifest: ResearchManifest | undefined;
     let manifestRef: ArtifactRef | undefined;
     if (job.status === "finished" && job.result?.manifest) {
-      manifestRef = await input.artifacts.lookup(job.result.manifest.path);
-      if (manifestRef)
-        manifest = ResearchManifestSchema.parse(
-          JSON.parse(await input.artifacts.read(manifestRef)),
-        );
+      const m = job.result.manifest;
+      manifestRef = {
+        repository: m.repository,
+        commit: m.commit,
+        path: m.path,
+        sha256: m.hash.replace(/^sha256:/, ""),
+      };
+      manifest = ResearchManifestSchema.parse(JSON.parse(await input.artifacts.read(manifestRef)));
     }
     jobs.push({
       jobId: job.jobId,
@@ -617,9 +682,19 @@ export async function assessPostCoverage(input: {
     return { job, assessed: assess(group, job, manifest) };
   };
 
-  for (const [dossierId, group] of groups) {
+  for (const [dossierId, all] of groups) {
+    // Nothing to research when every claim is already covered.
+    if (all.every((c) => outcomes.get(c.claimRecordId)?.reused)) continue;
+    const sorted = [...all].sort((a, b) => a.claimRecordId.localeCompare(b.claimRecordId));
+    for (let start = 0; start < sorted.length; start += MAX_REQUEST_CLAIMS) {
+      await assessGroup(dossierId, sorted.slice(start, start + MAX_REQUEST_CLAIMS));
+    }
+  }
+
+  async function assessGroup(dossierId: string, group: AcceptedClaim[]) {
     const first = await run(dossierId, group, 1);
     for (const claim of group) {
+      if (outcomes.get(claim.claimRecordId)?.reused) continue;
       const a = first.assessed.get(claim.claimRecordId)!;
       outcomes.set(claim.claimRecordId, {
         claimRecordId: claim.claimRecordId,
@@ -634,6 +709,7 @@ export async function assessPostCoverage(input: {
     // 4. One targeted second pass for consequential, unsupported claims.
     const followUp = group.filter(
       (c) =>
+        !outcomes.get(c.claimRecordId)?.reused &&
         outcomes.get(c.claimRecordId)?.status === "no-independent-evidence" &&
         (input.consequential?.(c) ?? false),
     );
@@ -649,7 +725,9 @@ export async function assessPostCoverage(input: {
           // second pass is recorded as such rather than hidden behind pass 1.
           ...(a.status === "evidence-found"
             ? { status: a.status, citations: a.citations, reason: undefined }
-            : a.status === "pending" || a.status === "research-failed"
+            : a.status === "pending" ||
+                a.status === "research-failed" ||
+                a.status === "claimant-only"
               ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
               : {}),
         });
@@ -705,5 +783,7 @@ export async function assessPostCoverage(input: {
     `librarian/coverage/${post.publicationId}/${post.postId}/${key}.json`,
     record,
   );
-  return { record, ref };
+  // An unchanged reassessment maps to an earlier record; return what is stored there.
+  const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+  return { record: stored, ref };
 }
