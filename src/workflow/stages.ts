@@ -17,7 +17,7 @@ import {
 } from "../research/librarian.js";
 import { runResearchJob, type SupportJudge } from "../research/runner.js";
 import type { SonarClient } from "../research/sonar.js";
-import type { ArticleStages, PinnedResearch, Ref } from "./article-run.js";
+import { StageError, type ArticleStages, type PinnedResearch, type Ref } from "./article-run.js";
 
 /**
  * The real stages for an unattended article run (#243), composed from the
@@ -25,16 +25,6 @@ import type { ArticleStages, PinnedResearch, Ref } from "./article-run.js";
  * for the same inputs: theme and claim results, research jobs, coverage
  * records, packages and drafts are content-addressed or reuse saved results.
  */
-
-export class StageError extends Error {
-  constructor(
-    readonly stage: string,
-    readonly reason: string,
-  ) {
-    super(`${stage}: ${reason}`);
-    this.name = "StageError";
-  }
-}
 
 const plain = (r: ArtifactRef): Ref => ({
   repository: r.repository,
@@ -106,7 +96,11 @@ export function articleStages(deps: {
           },
         },
       });
-      if (out.status !== "proposed") throw new StageError("themes", out.reason);
+      if (out.status !== "proposed") {
+        // A provider failure may be transient (bounded retry); the rest are permanent.
+        if (out.reason === "provider-failed") throw new Error("themes: provider-failed");
+        throw new StageError("themes", out.reason);
+      }
       return plain(out.ref);
     },
 
@@ -138,7 +132,10 @@ export function articleStages(deps: {
           ...transcriptTimingsFor(record),
         },
       });
-      if (out.status !== "extracted") throw new StageError("claims", out.reason);
+      if (out.status !== "extracted") {
+        if (out.reason === "provider-failed") throw new Error("claims: provider-failed");
+        throw new StageError("claims", out.reason);
+      }
       return plain(out.recordRef);
     },
 

@@ -94,11 +94,13 @@ async function main(): Promise<number> {
   const wf = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
   let submitted: "started" | "already-running";
   try {
-    await wf.workflowSubmit(input);
-    submitted = "started";
+    // Restate reports an existing run for this key as PreviouslyAccepted.
+    const submission = await wf.workflowSubmit(input);
+    submitted = submission.status === "PreviouslyAccepted" ? "already-running" : "started";
   } catch {
-    // A workflow keyed by this revision already exists: attach rather than restart.
-    submitted = "already-running";
+    // Unavailable or rejected: nothing may have been started, so say so.
+    console.error(JSON.stringify({ event: "article-run", key, outcome: "submission-failed" }));
+    return 1;
   }
   if (!values.wait) {
     const out = { event: "article-run", key, submitted };

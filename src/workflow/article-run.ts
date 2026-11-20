@@ -1,4 +1,5 @@
 import * as restate from "@restatedev/restate-sdk";
+import { z } from "zod";
 import { researchJobId, type ResearchRequest } from "../research/job.js";
 import type { CommissionedJob } from "../research/librarian.js";
 
@@ -109,105 +110,162 @@ export function researchService(stages: Pick<ArticleStages, "research">) {
 }
 export type ResearchServiceApi = ReturnType<typeof researchService>;
 
+/** A deterministic stage failure (bad input, exhausted extraction): never retried. */
+export class StageError extends Error {
+  constructor(
+    readonly stage: string,
+    readonly reason: string,
+  ) {
+    super(`${stage}: ${reason}`);
+    this.name = "StageError";
+  }
+}
+
+/** Validated at the workflow boundary: requests can reach Restate without the CLI. */
+export const ArticleRunInputSchema = z
+  .object({
+    publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+    postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+    sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    sourceUrl: z.url({ protocol: /^https$/ }),
+    researchDeadlineMs: z.number().int().min(1_000).max(86_400_000),
+  })
+  .strict();
+
+/** Transient stage failures are retried a bounded number of times. */
+const STEP_RETRY = { maxRetryAttempts: 5 } as const;
+
 export function articleRunWorkflow(stages: ArticleStages) {
   // Only the shape is used for typed calls; handlers run in the Research service.
   const Research = researchService(stages);
+
+  async function runStages(
+    ctx: restate.WorkflowContext,
+    input: ArticleRunInput,
+  ): Promise<ArticleRunResult> {
+    // A StageError is deterministic: terminal, not retried; others retry boundedly.
+    const step = <T>(name: string, fn: () => Promise<T>) =>
+      ctx.run(
+        name,
+        async () => {
+          try {
+            return await fn();
+          } catch (error) {
+            if (error instanceof StageError) throw new restate.TerminalError(error.message);
+            throw error;
+          }
+        },
+        STEP_RETRY,
+      );
+
+    // The deadline clock starts at submission: journaled once, fixed on replay.
+    const submittedAt = await ctx.date.now();
+    const deadline = submittedAt + input.researchDeadlineMs;
+
+    const themes = await step("themes", () => stages.themes(input));
+    const claims = await step("claims", () => stages.claims(input, themes));
+    const requests = await step("plan-research", () => stages.planResearch(themes, claims));
+
+    // Fan out every request at once; the scope's concurrency rule queues extras.
+    const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
+    requests.forEach((request, i) => {
+      const jobId = researchJobId(request);
+      pending.set(
+        i,
+        ctx
+          .scope(RESEARCH_SCOPE)
+          .serviceClient(Research)
+          .run(request, restate.rpc.opts({ idempotencyKey: jobId, limitKey: "sonar" }))
+          // A research call that fails terminally is pinned as a failed job,
+          // never allowed to fail the article run.
+          .map((job, failure) => (failure ? { i } : { i, job: job! })),
+      );
+    });
+    const harvested = new Map<number, CommissionedJob | null>();
+    const remainingMs = deadline - (await ctx.date.now());
+    if (pending.size > 0 && remainingMs > 0) {
+      const timer = ctx
+        .sleep(remainingMs, "research-deadline")
+        .map(() => ({ i: -1, job: undefined }));
+      while (pending.size > 0) {
+        const next = await restate.RestatePromise.race([...pending.values(), timer]);
+        if (next.i === -1) break; // deadline reached: pin what we have
+        harvested.set(next.i, next.job ?? null);
+        pending.delete(next.i);
+      }
+    }
+    const pinned: PinnedResearch[] = requests.map((request, i) => {
+      const jobId = researchJobId(request);
+      const job = harvested.get(i);
+      if (job) return { jobId, request, outcome: "finished", job };
+      return { jobId, request, outcome: job === null ? "failed" : "timed-out" };
+    });
+    const research = pinned.map((p) => ({ jobId: p.jobId, outcome: p.outcome }));
+
+    const coverage = await step("coverage", () => stages.coverage(themes, claims, pinned));
+    const pkg = await step("package", () => stages.package(coverage));
+    if (pkg.status !== "ready") {
+      return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };
+    }
+    const drafted = await step("draft", () => stages.draft(pkg.ref, input.sourceUrl));
+    if (!drafted.ref) {
+      return {
+        outcome: "failed",
+        reason: drafted.failure ?? "draft-failed",
+        themes,
+        claims,
+        coverage,
+        package: pkg.ref,
+        research,
+      };
+    }
+    const verified = await step("verify", () => stages.verify(drafted.ref!, pkg.ref));
+    if (verified.unavailable) {
+      return {
+        outcome: "drafted-unverified",
+        reason: verified.unavailable,
+        themes,
+        claims,
+        coverage,
+        package: pkg.ref,
+        draft: drafted.ref,
+        research,
+      };
+    }
+    return {
+      outcome: verified.approved ? "verified" : "rejected",
+      themes,
+      claims,
+      coverage,
+      package: pkg.ref,
+      draft: drafted.ref,
+      ...(verified.ref ? { verification: verified.ref } : {}),
+      research,
+    };
+  }
+
   return restate.workflow({
     name: "ArticleRun",
     handlers: {
-      run: async (
-        ctx: restate.WorkflowContext,
-        input: ArticleRunInput,
-      ): Promise<ArticleRunResult> => {
-        // The deadline clock starts at submission: journaled once, fixed on replay.
-        const submittedAt = await ctx.date.now();
-        const deadline = submittedAt + input.researchDeadlineMs;
-
-        const themes = await ctx.run("themes", () => stages.themes(input));
-        const claims = await ctx.run("claims", () => stages.claims(input, themes));
-        const requests = await ctx.run("plan-research", () => stages.planResearch(themes, claims));
-
-        // Fan out every request at once; the scope's concurrency rule queues extras.
-        const pending = new Map<
-          number,
-          restate.RestatePromise<{ i: number; job?: CommissionedJob }>
-        >();
-        requests.forEach((request, i) => {
-          const jobId = researchJobId(request);
-          pending.set(
-            i,
-            ctx
-              .scope(RESEARCH_SCOPE)
-              .serviceClient(Research)
-              .run(request, restate.rpc.opts({ idempotencyKey: jobId, limitKey: "sonar" }))
-              // A research call that fails terminally is pinned as a failed job,
-              // never allowed to fail the article run.
-              .map((job, failure) => (failure ? { i } : { i, job: job! })),
-          );
-        });
-        const harvested = new Map<number, CommissionedJob | null>();
-        const remainingMs = deadline - (await ctx.date.now());
-        if (pending.size > 0 && remainingMs > 0) {
-          const timer = ctx
-            .sleep(remainingMs, "research-deadline")
-            .map(() => ({ i: -1, job: undefined }));
-          while (pending.size > 0) {
-            const next = await restate.RestatePromise.race([...pending.values(), timer]);
-            if (next.i === -1) break; // deadline reached: pin what we have
-            harvested.set(next.i, next.job ?? null);
-            pending.delete(next.i);
+      run: async (ctx: restate.WorkflowContext, raw: ArticleRunInput): Promise<ArticleRunFinal> => {
+        const parsed = ArticleRunInputSchema.safeParse(raw);
+        if (!parsed.success) return { outcome: "failed", reason: "invalid-input", research: [] };
+        try {
+          return await runStages(ctx, parsed.data);
+        } catch (error) {
+          // A permanent stage failure ends the run with its recorded reason.
+          if (error instanceof restate.TerminalError) {
+            return { outcome: "failed", reason: error.message.slice(0, 300), research: [] };
           }
+          throw error;
         }
-        const pinned: PinnedResearch[] = requests.map((request, i) => {
-          const jobId = researchJobId(request);
-          const job = harvested.get(i);
-          if (job) return { jobId, request, outcome: "finished", job };
-          return { jobId, request, outcome: job === null ? "failed" : "timed-out" };
-        });
-        const research = pinned.map((p) => ({ jobId: p.jobId, outcome: p.outcome }));
-
-        const coverage = await ctx.run("coverage", () => stages.coverage(themes, claims, pinned));
-        const pkg = await ctx.run("package", () => stages.package(coverage));
-        if (pkg.status !== "ready") {
-          return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };
-        }
-        const drafted = await ctx.run("draft", () => stages.draft(pkg.ref, input.sourceUrl));
-        if (!drafted.ref) {
-          return {
-            outcome: "failed",
-            reason: drafted.failure ?? "draft-failed",
-            themes,
-            claims,
-            coverage,
-            package: pkg.ref,
-            research,
-          };
-        }
-        const verified = await ctx.run("verify", () => stages.verify(drafted.ref!, pkg.ref));
-        if (verified.unavailable) {
-          return {
-            outcome: "drafted-unverified",
-            reason: verified.unavailable,
-            themes,
-            claims,
-            coverage,
-            package: pkg.ref,
-            draft: drafted.ref,
-            research,
-          };
-        }
-        return {
-          outcome: verified.approved ? "verified" : "rejected",
-          themes,
-          claims,
-          coverage,
-          package: pkg.ref,
-          draft: drafted.ref,
-          ...(verified.ref ? { verification: verified.ref } : {}),
-          research,
-        };
       },
     },
   });
 }
+
+/** A run's final result: a full result, or a failure before stage outputs existed. */
+export type ArticleRunFinal =
+  | ArticleRunResult
+  | { outcome: "failed"; reason: string; research: [] };
 export type ArticleRunApi = ReturnType<typeof articleRunWorkflow>;

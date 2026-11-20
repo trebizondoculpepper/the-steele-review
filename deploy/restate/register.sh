@@ -8,4 +8,4 @@ curl -fsS -X POST "$ADMIN/deployments" -H 'content-type: application/json' \
   -d "{\"uri\": \"$WORKER\", \"force\": true}" >/dev/null
 curl -fsS -X PUT "$ADMIN/limits/rules" -H 'content-type: application/json' \
   -d '[{"pattern": "research", "limits": {"concurrency": 2}, "description": "Active Sonar research jobs (#243)"}]' >/dev/null
-echo "registered $WORKER; research concurrency limited to 2"
+echo "worker registered; research concurrency limited to 2"

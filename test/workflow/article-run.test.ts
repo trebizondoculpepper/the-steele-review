@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -5,6 +6,7 @@ import type { ResearchRequest } from "../../src/research/job.js";
 import { researchJobId } from "../../src/research/job.js";
 import {
   RESEARCH_CONCURRENCY_RULE,
+  StageError,
   articleRunKey,
   articleRunWorkflow,
   researchService,
@@ -48,7 +50,11 @@ const pinnedByPost = new Map<string, PinnedResearch[]>();
 const plans = new Map<string, string[]>();
 
 const stages: ArticleStages = {
-  themes: async (post) => (calls.themes++, ref(`theme-proposals/${post.postId}.json`)),
+  themes: async (post) => {
+    calls.themes++;
+    if (post.postId === "incomplete") throw new StageError("source", "incomplete-capture");
+    return ref(`theme-proposals/${post.postId}.json`);
+  },
   claims: async (post) => (calls.claims++, ref(`claim-extractions/${post.postId}.json`)),
   planResearch: async (themes) => {
     calls.plan++;
@@ -119,7 +125,7 @@ afterAll(async () => {
 const input = (postId: string): ArticleRunInput => ({
   publicationId: "pub",
   postId,
-  sourceVersion: `sha256:${postId.padEnd(64, "0")}`,
+  sourceVersion: `sha256:${createHash("sha256").update(postId).digest("hex")}`,
   sourceUrl: `https://pub.example.com/p/${postId}`,
   researchDeadlineMs: 6_000,
 });
@@ -173,4 +179,21 @@ describe("unattended article run on Restate (#243)", () => {
     // Jobs still queued or running at the cutoff are gaps, not blockers.
     expect([...a.research, ...b.research].some((r) => r.outcome === "timed-out")).toBe(true);
   }, 180_000);
+
+  it("ends a run with a recorded reason on a permanent stage failure or invalid input, without retrying", async () => {
+    const before = calls.themes;
+    const bad = ingress.workflowClient(Workflow, articleRunKey(input("incomplete")));
+    await bad.workflowSubmit(input("incomplete"));
+    expect(await bad.workflowAttach()).toMatchObject({
+      outcome: "failed",
+      reason: expect.stringContaining("incomplete-capture"),
+    });
+    expect(calls.themes).toBe(before + 1);
+    const invalid = ingress.workflowClient(Workflow, "pub/invalid@x");
+    await invalid.workflowSubmit({ ...input("invalid"), researchDeadlineMs: -1 });
+    expect(await invalid.workflowAttach()).toMatchObject({
+      outcome: "failed",
+      reason: "invalid-input",
+    });
+  }, 60_000);
 });
