@@ -80,3 +80,11 @@ Retry transient network and service failures with backoff and bounded attempts. 
 Persist publication intent and the destination draft ID before attempting publication. If a call has an uncertain result, query the existing draft/post to reconcile its status. Never create a fresh article merely because a publish response was lost. If reconciliation is inconclusive, retain `publication_uncertain` and stop automatic publication for that item until status can be established.
 
 Technical uncertainty is not an editorial skip. Do not claim exactly-once publishing unless the destination actually supports an appropriate idempotency mechanism.
+
+## Shared stream and message registry
+
+`src/events/registry.ts` is the single inventory of JetStream streams and application subjects. Subjects are `steele.v1.<area>.<event>`; streams are `STEELE_<RESPONSIBILITY>`, one per responsibility (never per post, theme or claim). Existing deployed names are kept. Each stream's name can be overridden with its configured environment variable; subjects are fixed contract identities.
+
+`provision` creates streams from the registry, so there is no second handwritten list. The reference at [generated/streams-and-messages.md](generated/streams-and-messages.md) is generated with `npm run events:reference`; tests fail if it drifts, if a subject is captured by two streams, if a stream subject has no message definition, or if a name breaks the convention.
+
+To add a message: export its subject and event type beside its schema, add a `MESSAGES` entry, assign it to an existing stream whose purpose fits or add a `STREAMS` entry, then regenerate the reference. Changing an existing deployed stream's subjects is a migration: document and scope it separately before changing live configuration.
