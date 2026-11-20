@@ -318,3 +318,31 @@ describe("preview image (#277)", () => {
     expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
   });
 });
+
+describe("preview image validation (#277)", () => {
+  const POST = "/api/v1/posts/a-post";
+  it("omits a malformed or non-HTTPS cover instead of failing collection", async () => {
+    for (const cover_image of ["not-a-url", "http://example.test/art.png"]) {
+      const result = await collector({ [POST]: { ...basePost, cover_image } }).c.collect(item);
+      expect(result).toMatchObject({ kind: "text" });
+      expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+    }
+  });
+
+  it("keeps the image when the post needs transcription", async () => {
+    const cover = "https://substackcdn.com/public/images/uuid_1200x800.png";
+    const result = await collector({
+      [POST]: {
+        ...basePost,
+        type: "podcast",
+        cover_image: cover,
+        podcast_url: "https://api.substack.com/audio/1.mp3",
+        podcastUpload: { id: "u9", duration: 30, transcription: { status: "pending" } },
+      },
+    }).c.collect(item);
+    expect(result).toMatchObject({
+      kind: "transcription-required",
+      previewImage: { url: cover, kind: "uploaded" },
+    });
+  });
+});

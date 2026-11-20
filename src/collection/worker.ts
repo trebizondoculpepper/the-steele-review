@@ -313,6 +313,7 @@ export class CollectionWorker {
               text: s.text,
             })),
           },
+          ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
           provenance: {
             ...acquired.provenance,
             method,

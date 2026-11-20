@@ -1,7 +1,7 @@
 import { convert } from "html-to-text";
 import { z } from "zod";
 import type { SubstackItem } from "../../content/substack-item.js";
-import type { PreviewImage } from "../../collection/collection-store.js";
+import { PreviewImageSchema, type PreviewImage } from "../../collection/collection-store.js";
 import {
   DiscoveryFetchError,
   boundedFetchText,
@@ -72,6 +72,8 @@ export interface TranscriptionRequired {
     | { kind: "video"; uploadId: string; durationSeconds?: number };
   /** Accessible article text to keep alongside the future transcript. */
   articleText?: string;
+  /** The post's own preview image, kept across the transcription step (#277). */
+  previewImage?: PreviewImage;
   provenance: Omit<CollectionProvenance, "method">;
 }
 
@@ -147,11 +149,13 @@ function derivePreviewImage(
   if (post.cover_image_is_explicit === true) return undefined;
   if (url === GENERIC_PODCAST_ART) return undefined;
   if (url === publication.logo || url === publication.cover) return undefined;
-  return {
+  // A malformed or non-HTTPS cover must not fail the whole collection record.
+  const parsed = PreviewImageSchema.safeParse({
     url,
     source: "cover_image",
     kind: /\/video_upload\//.test(url) ? "video-frame" : "uploaded",
-  };
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 type Post = z.infer<typeof PostSchema>;
 
@@ -307,6 +311,7 @@ export class SubstackContentCollector {
         item,
         media,
         articleText: articleText || undefined,
+        ...(previewImage ? { previewImage } : {}),
         provenance: baseProvenance,
       };
     }
