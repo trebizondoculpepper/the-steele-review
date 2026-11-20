@@ -512,4 +512,19 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       await draftFromPackage({ content, archive, package: ref, provider: model(GOOD) }),
     ).toEqual({ status: "failed", reason: "no-source-url" });
   });
+
+  it("makes exactly one model request with a single attempt, even on malformed output (#261)", async () => {
+    const ref = await packageRef();
+    const provider = model("not json", GOOD);
+    const out = await draftFromPackage({
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://pub.example.com/p/p1",
+      maxAttempts: 1,
+    });
+    expect(out).toMatchObject({ status: "failed", reason: "malformed-output" });
+    expect(provider.calls).toBe(1);
+  });
 });

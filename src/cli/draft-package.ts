@@ -1,7 +1,7 @@
 /**
  * Draft one article from a saved writer package (#149).
  *
- *   draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--json]
+ *   draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--single-attempt] [--json]
  *
  * Uses the configured model (STEELE_MODEL via OpenRouter). Reads the pinned
  * source text from the archive, validates the model's draft against the
@@ -21,7 +21,7 @@ import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 
 const USAGE =
-  "Usage: draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--json]";
+  "Usage: draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--single-attempt] [--json]";
 const Env = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
@@ -37,6 +37,7 @@ async function main(): Promise<number> {
         package: { type: "string" },
         "source-url": { type: "string" },
         model: { type: "string" },
+        "single-attempt": { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean" },
       },
@@ -114,6 +115,8 @@ async function main(): Promise<number> {
     ...(url.data ? { sourceUrl: url.data } : {}),
     ...(requested?.success ? { requestedModel: requested.data } : {}),
     resolvedModel: () => resolved,
+    // Experiments (#261): exactly one model request, never a second attempt.
+    ...(values["single-attempt"] ? { maxAttempts: 1 } : {}),
   });
   const report =
     out.status === "drafted"
