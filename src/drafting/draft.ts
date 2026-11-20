@@ -1,5 +1,6 @@
 import { contextForModel, contextMatchesBrief, type PinnedContext } from "./pinned-context.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
@@ -116,33 +117,17 @@ function draftReadyEvent(
   return { eventId: event.id, subject: DRAFT_READY_SUBJECT, payload };
 }
 
-export const DEFAULT_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "draft-critique-v1",
-  instructions: [
-    "Write the prose for a critique of the post described in the brief, using only the brief.",
-    "summary: a fair, neutral summary of what the post says. themes: related conspiratorial themes, if any.",
-    "errors: one item per brief claim you criticise. Explain the factual error and the underlying reasoning error, citing only that claim's citationIds as [E1]-style IDs. Give uncertainty low, medium or high.",
-    "Never criticise a claim listed under evidenceGaps. Never cite anything not in the brief. Keep the brief's limitations in mind; do not overstate.",
-    'Respond with JSON only: {"summary","themes":[],"errors":[{"claimId","explanation","citationIds":[],"uncertainty"}]}.',
-  ].join("\n"),
-};
+function loadWriterPrompt(name: string): ExtractionPrompt {
+  const instructions = readFileSync(
+    new URL(`../prompts/writer/${name}.md`, import.meta.url),
+    "utf8",
+  ).trim();
+  const hash = createHash("sha256").update(instructions).digest("hex");
+  return { version: `writer-${name}-sha256:${hash}`, instructions };
+}
 
-/**
- * Prompt for drafting with pinned whole-post context (#164). Versioned
- * separately so drafts made with and without context are never conflated.
- */
-export const DEFAULT_DRAFT_CONTEXT_PROMPT: ExtractionPrompt = {
-  version: "draft-critique-context-v1",
-  instructions: [
-    "Write the prose for a critique of the post, using only the supplied data.",
-    "summary: a fair, neutral summary of what the whole post says, written from originalPost. Do not judge it in the summary.",
-    "themes: related conspiratorial themes, taken from the supplied themes where they fit.",
-    "errors: one item per brief claim you criticise. Explain the factual error and the underlying reasoning error, citing only that claim's citationIds as [E1]-style IDs. Give uncertainty low, medium or high.",
-    "Factual corrections may come only from the cited research. The original post is the monitored source, never evidence: a statement in it never confirms itself.",
-    "Never criticise a claim listed under evidenceGaps. Never cite anything not in the brief. Keep the brief's limitations in mind; do not overstate.",
-    'Respond with JSON only: {"summary","themes":[],"errors":[{"claimId","explanation","citationIds":[],"uncertainty"}]}.',
-  ].join("\n"),
-};
+export const DEFAULT_DRAFT_PROMPT = loadWriterPrompt("explainer");
+export const DEFAULT_DRAFT_CONTEXT_PROMPT = loadWriterPrompt("explainer-with-source");
 
 const ModelDraftSchema = z
   .object({
