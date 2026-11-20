@@ -137,6 +137,14 @@ async function main(): Promise<number> {
    * Run a pass for a request, waiting (bounded) while another pass holds the
    * lease. `keepAlive` extends the message's acknowledgment deadline.
    */
+  /** Matches the provisioned consumer's max_deliver. */
+  const REQUEST_MAX_DELIVER = 10;
+  const recordExhausted = (requestId: string) => {
+    const key = `research-reindex:${requestId}`.slice(0, 200);
+    const claim = operations.claim(key, owner, 60_000, 1);
+    if (claim.kind === "claimed") operations.fail(claim.claim, "retries-exhausted", false);
+  };
+
   const passWhenFree = async (
     keepAlive: () => void,
     signal: AbortSignal,
@@ -218,11 +226,21 @@ async function main(): Promise<number> {
           c.STEELE_RESEARCH_STREAM ?? RESEARCH_STREAM,
           c.STEELE_RESEARCH_REINDEX_CONSUMER,
           async (message) => {
-            const decision = await handleReindexRequest(message.data, routes, () =>
+            const decision = await handleReindexRequest(
+              message.data,
+              routes,
               // Wait for an active pass rather than burning redeliveries.
-              passWhenFree(() => message.working(), stop.signal),
+              () => passWhenFree(() => message.working(), stop.signal),
+              30_000,
+              5_000,
+              { count: message.deliveryCount, max: REQUEST_MAX_DELIVER },
             );
             log({ state: "request", ...decision });
+            if (decision.action === "term" && decision.reason === "retries-exhausted") {
+              // Persist the failure in the state controller so it stays visible
+              // (operation <key>) after the broker stops redelivering.
+              recordExhausted(decision.requestId ?? "unknown");
+            }
             if (decision.action === "ack") await message.ack();
             else if (decision.action === "term") message.term();
             else message.nak(decision.delayMs);

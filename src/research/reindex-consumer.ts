@@ -8,12 +8,19 @@ import { parseResearchReindexEvent } from "../events/research-reindex-event.js";
  * - reconciliation completed: `ack`;
  * - another reconciler holds the lease: `nak` with a short delay, since that
  *   pass may have started before the change this request is about;
- * - reconciliation failed: `nak` with a delay (durable retry).
+ * - reconciliation failed: `nak` with a delay (durable retry), until the
+ *   final permitted delivery, which is `term`inated as `retries-exhausted`
+ *   so the caller records the failure durably instead of losing it.
  * Duplicate delivery is safe: reconciliation is idempotent from the checkpoint.
  */
 export type ReindexDecision =
   | { action: "ack"; route: string; outcome: "reconciled" }
-  | { action: "term"; reason: "malformed-request" | "unknown-route"; route?: string }
+  | {
+      action: "term";
+      reason: "malformed-request" | "unknown-route" | "retries-exhausted";
+      route?: string;
+      requestId?: string;
+    }
   | { action: "nak"; route: string; delayMs: number; why: "busy" | "failed" };
 
 export async function handleReindexRequest(
@@ -23,6 +30,7 @@ export async function handleReindexRequest(
   reconcile: (route: string) => Promise<true | false | "busy">,
   retryDelayMs = 30_000,
   busyDelayMs = 5_000,
+  delivery: { count: number; max: number } = { count: 1, max: Number.POSITIVE_INFINITY },
 ): Promise<ReindexDecision> {
   let request;
   try {
@@ -35,6 +43,14 @@ export async function handleReindexRequest(
   }
   const result = await reconcile(request.route);
   if (result === true) return { action: "ack", route: request.route, outcome: "reconciled" };
+  if (delivery.count >= delivery.max) {
+    return {
+      action: "term",
+      reason: "retries-exhausted",
+      route: request.route,
+      requestId: request.id,
+    };
+  }
   if (result === "busy")
     return { action: "nak", route: request.route, delayMs: busyDelayMs, why: "busy" };
   return { action: "nak", route: request.route, delayMs: retryDelayMs, why: "failed" };

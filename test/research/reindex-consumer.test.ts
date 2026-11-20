@@ -80,6 +80,16 @@ describe("research reindex requests (#232)", () => {
       action: "nak",
       why: "failed",
     });
+    expect(
+      await handleReindexRequest(
+        encode("havana", "req-9"),
+        routes,
+        async () => false,
+        30_000,
+        5_000,
+        { count: 10, max: 10 },
+      ),
+    ).toEqual({ action: "term", reason: "retries-exhausted", route: "havana", requestId: "req-9" });
   });
 
   it("indexes a revision with no filesystem notification exactly once, and replays safely", async () => {
