@@ -312,4 +312,40 @@ describe("record versions (#182)", () => {
       candidateReasons("assertion", ["geoengineering"], "This treaty bans weather warfare"),
     ).toEqual([]);
   });
+  it("recovers a quotation differing only in case, saving the source text and the candidate (#202)", async () => {
+    const response = JSON.stringify({
+      claims: [
+        claim({
+          statement: "Geoengineering has not been going on for decades",
+          passage: "geoengineering HAS NOT been going on for decades",
+          qualifiers: ["not"],
+          themeIds: ["geoengineering"],
+        }),
+        claim({
+          statement: "Geoengineering has been going on for decades",
+          passage: "Geoengineering has been going on for decades",
+          themeIds: ["geoengineering"],
+        }),
+      ],
+    });
+    const out = await extractGroundedClaims({
+      provider: model(response),
+      artifacts: content,
+      source: source("p9"),
+      themes,
+    });
+    if (out.status !== "extracted") throw new Error(out.status);
+    expect(out.record.extraction.matchingVersion).toBe("2");
+    expect(out.record.claims).toHaveLength(1);
+    const saved = out.record.claims[0];
+    expect((saved.occurrence as { passage: string }).passage).toBe(
+      "Geoengineering has not been going on for decades",
+    );
+    expect(saved.match).toEqual({
+      method: "formatting",
+      candidate: "geoengineering HAS NOT been going on for decades",
+    });
+    // Dropping the negation is a material change, never recovered.
+    expect(out.record.rejected.map((r) => r.reason)).toContain("passage-not-found");
+  });
 });

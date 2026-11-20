@@ -138,6 +138,80 @@ export function locatePassage(
   return { start, end: start + passage.length };
 }
 
+/** Version of the quotation-matching rules recorded with extraction results (#202). */
+export const PASSAGE_MATCHING_VERSION = "2";
+
+/** Characters that differ only in typography; mapped to one form before comparison. */
+const TYPOGRAPHIC: Record<string, string> = {
+  "\u2018": "'",
+  "\u2019": "'",
+  "\u201C": '"',
+  "\u201D": '"',
+  "\u2013": "-",
+  "\u2014": "-",
+  "\u00A0": " ",
+};
+
+/**
+ * Normalise for formatting-only comparison: case, typographic quotes and
+ * dashes, and runs of whitespace. Words, digits and punctuation that carry
+ * meaning are untouched, so changed wording, numbers or negation never match.
+ * Returns the normalised text and, for each of its characters, the index of
+ * the original character it came from.
+ */
+function normaliseWithMap(text: string): { norm: string; map: number[] } {
+  let norm = "";
+  const map: number[] = [];
+  let inSpace = false;
+  for (let i = 0; i < text.length; i++) {
+    const raw = TYPOGRAPHIC[text[i]] ?? text[i];
+    if (/\s/.test(raw)) {
+      if (!inSpace && norm.length > 0) {
+        norm += " ";
+        map.push(i);
+      }
+      inSpace = true;
+      continue;
+    }
+    inSpace = false;
+    const lower = raw.toLowerCase();
+    // Keep one-to-one mapping; skip case mappings that change length.
+    norm += lower.length === 1 ? lower : raw;
+    map.push(i);
+  }
+  if (norm.endsWith(" ")) {
+    norm = norm.slice(0, -1);
+    map.pop();
+  }
+  return { norm, map };
+}
+
+export type PassageMatch =
+  | { start: number; end: number; method: "exact" | "formatting"; text: string }
+  | "absent"
+  | "ambiguous";
+
+/**
+ * Locate a model-quoted passage in the source. Exact matching first; if that
+ * fails, a formatting-tolerant match (case, whitespace, typographic quotes
+ * and dashes only). A recovered match returns the unchanged source text and
+ * its offsets; anything else stays absent, and repeated matches ambiguous.
+ */
+export function recoverPassage(text: string, passage: string, occurrence?: number): PassageMatch {
+  const exact = locatePassage(text, passage, occurrence);
+  if (typeof exact !== "string")
+    return { ...exact, method: "exact", text: text.slice(exact.start, exact.end) };
+  if (exact === "ambiguous") return "ambiguous";
+  const source = normaliseWithMap(text);
+  const wanted = normaliseWithMap(passage).norm;
+  if (wanted.length === 0) return "absent";
+  const found = locatePassage(source.norm, wanted, occurrence);
+  if (typeof found === "string") return found;
+  const start = source.map[found.start];
+  const end = source.map[found.end - 1] + 1;
+  return { start, end, method: "formatting", text: text.slice(start, end) };
+}
+
 /** Fence untrusted source text so it is read as data, not instructions. */
 function fenceSource(text: string): { boundary: string; message: string } {
   const boundary = `SOURCE-${randomBytes(12).toString("hex")}`;
