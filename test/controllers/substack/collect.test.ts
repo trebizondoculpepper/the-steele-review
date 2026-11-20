@@ -270,3 +270,51 @@ describe.skipIf(!liveUrl || !liveId || !livePost)("live collection", () => {
     expect(["text", "transcription-required"]).toContain(result.kind);
   }, 90_000);
 });
+
+describe("preview image (#277)", () => {
+  const PUBLICATION_PATH = "/api/v1/publication";
+  const generic = "https://substack.com/img/podcast/generic.png";
+  const videoFrame =
+    "https://substackcdn.com/video_upload/post/a-post/uuid/transcoded-00001.png";
+  const uploaded = "https://substackcdn.com/public/images/uuid_1200x800.png";
+
+  const collectWith = async (post: object, publication?: object) =>
+    collector({ [POST_PATH]: { ...basePost, ...post }, ...(publication ? { [PUBLICATION_PATH]: publication } : {}) })
+      .c.collect(item);
+
+  it("keeps a post-specific video frame", async () => {
+    const result = await collectWith({ type: "video", cover_image: videoFrame });
+    expect(result).toMatchObject({
+      kind: "text",
+      previewImage: { url: videoFrame, source: "cover_image", kind: "video-frame" },
+    });
+  });
+
+  it("keeps an uploaded image and marks it uploaded", async () => {
+    const result = await collectWith({ cover_image: uploaded });
+    expect(result).toMatchObject({ previewImage: { url: uploaded, kind: "uploaded" } });
+  });
+
+  it("omits a null cover", async () => {
+    const result = await collectWith({ cover_image: null });
+    expect(result).toMatchObject({ kind: "text" });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits Substack's generic podcast art", async () => {
+    const result = await collectWith({ type: "podcast", cover_image: generic });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits the publication logo and cover photo", async () => {
+    const logo = await collectWith({ cover_image: uploaded }, { logo_url: uploaded });
+    expect((logo as { previewImage?: unknown }).previewImage).toBeUndefined();
+    const cover = await collectWith({ cover_image: videoFrame }, { cover_photo_url: videoFrame });
+    expect((cover as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+
+  it("omits an explicit-flagged cover", async () => {
+    const result = await collectWith({ cover_image: uploaded, cover_image_is_explicit: true });
+    expect((result as { previewImage?: unknown }).previewImage).toBeUndefined();
+  });
+});

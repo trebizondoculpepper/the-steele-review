@@ -1,6 +1,7 @@
 import { convert } from "html-to-text";
 import { z } from "zod";
 import type { SubstackItem } from "../../content/substack-item.js";
+import type { PreviewImage } from "../../collection/collection-store.js";
 import {
   DiscoveryFetchError,
   boundedFetchText,
@@ -58,6 +59,8 @@ export interface TextAcquired {
   text: string;
   /** False when the article body is known to be truncated. */
   complete: boolean;
+  /** The post's own preview image, when it has one (#277). */
+  previewImage?: PreviewImage;
   provenance: CollectionProvenance;
 }
 
@@ -118,7 +121,38 @@ const PostSchema = z.looseObject({
   podcast_duration: z.number().nullable().optional(),
   podcastUpload: UploadSchema,
   videoUpload: UploadSchema,
+  cover_image: z.string().nullable().optional(),
+  cover_image_is_explicit: z.boolean().nullable().optional(),
 });
+
+/** Substack's shared placeholder for podcast art; never post-specific. */
+const GENERIC_PODCAST_ART = "https://substack.com/img/podcast/generic.png";
+
+const PublicationSchema = z.looseObject({
+  logo_url: z.string().nullable().optional(),
+  cover_photo_url: z.string().nullable().optional(),
+});
+
+/**
+ * The post's own preview image (#277), or undefined when it is not
+ * post-specific: a missing cover, an explicit-flagged cover, Substack's generic
+ * podcast art, or the publication's own logo/cover photo.
+ */
+function derivePreviewImage(
+  post: Post,
+  publication: { logo?: string; cover?: string },
+): PreviewImage | undefined {
+  const url = post.cover_image?.trim();
+  if (!url) return undefined;
+  if (post.cover_image_is_explicit === true) return undefined;
+  if (url === GENERIC_PODCAST_ART) return undefined;
+  if (url === publication.logo || url === publication.cover) return undefined;
+  return {
+    url,
+    source: "cover_image",
+    kind: /\/video_upload\//.test(url) ? "video-frame" : "uploaded",
+  };
+}
 type Post = z.infer<typeof PostSchema>;
 
 const SegmentsSchema = z
@@ -216,6 +250,9 @@ export class SubstackContentCollector {
       postType: post.type,
       audience: post.audience,
     };
+    // Only posts that carry a cover need the publication's branding to compare.
+    const publication = post.cover_image?.trim() ? await this.publicationImages(signal) : {};
+    const previewImage = derivePreviewImage(post, publication);
     const restricted = post.audience !== undefined && post.audience !== "everyone";
     const articleHtml = post.body_html?.trim() || undefined;
     const articleText = articleHtml ? htmlToPlainText(articleHtml) : undefined;
@@ -246,6 +283,7 @@ export class SubstackContentCollector {
           },
           text,
           complete: true,
+          ...(previewImage ? { previewImage } : {}),
           provenance: {
             ...baseProvenance,
             method: articleHtml ? "supplied-transcript+article-html" : "supplied-transcript",
@@ -286,10 +324,34 @@ export class SubstackContentCollector {
         supplied: { articleHtml },
         text: articleText,
         complete: !isMediaPost,
+        ...(previewImage ? { previewImage } : {}),
         provenance: { ...baseProvenance, method: "article-html" },
       };
     }
     return { kind: "unavailable", item, reason: "no-content" };
+  }
+
+  /** Publication branding, fetched once: only used to suppress non-specific images. */
+  private publicationCache?: { logo?: string; cover?: string } | null;
+
+  private async publicationImages(
+    signal?: AbortSignal,
+  ): Promise<{ logo?: string; cover?: string }> {
+    if (this.publicationCache !== undefined) return this.publicationCache ?? {};
+    try {
+      const url = new URL("/api/v1/publication", this.base);
+      const body = await boundedFetchText(url, this.publicationOptions, signal);
+      const parsed = PublicationSchema.safeParse(JSON.parse(body));
+      this.publicationCache = parsed.success
+        ? {
+            ...(parsed.data.logo_url ? { logo: parsed.data.logo_url } : {}),
+            ...(parsed.data.cover_photo_url ? { cover: parsed.data.cover_photo_url } : {}),
+          }
+        : null;
+    } catch {
+      this.publicationCache = null;
+    }
+    return this.publicationCache ?? {};
   }
 
   /** Fetch supplied transcript segments, or undefined if the document is unusable. */
