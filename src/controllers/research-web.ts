@@ -199,6 +199,7 @@ export function kagiFromEnv(
 // Public page fetcher
 
 export interface PageFetcherConfig {
+  preserveOriginal?: boolean;
   timeoutMs?: number;
   maxBytes?: number;
   /**
@@ -343,7 +344,8 @@ export class PublicPageFetcher implements PageFetcher {
       if (error instanceof WebAdapterError) throw error;
       throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
     }
-    return html ? pageFromHtml(url, body) : { url, title: url, text: body };
+    const page = html ? pageFromHtml(url, body) : { url, title: url, text: body };
+    return this.config.preserveOriginal ? { ...page, original: { contentType: type, body } } : page;
   }
 
   private async assertPublic(url: string): Promise<void> {
