@@ -244,7 +244,10 @@ describe("review fixes", () => {
       retrieval: "archived",
       support: "unverified",
       sourceType: "monitored-source",
-      passages: [],
+      // Explicit claim-level attribution, still never counted as support.
+      passages: [
+        { claimRecordId: "request", passage: "not to engage in military or any other hostile use" },
+      ],
     });
   });
 

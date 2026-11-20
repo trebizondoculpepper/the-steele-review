@@ -6,6 +6,8 @@ import { proposeThemes } from "../../src/analysis/theme-proposals.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { type ArtifactRef, GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { DossierStore } from "../../src/research/dossier.js";
+import { OperationStore } from "../../src/controllers/operation-store.js";
+import { runResearchJob } from "../../src/research/runner.js";
 import { researchJobId, type ResearchRequest } from "../../src/research/job.js";
 import {
   type Commission,
@@ -473,6 +475,54 @@ describe("librarian coverage", () => {
       { themeId: "a", title: "x", scope: "y" },
     ]);
     expect(list).toMatchObject({ method: "lexical", limitation: "embedding response invalid" });
+  });
+
+  it("reaches claimant-only through the real research runner", async () => {
+    const a = await analysis("p1", [claims[1]]);
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    const commission: Commission = async (request) => {
+      const out = await runResearchJob({
+        artifacts,
+        operations,
+        request,
+        owner: "t",
+        monitoredHosts: ["saveusnow.substack.com"],
+        sonar: {
+          model: "fixture",
+          research: async () => ({
+            report: "Only the author's post repeats this.",
+            citations: ["https://saveusnow.substack.com/p/x"],
+            model: "fixture",
+          }),
+        },
+        fetcher: {
+          fetch: async (url) => ({
+            url,
+            title: "post",
+            text: "A payment of 56 million funded an attack, they say.",
+          }),
+        },
+        judge: {
+          judge: async ({ findings }) => ({
+            passages: findings.map((f) => ({
+              findingId: f.id,
+              passage: "A payment of 56 million funded an attack",
+            })),
+          }),
+        },
+      });
+      if (out.status !== "finished") return { jobId: out.jobId, status: "busy" };
+      const resultRef = (await artifacts.lookup(`research-jobs/${out.jobId}/result.json`))!;
+      return { jobId: out.jobId, status: "finished", result: out.result, resultRef };
+    };
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission,
+      shortlister: new LexicalShortlister(),
+    });
+    operations.close();
+    expect(out.record.claims[0].status).toBe("claimant-only");
   });
 
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {

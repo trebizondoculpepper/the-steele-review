@@ -255,9 +255,10 @@ export async function runResearchJob(input: {
     let sourceType: string | undefined;
     let rationale: string | undefined;
     const own = monitored(url);
-    if (own) {
-      support = "unverified";
-    } else if (input.judge) {
+    // The claimant's own pages are checked too, so each claim gets explicit,
+    // verbatim attribution passages; they stay "unverified" and are labelled
+    // monitored, so they never count as independent support.
+    if (input.judge) {
       try {
         const source = normalise(text);
         const judgement = await input.judge.judge(
@@ -271,10 +272,12 @@ export async function runResearchJob(input: {
           .filter((p) => source.includes(normalise(p.passage)))
           .slice(0, 50)
           .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
-        support = passages.length > 0 ? "supported" : "unverified";
+        support = own ? "unverified" : passages.length > 0 ? "supported" : "unverified";
       } catch {
-        support = "not-checked";
+        support = own ? "unverified" : "not-checked";
       }
+    } else if (own) {
+      support = "unverified";
     }
     citations.push({
       url,
@@ -320,7 +323,12 @@ export async function runResearchJob(input: {
   if (unchecked > 0)
     gaps.push(`${unchecked} archived source(s) have no verified supporting passage.`);
   for (const f of findings) {
-    if (!citations.some((c) => c.passages.some((p) => p.claimRecordId === f.id))) {
+    if (
+      !citations.some(
+        (c) =>
+          c.sourceType !== "monitored-source" && c.passages.some((p) => p.claimRecordId === f.id),
+      )
+    ) {
       gaps.push(`No verified supporting passage for finding ${f.id}.`);
     }
   }
