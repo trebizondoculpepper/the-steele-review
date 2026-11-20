@@ -57,7 +57,12 @@ This project (trebizondoculpepper/the-steele-review) uses pdb for status, priori
 - Prefer pdb over raw gh for status and priorities; use gh only for operations pdb does not support.
 - Merge your own pull requests. Once your PR is green and unblocked, merge it; do not wait for someone else to do it. Getting your own PR unblocked is your work: answer review findings, resolve threads, rebase conflicts and re-request review. Merging someone else's PR is not implied by this rule.
 - When pdb offers a ticket as available, claim it and start. Availability authorizes pickup. Unresolved scope decisions, architectural exceptions, and security exceptions still require explicit agreement.
-- When no ticket is claimable, do not stop at "blocked". Re-check the board first, because it changes within minutes. Then work that needs no claim: refresh stale estimates and refinement requests, review not-ready tickets and raise design questions on them, hunt and fix defects proactively, and split tickets that are too large to deliver. Report a blocker only after those are exhausted, and only with the specific decision needed.
+- When no ticket is claimable, do not stop at "blocked". Always re-check the board first, because it changes within minutes. Then do the work that needs no claim:
+  - Estimate: refresh stale estimates and raise refinement requests for tickets whose scope is not yet clear.
+  - Review work that is not ready: read it anyway, ask the design questions on the ticket, and say what still needs future design.
+  - Look for anything that may be broken, and fix defects proactively.
+  - Identify oversized tickets and propose how to split them.
+  Report a blocker only after those are exhausted, and only with the specific decision needed.
 - Implementers raise all work questions on the relevant ticket. Record the question, the decision needed, and why it matters. If the question blocks implementation, record the blocker and move on to the next available ticket. Keep working through the queue without interrupting the human directly. Resume the blocked ticket once the decision is recorded on it.
 
 <!-- pdb:coordination:end -->
