@@ -72,7 +72,11 @@ export interface ArticleStages {
   package(coverage: Ref): Promise<{ ref: Ref; status: "ready" | "evidence-gap" }>;
   draft(pkg: Ref, sourceUrl: string): Promise<{ ref?: Ref; failure?: string }>;
   /** Verify the exact draft against its package; `unavailable` when no verifier is configured. */
-  verify(draft: Ref, pkg: Ref): Promise<{ ref?: Ref; approved: boolean; unavailable?: string }>;
+  verify(
+    draft: Ref,
+    pkg: Ref,
+    sourceUrl: string,
+  ): Promise<{ ref?: Ref; approved: boolean; unavailable?: string; draft?: Ref; reason?: string }>;
 }
 
 /** A research job as pinned at the batch deadline. */
@@ -219,7 +223,11 @@ export function articleRunWorkflow(stages: ArticleStages) {
         research,
       };
     }
-    const verified = await step("verify", () => stages.verify(drafted.ref!, pkg.ref));
+    // Verification may redraft (bounded); the final draft is the one it judged.
+    const verified = await step("verify", () =>
+      stages.verify(drafted.ref!, pkg.ref, input.sourceUrl),
+    );
+    const finalDraft = verified.draft ?? drafted.ref;
     if (verified.unavailable) {
       return {
         outcome: "drafted-unverified",
@@ -228,17 +236,18 @@ export function articleRunWorkflow(stages: ArticleStages) {
         claims,
         coverage,
         package: pkg.ref,
-        draft: drafted.ref,
+        draft: finalDraft,
         research,
       };
     }
     return {
       outcome: verified.approved ? "verified" : "rejected",
+      ...(verified.reason ? { reason: verified.reason } : {}),
       themes,
       claims,
       coverage,
       package: pkg.ref,
-      draft: drafted.ref,
+      draft: finalDraft,
       ...(verified.ref ? { verification: verified.ref } : {}),
       research,
     };

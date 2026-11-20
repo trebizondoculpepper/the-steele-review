@@ -12,7 +12,7 @@
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   STEELE_STATE_PATH                                state controller (research job leases)
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
- *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?
+ *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?, STEELE_MODEL_VERIFIER?
  *                                                    per-stage overrides
  *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_OUTPUT_TOKENS?
  *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
@@ -74,6 +74,7 @@ function main(): number {
         themes: model("STEELE_MODEL_THEMES"),
         claims: model("STEELE_MODEL_CLAIMS"),
         writer: model("STEELE_MODEL_WRITER"),
+        verifier: model("STEELE_MODEL_VERIFIER"),
       },
       shortlister: new LexicalShortlister(),
       research: {

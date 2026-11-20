@@ -59,33 +59,31 @@ const ModelDraftSchema = z
      * How the post develops the author's narrative (#176): "supported" only
      * with cited earlier passages from the package; otherwise "limited".
      */
-    narrative: z
-      .discriminatedUnion("status", [
-        z
-          .object({
-            status: z.literal("supported"),
-            text: z.string().trim().min(1).max(3000),
-            history: z.array(z.number().int().min(0)).min(1).max(20),
-          })
-          .strict(),
-        z
-          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
-          .strict(),
-      ]),
+    narrative: z.discriminatedUnion("status", [
+      z
+        .object({
+          status: z.literal("supported"),
+          text: z.string().trim().min(1).max(3000),
+          history: z.array(z.number().int().min(0)).min(1).max(20),
+        })
+        .strict(),
+      z
+        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .strict(),
+    ]),
     /** Significance within the wider movement (#176): "supported" only with cited background. */
-    widerContext: z
-      .discriminatedUnion("status", [
-        z
-          .object({
-            status: z.literal("supported"),
-            text: z.string().trim().min(1).max(3000),
-            background: z.array(z.number().int().min(0)).min(1).max(30),
-          })
-          .strict(),
-        z
-          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
-          .strict(),
-      ]),
+    widerContext: z.discriminatedUnion("status", [
+      z
+        .object({
+          status: z.literal("supported"),
+          text: z.string().trim().min(1).max(3000),
+          background: z.array(z.number().int().min(0)).min(1).max(30),
+        })
+        .strict(),
+      z
+        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .strict(),
+    ]),
   })
   .strict();
 export type PackageModelDraft = z.infer<typeof ModelDraftSchema>;
@@ -236,7 +234,8 @@ export function renderPackageDraft(
           "",
         );
         if (c.conflictRationale) lines.push(`_Qualification: ${c.conflictRationale}_`, "");
-        if (c.changedCircumstances) lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
+        if (c.changedCircumstances)
+          lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
       }
     }
   }
@@ -301,6 +300,11 @@ export async function draftFromPackage(input: {
   sourceUrl: string;
   prompt?: ExtractionPrompt;
   maxAttempts?: number;
+  /**
+   * Verifier feedback for a redraft (#150): the passages and reasons to fix.
+   * Part of the draft's identity, so each revision is a new, separately saved draft.
+   */
+  revision?: { number: number; feedback: { passage: string; reason: string }[] };
   now?: () => Date;
 }): Promise<PackageDraftOutcome> {
   const prompt = input.prompt ?? DEFAULT_PACKAGE_DRAFT_PROMPT;
@@ -314,6 +318,7 @@ export async function draftFromPackage(input: {
         input.provider.modelVersion,
         prompt.version,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
+        ...(input.revision ? [input.revision] : []),
       ]),
     )
     .digest("hex")
@@ -364,7 +369,7 @@ export async function draftFromPackage(input: {
             earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
             comparison: c.comparison.text,
             ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
-          ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
+            ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
           }))
         : { gap: pkg.context?.history.reason ?? "no historical comparison" },
     background:
@@ -375,6 +380,16 @@ export async function draftFromPackage(input: {
             passage: p.passage,
           }))
         : { gap: pkg.context?.background.reason ?? "no independent background" },
+    ...(input.revision
+      ? {
+          revision: {
+            number: input.revision.number,
+            instruction:
+              "Revise the draft so every listed passage is fixed: remove or correct unsupported assertions; keep everything else supported by the evidence.",
+            feedback: input.revision.feedback,
+          },
+        }
+      : {}),
   });
   let draft: PackageModelDraft | undefined;
   let lastProblems: string[] = [];

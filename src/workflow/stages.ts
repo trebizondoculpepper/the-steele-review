@@ -7,6 +7,7 @@ import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
+import { verifyWithRevisions } from "../drafting/package-verify.js";
 import { saveWriterPackage } from "../drafting/writer-package.js";
 import type { PageFetcher } from "../research/gap-research.js";
 import { researchJobId, type ResearchRequest } from "../research/job.js";
@@ -42,6 +43,8 @@ export function articleStages(deps: {
     themes: ExtractionModelProvider;
     claims: ExtractionModelProvider;
     writer: ExtractionModelProvider;
+    /** Independent verifier stage (#150); without it runs end drafted-unverified. */
+    verifier?: ExtractionModelProvider;
   };
   shortlister: ThemeShortlister;
   research: {
@@ -212,10 +215,31 @@ export function articleStages(deps: {
       return { failure: out.status === "failed" ? out.reason : out.status };
     },
 
-    // Verifying a package draft is #150; until it lands the run reports
-    // "drafted-unverified" rather than claiming an approval.
-    async verify() {
-      return { approved: false, unavailable: "package-draft verifier not yet implemented (#150)" };
+    async verify(draft, pkg, sourceUrl) {
+      if (!deps.models.verifier)
+        return { approved: false, unavailable: "no verifier model configured" };
+      const metadata = await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
+      if (!metadata) throw new StageError("verify", "draft-metadata-missing");
+      const out = await verifyWithRevisions({
+        content: deps.content,
+        archive: deps.archive,
+        package: pkg,
+        metadata,
+        writer: deps.models.writer,
+        verifier: deps.models.verifier,
+        sourceUrl,
+      });
+      if (out.outcome === "approved")
+        return { approved: true, ref: plain(out.report), draft: plain(out.draft) };
+      if (out.outcome === "unresolved") {
+        return {
+          approved: false,
+          ref: plain(out.report),
+          draft: plain(out.draft),
+          reason: `unresolved after ${out.revisions} redrafts`,
+        };
+      }
+      throw new Error(`verify: ${out.reason}`);
     },
   };
 }
