@@ -194,6 +194,10 @@ export async function verifyPackageDraft(input: {
     claims: pkg.claims.map((c) => ({
       statement: c.statement,
       status: c.status,
+      // The librarian's outcome and gap reason, so the verifier can check the
+      // draft represents e.g. "claimant-only" differently from "research-failed".
+      coverage: c.coverage,
+      ...(c.reason ? { reason: c.reason } : {}),
       evidence: c.evidence.map((e) => ({ url: e.url, passage: e.passage })),
     })),
     history: pkg.context?.history ?? { status: "gap" },

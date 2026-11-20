@@ -74,7 +74,8 @@ async function main(): Promise<number> {
   let verifier, writer;
   try {
     verifier = model("STEELE_MODEL_VERIFIER");
-    writer = model("STEELE_MODEL_WRITER");
+    // The writer is needed only to redraft.
+    if (values.revise) writer = model("STEELE_MODEL_WRITER");
   } catch {
     console.error("verify-package-draft: model provider is not configured");
     return 2;
@@ -108,7 +109,7 @@ async function main(): Promise<number> {
       archive,
       package: pkg,
       metadata,
-      writer,
+      writer: writer!,
       verifier,
       sourceUrl: url.data,
     });

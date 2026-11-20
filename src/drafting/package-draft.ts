@@ -29,6 +29,14 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v2";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
+/** Revision instructions for redrafts (#150), from their own editable Markdown file. */
+export const PACKAGE_REVISION_INSTRUCTIONS = readFileSync(
+  new URL("../prompts/writer/package-revision.md", import.meta.url),
+  "utf8",
+).trim();
+/** Identity of the revision instructions; part of a redraft's identity. */
+export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
+
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
   version: "package-draft-v2",
@@ -318,7 +326,7 @@ export async function draftFromPackage(input: {
         input.provider.modelVersion,
         prompt.version,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
-        ...(input.revision ? [input.revision] : []),
+        ...(input.revision ? [input.revision, PACKAGE_REVISION_PROMPT_VERSION] : []),
       ]),
     )
     .digest("hex")
@@ -384,8 +392,7 @@ export async function draftFromPackage(input: {
       ? {
           revision: {
             number: input.revision.number,
-            instruction:
-              "Revise the draft so every listed passage is fixed: remove or correct unsupported assertions; keep everything else supported by the evidence.",
+            instruction: PACKAGE_REVISION_INSTRUCTIONS,
             feedback: input.revision.feedback,
           },
         }
