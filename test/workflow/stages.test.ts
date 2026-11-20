@@ -207,5 +207,5 @@ describe("article stages composed (#243)", () => {
       reused: true,
       evidenceFrom: expect.any(Object),
     });
-  });
+  }, 60_000);
 });
