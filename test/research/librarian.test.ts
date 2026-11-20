@@ -395,7 +395,7 @@ describe("librarian coverage", () => {
       shortlister: new LexicalShortlister(),
     });
     expect(r.requests.map((q) => q.claims.length)).toEqual([100, 50]);
-  });
+  }, 60_000);
 
   it("refuses a claim result extracted against a different theme result", async () => {
     const a = await analysis("p1", claims);

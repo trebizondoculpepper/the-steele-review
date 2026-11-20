@@ -305,6 +305,8 @@ const toRef = (r: ArtifactRef) => ({
 const ClaimText = z.looseObject({ statement: z.string().min(1) });
 
 interface AcceptedClaim {
+  /** The extraction's own claim ID: the internal key, stable across later merges. */
+  key: string;
   /** Current canonical claim identity: coverage and reuse are judged under it. */
   claimRecordId: string;
   statement: string;
@@ -325,6 +327,7 @@ function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): Ac
     const prior = seen.get(c.claimRecordId);
     const proposalIds = [...new Set([...(prior?.proposalIds ?? []), ...c.themeIds])];
     seen.set(c.claimRecordId, {
+      key: c.claimRecordId,
       extracted: [{ claimRecordId: c.claimRecordId, statement: parsed.data.statement }],
       claimRecordId: c.claimRecordId,
       statement: parsed.data.statement,
@@ -349,7 +352,7 @@ function assess(
   >();
   for (const claim of claims) {
     if (job.status === "busy") {
-      out.set(claim.claimRecordId, {
+      out.set(claim.key, {
         status: "pending",
         citations: [],
         reason: "research job in progress",
@@ -357,7 +360,7 @@ function assess(
       continue;
     }
     if (!job.result || job.result.outcome === "failed" || !manifest) {
-      out.set(claim.claimRecordId, {
+      out.set(claim.key, {
         status: "research-failed",
         citations: [],
         reason: `research failed (${job.result?.failure ?? "no result"})`,
@@ -383,15 +386,15 @@ function assess(
       }
     }
     if (independent.length > 0)
-      out.set(claim.claimRecordId, { status: "evidence-found", citations: independent });
+      out.set(claim.key, { status: "evidence-found", citations: independent });
     else if (claimantOnly) {
-      out.set(claim.claimRecordId, {
+      out.set(claim.key, {
         status: "claimant-only",
         citations: [],
         reason: "only the claimant's own material was found",
       });
     } else {
-      out.set(claim.claimRecordId, {
+      out.set(claim.key, {
         status: "no-independent-evidence",
         citations: [],
         reason: insecureOnly
@@ -666,14 +669,10 @@ export async function assessPostCoverage(input: {
   const byCanonical = new Map<string, AcceptedClaim>();
   for (const c of acceptedClaims(claimRecord)) {
     const canonical = await canonicalOf(input.artifacts, c.claimRecordId);
-    const prior = byCanonical.get(canonical);
-    if (prior) {
-      prior.proposalIds = [...new Set([...prior.proposalIds, ...c.proposalIds])];
-      prior.extracted.push(...c.extracted);
-      continue;
-    }
+    // One entry per extracted claim: grouping and request limits follow the
+    // extraction, so later merges cannot regroup or resize requests.
     const entry = { ...c, claimRecordId: canonical };
-    byCanonical.set(canonical, entry);
+    byCanonical.set(c.key, entry);
     claims.push(entry);
   }
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
@@ -681,7 +680,7 @@ export async function assessPostCoverage(input: {
   for (const claim of claims) {
     const home = claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
     if (!home) {
-      outcomes.set(claim.claimRecordId, {
+      outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
         dossierId: null,
@@ -703,7 +702,10 @@ export async function assessPostCoverage(input: {
     let prior: DossierMetadata["claims"][number] | undefined;
     for (const id of mapped) {
       const d = existing.get(id);
-      const c = d?.metadata.claims.find((x) => x.claimId === claim.claimRecordId);
+      // Coverage may be stored under the canonical ID or the extracted (merged-away) one.
+      const c = d?.metadata.claims.find(
+        (x) => x.claimId === claim.claimRecordId || x.claimId === claim.key,
+      );
       if (d && c?.status === "covered") {
         homeDossier = d;
         prior = c;
@@ -712,7 +714,7 @@ export async function assessPostCoverage(input: {
     }
     if (homeDossier && prior?.status === "covered") {
       const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
-      outcomes.set(claim.claimRecordId, {
+      outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
         dossierId: homeDossier.metadata.themeId,
@@ -802,8 +804,8 @@ export async function assessPostCoverage(input: {
 
   for (const [dossierId, all] of groups) {
     // Nothing to research when every claim is already covered.
-    if (all.every((c) => outcomes.get(c.claimRecordId)?.reused)) continue;
-    const sorted = [...all].sort((a, b) => a.claimRecordId.localeCompare(b.claimRecordId));
+    if (all.every((c) => outcomes.get(c.key)?.reused)) continue;
+    const sorted = [...all].sort((a, b) => a.key.localeCompare(b.key));
     for (let start = 0; start < sorted.length; start += MAX_REQUEST_CLAIMS) {
       await assessGroup(dossierId, sorted.slice(start, start + MAX_REQUEST_CLAIMS));
     }
@@ -812,9 +814,9 @@ export async function assessPostCoverage(input: {
   async function assessGroup(dossierId: string, group: AcceptedClaim[]) {
     const first = await run(dossierId, group, 1);
     for (const claim of group) {
-      if (outcomes.get(claim.claimRecordId)?.reused) continue;
-      const a = first.assessed.get(claim.claimRecordId)!;
-      outcomes.set(claim.claimRecordId, {
+      if (outcomes.get(claim.key)?.reused) continue;
+      const a = first.assessed.get(claim.key)!;
+      outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
         dossierId,
@@ -829,16 +831,16 @@ export async function assessPostCoverage(input: {
     // the dossier), so reassessment rebuilds the identical pass-2 request.
     const followUp = group.filter(
       (c) =>
-        first.assessed.get(c.claimRecordId)?.status === "no-independent-evidence" &&
+        first.assessed.get(c.key)?.status === "no-independent-evidence" &&
         (input.consequential?.(c) ?? false),
     );
     if (followUp.length > 0 && first.job.status === "finished") {
       const second = await run(dossierId, followUp, 2, first.job.jobId);
       for (const claim of followUp) {
-        if (outcomes.get(claim.claimRecordId)?.reused) continue;
-        const a = second.assessed.get(claim.claimRecordId)!;
-        const prior = outcomes.get(claim.claimRecordId)!;
-        outcomes.set(claim.claimRecordId, {
+        if (outcomes.get(claim.key)?.reused) continue;
+        const a = second.assessed.get(claim.key)!;
+        const prior = outcomes.get(claim.key)!;
+        outcomes.set(claim.key, {
           ...prior,
           jobIds: [...prior.jobIds, second.job.jobId],
           // Evidence from the second pass replaces the gap; a pending or failed
