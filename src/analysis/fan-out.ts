@@ -51,10 +51,7 @@ export type FanOutRefusal =
   | "parent-source-mismatch";
 
 const sameReference = (a: ArtifactReference, b: ArtifactReference): boolean =>
-  a.repository === b.repository &&
-  a.commit === b.commit &&
-  a.path === b.path &&
-  a.hash === b.hash;
+  a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash;
 
 const toRef = (reference: ArtifactReference): ArtifactRef => ({
   repository: reference.repository,

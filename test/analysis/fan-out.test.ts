@@ -72,11 +72,13 @@ const themeResult = (over: { proposals?: unknown[] } = {}) => ({
   },
 });
 
-const claimResult = (over: {
-  post?: { publicationId: string; postId: string };
-  schemaVersion?: 1 | 2;
-  claims?: unknown[];
-} = {}) => ({
+const claimResult = (
+  over: {
+    post?: { publicationId: string; postId: string };
+    schemaVersion?: 1 | 2;
+    claims?: unknown[];
+  } = {},
+) => ({
   schemaVersion: over.schemaVersion ?? 2,
   post: over.post ?? post,
   sourceVersion: SOURCE_VERSION,
@@ -94,13 +96,21 @@ const claimResult = (over: {
   ],
   candidates: [],
   rejected: [],
-  extraction: { modelVersion: "m", promptVersion: "claims-v2", extractedAt: "2026-01-01T00:00:00Z" },
+  extraction: {
+    modelVersion: "m",
+    promptVersion: "claims-v2",
+    extractedAt: "2026-01-01T00:00:00Z",
+  },
 });
 
 async function savePair(
   theme: unknown,
   claims: (over?: unknown) => Record<string, unknown>,
-  opts: { claimOverrides?: Parameters<typeof claimResult>[0]; themePath?: string; claimPath?: string } = {},
+  opts: {
+    claimOverrides?: Parameters<typeof claimResult>[0];
+    themePath?: string;
+    claimPath?: string;
+  } = {},
 ) {
   const n = ++sequence;
   const themeRef = await content.write(
@@ -128,9 +138,10 @@ const asReference = (ref: {
   hash: `sha256:${ref.sha256}`,
 });
 
-const parentData = (
-  refs: { themeRef: { repository: string; commit: string; path: string; sha256: string }; claimRef: { repository: string; commit: string; path: string; sha256: string } },
-): PostAnalysedData => ({
+const parentData = (refs: {
+  themeRef: { repository: string; commit: string; path: string; sha256: string };
+  claimRef: { repository: string; commit: string; path: string; sha256: string };
+}): PostAnalysedData => ({
   ...post,
   sourceVersion: SOURCE_VERSION,
   sourceArtifact,
@@ -189,7 +200,10 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
     const message = parentMessage(parentData({ themeRef, claimRef }));
     expect(await worker(pub).handle(message)).toBe("fanned-out");
 
-    expect(pub.sent.map((s) => s.subject)).toEqual([THEME_OCCURRED_SUBJECT, CLAIM_OCCURRED_SUBJECT]);
+    expect(pub.sent.map((s) => s.subject)).toEqual([
+      THEME_OCCURRED_SUBJECT,
+      CLAIM_OCCURRED_SUBJECT,
+    ]);
     const theme = parseThemeOccurredEvent(pub.sent[0].payload);
     expect(theme).toMatchObject({
       ...post,
@@ -289,11 +303,9 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
   });
 
   it("records a valid zero-result analysis without events", async () => {
-    const { themeRef, claimRef } = await savePair(
-      themeResult({ proposals: [] }),
-      claimResult,
-      { claimOverrides: { claims: [] } },
-    );
+    const { themeRef, claimRef } = await savePair(themeResult({ proposals: [] }), claimResult, {
+      claimOverrides: { claims: [] },
+    });
     const pub = publisher();
     const data = parentData({ themeRef, claimRef });
     expect(await worker(pub).handle(parentMessage(data))).toBe("fanned-out");
@@ -349,9 +361,7 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
     });
     expect(key.length).toBeLessThanOrEqual(512);
     // The controller must accept it: a rejected key would nak forever.
-    expect(() =>
-      operations.claim(key, "test", 60_000, 1),
-    ).not.toThrow();
+    expect(() => operations.claim(key, "test", 60_000, 1)).not.toThrow();
   });
 
   it("retries when an artifact read fails transiently", async () => {

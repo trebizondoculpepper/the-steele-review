@@ -22,10 +22,7 @@ import {
   ARTICLE_PUBLISHED_EVENT_TYPE_V1,
   ARTICLE_PUBLISHED_SUBJECT,
 } from "../publishing/publisher-worker.js";
-import {
-  CLAIM_OCCURRED_EVENT_TYPE_V1,
-  CLAIM_OCCURRED_SUBJECT,
-} from "./claim-occurred-event.js";
+import { CLAIM_OCCURRED_EVENT_TYPE_V1, CLAIM_OCCURRED_SUBJECT } from "./claim-occurred-event.js";
 import { DISCOVERY_EVENT_TYPE_V1 } from "./discovery-event.js";
 import {
   ANALYSIS_STREAM,
@@ -38,10 +35,7 @@ import {
   RESEARCH_STREAM,
 } from "./research-completed-event.js";
 import { TEXT_READY_EVENT_TYPE_V1, TEXT_READY_SUBJECT } from "./text-ready-event.js";
-import {
-  THEME_OCCURRED_EVENT_TYPE_V1,
-  THEME_OCCURRED_SUBJECT,
-} from "./theme-occurred-event.js";
+import { THEME_OCCURRED_EVENT_TYPE_V1, THEME_OCCURRED_SUBJECT } from "./theme-occurred-event.js";
 
 /**
  * Shared stream and message registry (#209).

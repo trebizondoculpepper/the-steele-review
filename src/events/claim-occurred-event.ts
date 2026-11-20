@@ -33,7 +33,10 @@ export const ClaimOccurredDataSchema = z
      */
     occurrenceId: z.string().min(1).max(200),
     /** Stable claim identity this occurrence belongs to; absent for questions. */
-    claimId: z.string().regex(/^claim-[0-9a-f]{32}$/).optional(),
+    claimId: z
+      .string()
+      .regex(/^claim-[0-9a-f]{32}$/)
+      .optional(),
     kind: AssertionKindSchema,
     /** Result-local theme proposal IDs linked to this claim. */
     themeIds: z.array(z.string()).max(100),

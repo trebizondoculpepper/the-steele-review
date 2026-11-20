@@ -109,7 +109,14 @@ export const CitationRecordSchema = z
   .object({
     url: z.url({ protocol: /^https?$/ }),
     retrieval: z.enum(["archived", "inaccessible", "unsupported", "not-attempted"]),
+    /** Sanitised reason when not archived, e.g. "redirected", "unsupported-content", "timeout". */
+    retrievalReason: z.string().max(100).optional(),
     archivedArtifact: Ref.optional(),
+    /**
+     * `supported`: an archived passage directly supports the attributed finding.
+     * `unverified`: retrieved, but only topical or uncertain. `not-checked`: no support check ran.
+     */
+    support: z.enum(["supported", "unverified", "not-checked"]).optional(),
     sourceType: z.string().max(100).optional(),
     confidenceRationale: z.string().max(2000).optional(),
     /** Claim-specific supporting passages in the archived source. */
@@ -212,12 +219,12 @@ const asReference = (r: ArtifactRef) => ({
   hash: `sha256:${r.sha256}`,
 });
 
-async function writeOnce(
+export async function writeOnce(
   store: GitArtifactStore,
   path: string,
   value: unknown,
 ): Promise<ArtifactRef> {
-  const content = `${JSON.stringify(value, null, 2)}\n`;
+  const content = typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`;
   for (let attempt = 0; ; attempt++) {
     try {
       return await store.write(path, content);
