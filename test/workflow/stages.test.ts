@@ -190,9 +190,38 @@ describe("article stages composed (#243)", () => {
     const md = await content.read(draft.ref!);
     expect(md).toContain("**Supported by the evidence.**");
     expect(md).toContain("**Unresolved.**");
-    expect(await stages.verify(draft.ref!, pkg.ref)).toMatchObject({
+    expect(await stages.verify(draft.ref!, pkg.ref, input.sourceUrl)).toMatchObject({
       approved: false,
-      unavailable: expect.stringContaining("#150"),
+      unavailable: expect.stringContaining("no verifier"),
+    });
+    // With the independent verifier stage configured (#150), the run is approved.
+    const verifying = articleStages({
+      archive,
+      content,
+      operations,
+      models: {
+        themes: provider,
+        claims: provider,
+        writer: provider,
+        verifier: {
+          modelVersion: "fake/verifier",
+          complete: async () => JSON.stringify({ verdict: "approved", issues: [] }),
+        },
+      },
+      shortlister: new LexicalShortlister(),
+      research: {
+        sonar: { model: "x", research: async () => ({ report: "r", citations: [], model: "x" }) },
+        fetcher: {
+          fetch: async () => {
+            throw new Error("unused");
+          },
+        },
+      },
+      owner: "test",
+    });
+    expect(await verifying.verify(draft.ref!, pkg.ref, input.sourceUrl)).toMatchObject({
+      approved: true,
+      draft: { path: draft.ref!.path },
     });
 
     // Reassessing with the job timed out: no new evidence is invented.

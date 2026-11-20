@@ -30,6 +30,14 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v2";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
+/** Revision instructions for redrafts (#150), from their own editable Markdown file. */
+export const PACKAGE_REVISION_INSTRUCTIONS = readFileSync(
+  new URL("../prompts/writer/package-revision.md", import.meta.url),
+  "utf8",
+).trim();
+/** Identity of the revision instructions; part of a redraft's identity. */
+export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
+
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
   version: "package-draft-v2",
@@ -311,6 +319,11 @@ export async function draftFromPackage(input: {
   resolvedModel?: () => string | undefined;
   prompt?: ExtractionPrompt;
   maxAttempts?: number;
+  /**
+   * Verifier feedback for a redraft (#150): the passages and reasons to fix.
+   * Part of the draft's identity, so each revision is a new, separately saved draft.
+   */
+  revision?: { number: number; feedback: { passage: string; reason: string }[] };
   now?: () => Date;
 }): Promise<PackageDraftOutcome> {
   const prompt = input.prompt ?? DEFAULT_PACKAGE_DRAFT_PROMPT;
@@ -324,6 +337,7 @@ export async function draftFromPackage(input: {
         input.provider.modelVersion,
         prompt.version,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
+        ...(input.revision ? [input.revision, PACKAGE_REVISION_PROMPT_VERSION] : []),
       ]),
     )
     .digest("hex")
@@ -385,6 +399,15 @@ export async function draftFromPackage(input: {
             passage: p.passage,
           }))
         : { gap: pkg.context?.background.reason ?? "no independent background" },
+    ...(input.revision
+      ? {
+          revision: {
+            number: input.revision.number,
+            instruction: PACKAGE_REVISION_INSTRUCTIONS,
+            feedback: input.revision.feedback,
+          },
+        }
+      : {}),
   });
   let draft: PackageModelDraft | undefined;
   let lastProblems: string[] = [];

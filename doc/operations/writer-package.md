@@ -29,6 +29,16 @@ The writer receives the package and the pinned full source text and themes (#164
 
 From template `package-explainer-v2` (#176) the draft also has a narrative-development section and a wider-movement section. Each is either supported, citing the package's own historical comparisons (earlier passages quoted with dates and links; the comparison text labelled as analysis, not evidence, with any qualification) or its independently sourced dossier background, or stated as a limitation. A section that claims support without that context, or cites context the package does not hold, rejects the draft.
 
+## Verifying a draft (#150)
+
+```sh
+... STEELE_MODEL_VERIFIER=... node dist/cli/verify-package-draft.js --metadata articles/<publication>/<post>/<key>.json --source-url https://... [--revise]
+```
+
+An independent verifier stage (prompt `src/prompts/verifier/package-verifier.md`) checks the exact saved draft against the exact package it was written from and the same pinned source and themes. Deterministic checks run first: every cited source must be evidence or background the package holds, every claim heading must be a package claim, and a gap claim must stay "Unresolved". The model then checks fairness of the summary, attribution, quotations, citation support and overstatement, preserved gaps and limitations, and historical and wider-movement statements, classifying each problem as substantive or minor. Approval requires no substantive problem.
+
+The report is saved under `verifications/<publication>/<post>/` and names the draft's exact content hash; any edit to the text invalidates the approval. With `--revise`, a `redraft` verdict sends the substantive passages and reasons back to the writer as a new, separately saved revision, up to two redrafts (the existing revision limit); if the draft still fails, an `unresolved` result with reasons is saved. Nothing is published. In the unattended pipeline (#243) the verify stage runs this loop when `STEELE_MODEL_VERIFIER` or `STEELE_MODEL` is configured.
+
 ### Choosing the writer model (#260)
 
 `draft-package --model <openrouter model id>` requests any OpenRouter model for that run; without it the configured `STEELE_MODEL` is used. The model is part of the draft's identity, so different models produce separate drafts and a replay with the same model reuses its draft without a model call. The draft metadata records `requestedModel` and the model OpenRouter reports it served (`resolvedModel`). An unknown or rejected model is reported as `model-unavailable` and is not retried or swapped for another model.

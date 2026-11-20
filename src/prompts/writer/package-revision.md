@@ -1,0 +1,1 @@
+Revise the draft so every listed passage is fixed: remove or correct each unsupported or misleading assertion the verifier identified, keeping everything else supported by the evidence. Do not add new claims, sources or certainty to compensate.
