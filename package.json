@@ -36,7 +36,8 @@
     "writer-package": "node --enable-source-maps dist/cli/writer-package.js",
     "draft-package": "node --enable-source-maps dist/cli/draft-package.js",
     "article-worker": "node --enable-source-maps dist/cli/article-worker.js",
-    "article-run": "node --enable-source-maps dist/cli/article-run.js"
+    "article-run": "node --enable-source-maps dist/cli/article-run.js",
+    "install-wake-hook": "node --enable-source-maps dist/cli/install-wake-hook.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",

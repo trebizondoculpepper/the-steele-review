@@ -35,3 +35,13 @@ NATS_URL=... node dist/cli/research-reindex.js --route default
 ```
 
 The command publishes a typed `steele.v1.research.reindex.requested` message (in the registry, on `STEELE_RESEARCH`). It names a route only; the worker resolves its repository and index from its own configuration (`STEELE_RESEARCH_INDEX_ROUTE`, default `default`). A worker started with `STEELE_RESEARCH_REINDEX_CONSUMER` (provisioned by `provision`, default `steele-research-indexer`) consumes these requests and then requires a broker (`NATS_URL` or `NATS_URL_FILE`). It acknowledges a request after its leased reconciliation pass completes. While another pass holds the lease it keeps the message alive and waits, bounded by the lease length, rather than spending redeliveries; a failed pass is redelivered later. If the request consumer cannot start or stops, the worker exits non-zero so its supervisor restarts it. It and rejects malformed requests and unknown routes without retrying. Duplicate delivery is safe: reconciliation is idempotent from the checkpoint. This reconciles changes since the checkpoint; it is not a forced rebuild. Scheduling stays outside the worker.
+
+## Git wake hook (#251)
+
+For a fast wake-up, install the content repository's `reference-transaction` hook once:
+
+```sh
+STEELE_CONTENT_PATH=... STEELE_CONTENT_REPOSITORY=... node dist/cli/install-wake-hook.js
+```
+
+After any committed ref update the hook touches `steele-wake` in the Git directory; the worker's watcher reacts to it (as well as to loose and packed ref changes). The hook is deliberately minimal POSIX `sh`: it does nothing else and always exits 0, so it can never block or fail a commit. Whether the configured branch actually moved is decided in TypeScript: the woken reconciliation compares the branch head with its checkpoint and does nothing if it is unchanged. Installing again reports `unchanged`; an existing hook that is not ours is left alone and reported as `foreign-hook` (exit 1). Wake signals are only hints: duplicate signals run the same idempotent reconciliation, and a missed one is caught by the periodic pass (`STEELE_RESEARCH_COLLECTION_INTERVAL_MS`).
