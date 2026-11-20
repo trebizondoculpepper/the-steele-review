@@ -340,5 +340,21 @@ describe("tracePost", () => {
         status: "completed",
       },
     );
+    expect(traceIncomplete(trace)).toBe(false);
+    // A failed announcement lookup makes the trace incomplete even when other stages succeed.
+    const failing = await tracePost({
+      post,
+      content,
+      state: {
+        readOperation: async (k) => {
+          if (k === key) throw new Error("state unavailable");
+          return null;
+        },
+      },
+    });
+    expect(failing.claims.state === "recorded" && failing.claims.results[0].announcement).toEqual({
+      state: "unavailable",
+    });
+    expect(traceIncomplete(failing)).toBe(true);
   });
 });

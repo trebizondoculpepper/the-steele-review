@@ -361,6 +361,12 @@ export function traceIncomplete(t: PostTrace): boolean {
   if (stages.some((x) => x.state === "unavailable")) return true;
   if (t.themes.state === "recorded" && t.themes.unreadable > 0) return true;
   if (t.claims.state === "recorded" && t.claims.unreadable > 0) return true;
+  if (
+    t.claims.state === "recorded" &&
+    t.claims.results.some((r) => r.announcement.state === "unavailable")
+  ) {
+    return true;
+  }
   return !stages.some((x) => x.state === "recorded");
 }
 
