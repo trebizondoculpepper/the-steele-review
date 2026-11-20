@@ -56,7 +56,8 @@ This project (trebizondoculpepper/the-steele-review) uses pdb for status, priori
 - MCP clients: `pdb-mcp --repo trebizondoculpepper/the-steele-review`.
 - Prefer pdb over raw gh for status and priorities; use gh only for operations pdb does not support.
 - Merge your own pull requests. Once your PR is green and unblocked, merge it; do not wait for someone else to do it. Getting your own PR unblocked is your work: answer review findings, resolve threads, rebase conflicts and re-request review. Merging someone else's PR is not implied by this rule.
-- Do not ask the user for permission before picking up work. If pdb offers an item as available (listed under READY / UNCLAIMED, or a next step whose command is a claim), it is explicitly available: claim it and start. Availability settles pickup, not scope: still ask when pdb does not offer the work, when a decision is recorded as unresolved on the ticket, when the change would alter an agreed architectural principle or require an architecture update, or when the security review gate would block it. Those still require explicit user agreement as described above.
+- When pdb offers a ticket as available, claim it and start. Availability authorizes pickup. Unresolved scope decisions, architectural exceptions, and security exceptions still require explicit agreement.
+- Implementers raise all work questions on the relevant ticket. Record the question, the decision needed, and why it matters. If the question blocks implementation, record the blocker and move on to the next available ticket. Keep working through the queue without interrupting the human directly. Resume the blocked ticket once the decision is recorded on it.
 
 <!-- pdb:coordination:end -->
 
