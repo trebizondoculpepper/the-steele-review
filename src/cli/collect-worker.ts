@@ -21,6 +21,7 @@
  * Disabled by default; see doc/testing/local-whisper.md for configuration.
  * Output is one JSON line per outcome; no URLs with credentials are printed.
  */
+import { CAPTURED_CONTENT_SUBJECT } from "../events/captured-content-event.js";
 import { configuredTranscription } from "../config/transcription.js";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { hostname } from "node:os";
@@ -85,7 +86,11 @@ async function main(): Promise<number> {
     collector: new SubstackContentCollector({ publicationUrl: c.STEELE_PUBLICATION_URL }),
     publisher: nats,
     // Publish only the collector's own subjects from the shared outbox.
-    dispatchSubjects: [TEXT_READY_SUBJECT, c.STEELE_DISCOVERY_SUBJECT ?? DEFAULT_DISCOVERY_SUBJECT],
+    dispatchSubjects: [
+      TEXT_READY_SUBJECT,
+      CAPTURED_CONTENT_SUBJECT,
+      c.STEELE_DISCOVERY_SUBJECT ?? DEFAULT_DISCOVERY_SUBJECT,
+    ],
     ...(transcriber ? { transcriber } : {}),
     owner: `collect-worker:${hostname()}:${process.pid}`,
     ...(c.STEELE_COLLECT_RETRY_DELAY_MS ? { retryDelayMs: c.STEELE_COLLECT_RETRY_DELAY_MS } : {}),

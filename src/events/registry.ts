@@ -1,4 +1,8 @@
 import {
+  CAPTURED_CONTENT_EVENT_TYPE_V1,
+  CAPTURED_CONTENT_SUBJECT,
+} from "./captured-content-event.js";
+import {
   ARTICLE_APPROVED_EVENT_TYPE_V1,
   ARTICLE_APPROVED_SUBJECT,
   PUBLICATION_STREAM,
@@ -108,7 +112,7 @@ export const STREAMS: readonly StreamDefinition[] = [
     name: "STEELE_CONTENT",
     overrideEnv: "STEELE_CONTENT_STREAM",
     purpose: "Captured source text ready for indexing and analysis.",
-    subjects: [TEXT_READY_SUBJECT],
+    subjects: [TEXT_READY_SUBJECT, CAPTURED_CONTENT_SUBJECT],
   },
   {
     name: ANALYSIS_STREAM,
@@ -200,6 +204,13 @@ export const MESSAGES: readonly MessageDefinition[] = [
     emittedWhen: "An operator or scheduler requests reconciliation of a route.",
     guarantees:
       "Idempotent from the index checkpoint; acked after the pass, redelivered while busy or failed, terminated and recorded when malformed, for an unknown route or when retries are exhausted.",
+  },
+  {
+    subject: CAPTURED_CONTENT_SUBJECT,
+    eventType: CAPTURED_CONTENT_EVENT_TYPE_V1,
+    stream: "STEELE_CONTENT",
+    producer: "collect-worker (Substack); any ingestion source",
+    description: "Source-neutral captured item revision for the writing engine (#269).",
   },
   {
     subject: ARTICLE_APPROVED_SUBJECT,

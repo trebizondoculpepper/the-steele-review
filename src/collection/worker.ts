@@ -10,6 +10,12 @@ import type { CollectionResult } from "../controllers/substack/collect.js";
 import { parseDiscoveryEvent, type IngestionReason } from "../events/discovery-event.js";
 import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
 import { TEXT_READY_SUBJECT, createTextReadyEvent } from "../events/text-ready-event.js";
+import {
+  CAPTURED_CONTENT_SUBJECT,
+  createCapturedContentEvent,
+  substackCapturedContent,
+} from "../events/captured-content-event.js";
+import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { MediaCandidate, TranscriptionJob } from "../transcription/adapter.js";
 import type { CollectionRecord, CollectionStore } from "./collection-store.js";
 
@@ -66,6 +72,7 @@ export type WorkerOutcome =
 /** Subjects the collector owns in the shared outbox: text-ready handoffs and its own discovery retries. */
 export const COLLECTOR_DISPATCH_SUBJECTS: readonly string[] = [
   TEXT_READY_SUBJECT,
+  CAPTURED_CONTENT_SUBJECT,
   DEFAULT_DISCOVERY_SUBJECT,
 ];
 
@@ -129,8 +136,27 @@ export class CollectionWorker {
         },
         { causationId },
       );
+      // The source-neutral captured-content handoff (#269), committed with
+      // the text-ready event; existing indexing consumers are unchanged.
+      const captured = createCapturedContentEvent(
+        substackCapturedContent({
+          artifact: {
+            repository: artifact.repository,
+            commit: artifact.commit,
+            path: artifact.path,
+            hash: `sha256:${artifact.sha256}`,
+          },
+          record,
+          sourceVersion: sourceVersionFor(record.text),
+        }),
+      );
       return [
         { eventId: event.id, subject: TEXT_READY_SUBJECT, payload: JSON.stringify(event.toJSON()) },
+        {
+          eventId: captured.id,
+          subject: CAPTURED_CONTENT_SUBJECT,
+          payload: JSON.stringify(captured.toJSON()),
+        },
       ];
     };
   }
