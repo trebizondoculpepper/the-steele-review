@@ -34,18 +34,23 @@
     "research-index-worker": "node --enable-source-maps dist/cli/research-index-worker.js",
     "research-reindex": "node --enable-source-maps dist/cli/research-reindex.js",
     "writer-package": "node --enable-source-maps dist/cli/writer-package.js",
-    "draft-package": "node --enable-source-maps dist/cli/draft-package.js"
+    "draft-package": "node --enable-source-maps dist/cli/draft-package.js",
+    "article-worker": "node --enable-source-maps dist/cli/article-worker.js",
+    "article-run": "node --enable-source-maps dist/cli/article-run.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
     "@nats-io/jetstream": "^3.5.0",
     "@nats-io/transport-node": "^3.5.0",
+    "@restatedev/restate-sdk": "1.18.4",
+    "@restatedev/restate-sdk-clients": "1.18.4",
     "cloudevents": "^6.0.3",
     "html-to-text": "^10.0.1",
     "rss-parser": "^3.13.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@restatedev/restate-sdk-testcontainers": "1.18.4",
     "@types/html-to-text": "^9.0.4",
     "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
