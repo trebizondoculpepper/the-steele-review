@@ -15,6 +15,7 @@ import {
   REVISION_DECIDED_SUBJECT,
   parseRevisionDecidedEvent,
 } from "../../src/drafting/revision-attempts.js";
+import { DEFAULT_DRAFT_PROMPT } from "../../src/drafting/draft.js";
 import { RevisionWorker } from "../../src/drafting/revision-worker.js";
 import type { ApplicabilityResult } from "../../src/research/applicability.js";
 
@@ -245,7 +246,7 @@ describe("RevisionWorker", () => {
     const meta = JSON.parse(await artifacts.read((await artifacts.lookup(metaPath))!));
     expect(meta).toMatchObject({
       modelVersion: "fake/writer",
-      promptVersion: "draft-critique-v1",
+      promptVersion: DEFAULT_DRAFT_PROMPT.version,
       templateVersion: "critique-template-v1",
       citationIds: ["E1"],
     });

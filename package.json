@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').cpSync('src/prompts', 'dist/prompts', {recursive:true})\"",
     "check": "vp check",
     "typecheck": "tsc --noEmit",
     "lint": "vp lint",

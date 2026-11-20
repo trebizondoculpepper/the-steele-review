@@ -13,6 +13,7 @@ import {
   type BriefInput,
 } from "../../src/drafting/brief.js";
 import {
+  DEFAULT_DRAFT_PROMPT,
   DRAFT_READY_SUBJECT,
   DRAFT_TEMPLATE_VERSION,
   parseDraftReadyEvent,
@@ -288,7 +289,7 @@ describe("DraftingWorker", () => {
     const meta = JSON.parse(await artifacts.read(r.metadata)) as DraftMetadata;
     expect(meta).toMatchObject({
       modelVersion: "fake/drafter-1",
-      promptVersion: "draft-critique-v1",
+      promptVersion: DEFAULT_DRAFT_PROMPT.version,
       templateVersion: DRAFT_TEMPLATE_VERSION,
       draftHash: `sha256:${r.draft.sha256}`,
       citationIds: ["E1"],
