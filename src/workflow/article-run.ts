@@ -130,14 +130,19 @@ const slugFor = (raw: string): string => {
  * Work identity for a captured item. Substack keeps its publication and post
  * IDs, so a run started from a captured-content event and a replay from the
  * CLI share one workflow key. Other sources are prefixed with their kind
- * (`blog/example-site` becomes `blog-example-site`) so they cannot collide
- * with a Substack publication; item IDs outside the slug alphabet get a
+ * and suffixed with a hash of the whole namespace
+ * (`blog/example-site` becomes `blog-example-site-<hash>`), so they cannot
+ * collide with a Substack publication or with each other; item IDs outside the slug alphabet get a
  * stable hash suffix.
  */
 export function articleRunTarget(namespace: string, itemId: string) {
   const [kind, instance] = namespace.split("/") as [string, string];
   return {
-    publicationId: kind === "substack" ? instance : slugFor(`${kind}-${instance}`),
+    publicationId:
+      kind === "substack"
+        ? instance
+        : // The namespace hash keeps `blog/x` and `substack/blog-x` apart.
+          `${`${kind}-${instance}`.slice(0, 180)}-${createHash("sha256").update(namespace).digest("hex").slice(0, 12)}`,
     postId: slugFor(itemId),
   };
 }

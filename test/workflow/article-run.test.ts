@@ -8,6 +8,7 @@ import {
   RESEARCH_CONCURRENCY_RULE,
   StageError,
   articleRunKey,
+  articleRunTarget,
   articleRunWorkflow,
   researchService,
   type ArticleRunInput,
@@ -328,8 +329,12 @@ describe("unattended article run on Restate (#243)", () => {
       eventId: "x",
     };
     const runInput = articleRunInputFor(parsed, 6_000);
+    // A Substack publication named like the blog cannot share its identity.
+    expect(articleRunTarget("substack/blog-example-site", parsed.itemId).publicationId).not.toBe(
+      articleRunTarget("blog/example-site", parsed.itemId).publicationId,
+    );
     expect(runInput).toMatchObject({
-      publicationId: "blog-example-site",
+      publicationId: expect.stringMatching(/^blog-example-site-[0-9a-f]{12}$/),
       postId: expect.stringMatching(/^2026-11-20-a-post-[0-9a-f]{12}$/),
     });
     const wf = ingress.workflowClient(Workflow, articleRunKey(runInput));
