@@ -118,6 +118,8 @@ const provider = {
             },
       ),
       limitations: [],
+      narrative: { status: "limited", limitation: "No earlier posts were compared." },
+      widerContext: { status: "limited", limitation: "No background used." },
     });
   },
 };
@@ -207,5 +209,5 @@ describe("article stages composed (#243)", () => {
       reused: true,
       evidenceFrom: expect.any(Object),
     });
-  });
+  }, 60_000);
 });

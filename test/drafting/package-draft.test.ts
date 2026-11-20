@@ -83,6 +83,8 @@ const GOOD = JSON.stringify({
     },
   ],
   limitations: ["The payment claim could not be checked against any record."],
+  narrative: { status: "limited", limitation: "No earlier posts were compared." },
+  widerContext: { status: "limited", limitation: "No independent background was used." },
 });
 
 describe("drafting from a writer package (#149)", () => {
@@ -106,7 +108,7 @@ describe("drafting from a writer package (#149)", () => {
     const meta = JSON.parse(await content.read(out.metadata));
     expect(meta).toMatchObject({
       package: { path: ref.path },
-      templateVersion: "package-explainer-v1",
+      templateVersion: "package-explainer-v2",
       modelVersion: "fake/writer",
     });
   });
@@ -220,10 +222,160 @@ describe("drafting from a writer package (#149)", () => {
       package: ref,
       provider: model(GOOD),
       sourceUrl: "https://x/p",
-      prompt: { version: "package-draft-v2", instructions: "x" },
+      prompt: { version: "package-draft-v3", instructions: "x" },
     });
     if (one.status !== "drafted" || two.status !== "drafted") throw new Error("expected drafts");
     expect(two.draft.path).not.toBe(one.draft.path);
     expect(await content.read(one.draft)).toContain("Original post");
+  });
+
+  describe("narrative and wider context (#176)", () => {
+    const comparison = (
+      source: unknown,
+      sourceVersion: string,
+      extra: Record<string, unknown> = {},
+    ) =>
+      JSON.stringify({
+        status: "complete",
+        claimId: `sha256:${"c".repeat(64)}`,
+        findings: [
+          {
+            kind: "repetition",
+            explanation: {
+              text: "The author made the same treaty claim in May 2023.",
+              generatedBy: "m",
+              isEvidence: false,
+            },
+            uncertainty: "low",
+            current: {
+              claimId: "x",
+              quote: "A treaty bans weather weapons.",
+              artifact: source,
+              sourceVersion,
+              start: 0,
+              end: 30,
+            },
+            earlier: [
+              {
+                passageId: "p",
+                postId: "earlier",
+                publishedAt: "2023-05-01",
+                url: "https://pub.example.com/p/earlier",
+                quote: "The treaty bans weather weapons.",
+                artifact: {
+                  repository: "archive",
+                  commit: "d".repeat(40),
+                  path: "substack/pub/earlier/collected.json",
+                  hash: `sha256:${"e".repeat(64)}`,
+                },
+                start: 0,
+                end: 32,
+              },
+            ],
+            ...extra,
+          },
+        ],
+        rejected: [],
+        modelVersion: "m",
+        promptVersion: "p",
+      });
+    const withContext = (over: Record<string, unknown>) =>
+      JSON.stringify({ ...JSON.parse(GOOD), ...over });
+
+    it("requires limitations when history is absent, and cites independent background for wider context", async () => {
+      const ref = await packageRef();
+      const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(ref)));
+      expect(pkg.context!.history.status).toBe("gap");
+      const overreach = {
+        ...JSON.parse(GOOD),
+        narrative: { status: "supported", text: "The author has long claimed this.", history: [0] },
+      };
+      expect(draftProblems(pkg, overreach)).toEqual(
+        expect.arrayContaining([expect.stringContaining("without historical evidence")]),
+      );
+      const out = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: model(
+          withContext({
+            narrative: { status: "limited", limitation: "No earlier posts were compared." },
+            widerContext: {
+              status: "supported",
+              text: "The treaty is a standard reference in this movement's claims.",
+              background: [0],
+            },
+          }),
+        ),
+        sourceUrl: "https://x/p",
+      });
+      if (out.status !== "drafted") throw new Error(out.status);
+      const md = await content.read(out.draft);
+      expect(md).toContain("_Limitation: No earlier posts were compared._");
+      expect(md).toContain("## The wider movement");
+      expect(md).toMatch(/standard reference in this movement's claims\. \[\d\]/);
+    });
+
+    it("renders dated earlier passages as quotes and the comparison as labelled analysis", async () => {
+      const a = await fx.analysis("p1", CLAIMS);
+      const coverage = await assessPostCoverage({
+        artifacts: content,
+        ...a,
+        commission: fx.researcher(() => ({
+          passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+        })).commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const record = JSON.parse(await content.read(coverage.ref));
+      const themes = JSON.parse(
+        await content.read((await content.lookup(record.themeResult.path))!),
+      );
+      const cmp = await content.write(
+        "comparisons/pub/p1/a.json",
+        comparison(record.source, themes.sourceVersion, {
+          kind: "possible-contradiction",
+          conflictRationale: "Earlier wording was narrower in scope.",
+        }),
+      );
+      const { ref } = await saveWriterPackage({
+        content,
+        coverage: coverage.ref,
+        comparisons: [cmp],
+      });
+      const out = await draftFromPackage({
+        content,
+        archive,
+        package: ref,
+        provider: model(
+          withContext({
+            narrative: {
+              status: "supported",
+              text: "The post reframes an earlier claim.",
+              history: [0],
+            },
+          }),
+        ),
+        sourceUrl: "https://x/p",
+      });
+      if (out.status !== "drafted") throw new Error(out.status);
+      const md = await content.read(out.draft);
+      expect(md).toContain(
+        '> "The treaty bans weather weapons." (2023-05-01, https://pub.example.com/p/earlier)',
+      );
+      expect(md).toContain("analysis, not evidence");
+      expect(md).toContain("_Qualification: Earlier wording was narrower in scope._");
+      // Different context, different package: a distinct draft identity.
+      const plain = await packageRef();
+      expect(plain.path).not.toBe(ref.path);
+    });
+
+    it("rejects citations of context the package does not hold", async () => {
+      const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(await packageRef())));
+      const bad = {
+        ...JSON.parse(GOOD),
+        widerContext: { status: "supported", text: "t", background: [99] },
+      };
+      expect(draftProblems(pkg, bad)).toEqual([expect.stringContaining("unknown background")]);
+    });
   });
 });

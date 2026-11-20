@@ -26,12 +26,12 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v1";
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v2";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "package-draft-v1",
+  version: "package-draft-v2",
   instructions: readFileSync(
     new URL("../prompts/writer/package-explainer.md", import.meta.url),
     "utf8",
@@ -55,6 +55,37 @@ const ModelDraftSchema = z
       )
       .max(50),
     limitations: z.array(z.string().trim().min(1).max(1000)).max(20),
+    /**
+     * How the post develops the author's narrative (#176): "supported" only
+     * with cited earlier passages from the package; otherwise "limited".
+     */
+    narrative: z
+      .discriminatedUnion("status", [
+        z
+          .object({
+            status: z.literal("supported"),
+            text: z.string().trim().min(1).max(3000),
+            history: z.array(z.number().int().min(0)).min(1).max(20),
+          })
+          .strict(),
+        z
+          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+          .strict(),
+      ]),
+    /** Significance within the wider movement (#176): "supported" only with cited background. */
+    widerContext: z
+      .discriminatedUnion("status", [
+        z
+          .object({
+            status: z.literal("supported"),
+            text: z.string().trim().min(1).max(3000),
+            background: z.array(z.number().int().min(0)).min(1).max(30),
+          })
+          .strict(),
+        z
+          .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+          .strict(),
+      ]),
   })
   .strict();
 export type PackageModelDraft = z.infer<typeof ModelDraftSchema>;
@@ -87,6 +118,24 @@ export class InvalidDraftError extends Error {
 /** Validate a model draft against the package; returns problems (empty when valid). */
 export function draftProblems(pkg: WriterPackage, draft: PackageModelDraft): string[] {
   const problems: string[] = [];
+  // Narrative and wider context may be asserted only from the package's own
+  // cited context; without it they must be stated as limitations (#176).
+  const history = pkg.context?.history.comparisons ?? [];
+  const background = pkg.context?.background.passages ?? [];
+  if (draft.narrative?.status === "supported") {
+    if (history.length === 0)
+      problems.push("narrative development asserted without historical evidence");
+    for (const i of draft.narrative.history) {
+      if (i >= history.length) problems.push(`narrative cites unknown comparison ${i}`);
+    }
+  }
+  if (draft.widerContext?.status === "supported") {
+    if (background.length === 0)
+      problems.push("wider context asserted without independent background");
+    for (const i of draft.widerContext.background) {
+      if (i >= background.length) problems.push(`wider context cites unknown background ${i}`);
+    }
+  }
   const claims = new Map(pkg.claims.map((c) => [c.claimRecordId, c]));
   const seen = new Set<string>();
   for (const r of draft.responses) {
@@ -167,6 +216,41 @@ export function renderPackageDraft(
       `**${VERDICT_LABEL[r.verdict]}.** ${r.text}${refs.length > 0 ? ` ${refs.map((n) => `[${n}]`).join("")}` : ""}`,
       "",
     );
+  }
+  // Narrative development: earlier passages are quoted evidence (dated,
+  // linked); the comparison text is generated analysis, labelled as such.
+  if (draft.narrative) {
+    lines.push("## How this develops the author's narrative", "");
+    if (draft.narrative.status === "limited") {
+      lines.push(`_Limitation: ${draft.narrative.limitation}_`, "");
+    } else {
+      lines.push(draft.narrative.text, "");
+      const comparisons = pkg.context?.history.comparisons ?? [];
+      for (const i of draft.narrative.history) {
+        const c = comparisons[i];
+        for (const e of c.earlier) {
+          lines.push(`> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`, "");
+        }
+        lines.push(
+          `_Comparison (${c.kind}, ${c.uncertainty} uncertainty; analysis, not evidence): ${c.comparison.text}_`,
+          "",
+        );
+        if (c.conflictRationale) lines.push(`_Qualification: ${c.conflictRationale}_`, "");
+        if (c.changedCircumstances) lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
+      }
+    }
+  }
+  if (draft.widerContext) {
+    lines.push("## The wider movement", "");
+    if (draft.widerContext.status === "limited") {
+      lines.push(`_Limitation: ${draft.widerContext.limitation}_`, "");
+    } else {
+      const passages = pkg.context?.background.passages ?? [];
+      const refs = draft.widerContext.background.map((i) =>
+        cite(passages[i].url, passages[i].passage),
+      );
+      lines.push(`${draft.widerContext.text} ${refs.map((n) => `[${n}]`).join("")}`, "");
+    }
   }
   if (draft.limitations.length > 0) {
     lines.push("## Limitations", "", ...draft.limitations.map((l) => `- ${l}`), "");
@@ -271,6 +355,26 @@ export async function draftFromPackage(input: {
       ...(c.reason ? { gapReason: c.reason } : {}),
       evidence: c.evidence.map((e, i) => ({ index: i, url: e.url, passage: e.passage })),
     })),
+    history:
+      pkg.context?.history.status === "available"
+        ? pkg.context.history.comparisons.map((c, i) => ({
+            index: i,
+            kind: c.kind,
+            uncertainty: c.uncertainty,
+            earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
+            comparison: c.comparison.text,
+            ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
+          ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
+          }))
+        : { gap: pkg.context?.history.reason ?? "no historical comparison" },
+    background:
+      pkg.context?.background.status === "available"
+        ? pkg.context.background.passages.map((p, i) => ({
+            index: i,
+            url: p.url,
+            passage: p.passage,
+          }))
+        : { gap: pkg.context?.background.reason ?? "no independent background" },
   });
   let draft: PackageModelDraft | undefined;
   let lastProblems: string[] = [];
