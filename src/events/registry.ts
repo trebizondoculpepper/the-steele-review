@@ -13,6 +13,11 @@ import {
   POST_ANALYSED_EVENT_TYPE_V1,
   POST_ANALYSED_SUBJECT,
 } from "./post-analysed-event.js";
+import {
+  RESEARCH_COMPLETED_EVENT_TYPE_V1,
+  RESEARCH_COMPLETED_SUBJECT,
+  RESEARCH_STREAM,
+} from "./research-completed-event.js";
 import { TEXT_READY_EVENT_TYPE_V1, TEXT_READY_SUBJECT } from "./text-ready-event.js";
 
 /**
@@ -56,10 +61,6 @@ export interface MessageDefinition {
   description: string;
 }
 
-/** Research completion is defined with #215; registered here so its stream is reserved. */
-export const RESEARCH_COMPLETED_SUBJECT_V1 = "steele.v1.research.completed";
-export const RESEARCH_STREAM_NAME = "STEELE_RESEARCH";
-
 export const STREAMS: readonly StreamDefinition[] = [
   {
     name: "STEELE_DISCOVERY",
@@ -80,10 +81,10 @@ export const STREAMS: readonly StreamDefinition[] = [
     subjects: [POST_ANALYSED_SUBJECT],
   },
   {
-    name: RESEARCH_STREAM_NAME,
+    name: RESEARCH_STREAM,
     overrideEnv: "STEELE_RESEARCH_STREAM",
     purpose: "Research job completions (complete, complete with gaps, failed).",
-    subjects: [RESEARCH_COMPLETED_SUBJECT_V1],
+    subjects: [RESEARCH_COMPLETED_SUBJECT],
   },
 ];
 
@@ -110,9 +111,9 @@ export const MESSAGES: readonly MessageDefinition[] = [
     description: "Theme proposals and claims saved for one post.",
   },
   {
-    subject: RESEARCH_COMPLETED_SUBJECT_V1,
-    eventType: "org.steele.research.completed.v1",
-    stream: RESEARCH_STREAM_NAME,
+    subject: RESEARCH_COMPLETED_SUBJECT,
+    eventType: RESEARCH_COMPLETED_EVENT_TYPE_V1,
+    stream: RESEARCH_STREAM,
     producer: "research jobs (#215)",
     description: "A research job reached a terminal outcome.",
   },
