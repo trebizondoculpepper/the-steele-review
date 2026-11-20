@@ -429,6 +429,31 @@ export class GitArtifactStore {
     return { head, full: false, changes };
   }
 
+  /**
+   * Like `lookup`, but resolved against a specific branch commit (for
+   * example the head a reconciliation pass is applying), so later commits
+   * cannot leak into that pass. Undefined when the path is absent there.
+   */
+  async lookupAt(
+    at: string,
+    path: string,
+  ): Promise<{ ref: ArtifactRef; content: string } | undefined> {
+    assertArtifactPath(path);
+    if (!/^[0-9a-f]{40,64}$/.test(at) || !(await this.commitExists(at))) {
+      throw new ArtifactStoreError("git-failed");
+    }
+    const blob = await this.entryAt(at, path);
+    if (blob === undefined) return undefined;
+    const content = await this.blobContent(blob);
+    const commit = isRevisablePath(path)
+      ? await this.latestCommit(at, path)
+      : await this.introducingCommit(at, path);
+    return {
+      ref: { repository: this.config.repository, commit, path, sha256: sha256(content) },
+      content,
+    };
+  }
+
   private async commitExists(commit: string): Promise<boolean> {
     try {
       await this.run(["cat-file", "-e", `${commit}^{commit}`]);

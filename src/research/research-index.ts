@@ -183,8 +183,10 @@ export async function reconcileResearchIndex(input: {
       removed++;
       continue;
     }
-    const ref = await input.artifacts.lookup(path);
-    const fields = ref ? researchDocument(path, await input.artifacts.read(ref)) : undefined;
+    // Read exactly the revision at the head this pass is applying.
+    const found = await input.artifacts.lookupAt(head, path);
+    const ref = found?.ref;
+    const fields = found ? researchDocument(path, found.content) : undefined;
     if (!ref || !fields) {
       // Unreadable for search: make sure no stale copy lingers.
       await input.es.deleteDocument(index, id, options);

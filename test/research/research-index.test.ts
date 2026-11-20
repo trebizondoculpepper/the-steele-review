@@ -172,6 +172,22 @@ describe("research collection indexing", () => {
     expect(es.text("dossier/a.md")).toBe("# A1\n");
   });
 
+  it("reads each document at the pass's head, not a later commit", async () => {
+    await rev("dossier/a.md", "# A1\n");
+    const realChanges = artifacts.changesSince.bind(artifacts);
+    artifacts.changesSince = async (from) => {
+      const result = await realChanges(from);
+      await rev("dossier/a.md", "# A2 committed mid-pass\n");
+      return result;
+    };
+    await reconcile();
+    artifacts.changesSince = realChanges;
+    expect(es.text("dossier/a.md")).toBe("# A1\n");
+    // The later commit is picked up by the next pass.
+    await reconcile();
+    expect(es.text("dossier/a.md")).toBe("# A2 committed mid-pass\n");
+  });
+
   it("skips unreadable source snapshots without leaving stale copies", async () => {
     await artifacts.write(`${JOB}/sources/2.json`, "not json");
     expect(await reconcile()).toMatchObject({ skipped: 1, indexed: 0 });
