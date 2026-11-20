@@ -442,6 +442,30 @@ describe("librarian coverage", () => {
     expect(merged.claims.find((c) => c.claimId === "c2")).toMatchObject({ status: "gap" });
   });
 
+  it("bounds a claim's dossier citations to the schema limit", () => {
+    const base = {
+      schemaVersion: 1 as const,
+      themeId: "t",
+      title: "T",
+      scope: "S",
+      claims: [],
+      citations: [],
+      gaps: [],
+      updatedAt: "2026-01-01",
+    };
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      url: `https://s${i}.example/`,
+      passage: `p${i}`,
+    }));
+    const merged = mergeCoverage(
+      base,
+      [{ claimRecordId: "c1", status: "evidence-found", citations: many }],
+      "2026-01-02",
+    );
+    const c1 = merged.claims[0];
+    expect(c1.status === "covered" && c1.citations.length).toBe(50);
+  });
+
   it("falls back when an embedding response is malformed", async () => {
     const bad = new EmbeddingShortlister({ vectorSpace: "s", embed: async () => [[1, 0]] }, "s");
     const list = await bad.shortlist({ title: "x", description: "" }, [

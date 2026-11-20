@@ -384,6 +384,8 @@ function assess(
 
 /** Schema limit on claims and citations held by one dossier. */
 const MAX_DOSSIER_ENTRIES = 1000;
+/** Schema limit on citations per covered claim. */
+const MAX_CLAIM_CITATIONS = 50;
 /** The researcher's per-request claim limit. */
 const MAX_REQUEST_CLAIMS = 100;
 
@@ -436,7 +438,12 @@ export function mergeCoverage(
     coverage.set(
       claim.claimRecordId,
       claim.status === "evidence-found" && ids.length > 0
-        ? { claimId: claim.claimRecordId, status: "covered", citations: [...new Set(ids)] }
+        ? {
+            claimId: claim.claimRecordId,
+            status: "covered",
+            // The dossier schema allows at most 50 citations per claim.
+            citations: [...new Set(ids)].slice(0, MAX_CLAIM_CITATIONS),
+          }
         : {
             claimId: claim.claimRecordId,
             status: "gap",
