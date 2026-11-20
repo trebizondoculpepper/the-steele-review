@@ -32,7 +32,8 @@
     "events:reference": "tsx scripts/events-reference.ts",
     "research-subject": "node --enable-source-maps dist/cli/research-subject.js",
     "research-index-worker": "node --enable-source-maps dist/cli/research-index-worker.js",
-    "research-reindex": "node --enable-source-maps dist/cli/research-reindex.js"
+    "research-reindex": "node --enable-source-maps dist/cli/research-reindex.js",
+    "writer-package": "node --enable-source-maps dist/cli/writer-package.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
