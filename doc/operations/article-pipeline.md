@@ -31,3 +31,16 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 ## Model choices
 
 `STEELE_MODEL` is the default for model-backed stages; `STEELE_MODEL_THEMES`, `STEELE_MODEL_CLAIMS`, `STEELE_MODEL_WRITER` and `STEELE_MODEL_SUPPORT` override per stage. Research uses `STEELE_RESEARCH_MODEL` (Sonar) with its configured timeout and token limits.
+
+## Starting runs from captured content (#270)
+
+`captured-bridge` (`src/cli/captured-bridge.ts`) consumes `steele.v1.content.captured` (#269) from a durable consumer on `STEELE_CONTENT` and submits one `ArticleRun` per captured item revision. The logic is in `src/workflow/captured-bridge.ts`.
+
+- **What starts a run:** only `live` captures from sources listed in `STEELE_ARTICLE_SOURCES` (comma-separated namespaces such as `substack/saveusnow`; empty means none). `backfill` and `reprocess` captures are acknowledged and skipped, so an archive reload never launches hundreds of paid runs; replay those explicitly with `article-run`. Incomplete captures are skipped too.
+- **Identity:** the workflow key is the source, item and source version. Substack keeps its publication and post IDs, so a captured-content event and an `article-run` replay of the same revision share one run. Other sources are prefixed with their kind (`blog/example-site` becomes `blog-example-site`), and item IDs outside the slug alphabet get a stable hash suffix (`articleRunTarget`).
+- **Exact input:** the run carries the event's exact archived artifact reference, and the stages read those bytes (hash-verified) rather than looking up the latest capture. A missing or altered artifact, or one not in the capture-record format, ends the run with a recorded reason. The workflow rejects input whose publication and post do not match the captured source.
+- **Acknowledgment:** the event is acknowledged only after Restate has durably accepted the submission or reports the run already exists. If Restate is unreachable the event is negatively acknowledged and redelivered; a bridge crash before acknowledgment is safe for the same reason. Invalid events are terminated.
+- **Handoff to publishing:** when verification approves a draft, the workflow records one approved-article event through `recordApproval` and the outbox (#262), and returns its ID as `approvalEvent`. A rejected, unresolved or unverified draft emits nothing.
+
+Configuration: `NATS_URL`, `NATS_TOKEN?`, `STEELE_CONTENT_STREAM`, `STEELE_CAPTURED_CONSUMER` (provisioned separately, filtered to `steele.v1.content.captured`), `RESTATE_INGRESS_URL`, `STEELE_ARTICLE_SOURCES`, optional `STEELE_RESEARCH_DEADLINE_MS` (default 30 minutes) and `STEELE_BRIDGE_RETRY_DELAY_MS`.
+

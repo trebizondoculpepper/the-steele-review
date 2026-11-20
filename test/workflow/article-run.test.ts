@@ -15,6 +15,11 @@ import {
   type PinnedResearch,
   type Ref,
 } from "../../src/workflow/article-run.js";
+import {
+  createCapturedContentEvent,
+  type CapturedContentData,
+} from "../../src/events/captured-content-event.js";
+import { articleRunInputFor, handleCapturedContent } from "../../src/workflow/captured-bridge.js";
 
 /**
  * Deterministic integration test against a real Restate 1.8.1 container with
@@ -43,7 +48,16 @@ const request = (subject: string): ResearchRequest => ({
 const delayFor = (subject: string) =>
   subject.startsWith("slow") ? 20_000 : subject.startsWith("partial") ? 1_500 : 500;
 
-const calls = { themes: 0, claims: 0, plan: 0, coverage: 0, draft: 0, verify: 0, research: 0 };
+const calls = {
+  themes: 0,
+  claims: 0,
+  plan: 0,
+  coverage: 0,
+  draft: 0,
+  verify: 0,
+  research: 0,
+  approve: 0,
+};
 let active = 0;
 let maxActive = 0;
 const pinnedByPost = new Map<string, PinnedResearch[]>();
@@ -98,8 +112,9 @@ const stages: ArticleStages = {
   draft: async (pkg) => (calls.draft++, { ref: ref(`articles/${pkg.path}.md`) }),
   verify: async (draft) => (
     calls.verify++,
-    { ref: ref(`verifications/${draft.path}.json`), approved: true }
+    { ref: ref(`verifications/${draft.path}.json`), approved: !draft.path.includes("rejected") }
   ),
+  approve: async (report) => (calls.approve++, { eventId: `approved-${report.path}` }),
 };
 
 let env: RestateTestEnvironment;
@@ -192,6 +207,138 @@ describe("unattended article run on Restate (#243)", () => {
     const invalid = ingress.workflowClient(Workflow, "pub/invalid@x");
     await invalid.workflowSubmit({ ...input("invalid"), researchDeadlineMs: -1 });
     expect(await invalid.workflowAttach()).toMatchObject({
+      outcome: "failed",
+      reason: "invalid-input",
+    });
+  }, 60_000);
+
+  it("hands an approval to publishing once, and a rejected draft emits none", async () => {
+    const before = calls.approve;
+    const ok = ingress.workflowClient(Workflow, articleRunKey(input("approved-one")));
+    await ok.workflowSubmit(input("approved-one"));
+    expect(await ok.workflowAttach()).toMatchObject({
+      outcome: "verified",
+      approvalEvent: expect.stringContaining("approved-one"),
+    });
+    expect(calls.approve).toBe(before + 1);
+    const no = ingress.workflowClient(Workflow, articleRunKey(input("rejected-one")));
+    await no.workflowSubmit(input("rejected-one"));
+    const rejected = await no.workflowAttach();
+    expect(rejected).toMatchObject({ outcome: "rejected" });
+    expect(rejected).not.toHaveProperty("approvalEvent");
+    expect(calls.approve).toBe(before + 1);
+  }, 60_000);
+
+  it("starts one run per live captured revision; redelivery and Substack replay attach to it", async () => {
+    const artifact = {
+      repository: "archive",
+      commit: "e".repeat(40),
+      path: "substack/pub/captured/collected.json",
+      hash: `sha256:${"f".repeat(64)}`,
+    };
+    const event = (over: Record<string, unknown> = {}) =>
+      JSON.stringify(
+        createCapturedContentEvent(
+          {
+            source: { namespace: "substack/pub", kind: "substack" },
+            itemId: "captured",
+            originalUrl: "https://pub.example.com/p/captured",
+            artifact,
+            sourceVersion: input("captured").sourceVersion,
+            complete: true,
+            transcript: { kind: "none" },
+            ingestionReason: "live",
+            ...over,
+          } as CapturedContentData,
+          () => new Date("2026-11-20T00:00:00Z"),
+        ).toJSON(),
+      );
+    const submitted: string[] = [];
+    const options = {
+      enabledSources: new Set(["substack/pub", "blog/example-site"]),
+      researchDeadlineMs: 6_000,
+      submit: async (key: string, runInput: ArticleRunInput) => {
+        submitted.push(key);
+        const s = await ingress.workflowClient(Workflow, key).workflowSubmit(runInput);
+        return s.status === "PreviouslyAccepted"
+          ? ("already-running" as const)
+          : ("started" as const);
+      },
+    };
+    const first = await handleCapturedContent(event(), options);
+    expect(first).toMatchObject({ action: "ack", outcome: "started" });
+    // Redelivery after a crash before ack: Restate already has the run.
+    expect(await handleCapturedContent(event(), options)).toMatchObject({
+      action: "ack",
+      outcome: "already-running",
+    });
+    // A Substack replay from the CLI uses the same key.
+    expect(first.action === "ack" && "key" in first && first.key).toBe(
+      articleRunKey(input("captured")),
+    );
+    const result = await ingress
+      .workflowClient(Workflow, articleRunKey(input("captured")))
+      .workflowAttach();
+    expect(result).toMatchObject({ outcome: "verified" });
+
+    // Backfill, disabled sources and incomplete captures never start runs.
+    for (const [over, reason] of [
+      [{ ingestionReason: "backfill" }, "not-live"],
+      [{ ingestionReason: "reprocess" }, "not-live"],
+      [{ source: { namespace: "substack/other", kind: "substack" } }, "source-disabled"],
+      [{ complete: false }, "incomplete"],
+    ] as const) {
+      expect(await handleCapturedContent(event(over), options)).toMatchObject({
+        action: "ack",
+        outcome: "skipped",
+        reason,
+      });
+    }
+    expect(submitted).toHaveLength(2);
+    expect(await handleCapturedContent("{nope", options)).toEqual({
+      action: "term",
+      reason: "invalid-event",
+    });
+    // Restate unreachable: not acknowledged, so the event is redelivered.
+    expect(
+      await handleCapturedContent(event(), {
+        ...options,
+        submit: async () => {
+          throw new Error("down");
+        },
+      }),
+    ).toMatchObject({ action: "nak", reason: "submission-failed" });
+  }, 60_000);
+
+  it("runs a non-Substack source under its own identity", async () => {
+    const parsed = {
+      source: { namespace: "blog/example-site", kind: "blog" },
+      itemId: "2026-11-20_a.post",
+      originalUrl: "https://example-site.test/a-post",
+      artifact: {
+        repository: "archive",
+        commit: "e".repeat(40),
+        path: "blog/example-site/a/collected.json",
+        hash: `sha256:${"f".repeat(64)}`,
+      },
+      sourceVersion: input("blog").sourceVersion,
+      complete: true,
+      transcript: { kind: "none" as const },
+      ingestionReason: "live" as const,
+      eventId: "x",
+    };
+    const runInput = articleRunInputFor(parsed, 6_000);
+    expect(runInput).toMatchObject({
+      publicationId: "blog-example-site",
+      postId: expect.stringMatching(/^2026-11-20-a-post-[0-9a-f]{12}$/),
+    });
+    const wf = ingress.workflowClient(Workflow, articleRunKey(runInput));
+    await wf.workflowSubmit(runInput);
+    expect(await wf.workflowAttach()).toMatchObject({ outcome: "verified" });
+    // Identity that does not match the captured source is refused.
+    const bad = ingress.workflowClient(Workflow, "blog-example-site/mismatch@x");
+    await bad.workflowSubmit({ ...runInput, postId: "other" });
+    expect(await bad.workflowAttach()).toMatchObject({
       outcome: "failed",
       reason: "invalid-input",
     });
