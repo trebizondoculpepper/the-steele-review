@@ -188,6 +188,10 @@ describe("article stages composed (#243)", () => {
         source: { ...viaEvent.source, artifact: { ...captured!, sha256: "0".repeat(64) } },
       }),
     ).rejects.toThrow(/capture-unavailable/);
+    // A valid capture of another post must not be analysed under this identity.
+    await expect(stages.themes({ ...viaEvent, postId: "other-post" })).rejects.toThrow(
+      /capture-identity-mismatch/,
+    );
     const claims = await stages.claims(input, themes);
     const requests = await stages.planResearch(themes, claims);
     expect(requests).toHaveLength(1);

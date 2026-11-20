@@ -337,6 +337,12 @@ describe("unattended article run on Restate (#243)", () => {
       publicationId: expect.stringMatching(/^blog-example-site-[0-9a-f]{12}$/),
       postId: expect.stringMatching(/^2026-11-20-a-post-[0-9a-f]{12}$/),
     });
+    // An encoded ID must never equal an item ID that needed no encoding.
+    const encoded = articleRunTarget("blog/example-site", "2026-11-20_a.post");
+    const literal = articleRunTarget("blog/example-site", encoded.postId);
+    expect(literal.postId).not.toBe(encoded.postId);
+    // Substack keeps its raw post ID so a replay shares the key.
+    expect(articleRunTarget("substack/pub", "2026-11-20_a.post").postId).toBe("2026-11-20_a.post");
     const wf = ingress.workflowClient(Workflow, articleRunKey(runInput));
     await wf.workflowSubmit(runInput);
     expect(await wf.workflowAttach()).toMatchObject({ outcome: "verified" });

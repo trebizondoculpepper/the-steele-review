@@ -88,6 +88,10 @@ export function articleStages(deps: {
     const parsed = CollectionRecordSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new StageError("source", "unsupported-capture-format");
     const record = parsed.data;
+    // Hash verification authenticates the bytes, not the identity: a caller
+    // supplied reference could point at a valid capture of a different post.
+    if (record.item.publicationId !== post.publicationId || record.item.postId !== post.postId)
+      throw new StageError("source", "capture-identity-mismatch");
     if (!record.complete) throw new StageError("source", "incomplete-capture");
     return { ref, record, sourceVersion: sourceVersionFor(record.text) };
   };
