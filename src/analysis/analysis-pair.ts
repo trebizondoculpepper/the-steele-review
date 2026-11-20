@@ -78,8 +78,10 @@ export async function readAnalysisPair(
   } catch {
     return { status: "refused", reason: "unreadable-claim-result" };
   }
-  // Only results under the current accepted/candidate contract complete a post.
-  if (claims.schemaVersion !== 2) return { status: "refused", reason: "legacy-claim-result" };
+  // Only results under the accepted/candidate contract complete a post. Version
+  // 2 and later share that contract; version 3 only adds a candidate reason,
+  // so saved version 2 runs stay readable and announceable.
+  if (claims.schemaVersion < 2) return { status: "refused", reason: "legacy-claim-result" };
   const samePost = (p: { publicationId: string; postId: string }) =>
     p.publicationId === post.publicationId && p.postId === post.postId;
   if (!samePost(theme.post) || !samePost(claims.post)) {

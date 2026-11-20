@@ -134,7 +134,7 @@ describe("extractGroundedClaims", () => {
     });
     if (out.status !== "extracted") throw new Error(out.status);
     const { claims, rejected, candidates } = out.record;
-    expect(out.record.schemaVersion).toBe(2);
+    expect(out.record.schemaVersion).toBe(3);
     expect(claims.map((c) => [c.kind, c.classification])).toEqual([
       ["assertion", "themed"],
       ["quotation", "themed"],
@@ -249,7 +249,7 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: "grounded-claims-v5",
+      promptVersion: "grounded-claims-v6",
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
@@ -347,5 +347,25 @@ describe("record versions (#182)", () => {
     });
     // Dropping the negation is a material change, never recovered.
     expect(out.record.rejected.map((r) => r.reason)).toContain("passage-not-found");
+  });
+
+  it("keeps a pure call to action as a not-self-contained candidate", () => {
+    expect(candidateReasons("assertion", ["geoengineering"], "Stop spraying us now")).toEqual([
+      "not-self-contained",
+    ]);
+    expect(candidateReasons("assertion", ["geoengineering"], "Share this everywhere")).toEqual([
+      "not-self-contained",
+    ]);
+    // An instruction that carries a checkable proposition is still a claim.
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Stop spraying because the soil is toxic"),
+    ).toEqual([]);
+  });
+
+  it("accepts a short exact quotation that is self-contained", () => {
+    // Exact equality with the passage is never on its own a rejection reason.
+    expect(
+      candidateReasons("quotation", ["geoengineering"], "The council raised fees by 3%"),
+    ).toEqual([]);
   });
 });
