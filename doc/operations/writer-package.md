@@ -16,3 +16,13 @@ Outcomes: `ready` (exit 0) when at least one claim has independent evidence; `ev
 ## Narrative and movement context (#176)
 
 Pass saved historical comparison results (#36) with `--comparison comparisons/<publication>/<post>/<id>.json` (repeatable). Each is read at its pinned version and must describe this exact source version, or the package is refused. The package's `context.history` keeps the earlier passages as quoted evidence (exact quote, publication date, link and archive reference) and the comparison text as generated, never evidence (`isEvidence: false`), with any conflict rationale or changed circumstances. `context.background` carries independently cited passages from the mapped dossiers' pinned versions as movement background. Either becomes an explicit `gap` with a reason when nothing supports it; nothing is invented. Both are bounded (20 comparisons, 30 background passages). Supplying different context produces a different package.
+
+## Drafting from a package (#149)
+
+```sh
+STEELE_CONTENT_PATH=... STEELE_CONTENT_REPOSITORY=... STEELE_ARCHIVE_PATH=... STEELE_ARCHIVE_REPOSITORY=... \
+OPENROUTER_API_KEY_FILE=... STEELE_MODEL=... \
+node dist/cli/draft-package.js --package writer-packages/<publication>/<post>/<hash>.json --source-url https://...
+```
+
+The writer receives the package and the pinned full source text and themes (#164), and writes the `package-explainer-v1` template: original link and a fair summary of the post, its themes, then claim-by-claim responses (supported, contradicted, unsupported or unresolved) with numbered sources. It may leave claims out. Every response is validated against the package before saving: it may cite only that claim's evidence, a gap claim can only be "unresolved" and cites nothing, and unknown claims or evidence reject the draft (one retry). The Markdown draft and its metadata (exact package, source, themes, model, prompt and template versions) are saved write-once under `articles/<publication>/<post>/`. Rerunning with the same package, model and prompt reuses the draft without a model call; a new package or prompt version produces a new draft and older drafts stay readable. An `evidence-gap` package is not drafted. The writer never browses or publishes.
