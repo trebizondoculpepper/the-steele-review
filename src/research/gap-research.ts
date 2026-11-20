@@ -45,6 +45,7 @@ export interface FetchedPage {
   url: string;
   title: string;
   text: string;
+  original?: { contentType: string; body: string };
   publisher?: string;
   publishedAt?: string;
 }

@@ -29,7 +29,8 @@
     "announce-post": "node --enable-source-maps dist/cli/announce-post.js",
     "detect-themes": "node --enable-source-maps dist/cli/detect-themes.js",
     "retry-collection": "node --enable-source-maps dist/cli/retry-collection.js",
-    "events:reference": "tsx scripts/events-reference.ts"
+    "events:reference": "tsx scripts/events-reference.ts",
+    "research-subject": "node --enable-source-maps dist/cli/research-subject.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
