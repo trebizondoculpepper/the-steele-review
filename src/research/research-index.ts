@@ -160,7 +160,8 @@ export async function reconcileResearchIndex(input: {
   if (!full && head === checkpoint)
     return { head, full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
 
-  // Record that a pass is in progress before writing anything.
+  // Record that a pass is in progress before writing anything, visibly, so a
+  // retry that starts immediately still sees it.
   await input.es.indexDocument(
     index,
     CHECKPOINT_ID,
@@ -170,7 +171,7 @@ export async function reconcileResearchIndex(input: {
       ...(marker.checkpoint ? { checkpoint: marker.checkpoint } : {}),
       pending: head,
     },
-    options,
+    { refresh: "wait_for" as const },
   );
   let indexed = 0;
   let removed = 0;
@@ -223,7 +224,7 @@ export async function reconcileResearchIndex(input: {
     index,
     CHECKPOINT_ID,
     { schemaVersion: RESEARCH_INDEX_SCHEMA_VERSION, kind: "checkpoint", checkpoint: head },
-    options,
+    { refresh: "wait_for" as const },
   );
   return { head, full, indexed, removed, skipped, unchanged: false };
 }

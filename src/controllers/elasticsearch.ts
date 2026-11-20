@@ -97,7 +97,7 @@ export interface ElasticsearchClientLike {
   deleteByQuery?(
     params: { index: string; query: unknown; refresh?: boolean; conflicts?: "proceed" },
     options: { requestTimeout: number; maxRetries: number },
-  ): Promise<{ deleted?: number }>;
+  ): Promise<{ deleted?: number; failures?: unknown[]; timed_out?: boolean }>;
 }
 
 export interface SearchHit {
@@ -231,6 +231,10 @@ export class ElasticsearchController {
         { index, query, conflicts: "proceed", ...(options.refresh ? { refresh: true } : {}) },
         { requestTimeout: timeoutMs, maxRetries: 0 },
       );
+      // A 200 can still be partial; never let the caller treat it as complete.
+      if (response.timed_out || (response.failures?.length ?? 0) > 0) {
+        throw new IndexingError("failed", true);
+      }
       return response.deleted ?? 0;
     } catch (error) {
       throw classifyIndexingError(error);
