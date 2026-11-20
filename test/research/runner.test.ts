@@ -192,6 +192,33 @@ describe("research runner", () => {
 });
 
 describe("review fixes", () => {
+  it("keeps compatibility characters distinct when matching passages", async () => {
+    const sup: PageFetcher = {
+      async fetch(url) {
+        return { url, title: "t", text: "Emissions fell by 10² tonnes." };
+      },
+    };
+    const j: SupportJudge = {
+      async judge() {
+        return { passages: [{ findingId: "request", passage: "Emissions fell by 102 tonnes." }] };
+      },
+    };
+    const out = await runResearchJob({
+      artifacts,
+      operations,
+      request,
+      owner: "t",
+      fetcher: sup,
+      judge: j,
+      sonar: sonar(["https://example.org/data"]),
+    });
+    if (out.status !== "finished") throw new Error("expected finished");
+    const manifest = ResearchManifestSchema.parse(
+      JSON.parse(await artifacts.read((await artifacts.lookup(out.result.manifest!.path))!)),
+    );
+    expect(manifest.citations[0]).toMatchObject({ support: "unverified", passages: [] });
+  });
+
   it("judges support against the discovery report's conclusions, not only the claims", async () => {
     const seen: string[] = [];
     const recording: SupportJudge = {

@@ -100,7 +100,7 @@ export function researchPrompt(request: ResearchRequest): { system: string; user
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 /** Whitespace-only normalisation: a kept passage must match the source's exact wording and case. */
-const normalise = (s: string) => s.normalize("NFKC").replace(/\s+/g, " ").trim();
+const normalise = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim();
 
 function retrievalOf(error: unknown): {
   retrieval: "inaccessible" | "unsupported";
