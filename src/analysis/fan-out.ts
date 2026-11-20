@@ -179,14 +179,29 @@ export type FanOutOutcome =
   | "retry"
   | "invalid-event";
 
-/** Operation key: one fan-out per exact parent analysis. */
+/**
+ * Operation key: one fan-out per exact parent analysis. Hashed because the
+ * state controller bounds keys at 512 characters and long publication/post
+ * identities appear again inside each artifact path.
+ */
 export const fanOutOperationKey = (data: {
   publicationId: string;
   postId: string;
   themeResult: ArtifactReference;
   claimResult: ArtifactReference;
 }): string =>
-  `fanout:${data.publicationId}/${data.postId}:${data.themeResult.commit}:${data.themeResult.path}:${data.claimResult.commit}:${data.claimResult.path}`;
+  `fanout:${digest([
+    data.publicationId,
+    data.postId,
+    data.themeResult.repository,
+    data.themeResult.commit,
+    data.themeResult.path,
+    data.themeResult.hash,
+    data.claimResult.repository,
+    data.claimResult.commit,
+    data.claimResult.path,
+    data.claimResult.hash,
+  ])}`;
 
 export class AnalysisFanOut {
   constructor(private readonly config: FanOutConfig) {}
@@ -214,6 +229,7 @@ export class AnalysisFanOut {
       return this.report("invalid-event", "unknown");
     }
     const { id: parentId, data: parent } = event;
+    const retryDelay = this.config.retryDelayMs ?? 60_000;
     const key = fanOutOperationKey(parent);
     const now = this.config.now ?? (() => new Date());
     const existing = this.config.operations.operationStatus(key);
@@ -229,6 +245,12 @@ export class AnalysisFanOut {
       toRef(parent.themeResult),
       toRef(parent.claimResult),
     );
+    if (pair.status === "unavailable") {
+      // An operational repository failure may clear: retry rather than
+      // permanently failing a valid analysis.
+      message.nak(retryDelay);
+      return this.report("retry", parent.postId);
+    }
     if (pair.status === "refused") {
       // Saved results that cannot complete an analysis are permanent: never
       // research or fan out on unvalidated material.

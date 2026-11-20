@@ -330,6 +330,60 @@ describe("AnalysisFanOut", { timeout: 30_000 }, () => {
     expect(pub.sent).toEqual([]);
   });
 
+  it("bounds the operation key for long post identities", async () => {
+    const longPost = { publicationId: "p".repeat(19), postId: "s".repeat(80) };
+    const key = fanOutOperationKey({
+      ...longPost,
+      themeResult: {
+        repository: "content",
+        commit: "a".repeat(40),
+        path: `theme-proposals/${longPost.publicationId}/${longPost.postId}/${"x".repeat(120)}.json`,
+        hash: SOURCE_VERSION,
+      },
+      claimResult: {
+        repository: "content",
+        commit: "b".repeat(40),
+        path: `claim-extractions/${longPost.publicationId}/${longPost.postId}/${"y".repeat(120)}.json`,
+        hash: SOURCE_VERSION,
+      },
+    });
+    expect(key.length).toBeLessThanOrEqual(512);
+    // The controller must accept it: a rejected key would nak forever.
+    expect(() =>
+      operations.claim(key, "test", 60_000, 1),
+    ).not.toThrow();
+  });
+
+  it("retries when an artifact read fails transiently", async () => {
+    const { themeRef, claimRef } = await savePair(themeResult(), claimResult);
+    const data = parentData({ themeRef, claimRef });
+    const failing = {
+      read: async () => {
+        const { ArtifactStoreError } = await import("../../src/controllers/artifact-store.js");
+        throw new ArtifactStoreError("git-failed");
+      },
+    };
+    const fanOut = new AnalysisFanOut({
+      content: failing as never,
+      operations,
+      publisher: publisher(),
+      owner: "test",
+      now,
+    });
+    let naked = false;
+    const message = {
+      ...parentMessage(data),
+      nak: () => {
+        naked = true;
+      },
+    } as DeliveredMessage;
+    expect(await fanOut.handle(message)).toBe("retry");
+    expect(naked).toBe(true);
+    expect(operations.duePendingEvents(10)).toEqual([]);
+    // The operation is not terminally failed: a later attempt can complete it.
+    expect(operations.operationStatus(fanOutOperationKey(data))).toBeUndefined();
+  });
+
   it("rejects a malformed parent event without acking it", async () => {
     const pub = publisher();
     const message = {

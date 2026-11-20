@@ -46,7 +46,8 @@ export type AnnounceOutcome =
         | "legacy-claim-result"
         | "post-mismatch"
         | "source-version-mismatch"
-        | "theme-result-not-linked";
+        | "theme-result-not-linked"
+        | "results-unavailable";
     }
   | { status: "busy" };
 
@@ -76,6 +77,7 @@ export async function announcePost(input: {
   now?: () => Date;
 }): Promise<AnnounceOutcome> {
   const pair = await readAnalysisPair(input.content, input.post, input.themeRef, input.claimRef);
+  if (pair.status === "unavailable") return { status: "refused", reason: "results-unavailable" };
   if (pair.status === "refused") return { status: "refused", reason: pair.reason };
   const { theme, claims } = pair;
 

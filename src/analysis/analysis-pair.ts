@@ -6,7 +6,11 @@
  * post and source version, and the claim result links to exactly this theme
  * result. Centralising it keeps the two handoffs from drifting apart.
  */
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { ClaimExtractionRecordSchema, type ClaimExtractionRecord } from "./grounded-claims.js";
 import { parseThemeProposalResult, type ThemeProposalResult } from "./theme-proposals.js";
 
@@ -20,10 +24,28 @@ export type AnalysisRefusal =
 
 export type AnalysisPair =
   | { status: "ok"; theme: ThemeProposalResult; claims: ClaimExtractionRecord }
-  | { status: "refused"; reason: AnalysisRefusal };
+  | { status: "refused"; reason: AnalysisRefusal }
+  /** A transient repository failure: the same input may succeed later. */
+  | { status: "unavailable" };
 
 /** `commit:path`, the exact reference recorded inside a saved result. */
 export const shortRef = (ref: ArtifactRef): string => `${ref.commit}:${ref.path}`;
+
+/** One artifact read, distinguishing a missing result from a repository fault. */
+async function readText(
+  content: Pick<GitArtifactStore, "read">,
+  ref: ArtifactRef,
+): Promise<{ ok: true; text: string } | { ok: false; retry: boolean }> {
+  try {
+    return { ok: true, text: await content.read(ref) };
+  } catch (error) {
+    // A Git or I/O failure is operational, not evidence the result is absent.
+    return {
+      ok: false,
+      retry: error instanceof ArtifactStoreError && error.code === "git-failed",
+    };
+  }
+}
 
 /** Read and validate the theme/claim pair that completes one analysis. */
 export async function readAnalysisPair(
@@ -32,15 +54,27 @@ export async function readAnalysisPair(
   themeRef: ArtifactRef,
   claimRef: ArtifactRef,
 ): Promise<AnalysisPair> {
+  const themeText = await readText(content, themeRef);
+  if (!themeText.ok) {
+    return themeText.retry
+      ? { status: "unavailable" }
+      : { status: "refused", reason: "unreadable-theme-result" };
+  }
   let theme: ThemeProposalResult;
   try {
-    theme = parseThemeProposalResult(JSON.parse(await content.read(themeRef)));
+    theme = parseThemeProposalResult(JSON.parse(themeText.text));
   } catch {
     return { status: "refused", reason: "unreadable-theme-result" };
   }
+  const claimText = await readText(content, claimRef);
+  if (!claimText.ok) {
+    return claimText.retry
+      ? { status: "unavailable" }
+      : { status: "refused", reason: "unreadable-claim-result" };
+  }
   let claims: ClaimExtractionRecord;
   try {
-    claims = ClaimExtractionRecordSchema.parse(JSON.parse(await content.read(claimRef)));
+    claims = ClaimExtractionRecordSchema.parse(JSON.parse(claimText.text));
   } catch {
     return { status: "refused", reason: "unreadable-claim-result" };
   }
