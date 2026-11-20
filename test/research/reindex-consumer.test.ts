@@ -54,15 +54,29 @@ describe("research reindex requests (#232)", () => {
     const routes = new Set(["havana"]);
     let ran = 0;
     const reconcile = async () => (ran++, true as const);
-    expect(await handleReindexRequest(new TextEncoder().encode("{}"), routes, reconcile)).toEqual({
+    expect(
+      await handleReindexRequest(new TextEncoder().encode("{}"), routes, reconcile),
+    ).toMatchObject({
       action: "term",
       reason: "malformed-request",
+      requestId: expect.stringMatching(/^payload-/),
     });
     expect(await handleReindexRequest(encode("other"), routes, reconcile)).toEqual({
       action: "term",
       reason: "unknown-route",
       route: "other",
+      requestId: "r1",
     });
+    // A request without the required CloudEvents source is malformed.
+    const noSource = JSON.parse(new TextDecoder().decode(encode("havana")));
+    delete noSource.source;
+    expect(
+      await handleReindexRequest(
+        new TextEncoder().encode(JSON.stringify(noSource)),
+        routes,
+        reconcile,
+      ),
+    ).toMatchObject({ reason: "malformed-request" });
     expect(ran).toBe(0);
     expect(researchReindexDataJsonSchema()).toMatchObject({ type: "object" });
   });

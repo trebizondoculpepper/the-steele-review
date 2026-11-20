@@ -42,7 +42,10 @@ export function createResearchReindexEvent(
 const EnvelopeSchema = z.looseObject({
   specversion: z.literal("1.0"),
   id: z.string().min(1).max(200),
+  source: z.string().min(1).max(500),
   type: z.literal(RESEARCH_REINDEX_EVENT_TYPE_V1),
+  time: z.iso.datetime({ offset: true }).optional(),
+  subject: z.string().min(1).max(200).optional(),
   dataschema: z.literal(RESEARCH_REINDEX_DATASCHEMA_V1),
   datacontenttype: z.literal("application/json"),
 });

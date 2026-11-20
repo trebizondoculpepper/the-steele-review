@@ -90,7 +90,10 @@ async function main(): Promise<number> {
     const result = await runPass(reason);
     return result !== false;
   };
-  const runPass = async (reason: string): Promise<true | false | "busy"> => {
+  const runPass = async (
+    reason: string,
+    onProgress?: () => void,
+  ): Promise<true | false | "busy"> => {
     // One reconciler at a time per index: a second worker or a --once run
     // alongside the daemon skips instead of interleaving checkpoint writes.
     const claim = operations.claim(
@@ -111,6 +114,7 @@ async function main(): Promise<number> {
       const report = await reconcileResearchIndex({
         keepAlive: () => {
           operations.renew(claim.claim, LEASE_MS);
+          onProgress?.();
         },
         artifacts,
         es,
@@ -139,10 +143,10 @@ async function main(): Promise<number> {
    */
   /** Matches the provisioned consumer's max_deliver. */
   const REQUEST_MAX_DELIVER = 10;
-  const recordExhausted = (requestId: string) => {
-    const key = `research-reindex:${requestId}`.slice(0, 200);
-    const claim = operations.claim(key, owner, 60_000, 1);
-    if (claim.kind === "claimed") operations.fail(claim.claim, "retries-exhausted", false);
+  /** Record a request that will not be retried, under its full request ID. */
+  const recordRejected = (requestId: string, reason: string) => {
+    const claim = operations.claim(`research-reindex:${requestId}`, owner, 60_000, 1);
+    if (claim.kind === "claimed") operations.fail(claim.claim, reason, false);
   };
 
   const passWhenFree = async (
@@ -151,7 +155,7 @@ async function main(): Promise<number> {
   ): Promise<true | false | "busy"> => {
     const deadline = Date.now() + LEASE_MS;
     for (;;) {
-      const result = await runPass("request");
+      const result = await runPass("request", keepAlive);
       if (result !== "busy" || Date.now() >= deadline || signal.aborted) return result;
       keepAlive();
       await new Promise((resolve) => setTimeout(resolve, 5_000));
@@ -230,16 +234,17 @@ async function main(): Promise<number> {
               message.data,
               routes,
               // Wait for an active pass rather than burning redeliveries.
+              // Extend the delivery deadline while waiting and while reconciling.
               () => passWhenFree(() => message.working(), stop.signal),
               30_000,
               5_000,
               { count: message.deliveryCount, max: REQUEST_MAX_DELIVER },
             );
             log({ state: "request", ...decision });
-            if (decision.action === "term" && decision.reason === "retries-exhausted") {
-              // Persist the failure in the state controller so it stays visible
-              // (operation <key>) after the broker stops redelivering.
-              recordExhausted(decision.requestId ?? "unknown");
+            if (decision.action === "term") {
+              // Persist every rejection in the state controller so it stays
+              // visible (operation <key>) after the broker stops delivering.
+              recordRejected(decision.requestId ?? "unknown", decision.reason);
             }
             if (decision.action === "ack") await message.ack();
             else if (decision.action === "term") message.term();

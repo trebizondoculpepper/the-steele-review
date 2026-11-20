@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseResearchReindexEvent } from "../events/research-reindex-event.js";
 
 /**
@@ -36,10 +37,12 @@ export async function handleReindexRequest(
   try {
     request = parseResearchReindexEvent(new TextDecoder().decode(payload));
   } catch {
-    return { action: "term", reason: "malformed-request" };
+    // No trustworthy ID: identify the rejected payload by its hash.
+    const requestId = `payload-${createHash("sha256").update(payload).digest("hex").slice(0, 32)}`;
+    return { action: "term", reason: "malformed-request", requestId };
   }
   if (!routes.has(request.route)) {
-    return { action: "term", reason: "unknown-route", route: request.route };
+    return { action: "term", reason: "unknown-route", route: request.route, requestId: request.id };
   }
   const result = await reconcile(request.route);
   if (result === true) return { action: "ack", route: request.route, outcome: "reconciled" };
