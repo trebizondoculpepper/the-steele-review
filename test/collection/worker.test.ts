@@ -14,6 +14,10 @@ import { OperationStore } from "../../src/controllers/operation-store.js";
 import type { CollectionResult } from "../../src/controllers/substack/collect.js";
 import { createDiscoveryEvent, serializeDiscoveryEvent } from "../../src/events/discovery-event.js";
 import { parseTextReadyEvent } from "../../src/events/text-ready-event.js";
+import {
+  CAPTURED_CONTENT_SUBJECT,
+  parseCapturedContentEvent,
+} from "../../src/events/captured-content-event.js";
 import type { SubstackItem } from "../../src/content/substack-item.js";
 
 const item: SubstackItem = {
@@ -89,6 +93,7 @@ function setup(options: {
     collect: async () => (options.collect ?? (() => textResult()))(++calls),
   };
   const published: Array<{ subject: string; body: string; msgId: string }> = [];
+  const captured: Array<{ subject: string; body: string; msgId: string }> = [];
   let failures = options.publishFails ?? 0;
   const worker = new CollectionWorker({
     store,
@@ -98,20 +103,33 @@ function setup(options: {
     publisher: {
       publish: async (subject, payload, { msgId }) => {
         if (failures-- > 0) throw new Error("broker down");
-        published.push({ subject, body: new TextDecoder().decode(payload), msgId });
+        // Text-ready events in `published`; the captured-content companion (#269) apart.
+        (subject === CAPTURED_CONTENT_SUBJECT ? captured : published).push({
+          subject,
+          body: new TextDecoder().decode(payload),
+          msgId,
+        });
       },
     },
     owner: options.owner ?? "worker-1",
     retryDelayMs: 0,
   });
-  return { worker, operations, store, published, collectCalls: () => calls };
+  return { worker, operations, store, published, captured, collectCalls: () => calls };
 }
 
 describe("CollectionWorker", () => {
   it("collects, commits, acknowledges and hands off a text-ready event", async () => {
-    const { worker, published } = setup({});
+    const { worker, published, captured } = setup({});
     const m = message("backfill");
     expect(await worker.handle(m)).toBe("collected");
+    // The source-neutral captured-content event is committed with the text-ready one (#269).
+    expect(captured).toHaveLength(1);
+    const item = parseCapturedContentEvent(captured[0]!.body);
+    expect(item).toMatchObject({
+      source: { namespace: "substack/example-pub", kind: "substack" },
+      itemId: "a-post",
+      ingestionReason: "backfill",
+    });
     expect(m.acked).toBe(1);
     expect(published).toHaveLength(1);
     const event = parseTextReadyEvent(published[0]!.body);
