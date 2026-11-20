@@ -1,0 +1,41 @@
+import { parseResearchReindexEvent } from "../events/research-reindex-event.js";
+
+/**
+ * Handle one delivered research reindex request (#232). Returns what to do
+ * with the message, so the caller (the worker's consumer loop) owns
+ * acknowledgment:
+ * - malformed request or unknown route: `term` (never redelivered, logged);
+ * - reconciliation completed: `ack`;
+ * - another reconciler holds the lease: `nak` with a short delay, since that
+ *   pass may have started before the change this request is about;
+ * - reconciliation failed: `nak` with a delay (durable retry).
+ * Duplicate delivery is safe: reconciliation is idempotent from the checkpoint.
+ */
+export type ReindexDecision =
+  | { action: "ack"; route: string; outcome: "reconciled" }
+  | { action: "term"; reason: "malformed-request" | "unknown-route"; route?: string }
+  | { action: "nak"; route: string; delayMs: number; why: "busy" | "failed" };
+
+export async function handleReindexRequest(
+  payload: Uint8Array,
+  routes: ReadonlySet<string>,
+  /** Run one leased pass for the route: true done, "busy" another holder, false failed. */
+  reconcile: (route: string) => Promise<true | false | "busy">,
+  retryDelayMs = 30_000,
+  busyDelayMs = 5_000,
+): Promise<ReindexDecision> {
+  let request;
+  try {
+    request = parseResearchReindexEvent(new TextDecoder().decode(payload));
+  } catch {
+    return { action: "term", reason: "malformed-request" };
+  }
+  if (!routes.has(request.route)) {
+    return { action: "term", reason: "unknown-route", route: request.route };
+  }
+  const result = await reconcile(request.route);
+  if (result === true) return { action: "ack", route: request.route, outcome: "reconciled" };
+  if (result === "busy")
+    return { action: "nak", route: request.route, delayMs: busyDelayMs, why: "busy" };
+  return { action: "nak", route: request.route, delayMs: retryDelayMs, why: "failed" };
+}

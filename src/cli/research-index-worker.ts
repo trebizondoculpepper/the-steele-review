@@ -15,6 +15,9 @@
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY?
  *   STEELE_RESEARCH_COLLECTION_INDEX?               logical index (alias); default steele-research-collection-v1
  *   STEELE_RESEARCH_COLLECTION_INTERVAL_MS?   periodic reconciliation; default 300000
+ *   STEELE_RESEARCH_INDEX_ROUTE?         route name this worker serves; default "default"
+ *   STEELE_RESEARCH_REINDEX_CONSUMER?    durable consumer for reindex requests (#232); with
+ *                                         NATS_URL, the worker also reconciles on request
  *
  * Output is sanitised JSON lines: counts and commits only.
  */
@@ -23,6 +26,11 @@ import { describeSetupError, elasticsearchConnection } from "../config/credentia
 import { hostname } from "node:os";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { OperationStore } from "../controllers/operation-store.js";
+import { NatsController } from "../controllers/nats.js";
+import { natsConnection } from "../config/credentials.js";
+import { RESEARCH_STREAM } from "../events/research-completed-event.js";
+import { RouteName } from "../events/research-reindex-event.js";
+import { handleReindexRequest } from "../research/reindex-consumer.js";
 import { ElasticsearchController, IndexingError } from "../controllers/elasticsearch.js";
 import {
   RESEARCH_COLLECTION_INDEX_V1,
@@ -33,6 +41,9 @@ const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
+  STEELE_RESEARCH_INDEX_ROUTE: RouteName.default("default"),
+  STEELE_RESEARCH_REINDEX_CONSUMER: z.string().min(1).optional(),
+  STEELE_RESEARCH_STREAM: z.string().min(1).optional(),
   STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
   STEELE_RESEARCH_COLLECTION_INTERVAL_MS: z.coerce
     .number()
@@ -76,6 +87,10 @@ async function main(): Promise<number> {
   const owner = `research-index-worker@${hostname()}:${process.pid}`;
   const LEASE_MS = 10 * 60_000;
   const pass = async (reason: string): Promise<boolean> => {
+    const result = await runPass(reason);
+    return result !== false;
+  };
+  const runPass = async (reason: string): Promise<true | false | "busy"> => {
     // One reconciler at a time per index: a second worker or a --once run
     // alongside the daemon skips instead of interleaving checkpoint writes.
     const claim = operations.claim(
@@ -90,7 +105,7 @@ async function main(): Promise<number> {
         reason,
         why: claim.kind === "busy" ? "another reconciler holds the lease" : claim.kind,
       });
-      return claim.kind === "busy";
+      return claim.kind === "busy" ? "busy" : false;
     }
     try {
       const report = await reconcileResearchIndex({
@@ -151,10 +166,42 @@ async function main(): Promise<number> {
     });
     wake("startup");
     const interval = setInterval(() => wake("periodic"), c.STEELE_RESEARCH_COLLECTION_INTERVAL_MS);
+
+    // Reindex requests (#232): an operator or external scheduler asks for a
+    // reconciliation of this worker's route through the broker.
+    const stop = new AbortController();
+    let consuming: Promise<void> | undefined;
+    let nats: NatsController | undefined;
+    if (c.STEELE_RESEARCH_REINDEX_CONSUMER && process.env.NATS_URL) {
+      const conn = natsConnection();
+      nats = new NatsController(conn.url, conn.token);
+      await nats.connect("steele-research-index");
+      const routes = new Set([c.STEELE_RESEARCH_INDEX_ROUTE]);
+      consuming = nats
+        .consume(
+          c.STEELE_RESEARCH_STREAM ?? RESEARCH_STREAM,
+          c.STEELE_RESEARCH_REINDEX_CONSUMER,
+          async (message) => {
+            const decision = await handleReindexRequest(message.data, routes, () =>
+              runPass("request"),
+            );
+            log({ state: "request", ...decision });
+            if (decision.action === "ack") await message.ack();
+            else if (decision.action === "term") message.term();
+            else message.nak(decision.delayMs);
+          },
+          stop.signal,
+        )
+        .catch(() => log({ state: "request-consumer-stopped" }));
+      log({ state: "consuming-requests", route: c.STEELE_RESEARCH_INDEX_ROUTE });
+    }
     await new Promise<void>((resolve) => {
       process.once("SIGTERM", resolve);
       process.once("SIGINT", resolve);
     });
+    stop.abort();
+    await consuming;
+    await nats?.close();
     clearInterval(interval);
     clearTimeout(timer);
     watcher.close();

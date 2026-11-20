@@ -31,7 +31,8 @@
     "retry-collection": "node --enable-source-maps dist/cli/retry-collection.js",
     "events:reference": "tsx scripts/events-reference.ts",
     "research-subject": "node --enable-source-maps dist/cli/research-subject.js",
-    "research-index-worker": "node --enable-source-maps dist/cli/research-index-worker.js"
+    "research-index-worker": "node --enable-source-maps dist/cli/research-index-worker.js",
+    "research-reindex": "node --enable-source-maps dist/cli/research-reindex.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",

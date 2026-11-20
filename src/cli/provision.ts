@@ -16,12 +16,15 @@
  *   (stream definitions live in src/events/registry.ts)
  *   STEELE_COLLECT_CONSUMER?   default steele-collector
  *   STEELE_INDEX_CONSUMER?     default steele-indexer
+ *   STEELE_RESEARCH_REINDEX_CONSUMER? default steele-research-indexer (#232)
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
  *   STEELE_RESEARCH_COLLECTION_INDEX?     default steele-research-collection-v1 (#225)
  *
  * Output is one JSON line naming each resource and whether it was created,
  * unchanged or updated.
  */
+import { RESEARCH_STREAM } from "../events/research-completed-event.js";
+import { RESEARCH_REINDEX_SUBJECT } from "../events/research-reindex-event.js";
 import {
   describeSetupError,
   elasticsearchConnection,
@@ -46,6 +49,7 @@ import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
 const EnvSchema = z.object({
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
+  STEELE_RESEARCH_REINDEX_CONSUMER: z.string().min(1).default("steele-research-indexer"),
   STEELE_FULLTEXT_INDEX: z.string().min(1).default(FULLTEXT_INDEX_V1),
   STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
 });
@@ -105,6 +109,11 @@ async function main(): Promise<number> {
       stream: names.get("STEELE_CONTENT")!,
       name: c.STEELE_INDEX_CONSUMER,
       filterSubject: TEXT_READY_SUBJECT,
+    });
+    report.reindexConsumer = await provisionDurableConsumer(nats, {
+      stream: names.get(RESEARCH_STREAM)!,
+      name: c.STEELE_RESEARCH_REINDEX_CONSUMER,
+      filterSubject: RESEARCH_REINDEX_SUBJECT,
     });
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
     report.researchIndex = await es.provisionIndex(

@@ -25,3 +25,13 @@ node dist/cli/research-index-worker.js --once                          # one pas
 ```
 
 Output is JSON lines with counts and commits only.
+
+## Reconciling on request (#232)
+
+An operator or an external scheduler can ask the worker to reconcile its route without waiting for a notification or the periodic pass:
+
+```sh
+NATS_URL=... node dist/cli/research-reindex.js --route default
+```
+
+The command publishes a typed `steele.v1.research.reindex.requested` message (in the registry, on `STEELE_RESEARCH`). It names a route only; the worker resolves its repository and index from its own configuration (`STEELE_RESEARCH_INDEX_ROUTE`, default `default`). A worker started with `NATS_URL` and `STEELE_RESEARCH_REINDEX_CONSUMER` (provisioned by `provision`, default `steele-research-indexer`) consumes these requests. It acknowledges a request after its leased reconciliation pass completes, asks for redelivery when another pass holds the lease or the pass fails, and rejects malformed requests and unknown routes without retrying. Duplicate delivery is safe: reconciliation is idempotent from the checkpoint. This reconciles changes since the checkpoint; it is not a forced rebuild. Scheduling stays outside the worker.
