@@ -1,3 +1,4 @@
+import { postAnalysedEventId } from "../analysis/announce.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
 import {
@@ -293,9 +294,15 @@ export async function tracePost(input: {
         const results = [];
         for (const { ref, value } of c.items) {
           const linked = value.themeResult ? themeRefs.get(value.themeResult) : undefined;
-          // The post-analysed announcement (#178) is traced once its event-ID
-          // helper is merged; until then it has no traceable key here.
-          const announcement: Unread = notTraceable;
+          // The post-analysed announcement (#178) is keyed by the exact
+          // (theme result, claim result) pair, so it is traceable only when the
+          // linked theme result was read in this inspection.
+          const announcement = linked
+            ? await readOperation(
+                input.state,
+                `analysed:${post.publicationId}/${post.postId}:${postAnalysedEventId(linked, ref)}`,
+              )
+            : notTraceable;
           results.push({
             ref: logical(ref),
             schemaVersion: value.schemaVersion,
@@ -354,6 +361,12 @@ export function traceIncomplete(t: PostTrace): boolean {
   if (stages.some((x) => x.state === "unavailable")) return true;
   if (t.themes.state === "recorded" && t.themes.unreadable > 0) return true;
   if (t.claims.state === "recorded" && t.claims.unreadable > 0) return true;
+  if (
+    t.claims.state === "recorded" &&
+    t.claims.results.some((r) => r.announcement.state === "unavailable")
+  ) {
+    return true;
+  }
   return !stages.some((x) => x.state === "recorded");
 }
 

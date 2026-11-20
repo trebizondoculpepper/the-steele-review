@@ -77,6 +77,8 @@ export interface ElasticsearchClientLike {
     }): Promise<unknown>;
     existsAlias(params: { name: string }): Promise<boolean>;
     putMapping(params: { index: string; properties: Record<string, unknown> }): Promise<unknown>;
+    /** Optional for test doubles. */
+    refresh?(params: { index: string }): Promise<unknown>;
   };
   search(
     params: {
@@ -89,6 +91,15 @@ export interface ElasticsearchClientLike {
     options: { requestTimeout: number; maxRetries: number },
   ): Promise<{ hits: { hits: Array<{ _id: string; _score: number | null; _source?: unknown }> } }>;
   close(): Promise<void>;
+  /** Optional for test doubles that never delete. */
+  delete?(
+    params: { index: string; id: string; refresh?: boolean | "wait_for" },
+    options: { requestTimeout: number; maxRetries: number; ignore?: number[] },
+  ): Promise<unknown>;
+  deleteByQuery?(
+    params: { index: string; query: unknown; refresh?: boolean; conflicts?: "proceed" },
+    options: { requestTimeout: number; maxRetries: number },
+  ): Promise<{ deleted?: number; failures?: unknown[]; timed_out?: boolean }>;
 }
 
 export interface SearchHit {
@@ -193,6 +204,50 @@ export class ElasticsearchController {
           : undefined;
       if (!result) throw new IndexingError("failed", true);
       return { index: response._index, id: response._id, result, version: response._version };
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /** Remove one document by ID; a missing document is not an error. */
+  async deleteDocument(index: string, id: string, options: IndexOptions = {}): Promise<void> {
+    if (!this.client.delete) throw new IndexingError("rejected", false);
+    if (!id || id.length > 512) throw new IndexingError("rejected", false);
+    const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
+    try {
+      await this.client.delete(
+        { index, id, ...(options.refresh === undefined ? {} : { refresh: options.refresh }) },
+        { requestTimeout: timeoutMs, maxRetries: 0, ignore: [404] },
+      );
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /** Make every prior write to the index visible to search on all shards. */
+  async refreshIndex(index: string): Promise<void> {
+    if (!this.client.indices.refresh) throw new IndexingError("rejected", false);
+    try {
+      await this.client.indices.refresh({ index });
+    } catch (error) {
+      throw classifyIndexingError(error);
+    }
+  }
+
+  /** Remove every document matching a query in one logical index. Returns the count removed. */
+  async deleteMatching(index: string, query: unknown, options: IndexOptions = {}): Promise<number> {
+    if (!this.client.deleteByQuery) throw new IndexingError("rejected", false);
+    const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 30_000));
+    try {
+      const response = await this.client.deleteByQuery(
+        { index, query, conflicts: "proceed", ...(options.refresh ? { refresh: true } : {}) },
+        { requestTimeout: timeoutMs, maxRetries: 0 },
+      );
+      // A 200 can still be partial; never let the caller treat it as complete.
+      if (response.timed_out || (response.failures?.length ?? 0) > 0) {
+        throw new IndexingError("failed", true);
+      }
+      return response.deleted ?? 0;
     } catch (error) {
       throw classifyIndexingError(error);
     }
