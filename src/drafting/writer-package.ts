@@ -133,16 +133,18 @@ export async function buildWriterPackage(input: {
   }
   if (input.archive) await readPinned(input.archive, record.source, "source post");
 
-  // Archived snapshots per cited URL, from each job's pinned manifest.
-  const archivedByUrl = new Map<string, z.infer<typeof Ref>>();
+  // Archived snapshots per (job, cited URL), from each job's pinned manifest:
+  // a claim's evidence is resolved from the jobs that supported it, never from
+  // another job that happened to fetch the same URL.
+  const archivedByJobUrl = new Map<string, z.infer<typeof Ref>>();
   for (const job of record.jobs) {
     if (!job.manifest) continue;
     const manifest = ResearchManifestSchema.parse(
       JSON.parse(await readPinned(input.content, job.manifest, `manifest for ${job.jobId}`)),
     );
     for (const c of manifest.citations) {
-      if (c.archivedArtifact && !archivedByUrl.has(c.url))
-        archivedByUrl.set(c.url, c.archivedArtifact);
+      if (c.archivedArtifact)
+        archivedByJobUrl.set(JSON.stringify([job.jobId, c.url]), c.archivedArtifact);
     }
   }
   // Every dossier version the package relies on must still be readable as pinned.
@@ -165,7 +167,14 @@ export async function buildWriterPackage(input: {
           ? c.citations.map((e) => ({
               url: e.url,
               passage: e.passage,
-              ...(archivedByUrl.has(e.url) ? { archived: archivedByUrl.get(e.url)! } : {}),
+              ...(() => {
+                // Latest supporting job first (a second pass supersedes the first).
+                for (const jobId of [...c.jobIds].reverse()) {
+                  const hit = archivedByJobUrl.get(JSON.stringify([jobId, e.url]));
+                  if (hit) return { archived: hit };
+                }
+                return {};
+              })(),
             }))
           : [],
       };
