@@ -587,11 +587,33 @@ describe("librarian coverage", () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
-    expect(r.requests[0].claims.map((c) => c.claimRecordId)).toEqual([canonical]);
+    // The request keeps the extraction's own ID; coverage is recorded canonically.
+    expect(r.requests[0].claims.map((c) => c.claimRecordId)).toEqual([merged]);
     expect(out.record.claims[0]).toMatchObject({
       claimRecordId: canonical,
       status: "evidence-found",
     });
+  });
+
+  it("reuses its own saved theme mapping when reassessing an analysis", async () => {
+    const a = await analysis("p1", [claims[0]], "AI");
+    const r = researcher(() => ({ passages: [] }));
+    const one = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const rejecting = { decide: async () => ({ themeId: null, rationale: "different subject" }) };
+    const two = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: rejecting,
+    });
+    expect(two.record.mappings[0].dossierId).toBe(one.record.mappings[0].dossierId);
+    expect(new Set(r.requests.map((q) => researchJobId(q))).size).toBe(1);
   });
 
   it("falls back to the lexical shortlist, and records why, when vectors are incompatible", async () => {

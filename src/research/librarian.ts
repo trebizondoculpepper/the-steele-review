@@ -305,9 +305,15 @@ const toRef = (r: ArtifactRef) => ({
 const ClaimText = z.looseObject({ statement: z.string().min(1) });
 
 interface AcceptedClaim {
+  /** Current canonical claim identity: coverage and reuse are judged under it. */
   claimRecordId: string;
   statement: string;
   proposalIds: string[];
+  /**
+   * The extraction's own claim IDs and statements. Research requests are built
+   * from these, so a later claim merge cannot change a request's identity.
+   */
+  extracted: { claimRecordId: string; statement: string }[];
 }
 
 function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): AcceptedClaim[] {
@@ -319,6 +325,7 @@ function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): Ac
     const prior = seen.get(c.claimRecordId);
     const proposalIds = [...new Set([...(prior?.proposalIds ?? []), ...c.themeIds])];
     seen.set(c.claimRecordId, {
+      extracted: [{ claimRecordId: c.claimRecordId, statement: parsed.data.statement }],
       claimRecordId: c.claimRecordId,
       statement: parsed.data.statement,
       proposalIds,
@@ -362,7 +369,11 @@ function assess(
     let insecureOnly = false;
     for (const c of manifest.citations) {
       for (const p of c.passages) {
-        if (p.claimRecordId !== claim.claimRecordId) continue;
+        if (
+          p.claimRecordId !== claim.claimRecordId &&
+          !claim.extracted.some((e) => e.claimRecordId === p.claimRecordId)
+        )
+          continue;
         if (c.sourceType === "monitored-source") claimantOnly = true;
         // Dossier citations are https-only; plain-http support is not recorded as evidence.
         // Only passages the researcher verified as supporting count as evidence.
@@ -484,6 +495,32 @@ export function mergeCoverage(
   };
 }
 
+/** Theme mappings saved by an earlier assessment of exactly this analysis. */
+async function priorMappings(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+): Promise<Map<string, CoverageRecord["mappings"][number]>> {
+  const out = new Map<string, CoverageRecord["mappings"][number]>();
+  const paths = await artifacts.list(
+    `librarian/coverage/${post.publicationId}/${post.postId}`,
+    1000,
+  );
+  for (const path of paths) {
+    const ref = await artifacts.lookup(path);
+    if (!ref) continue;
+    const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+    if (!parsed.success) continue;
+    const r = parsed.data;
+    const same = (a: { commit: string; path: string }, b: ArtifactRef) =>
+      a.commit === b.commit && a.path === b.path;
+    if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
+    for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+  }
+  return out;
+}
+
 async function saveDossier(
   store: DossierStore,
   themeId: string,
@@ -583,8 +620,24 @@ export async function assessPostCoverage(input: {
   const titles = new Map<string, string>();
   /** Research subject per dossier from this analysis's own proposals (never editable dossier titles). */
   const subjects = new Map<string, string>();
+  // Reassessing the same analysis reuses the mapping its earlier run saved,
+  // so shortlist or judge changes cannot move a theme to another dossier.
+  const savedMapping = await priorMappings(
+    input.artifacts,
+    post,
+    input.themeResult,
+    input.claimResult,
+  );
   for (const proposal of themes.proposals) {
     const p = { ...proposal, description: proposal.description ?? "" };
+    const kept = savedMapping.get(p.id);
+    if (kept) {
+      dossierFor.set(p.id, kept.dossierId);
+      titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
+      if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, p.title);
+      mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
+      continue;
+    }
     const shortlist = await input.shortlister.shortlist(p, summaries);
     const decision = await judge.decide(p, shortlist);
     let dossierId = decision.themeId ?? newDossierId(p.title);
@@ -616,6 +669,7 @@ export async function assessPostCoverage(input: {
     const prior = byCanonical.get(canonical);
     if (prior) {
       prior.proposalIds = [...new Set([...prior.proposalIds, ...c.proposalIds])];
+      prior.extracted.push(...c.extracted);
       continue;
     }
     const entry = { ...c, claimRecordId: canonical };
@@ -639,14 +693,29 @@ export async function assessPostCoverage(input: {
       });
       continue;
     }
-    const homeDossier = existing.get(home);
-    const prior = homeDossier?.metadata.claims.find((c) => c.claimId === claim.claimRecordId);
+    // Reuse evidence from any dossier this claim is mapped to, home first.
+    const mapped = [
+      ...new Set(
+        claim.proposalIds.map((id) => dossierFor.get(id)).filter((x): x is string => Boolean(x)),
+      ),
+    ];
+    let homeDossier: StoredDossier | undefined;
+    let prior: DossierMetadata["claims"][number] | undefined;
+    for (const id of mapped) {
+      const d = existing.get(id);
+      const c = d?.metadata.claims.find((x) => x.claimId === claim.claimRecordId);
+      if (d && c?.status === "covered") {
+        homeDossier = d;
+        prior = c;
+        break;
+      }
+    }
     if (homeDossier && prior?.status === "covered") {
       const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
       outcomes.set(claim.claimRecordId, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
-        dossierId: home,
+        dossierId: homeDossier.metadata.themeId,
         status: "evidence-found",
         reused: true,
         jobIds: [],
@@ -681,11 +750,13 @@ export async function assessPostCoverage(input: {
       pass,
       ...(previousJobId ? { previousJobId } : {}),
       post: postRefs,
-      claims: group.map((c) => ({
-        claimRecordId: c.claimRecordId,
-        statement: c.statement,
-        themeIds: [dossierId],
-      })),
+      claims: group
+        .flatMap((c) => c.extracted)
+        .map((e) => ({
+          claimRecordId: e.claimRecordId,
+          statement: e.statement,
+          themeIds: [dossierId],
+        })),
       question:
         pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
