@@ -4,6 +4,8 @@ The Steele Review monitors selected Substack publications, archives and indexes 
 
 ## Document map
 
+See the [pipeline module outline](18-module-outline.md) for the latest concise end-to-end responsibilities and discussion follow-ups.
+
 | Document                                                           | Theme                                                       |
 | ------------------------------------------------------------------ | ----------------------------------------------------------- |
 | [System overview](01-system-overview.md)                           | Scope, boundaries, and event flow                           |

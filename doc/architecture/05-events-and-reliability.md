@@ -8,6 +8,18 @@ Confirm that JetStream is enabled and determine server version, storage limits, 
 
 ## Event contract
 
+### Shared stream and message registry
+
+Agreed direction: maintain one shared typed TypeScript registry as the source of truth for application stream names, purposes, subject patterns and supported message contracts. Modules contribute definitions there; workers must not scatter independent stream-name literals or duplicate schema definitions across the codebase. This is a documentation decision; the registry implementation is subsequent work.
+
+Distinguish a JetStream stream (stored subjects and delivery configuration), a NATS subject (routing name), and a message type/schema (validated payload). One stream may carry multiple message types. Reference the existing Zod schemas from registry entries and derive TypeScript types and JSON Schema rather than copying schemas into a constants file.
+
+Naming convention: application subjects use `steele.v1.<area>.<event>`; stream names use the `STEELE_` prefix followed by an uppercase descriptive responsibility, preserving existing deployed names unless an explicit migration is planned. Each definition records its purpose, subject filters and allowed event types/schema versions. Additional streams follow this convention and are registered before use. Documentation listing streams and their messages should be derived from the registry so there is one coherent source of truth.
+
+The NATS controller consumes these definitions for stream/consumer setup and message routing/validation. Validate incompatible overlapping stream subjects and missing subject-to-message mappings. Stream retention must allow the intended independent durable consumers; names alone do not define delivery behaviour. A filter such as `steele.v1.content.*` does not include `steele.v1.post.analysed`. The exact assignment of that completion subject to a stream remains to be specified through the registry, not assumed from an older proposal table.
+
+There is one current proof-of-concept deployment, not separate experiment and production systems. Use its configured broker and state-controller outbox; no separate demo broker, content segregation or parallel outbox is required. Manual commands and automatic workers share the same stage boundaries. Configuration and actual deployment details remain private and external to this repository.
+
 Use CloudEvents 1.0 structured JSON as the event envelope, with Zod schemas for application payloads. Export JSON Schema from the same Zod definitions as the portable contract. This is the agreed message-format choice; libraries and message publishing are not implemented by this documentation change.
 
 The `cloudevents` package provides the `CloudEvent` class for envelope construction and validation. Zod validates each event's `data` and derives its TypeScript type. Send the structured JSON as UTF-8 bytes through the NATS controller. The CloudEvents JavaScript SDK does not supply a NATS transport binding; our controller handles transport without inventing another envelope format.
