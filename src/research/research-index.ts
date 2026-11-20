@@ -147,6 +147,8 @@ export async function reconcileResearchIndex(input: {
   >;
   index?: string;
   refresh?: boolean;
+  /** Called before each write; throws to abandon the pass if ownership was lost. */
+  keepAlive?: () => void;
 }): Promise<ReconcileReport> {
   const index = input.index ?? RESEARCH_COLLECTION_INDEX_V1;
   const options = input.refresh ? { refresh: "wait_for" as const } : {};
@@ -178,6 +180,7 @@ export async function reconcileResearchIndex(input: {
   let skipped = 0;
   for (const { path, change } of changes) {
     if (!researchDocumentKind(path)) continue;
+    input.keepAlive?.();
     const id = researchDocumentId(path);
     if (change === "delete") {
       await input.es.deleteDocument(index, id, options);

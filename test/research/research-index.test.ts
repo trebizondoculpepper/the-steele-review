@@ -203,6 +203,21 @@ describe("research collection indexing", () => {
     expect(calls).toBeGreaterThan(0);
   });
 
+  it("abandons a pass, keeping the checkpoint, when ownership is lost", async () => {
+    await rev("dossier/a.md", "# A\n");
+    await expect(
+      reconcileResearchIndex({
+        artifacts,
+        es,
+        keepAlive: () => {
+          throw new Error("not-owner");
+        },
+      }),
+    ).rejects.toThrow("not-owner");
+    expect(es.docs.get("checkpoint")?.checkpoint).toBeUndefined();
+    expect(es.text("dossier/a.md")).toBeUndefined();
+  });
+
   it("skips unreadable source snapshots without leaving stale copies", async () => {
     await artifacts.write(`${JOB}/sources/2.json`, "not json");
     expect(await reconcile()).toMatchObject({ skipped: 1, indexed: 0 });
