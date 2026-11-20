@@ -86,7 +86,7 @@ export async function replayArchiveToIndex(input: {
   selection: ReplaySelection;
   /** `lookupAt` is required only when the selection pins a commit. */
   artifacts: Pick<GitArtifactStore, "read" | "lookup" | "list"> &
-    Partial<Pick<GitArtifactStore, "lookupAt">>;
+    Partial<Pick<GitArtifactStore, "lookupAt" | "listAt">>;
   index: FulltextIndexPort;
   indexName?: string;
   signal?: AbortSignal;
@@ -107,7 +107,21 @@ export async function replayArchiveToIndex(input: {
     checkpointSaved: false,
   };
   const wanted = sel.postIds ? new Set(sel.postIds) : undefined;
-  const listed = await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN);
+  // Enumerating the current tree would let a pinned load see records that did
+  // not exist at that revision, or miss ones removed since (#249).
+  let listed: string[];
+  if (sel.commit) {
+    const listAt = input.artifacts.listAt;
+    if (!listAt) throw new ArtifactStoreError("git-failed");
+    listed = await listAt.call(
+      input.artifacts,
+      sel.commit,
+      `substack/${sel.publicationId}`,
+      MAX_REPLAY_SCAN,
+    );
+  } else {
+    listed = await input.artifacts.list(`substack/${sel.publicationId}`, MAX_REPLAY_SCAN);
+  }
   // A full listing may have stopped at the scan cap before every record.
   if (listed.length >= MAX_REPLAY_SCAN) report.truncated = true;
   const paths = listed.filter((p) => {

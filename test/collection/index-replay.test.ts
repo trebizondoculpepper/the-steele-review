@@ -330,6 +330,32 @@ describe("GitArtifactStore.list", () => {
     expect(states[0]).toMatchObject({ commit: pinnedRef!.commit, indexed: 2, unchanged: 0 });
   });
 
+  it("enumerates paths from the pinned commit rather than the current tree", async () => {
+    await archive(record("a", "2026-01-01T00:00:00Z"), record("b", "2026-02-01T00:00:00Z"));
+    const head = (await artifacts.lookup("substack/example-pub/b/collected.json"))!.commit;
+    // A record committed after the pin must not appear in a pinned load.
+    await archive(record("late", "2026-04-01T00:00:00Z"));
+
+    const { port, docs } = versionedIndex();
+    const pinnedOnly = {
+      read: artifacts.read.bind(artifacts),
+      lookup: artifacts.lookup.bind(artifacts),
+      lookupAt: artifacts.lookupAt.bind(artifacts),
+      listAt: artifacts.listAt.bind(artifacts),
+      // Proves enumeration does not fall back to the current working tree.
+      list: async () => {
+        throw new Error("list() must not be used for a pinned replay");
+      },
+    };
+    const pinned = await replayArchiveToIndex({
+      selection: { publicationId: "example-pub", limit: 10, commit: head },
+      artifacts: pinnedOnly,
+      index: port,
+    });
+    expect(pinned).toMatchObject({ ok: true, selected: 2, indexed: 2 });
+    expect(docs.size).toBe(2);
+  });
+
   it("reruns the same pinned load without duplicates and re-saves a stable checkpoint", async () => {
     await archive(record("a", "2026-01-01T00:00:00Z"), record("b", "2026-02-01T00:00:00Z"));
     const head = (await artifacts.lookup("substack/example-pub/b/collected.json"))!.commit;
