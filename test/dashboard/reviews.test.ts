@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { savedReviews } from "../../src/dashboard/reviews.js";
 import { reviewViews } from "../../src/dashboard/review-views.js";
+import { savePublicationPayload } from "../../src/drafting/publication-payload.js";
+import { PackageDraftMetadataSchema } from "../../src/drafting/package-draft.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -67,13 +69,6 @@ describe("review history (#499)", { timeout: 60_000 }, () => {
         draft: ref("draft-3", "6"),
         verifiedAt: "2026-01-03T00:00:00Z",
         issues: [],
-        schemaVersion: 2,
-        publication: {
-          repository: "content",
-          commit: "a".repeat(40),
-          path: "publications/pub/p1.json",
-          hash: `sha256:${"7".repeat(64)}`,
-        },
       }),
     );
     const history = await savedReviews(content).forPost(post);
@@ -84,7 +79,7 @@ describe("review history (#499)", { timeout: 60_000 }, () => {
     >;
     expect(newest).toMatchObject({
       outcome: "approved",
-      scope: "publication",
+      scope: "body-only",
       draft: { path: "articles/pub/p1/draft-3.md" },
       issues: [],
     });
@@ -203,5 +198,89 @@ describe("review history (#499)", { timeout: 60_000 }, () => {
     expect(html).toContain('href="/articles/trace?publication=pub&post=p1"');
     expect(html).toContain('href="/drafts?publication=pub&post=p1"');
     expect(html).toContain("fake/verifier");
+  });
+});
+
+describe("review history edge cases (#499)", { timeout: 60_000 }, () => {
+  it("derives scope from the pinned payload, not from schema version", async () => {
+    const body = await content.write("articles/pub/p1/draft-legacy.md", "# Legacy body");
+    const metadataRef = await content.write(
+      "articles/pub/p1/draft-legacy.meta.json",
+      JSON.stringify(
+        PackageDraftMetadataSchema.parse({
+          schemaVersion: 1,
+          package: ref("package", "2"),
+          source: ref("source", "3"),
+          themes: ref("themes", "4"),
+          templateVersion: "package-explainer-v5",
+          promptVersion: "writer-package-explainer-sha256:" + "9".repeat(64),
+          modelVersion: "fake/writer",
+          draft: `${body.commit}:${body.path}`,
+          draftedAt: "2026-01-01T00:00:00Z",
+        }),
+      ),
+    );
+    const { ref: payloadRef } = await savePublicationPayload({
+      content,
+      metadata: metadataRef,
+      body,
+      post,
+    });
+    await writeReport(
+      "pass-legacy",
+      report({
+        schemaVersion: 2,
+        publication: {
+          repository: payloadRef.repository,
+          commit: payloadRef.commit,
+          path: payloadRef.path,
+          hash: `sha256:${payloadRef.sha256}`,
+        },
+      }),
+    );
+    const history = await savedReviews(content).forPost(post);
+    expect(history.reviews[0]).toMatchObject({ kind: "review", scope: "body-only" });
+  });
+
+  it("reports a partial history when later listing pages fail", async () => {
+    await writeReport("pass-1", report({}));
+    let calls = 0;
+    const failing = {
+      lookup: (path: string) => content.lookup(path),
+      read: (ref: never) => content.read(ref),
+      list: async (_prefix: string, _limit: number, _after?: string) => {
+        calls++;
+        if (calls > 1) throw new Error("listing failed");
+        // A full first page forces the scanner to request another page.
+        return Array.from({ length: 50 }, (_, i) => `verifications/pub/p1/page-${i}.json`);
+      },
+    };
+    const history = await savedReviews(failing as never).forPost(post);
+    // The first page succeeded but the scan was incomplete: never "ok".
+    expect(history.state).toBe("partial");
+  });
+
+  it("orders a terminal wrapper by its referenced report's time", async () => {
+    await writeReport("a-report", report({ verifiedAt: "2026-01-03T00:00:00Z" }));
+    await writeReport("z-report", report({ verifiedAt: "2026-01-01T00:00:00Z" }));
+    await writeReport("m.unresolved", {
+      outcome: "unresolved",
+      revisions: 2,
+      report: {
+        repository: "content",
+        commit: "a".repeat(40),
+        path: "verifications/pub/p1/a-report.json",
+        hash: `sha256:${"8".repeat(64)}`,
+      },
+      issues: [],
+    });
+    const history = await savedReviews(content).forPost(post);
+    const order = history.reviews.map((r) =>
+      r.kind === "unresolved" ? `wrapper:${r.outcome}` : r.path.split("/").pop(),
+    );
+    // The wrapper inherits a-report's January 3 timestamp and sorts above the
+    // January 1 report regardless of path spelling.
+    expect(order.slice(0, 2)).toEqual(["wrapper:unresolved", "a-report.json"]);
+    expect(order.at(-1)).toBe("z-report.json");
   });
 });

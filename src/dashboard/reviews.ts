@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
+import { readPublicationPayload } from "../drafting/publication-payload.js";
 
 /**
  * Bounded read-only review history for one post (#499).
@@ -173,6 +174,17 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         const report = PackageVerificationReportSchema.safeParse(raw);
         if (report.success) {
           const r = report.data;
+          // A schema-v2 report can still cover only a legacy body, so the
+          // pinned payload's mode decides the scope, not the property.
+          let scope: "publication" | "body-only" = "body-only";
+          if ("publication" in r) {
+            try {
+              const { payload } = await readPublicationPayload(content, r.publication);
+              scope = payload.mode === "structured" ? "publication" : "body-only";
+            } catch {
+              scope = "body-only";
+            }
+          }
           parsed.push({
             kind: "review",
             path,
@@ -181,7 +193,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
             draft: r.draft,
             modelVersion: r.verifierModel,
             promptVersion: r.promptVersion,
-            scope: "publication" in r ? "publication" : "body-only",
+            scope,
             issues: asIssues(r.issues),
             checks: r.checks,
           });
@@ -203,13 +215,42 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         unreadableReports++;
       }
 
-      // Chronological by the saved instant; stable path tie-break. The wrapper
-      // has no timestamp of its own, so it keeps its path order among reviews.
-      const when = (e: ReviewEntry) => (e.kind === "review" ? Date.parse(e.verifiedAt) : NaN);
+      // One total order for every entry: the saved instant of the report it
+      // represents. A wrapper takes its referenced report's timestamp (path
+      // lexicographic order says nothing about time); unreadable or unknown
+      // entries get 0 and sort last, deterministically by path.
+      const at = new Map<string, number>();
+      for (const entry of parsed) {
+        if (entry.kind === "review") {
+          const parsedAt = Date.parse(entry.verifiedAt);
+          at.set(entry.path, Number.isFinite(parsedAt) ? parsedAt : 0);
+          continue;
+        }
+        if (entry.kind === "unresolved") {
+          let found = 0;
+          try {
+            const ref = await content.lookup(entry.reportPath);
+            if (ref) {
+              const inner = PackageVerificationReportSchema.safeParse(
+                JSON.parse(await content.read(ref)),
+              );
+              if (inner.success) {
+                const parsedAt = Date.parse(inner.data.verifiedAt);
+                if (Number.isFinite(parsedAt)) found = parsedAt;
+              }
+            }
+          } catch {
+            // Unknown age: sorted with the other untimestamped entries.
+          }
+          at.set(entry.path, found);
+          continue;
+        }
+        at.set(entry.path, 0);
+      }
       parsed.sort((a, b) => {
-        const ta = when(a);
-        const tb = when(b);
-        if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return tb - ta;
+        const ta = at.get(a.path) ?? 0;
+        const tb = at.get(b.path) ?? 0;
+        if (ta !== tb) return tb - ta;
         return b.path.localeCompare(a.path);
       });
 
@@ -238,14 +279,9 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       const startIndex = start * REVIEW_PAGE;
       const reviews = parsed.slice(startIndex, startIndex + REVIEW_PAGE);
       const next = parsed.length > startIndex + REVIEW_PAGE ? start + 1 : undefined;
+      const incomplete = truncated || unreadableReports > 0 || unreadableListing;
       const state =
-        parsed.length === 0
-          ? truncated || unreadableReports > 0
-            ? "partial"
-            : "none"
-          : truncated || unreadableReports > 0
-            ? "partial"
-            : "ok";
+        parsed.length === 0 ? (incomplete ? "partial" : "none") : incomplete ? "partial" : "ok";
       return {
         state,
         reviews,
