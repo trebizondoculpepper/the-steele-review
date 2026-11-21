@@ -125,7 +125,7 @@ describe("announcePost", { timeout: 60_000 }, () => {
       ...post,
       counts: { themeProposals: 1, acceptedClaims: 1, candidates: 0, rejected: 0 },
       themes: { prompt: DEFAULT_THEME_PROPOSAL_PROMPT.version, schema: 1 },
-      claims: { schema: 3 },
+      claims: { schema: 4 },
     });
 
     // Identical rerun: one logical completion, nothing resent.
