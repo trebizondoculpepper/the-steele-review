@@ -46,6 +46,14 @@ export class TrashConflictError extends Error {
 
 export type TrashState = "active" | "trashed";
 
+/** Later instant wins; a tie is broken by request id. */
+function newer(a: TrashMarker, b: TrashMarker): boolean {
+  const at = Date.parse(a.at);
+  const bt = Date.parse(b.at);
+  // Offsets are legal in the schema, so order by instant, not by string.
+  return at === bt ? a.requestId > b.requestId : at > bt;
+}
+
 /** Bound on pagination when reading marker history. */
 export const MAX_MARKER_PAGES = 20;
 
@@ -92,18 +100,31 @@ export class DraftTrashStore {
     }
   }
 
+  /**
+   * Trash state for many drafts from one history read, so a listing page does
+   * not re-read and re-sort the whole history per entry.
+   */
+  async states(draftPaths: readonly string[]): Promise<Map<string, TrashState>> {
+    const out = new Map<string, TrashState>();
+    if (draftPaths.length === 0) return out;
+    const markers = await this.markers();
+    const latest = new Map<string, TrashMarker>();
+    for (const marker of markers) {
+      const prior = latest.get(marker.draftPath);
+      if (!prior || newer(marker, prior)) latest.set(marker.draftPath, marker);
+    }
+    for (const path of draftPaths) {
+      out.set(path, latest.get(path)?.action === "delete" ? "trashed" : "active");
+    }
+    return out;
+  }
+
   /** Whether the most recent recorded action for this draft leaves it trashed. */
   async state(draftPath: string): Promise<TrashState> {
     const markers = await this.markers();
     const forDraft = markers.filter((m) => m.draftPath === draftPath);
     if (forDraft.length === 0) return "active";
-    const latest = forDraft.reduce((a, b) => {
-      const at = Date.parse(a.at);
-      const bt = Date.parse(b.at);
-      // Offsets are legal in the schema, so order by instant, not by string.
-      if (bt !== at) return bt > at ? b : a;
-      return b.requestId > a.requestId ? b : a;
-    });
+    const latest = forDraft.reduce((a, b) => (newer(b, a) ? b : a));
     return latest.action === "delete" ? "trashed" : "active";
   }
 

@@ -83,7 +83,7 @@ const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 export function draftInventory(
   content: Store,
   receipts?: ReceiptsPort,
-  trash?: Pick<DraftTrashStore, "state">,
+  trash?: Pick<DraftTrashStore, "states">,
 ): DraftInventoryPort {
   /**
    * Verification reports for one post, keyed by the exact draft they bind.
@@ -258,13 +258,11 @@ export function draftInventory(
       const next = last ?? more;
       // Trashed drafts leave the active listing; their artifacts stay intact
       // and a restore marker brings them back (#478).
-      const visible = trash
-        ? (
-            await Promise.all(
-              entries.map(async (e) => ((await trash.state(e.path)) === "active" ? e : undefined)),
-            )
-          ).filter((e): e is DraftEntry => e !== undefined)
-        : entries;
+      // One history read for the whole page, not one per entry.
+      const hidden = trash
+        ? await trash.states(entries.map((e) => e.path))
+        : new Map<string, "active" | "trashed">();
+      const visible = entries.filter((e) => hidden.get(e.path) !== "trashed");
       return { entries: visible, ...(next ? { next } : {}) };
     },
     async text(path) {
