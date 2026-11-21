@@ -3,6 +3,7 @@ import { articleViews, renderTrace } from "../../src/dashboard/article-views.js"
 import {
   sanitizeReason,
   UNRECOGNISED_REASON,
+  STALL_MS,
   summariseRun,
   traceArticle,
   type RecentArticlesPort,
@@ -119,6 +120,68 @@ const runs = (by: Record<string, RunState>): RunStatusPort & { asked: string[] }
     },
   };
 };
+
+describe("in-progress stage state (#439)", () => {
+  const at = "2026-11-21T10:00:00.000Z";
+  const now = Date.parse(at) + 60_000;
+  it("shows the running stage, with earlier stages done", () => {
+    const s = summariseRun(
+      { state: "running", progress: { stage: "draft", status: "running", at } },
+      now,
+    );
+    expect(s.summary).toBe("pending");
+    expect(s.lastUpdate).toBe(at);
+    expect(s.stages.map((x) => `${x.stage}:${x.state}`)).toEqual([
+      "capture:done",
+      "themes:done",
+      "claims:done",
+      "research:done",
+      "drafting:pending",
+      "verification:not-reached",
+      "delivery:not-reached",
+    ]);
+    expect(s.stages[4]!.detail).toContain("draft in progress");
+  });
+
+  it("moves to the next stage once one completes, and marks stalled progress explicitly", () => {
+    const done = summariseRun(
+      { state: "running", progress: { stage: "claims", status: "completed", at } },
+      now,
+    );
+    expect(done.stages[3]).toMatchObject({ stage: "research", state: "pending" });
+    const stalled = summariseRun(
+      { state: "running", progress: { stage: "claims", status: "running", at } },
+      Date.parse(at) + STALL_MS + 1,
+    );
+    expect(stalled.stages[2]!.detail).toMatch(/^stalled: no update since/);
+  });
+
+  it("keeps a grouped stage pending until its last step completes", () => {
+    const state = (stage: string, status: "running" | "completed") =>
+      summariseRun({ state: "running", progress: { stage, status, at } }, now).stages.map(
+        (x) => `${x.stage}:${x.state}`,
+      );
+    // plan-research, research and coverage are all "research".
+    expect(state("plan-research", "completed")).toContain("research:pending");
+    expect(state("research", "completed")).toContain("research:pending");
+    expect(state("coverage", "completed")).toContain("drafting:pending");
+    // package and draft are both "drafting".
+    expect(state("package", "completed")).toContain("drafting:pending");
+    expect(state("package", "completed")).toContain("verification:not-reached");
+    expect(state("draft", "completed")).toContain("verification:pending");
+  });
+
+  it("never treats missing progress as success", () => {
+    expect(summariseRun({ state: "running", progress: null }).stages[1]).toMatchObject({
+      state: "pending",
+      detail: "starting",
+    });
+    expect(summariseRun({ state: "running" }).stages[1]).toMatchObject({
+      state: "pending",
+      detail: "progress unavailable",
+    });
+  });
+});
 
 describe("article pages (#377)", () => {
   it("traces the exact revision with the logs' correlation ID", async () => {

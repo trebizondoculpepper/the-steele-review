@@ -244,7 +244,17 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
         const out = await workflow.workflowOutput(
           clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
         );
-        return out.ready ? { state: "finished", result: out.result } : { state: "running" };
+        if (out.ready) return { state: "finished", result: out.result };
+        // Running: read the run's own progress (#439). A failed read is shown as
+        // unavailable progress, never as success.
+        try {
+          const progress = await workflow.progress(
+            clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
+          );
+          return { state: "running", progress };
+        } catch {
+          return { state: "running" };
+        }
       } catch (error) {
         if (error instanceof clients.HttpCallError && error.status === 404) {
           return { state: "not-started" };

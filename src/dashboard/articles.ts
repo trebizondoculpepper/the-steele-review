@@ -33,7 +33,11 @@ export interface RecentArticlesPort {
 
 export type RunState =
   | { state: "not-started" }
-  | { state: "running" }
+  | {
+      state: "running";
+      /** The run's own durable progress (#439); null before its first stage, absent if unreadable. */
+      progress?: { stage: string; status: "running" | "completed"; at: string } | null;
+    }
   | { state: "finished"; result: ArticleRunFinal }
   | { state: "unavailable" }
   | { state: "not-configured" };
@@ -114,6 +118,8 @@ export interface ArticleTrace {
   correlationId: string;
   sourceVersion?: string;
   summary: RunSummary;
+  /** When a running workflow last reported progress (#439). */
+  lastUpdate?: string;
   outcome?: string;
   reason?: string;
   stages: StageRow[];
@@ -158,6 +164,7 @@ const STAGE_ALIASES: Record<string, StageName> = {
   themes: "themes",
   claims: "claims",
   research: "research",
+  "plan-research": "research",
   coverage: "research",
   package: "drafting",
   draft: "drafting",
@@ -183,9 +190,23 @@ function rows(upTo: number, mark?: { state: "failed" | "pending"; detail?: strin
 }
 
 /** Stage table and summary from the workflow's result for this revision. */
+/** The workflow step that completes each dashboard stage (#439). */
+const LAST_STEP: Partial<Record<StageName, string>> = {
+  themes: "themes",
+  claims: "claims",
+  research: "coverage",
+  drafting: "draft",
+  verification: "verify",
+  delivery: "record-approval",
+};
+
+/** A running stage with no progress update for this long is shown as stalled. */
+export const STALL_MS = 30 * 60_000;
+
 export function summariseRun(
   run: RunState,
-): Pick<ArticleTrace, "summary" | "outcome" | "reason" | "stages" | "research"> {
+  now: number = Date.now(),
+): Pick<ArticleTrace, "summary" | "outcome" | "reason" | "stages" | "research" | "lastUpdate"> {
   const idx = (s: StageName) => STAGES.indexOf(s);
   switch (run.state) {
     case "not-configured":
@@ -197,14 +218,46 @@ export function summariseRun(
       };
     case "not-started":
       return { summary: "not-started", stages: rows(idx("themes")), research: [] };
-    case "running":
-      // The workflow's journal is not read here: running means "somewhere
-      // after capture", shown as pending rather than guessed.
+    case "running": {
+      // Progress comes from the run's own durable state (#439). Missing or
+      // stale progress is shown as such, never as success.
+      const p = run.progress;
+      if (!p) {
+        return {
+          summary: "pending",
+          stages: rows(idx("themes"), {
+            state: "pending",
+            detail: p === null ? "starting" : "progress unavailable",
+          }),
+          research: [],
+        };
+      }
+      const named = STAGE_ALIASES[p.stage];
+      if (!named) {
+        return {
+          summary: "pending",
+          stages: rows(idx("themes"), { state: "pending", detail: "progress unrecognised" }),
+          research: [],
+        };
+      }
+      // A dashboard stage groups several workflow steps; it is done only when
+      // its last step completes (coverage for research, draft for drafting).
+      const finishesGroup = p.status === "completed" && LAST_STEP[named] === p.stage;
+      const at = idx(named) + (finishesGroup ? 1 : 0);
+      const current = Math.min(at, STAGES.length - 1);
+      const age = now - Date.parse(p.at);
+      const when = p.at.slice(0, 19).replace("T", " ");
+      const detail =
+        Number.isNaN(age) || age > STALL_MS
+          ? `stalled: no update since ${when} UTC`
+          : `${p.stage} ${p.status === "running" ? "in progress" : "done"} at ${when} UTC`;
       return {
         summary: "pending",
-        stages: rows(idx("themes"), { state: "pending" }),
+        lastUpdate: p.at,
+        stages: rows(current, { state: "pending", detail }),
         research: [],
       };
+    }
     case "finished": {
       const r = run.result;
       const research = r.research.map((j) => ({ jobId: j.jobId, outcome: j.outcome }));
