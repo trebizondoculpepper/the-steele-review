@@ -67,6 +67,17 @@ This is an explicit operator recovery, not an automatic restart loop or a new
 default workflow identity. Coordinate with the rehearsal owner before starting
 downstream research, and retain the configured request/cost bounds.
 
+### Provider credit exhaustion (#407)
+
+The monetary control is the model provider's own per-key budget (OpenRouter), managed outside the application; there is no separate spending ledger or dollar gate. When it runs out, the provider returns a typed `credit-exhausted` error (HTTP 402), and the run treats it as an operational block, not an editorial result:
+
+- Model stages (themes, claims, draft, verify) stop at once instead of retrying or reporting `provider-failed`/`malformed-output`. A research job that failed for lack of credit (`budget-exceeded`) stops the run at coverage, so no article is written from a false evidence gap.
+- The run ends with the terminal reason `<stage>: credit-exhausted`. Nothing is marked as a finding about the article, and no hot retry loop runs.
+- Each occurrence writes a sanitised `provider.condition` line locally (correlation ID, stage, revision; no key, prompt, endpoint or response). Sentry receives an `article.pipeline` milestone at warning level with outcome `credit-exhausted`, at most once per stage per 10 minutes, so a queue of stalled runs cannot flood it.
+- The dashboard shows an actionable warning on the Articles list and on the run's trace.
+
+**Recovery.** Add credit or raise the key's limit with the provider first. Then recover each affected revision with the explicit operator recovery above ("Recovering a completed extraction failure"): resubmit the same validated input under one recorded recovery key. Content-addressed stage results (themes, claims, research jobs, packages) are reused, so completed work is not paid for twice. Do not resubmit under a new key per attempt.
+
 ### Stage model selection
 
 `STEELE_MODEL` is the default for model-backed stages; `STEELE_MODEL_THEMES`, `STEELE_MODEL_CLAIMS`, `STEELE_MODEL_WRITER` and `STEELE_MODEL_SUPPORT` override per stage. Research uses `STEELE_RESEARCH_MODEL` (Sonar) with its configured timeout and token limits.
@@ -141,7 +152,6 @@ Provision the destination consumers explicitly, once:
 STEELE_PUBLISHER_CONSUMERS=steele-dummy-publisher-a,steele-dummy-publisher-b node dist/cli/provision.js
 ```
 
-
 ## Find activity for one original post
 
 To look up a known post, run
@@ -190,7 +200,6 @@ verification report against the saved draft and waits for both simulated
 receipts with the same full draft hash. The default wait is two minutes.
 Set `STEELE_FIXTURE_TIMEOUT_MS` to adjust it. A failure prints only the stage
 and outcome. Keep the resulting fixture evidence with the deployment record.
-
 
 Use the isolated Compose file with a dedicated writable directory, a unique
 Compose project name and a pinned image that includes the dummy publishers.

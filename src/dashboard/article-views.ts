@@ -38,20 +38,25 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       }
       const recent = await deps.articles.recent(RECENT_LIMIT);
       if (recent.length === 0) return '<p class="empty">No archived articles are indexed yet.</p>';
+      let creditBlocked = 0;
       const rowsHtml = await Promise.all(
         recent.map(async (a) => {
           let summary = "unknown";
           if (deps.runs) {
             try {
               const s = await deps.runs.status(a);
-              summary =
-                s.state === "finished"
-                  ? s.result.outcome === "failed"
-                    ? "failed"
-                    : "completed"
-                  : s.state === "running"
-                    ? "pending"
-                    : s.state;
+              if (s.state === "finished" && isCreditBlocked(s.result.reason)) {
+                creditBlocked++;
+                summary = "credit-exhausted";
+              } else
+                summary =
+                  s.state === "finished"
+                    ? s.result.outcome === "failed"
+                      ? "failed"
+                      : "completed"
+                    : s.state === "running"
+                      ? "pending"
+                      : s.state;
             } catch {
               summary = "unknown";
             }
@@ -59,7 +64,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
           return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td></tr>`;
         }),
       );
-      return `<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
+      return `${creditBlocked ? creditWarning(creditBlocked) : ""}<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
 <div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th></tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>`;
     },
@@ -88,6 +93,15 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
     },
   };
   return [list, detail];
+}
+
+/** A run stopped because the model provider's credit budget ran out (#407). */
+export const isCreditBlocked = (reason?: string) =>
+  typeof reason === "string" && /(^|: )credit-exhausted$/.test(reason.trim());
+
+/** Actionable, secret-free warning: what happened and how to recover. */
+export function creditWarning(runs: number): string {
+  return `<p class="warning" role="alert"><strong>Provider credit exhausted.</strong> ${runs} recent run${runs === 1 ? "" : "s"} stopped because the model provider's credit budget ran out. This is not a finding about any article. Add credit or raise the key's limit with the provider, then recover the affected revisions as described in the article pipeline operations guide (provider credit exhaustion); completed stage results are reused.</p>`;
 }
 
 export function renderTrace(t: ArticleTrace): string {
@@ -150,7 +164,7 @@ export function renderTrace(t: ArticleTrace): string {
             ? ""
             : `<div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${receiptRows}</tbody></table></div>`
         }`;
-  return `<p><a href="/articles">All articles</a></p>
+  return `${isCreditBlocked(t.reason) ? creditWarning(1) : ""}<p><a href="/articles">All articles</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>

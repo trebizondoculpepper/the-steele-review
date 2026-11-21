@@ -35,6 +35,7 @@ import {
 } from "./extraction.js";
 import type { OccurrenceIndexPort } from "./occurrence-indexer.js";
 import type { CatalogueTheme } from "./theme-catalogue.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
  * Source-grounded claims linked to themes (#144).
@@ -418,7 +419,8 @@ export async function extractGroundedClaims(input: {
           { system: prompt.instructions, user, maxOutputChars: maxResponseChars },
           input.signal ?? new AbortController().signal,
         );
-      } catch {
+      } catch (error) {
+        rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
         failure = "provider-failed";
         continue;
       }

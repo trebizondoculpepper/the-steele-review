@@ -63,6 +63,8 @@ th { color: var(--muted); font-weight: 600; }
 code { font-size: 0.85em; word-break: break-all; }
 .s-done, .s-completed { color: #2e8540; } .s-failed { color: #c0392b; font-weight: 600; }
 .s-pending { color: #b7791f; } .s-not-reached, .s-not-started, .s-unknown { color: var(--muted); }
+.warning { border: 1px solid #c0392b; border-left-width: 4px; padding: 0.5rem 0.75rem; }
+.s-credit-exhausted { color: #c0392b; font-weight: 600; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
 dt { color: var(--muted); }
 .empty { color: var(--muted); }

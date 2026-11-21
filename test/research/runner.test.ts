@@ -98,6 +98,24 @@ const run = (s: SonarClient, extra: Record<string, unknown> = {}) =>
   });
 
 describe("research runner", () => {
+  it("saves nothing terminal on exhausted credit, so the same job runs after credit returns (#407)", async () => {
+    const broke = sonar([], new ModelProviderError("credit-exhausted", 402));
+    const first = await run(broke);
+    expect(first).toMatchObject({
+      status: "finished",
+      reused: false,
+      result: { outcome: "failed", failure: "budget-exceeded" },
+    });
+    expect(await artifacts.lookup(`research-jobs/${first.jobId}/result.json`)).toBeUndefined();
+    // Credit restored: the same job ID runs again and completes.
+    const restored = sonar(["https://treaties.un.org/enmod"]);
+    const second = await run(restored);
+    expect(restored.calls).toBe(1);
+    expect(second.jobId).toBe(first.jobId);
+    expect(second).toMatchObject({ status: "finished", reused: false });
+    expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
+  });
+
   it("completes when every citation is archived with a verified supporting passage", async () => {
     const out = await run(sonar(["https://treaties.un.org/enmod"]));
     expect(out.status === "finished" && out.result.outcome).toBe("complete");

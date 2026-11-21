@@ -8,6 +8,7 @@ import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
  * Verify a package draft against its exact evidence package (#150).
@@ -230,7 +231,8 @@ export async function verifyPackageDraft(input: {
         { system: prompt.instructions, user, maxOutputChars: 30_000 },
         AbortSignal.timeout(180_000),
       );
-    } catch {
+    } catch (error) {
+      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
       failure = "provider-failed";
       continue;
     }
