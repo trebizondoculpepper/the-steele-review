@@ -79,6 +79,8 @@ describe("Markdown to Substack ProseMirror (#385)", () => {
       "[x](http://plain.example/)",
       "[x](javascript:alert(1))",
       "```\ncode\n```",
+      "# \n\nText",
+      "#### Too deep",
     ]) {
       expect(() => markdownToProseMirror(bad), bad).toThrow(UnsupportedMarkdownError);
     }

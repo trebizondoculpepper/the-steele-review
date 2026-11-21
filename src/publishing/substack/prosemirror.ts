@@ -202,6 +202,9 @@ export function markdownToProseMirror(markdown: string): { type: "doc"; content:
       para.push(lines[i]!.trim());
       i++;
     }
+    // A line no block parser accepts (for example an empty "# ") must fail,
+    // never loop: model output is untrusted.
+    if (para.length === 0) throw new UnsupportedMarkdownError("unrecognised block");
     content.push(paragraph(para.join(" ")));
   }
   return { type: "doc", content };

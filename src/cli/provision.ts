@@ -160,7 +160,10 @@ async function main(): Promise<number> {
         // and the handler terms after five claimed attempts. Failures before a
         // claim (an unreadable artifact) still stop, after about 2.5 hours of
         // 30-second retries, instead of looping forever.
-        maxDeliver: PUBLISHER_MAX_DELIVER,
+        // Live destinations (new-only) must never silently drop an approval
+        // while they wait, for example on an expired session: unlimited broker
+        // deliveries (-1); the handler still terms after five claimed attempts.
+        maxDeliver: newOnly ? -1 : PUBLISHER_MAX_DELIVER,
       });
     }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
