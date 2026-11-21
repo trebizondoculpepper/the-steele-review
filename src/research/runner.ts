@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -31,6 +32,57 @@ import type { SonarClient } from "./sonar.js";
  */
 
 export const RESEARCH_PROMPT_VERSION = "sonar-research-v1";
+
+/** Bound on a retained report snapshot; larger values are rejected, not used. */
+export const MAX_SAVED_REPORT_CHARS = 2_000_000;
+/**
+ * Bound on retained citations in a report snapshot. Matches what the Sonar
+ * client retains and the manifest schema accepts, so a legitimate snapshot is
+ * never rejected as invalid on recovery.
+ */
+export const MAX_SAVED_CITATIONS = 500;
+
+/**
+ * Narrow runtime parsers for retained provider snapshots (#432). Git hash
+ * verification proves the bytes are unchanged, not that they are the declared
+ * kind of record; a saved value with the wrong shape must fail the job rather
+ * than reach `.entries()`/`normalise()` or be silently refetched.
+ */
+const SavedReportSchema = z
+  .object({
+    schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
+    jobId: z.string().min(1).max(200),
+    promptVersion: z.string().min(1).max(200),
+    model: z.string().min(1).max(200),
+    report: z.string().min(1).max(MAX_SAVED_REPORT_CHARS),
+    // No per-URL cap: the Sonar client and manifest keep long citation URLs; the report size bound applies.
+    citations: z.array(z.string().min(1)).max(MAX_SAVED_CITATIONS),
+    omittedCitations: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+/** Parse retained bytes; malformed JSON becomes a schema failure, never a throw. */
+const parseJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+};
+
+const savedSourceSchema = (maxChars: number) =>
+  z
+    .object({
+      url: z.url({ protocol: /^https?$/ }),
+      title: z.string().max(2000),
+      publisher: z.string().max(500).optional(),
+      publishedAt: z.string().max(100).optional(),
+      truncated: z.boolean(),
+      // Empty text is legitimate (a script-only page); it stays an unverified source.
+      text: z.string().max(maxChars),
+    })
+    .strict();
+
 export const SUPPORT_PROMPT_VERSION = "source-support-v1";
 /** The finding id used for manual subject requests, which have no claims. */
 export const REQUEST_FINDING_ID = "request";
@@ -207,17 +259,21 @@ export async function runResearchJob(input: {
   let report: Awaited<ReturnType<SonarClient["research"]>>;
   const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
   if (savedReport) {
-    const saved = JSON.parse(await input.artifacts.read(savedReport)) as {
-      model: string;
-      report: string;
-      citations: string[];
-      omittedCitations?: number;
-    };
+    const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
+    // A retained snapshot that is not this job's validated report is a
+    // terminal operational failure: never reuse it, never refetch over it.
+    if (
+      !saved.success ||
+      saved.data.jobId !== jobId ||
+      saved.data.promptVersion !== RESEARCH_PROMPT_VERSION
+    ) {
+      return fail("invalid-report");
+    }
     report = {
-      model: saved.model,
-      report: saved.report,
-      citations: saved.citations,
-      ...(saved.omittedCitations ? { omittedCitations: saved.omittedCitations } : {}),
+      model: saved.data.model,
+      report: saved.data.report,
+      citations: saved.data.citations,
+      ...(saved.data.omittedCitations ? { omittedCitations: saved.data.omittedCitations } : {}),
     } as typeof report;
   } else {
     try {
@@ -276,8 +332,14 @@ export async function runResearchJob(input: {
     let text: string;
     let archived;
     if (savedSource) {
+      const saved = savedSourceSchema(limits.maxSourceChars).safeParse(
+        parseJson(await input.artifacts.read(savedSource)),
+      );
+      // The snapshot must be the source for this exact URL with bounded text;
+      // anything else is invalid retained state, not a reason to refetch.
+      if (!saved.success || saved.data.url !== url) return fail("invalid-report");
       archived = savedSource;
-      text = (JSON.parse(await input.artifacts.read(savedSource)) as { text: string }).text;
+      text = saved.data.text;
     } else {
       let page;
       try {
