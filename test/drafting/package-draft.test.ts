@@ -125,14 +125,15 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     expect(md).toContain(
       "Original post: [https://pub.example.com/p/p1](<https://pub.example.com/p/p1>)",
     );
-    expect(md).toContain("**Supported by the evidence.**");
+    expect(md).not.toMatch(/^#{2,3} (?!Sources$)/m);
+    expect(md).toMatch(/<!-- claim-verdict [a-f0-9]+ supported -->/);
     expect(md).toContain("[1]");
     expect(md).toContain(`1. ${SHARED}`);
-    expect(md).toContain("**Unresolved.** No source documenting");
+    expect(md).toContain("No source documenting");
     const meta = JSON.parse(await content.read(out.metadata));
     expect(meta).toMatchObject({
       package: { path: ref.path },
-      templateVersion: "package-explainer-v2",
+      templateVersion: "package-explainer-v3",
       modelVersion: "fake/writer",
     });
   });
@@ -335,8 +336,8 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       });
       if (out.status !== "drafted") throw new Error(out.status);
       const md = await content.read(out.draft);
-      expect(md).toContain("_Limitation: No earlier posts were compared._");
-      expect(md).toContain("## The wider movement");
+      expect(md).toContain("No earlier posts were compared.");
+      expect(md).not.toContain("## The wider movement");
       expect(md).toMatch(/standard reference in this movement's claims\. \[\d\]/);
     });
 
