@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { AddressedClaim, EvidenceSource, ResearchEntry } from "./research-entry.js";
 import { InvalidResearchEntryError, RESEARCH_ENTRY_SCHEMA_VERSION } from "./research-entry.js";
@@ -24,15 +25,7 @@ import { ResearchRevisionConflictError, researchEntryId } from "./research-store
  * than producing a result.
  */
 
-export const DEFAULT_GAP_RESEARCH_PROMPT: ExtractionPrompt = {
-  version: "gap-research-v1",
-  instructions: [
-    "Using only the supplied pages, decide whether they support, contradict or fail to settle the claim, for the listed gaps only.",
-    "Quote passages exactly from the pages. Never cite a page that is not supplied.",
-    "finding: supported, contradicted, unsupported (nothing either way) or unresolved (cannot be settled; give unresolvedReason).",
-    'Respond with JSON only: {"finding","explanation","evidence":[{"url","quote"}],"unresolvedReason?","limitations":[],"remainingGaps":[]}.',
-  ].join("\n"),
-};
+export const DEFAULT_GAP_RESEARCH_PROMPT = loadPromptFile("research", "gap-research-v1");
 
 export interface SearchResult {
   url: string;

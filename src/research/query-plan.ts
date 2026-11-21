@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 
 /**
@@ -29,17 +30,7 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extr
 export const HARD_MAX_QUERIES = 20;
 export const DEFAULT_QUERY_ALLOWANCE = 5;
 
-export const DEFAULT_QUERY_PLAN_PROMPT: ExtractionPrompt = {
-  version: "research-query-plan-v1",
-  instructions: [
-    "Plan distinct web search queries for the listed evidence gaps.",
-    "Every query must include the gapId of an input gap; never invent a gap.",
-    "Reformulate neutrally: alternative terms, recognised topic aliases, or the kind of source that would settle the question.",
-    "Queries may seek evidence that supports, contradicts or qualifies the claim; do not assume the desired answer.",
-    "Do not repeat a prior query, and never return more queries than the remaining allowance.",
-    'Respond with JSON only: {"queries":[{"gapId","query"}]}.',
-  ].join("\n"),
-};
+export const DEFAULT_QUERY_PLAN_PROMPT = loadPromptFile("research", "query-plan-v1");
 
 const GapId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/);
 
