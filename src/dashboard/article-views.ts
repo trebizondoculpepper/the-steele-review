@@ -4,6 +4,7 @@ import {
   type ArticleContentPort,
   type ArticleTrace,
   type CapturedSource,
+  type EditorialOutcome,
   type SourcePort,
   type ReceiptsPort,
   type RecentArticlesPort,
@@ -65,15 +66,19 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
               if (s.state === "finished" && isCreditBlocked(s.result.reason)) {
                 creditBlocked++;
                 summary = "credit-exhausted";
-              } else
+              } else if (s.state === "finished") {
+                // Editorial meaning, not just workflow termination (#486).
                 summary =
-                  s.state === "finished"
-                    ? s.result.outcome === "failed"
-                      ? "failed"
-                      : "completed"
-                    : s.state === "running"
-                      ? "pending"
-                      : s.state;
+                  s.result.outcome === "failed"
+                    ? "failed"
+                    : s.result.outcome === "rejected"
+                      ? "rejected"
+                      : s.result.outcome === "evidence-gap"
+                        ? "evidence-gap"
+                        : s.result.outcome === "drafted-unverified"
+                          ? "unverified"
+                          : "verified";
+              } else summary = s.state === "running" ? "pending" : s.state;
             } catch {
               summary = "unknown";
             }
@@ -158,13 +163,30 @@ ${mismatch}
 <pre>${escapeHtml(source.text)}</pre>`;
 }
 
+/** Human wording for the editorial outcome (#486). Never implies delivery. */
+export function editorialText(editorial: EditorialOutcome, outCome?: string): string {
+  switch (editorial) {
+    case "verified":
+      return "verified — approval recorded for dispatch";
+    case "rejected":
+      return "verification rejected — this draft was not approved";
+    case "evidence-gap":
+      return "evidence gap — drafting was not reached";
+    case "unverified":
+      return "unverified — verification was not reached";
+    default:
+      return outCome === "failed" ? "not evaluated — the workflow failed" : "not evaluated";
+  }
+}
+
 export function renderTrace(t: ArticleTrace): string {
   const facts = [
     ["Publication", escapeHtml(t.post.publicationId)],
     ["Post", escapeHtml(t.post.postId)],
     ["Correlation ID", `<code>${escapeHtml(t.correlationId)}</code>`],
     ["Revision", t.sourceVersion ? `<code>${escapeHtml(t.sourceVersion)}</code>` : "unknown"],
-    ["Run", badge(t.summary)],
+    ["Workflow", badge(t.summary)],
+    ["Editorial outcome", escapeHtml(editorialText(t.editorial, t.outcome))],
     ...(t.summary === "pending"
       ? [
           [

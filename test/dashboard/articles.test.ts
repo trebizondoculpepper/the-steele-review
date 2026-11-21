@@ -81,6 +81,73 @@ describe("article run summaries (#377)", () => {
     expect(s.stages.at(-1)).toMatchObject({ stage: "delivery", state: "not-reached" });
   });
 
+  it("separates editorial outcomes from workflow termination (#486)", () => {
+    const rejected = summariseRun({
+      state: "finished",
+      result: { ...verified, outcome: "rejected" as const, approvalEvent: undefined },
+    });
+    expect(rejected).toMatchObject({ summary: "completed", editorial: "rejected" });
+    expect(rejected.stages.at(-1)).toMatchObject({ stage: "delivery", state: "not-reached" });
+
+    const gap = summariseRun({
+      state: "finished",
+      result: { ...verified, outcome: "evidence-gap" as const },
+    });
+    expect(gap).toMatchObject({ summary: "completed", editorial: "evidence-gap" });
+
+    const unverified = summariseRun({
+      state: "finished",
+      result: { ...verified, outcome: "drafted-unverified" as const, verification: undefined },
+    });
+    expect(unverified).toMatchObject({ summary: "completed", editorial: "unverified" });
+
+    expect(summariseRun({ state: "finished", result: verified })).toMatchObject({
+      summary: "completed",
+      editorial: "verified",
+    });
+    expect(summariseRun({ state: "finished", result: claimFailure })).toMatchObject({
+      summary: "failed",
+      editorial: "none",
+    });
+    expect(summariseRun({ state: "running" }).editorial).toBe("none");
+  });
+
+  it("renders a rejected draft as unsuccessful without delivery (#486)", () => {
+    const summary = summariseRun({
+      state: "finished",
+      result: { ...verified, outcome: "rejected" as const, approvalEvent: undefined },
+    });
+    const html = renderTrace({
+      post,
+      correlationId: "cid",
+      editorial: summary.editorial,
+      ...summary,
+      receipts: [],
+      receiptsTruncated: false,
+      source: { state: "not-configured" },
+    });
+    expect(html).toContain("verification rejected");
+    expect(html).toContain("this draft was not approved");
+    expect(html).not.toContain("approval recorded for dispatch");
+    expect(html).not.toContain("delivered");
+
+    const gap = summariseRun({
+      state: "finished",
+      result: { ...verified, outcome: "evidence-gap" as const },
+    });
+    const gapHtml = renderTrace({
+      post,
+      correlationId: "cid",
+      editorial: gap.editorial,
+      ...gap,
+      receipts: [],
+      receiptsTruncated: false,
+      source: { state: "not-configured" },
+    });
+    expect(gapHtml).toContain("evidence gap");
+    expect(gapHtml).toContain("drafting was not reached");
+  });
+
   it("reduces failure reasons to allowlisted categories", () => {
     expect(sanitizeReason("claims: provider-failed")).toBe("claims: provider-failed");
     expect(sanitizeReason("unresolved after 2 redrafts")).toBe("unresolved after 2 redrafts");
@@ -333,6 +400,21 @@ describe("article pages (#377)", () => {
     expect(html).toContain('href="/articles/trace?publication=pub&amp;post=p1"');
     expect(html).toContain('<span class="s-pending">pending</span>');
     expect(html).toContain('<span class="s-not-started">not-started</span>');
+  });
+
+  it("lists a rejected article as unsuccessful, not completed (#486)", async () => {
+    const [list] = articleViews({
+      articles,
+      runs: runs({
+        p1: {
+          state: "finished",
+          result: { ...verified, outcome: "rejected" as const, approvalEvent: undefined },
+        },
+      }),
+    });
+    const html = await list!.render(new URL("http://x/articles"));
+    expect(html).toContain('<span class="s-rejected">rejected</span>');
+    expect(html).not.toContain('<span class="s-completed">completed</span>');
   });
 
   it("rejects malformed identifiers and reports missing sources", async () => {

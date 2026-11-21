@@ -151,11 +151,31 @@ export interface StageRow {
 
 export type RunSummary = "completed" | "failed" | "pending" | "not-started" | "unknown";
 
+/** Editorial meaning of a finished workflow, separate from its termination (#486). */
+export type EditorialOutcome = "verified" | "rejected" | "evidence-gap" | "unverified" | "none";
+
+export function editorialOutcomeOf(outcome: ArticleRunFinal["outcome"]): EditorialOutcome {
+  switch (outcome) {
+    case "verified":
+      return "verified";
+    case "rejected":
+      return "rejected";
+    case "evidence-gap":
+      return "evidence-gap";
+    case "drafted-unverified":
+      return "unverified";
+    default:
+      return "none";
+  }
+}
+
 export interface ArticleTrace {
   post: { publicationId: string; postId: string };
   correlationId: string;
   sourceVersion?: string;
   summary: RunSummary;
+  /** What the workflow concluded editorially; `none` for failures and pending work. */
+  editorial: EditorialOutcome;
   /** When a running workflow last reported progress (#439). */
   lastUpdate?: string;
   outcome?: string;
@@ -261,18 +281,22 @@ export const STALL_MS = 30 * 60_000;
 export function summariseRun(
   run: RunState,
   now: number = Date.now(),
-): Pick<ArticleTrace, "summary" | "outcome" | "reason" | "stages" | "research" | "lastUpdate"> {
+): Pick<
+  ArticleTrace,
+  "summary" | "editorial" | "outcome" | "reason" | "stages" | "research" | "lastUpdate"
+> {
   const idx = (s: StageName) => STAGES.indexOf(s);
   switch (run.state) {
     case "not-configured":
     case "unavailable":
       return {
         summary: "unknown",
+        editorial: "none",
         stages: STAGES.map((stage) => ({ stage, state: "unknown", detail: run.state })),
         research: [],
       };
     case "not-started":
-      return { summary: "not-started", stages: rows(idx("themes")), research: [] };
+      return { summary: "not-started", editorial: "none", stages: rows(idx("themes")), research: [] };
     case "running": {
       // Progress comes from the run's own durable state (#439). Missing or
       // stale progress is shown as such, never as success.
@@ -280,6 +304,7 @@ export function summariseRun(
       if (!p) {
         return {
           summary: "pending",
+          editorial: "none",
           stages: rows(idx("themes"), {
             state: "pending",
             detail: p === null ? "starting" : "progress unavailable",
@@ -291,6 +316,7 @@ export function summariseRun(
       if (!named) {
         return {
           summary: "pending",
+          editorial: "none",
           stages: rows(idx("themes"), { state: "pending", detail: "progress unrecognised" }),
           research: [],
         };
@@ -308,6 +334,7 @@ export function summariseRun(
           : `${p.stage} ${p.status === "running" ? "in progress" : "done"} at ${when} UTC`;
       return {
         summary: "pending",
+        editorial: "none",
         lastUpdate: p.at,
         stages: rows(current, { state: "pending", detail }),
         research: [],
@@ -329,6 +356,7 @@ export function summariseRun(
             : idx("themes");
         return {
           summary: "failed",
+          editorial: "none",
           ...base,
           stages: rows(at, { state: "failed", detail: reason ?? "failed" }),
         };
@@ -340,7 +368,12 @@ export function summariseRun(
           state: "not-reached",
           detail: "evidence gap",
         };
-        return { summary: "completed", ...base, stages };
+        return {
+          summary: "completed",
+          editorial: editorialOutcomeOf(r.outcome),
+          ...base,
+          stages,
+        };
       }
       if (r.outcome === "drafted-unverified") {
         const stages = rows(idx("verification"));
@@ -349,7 +382,12 @@ export function summariseRun(
           state: "not-reached",
           detail: reason ?? "unverified",
         };
-        return { summary: "completed", ...base, stages };
+        return {
+          summary: "completed",
+          editorial: editorialOutcomeOf(r.outcome),
+          ...base,
+          stages,
+        };
       }
       const verified = r.outcome === "verified";
       const stages = rows(idx("delivery"));
@@ -362,7 +400,12 @@ export function summariseRun(
         "approvalEvent" in r && r.approvalEvent
           ? { stage: "delivery", state: "done", detail: "approval recorded for dispatch" }
           : { stage: "delivery", state: "not-reached" };
-      return { summary: "completed", ...base, stages };
+      return {
+        summary: "completed",
+        editorial: editorialOutcomeOf(r.outcome),
+        ...base,
+        stages,
+      };
     }
   }
 }
