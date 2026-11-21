@@ -65,6 +65,7 @@ export interface ReceiptView {
 /** Reads saved drafts and verification reports through the artifact controller. */
 export interface ArticleContentPort {
   draft(ref: Ref): Promise<string | undefined>;
+  /** A verification report, or the report inside an unresolved wrapper. */
   verification(ref: Ref): Promise<{ outcome: string; draftHash?: string } | undefined>;
 }
 

@@ -72,6 +72,28 @@ describe("contentArticleView", () => {
     });
   });
 
+  it("follows an unresolved wrapper to its pinned report", async () => {
+    const draftRef = ref(await content.write("articles/pub/p1/draft.md", "body"));
+    const inner = ref(
+      await content.write("verify/pub/p1/report.json", `${JSON.stringify(report(draftRef))}\n`),
+    );
+    const wrapper = ref(
+      await content.write(
+        "verify/pub/p1/report.unresolved.json",
+        `${JSON.stringify({
+          outcome: "unresolved",
+          revisions: 2,
+          report: persisted(inner),
+          issues: [{ passage: "p", reason: "r", severity: "substantive" }],
+        })}\n`,
+      ),
+    );
+    expect(await contentArticleView(content).verification(wrapper)).toEqual({
+      outcome: "unresolved",
+      draftHash: `sha256:${draftRef.sha256}`,
+    });
+  });
+
   it("returns undefined for a mismatched hash or an unreadable report", async () => {
     const draftRef = ref(await content.write("articles/pub/p1/draft.md", "body"));
     const view = contentArticleView(content);

@@ -5,6 +5,7 @@ import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
+import { z } from "zod";
 import type {
   ArchivedArticle,
   ArticleContentPort,
@@ -53,6 +54,25 @@ export function indexArticles(
   };
 }
 
+/** Terminal wrapper written when redraft attempts are exhausted. */
+const UnresolvedVerificationSchema = z
+  .object({
+    outcome: z.literal("unresolved"),
+    revisions: z.number().int().min(0),
+    report: z
+      .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+      .strict(),
+    issues: z.array(z.unknown()),
+  })
+  .strict();
+
+const persistedRef = (r: { repository: string; commit: string; path: string; hash: string }): Ref => ({
+  repository: r.repository,
+  commit: r.commit,
+  path: r.path,
+  sha256: r.hash.replace(/^sha256:/, ""),
+});
+
 /** Saved drafts and verification reports, read at their exact pinned revision. */
 export function contentArticleView(
   content: Pick<GitArtifactStore, "lookupAt">,
@@ -66,14 +86,32 @@ export function contentArticleView(
       return undefined;
     }
   };
+  const readReport = async (
+    ref: Ref,
+  ): Promise<{ outcome: string; draftHash?: string } | undefined> => {
+    const text = await read(ref);
+    if (text === undefined) return undefined;
+    try {
+      const report = PackageVerificationReportSchema.parse(JSON.parse(text));
+      return { outcome: report.outcome, draftHash: report.draft.hash };
+    } catch {
+      return undefined;
+    }
+  };
   return {
     draft: read,
     async verification(ref) {
+      const direct = await readReport(ref);
+      if (direct) return direct;
       const text = await read(ref);
       if (text === undefined) return undefined;
       try {
-        const report = PackageVerificationReportSchema.parse(JSON.parse(text));
-        return { outcome: report.outcome, draftHash: report.draft.hash };
+        // An exhausted redraft loop saves a wrapper whose pinned report holds
+        // the terminal verdict; show that rather than omitting verification.
+        const wrapper = UnresolvedVerificationSchema.parse(JSON.parse(text));
+        const report = await readReport(persistedRef(wrapper.report));
+        if (report) return { outcome: wrapper.outcome, draftHash: report.draftHash };
+        return { outcome: wrapper.outcome };
       } catch {
         return undefined;
       }
