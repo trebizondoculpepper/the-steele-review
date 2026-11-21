@@ -147,7 +147,9 @@ export class ConfigurationController {
       version: snapshot.version,
       get<T>(key: string): T | undefined {
         if (!allowed.has(key)) throw new ConfigurationError("not-granted");
-        return values.get(key) as T | undefined;
+        // A copy, so no reader can change the loaded snapshot for others.
+        const v = values.get(key);
+        return (v !== null && typeof v === "object" ? structuredClone(v) : v) as T | undefined;
       },
     };
   }

@@ -102,6 +102,17 @@ describe("configuration controller (#543)", () => {
     expect(shown).not.toContain("UNKNOWN_KEY");
   });
 
+  it("never lets a reader mutate the loaded snapshot", async () => {
+    const c = new ConfigurationController({
+      env: { STEELE_ARTICLE_SOURCES: "substack/a" },
+      salt: "s",
+      roles: { bridge: ["STEELE_ARTICLE_SOURCES"] },
+    });
+    await c.load();
+    c.runtime("bridge").get<string[]>("STEELE_ARTICLE_SOURCES")!.push("substack/injected");
+    expect(c.runtime("bridge").get("STEELE_ARTICLE_SOURCES")).toEqual(["substack/a"]);
+  });
+
   it("refuses runtime access before a snapshot is loaded", () => {
     expect(() => controller().runtime("model-worker")).toThrow(ConfigurationError);
   });
