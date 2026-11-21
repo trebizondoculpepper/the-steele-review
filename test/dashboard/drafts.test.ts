@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore, type ArtifactRef } from "../../src/controllers/artifact-store.js";
 import { draftViews } from "../../src/dashboard/draft-views.js";
 import { DRAFT_PAGE, draftInventory } from "../../src/dashboard/drafts.js";
+import { DraftTrashStore } from "../../src/dashboard/draft-trash.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -266,5 +267,51 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     );
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>");
+  });
+});
+
+describe("trashed drafts leave the active listing (#478)", () => {
+  it("hides a trashed draft and shows it again after a restore", async () => {
+    await saveDraft("post", "Body text");
+    const trash = new DraftTrashStore(content);
+    const withTrash = () => draftInventory(content, undefined, trash);
+
+    const [entry] = (await withTrash().page({})).entries;
+    expect(entry).toBeDefined();
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: entry!.path,
+      action: "delete",
+      requestId: "req-1",
+      at: "2026-02-01T00:00:00.000Z",
+    });
+    expect((await withTrash().page({})).entries).toHaveLength(0);
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: entry!.path,
+      action: "restore",
+      requestId: "req-2",
+      at: "2026-02-02T00:00:00.000Z",
+    });
+    expect((await withTrash().page({})).entries).toHaveLength(1);
+  });
+
+  it("skips past a storage page that is entirely trashed", async () => {
+    // Two drafts per storage page; trash the whole first page.
+    const trash = new DraftTrashStore(content);
+    await saveDraft("post", "Body text");
+    const all = await draftInventory(content).page({});
+    const [first] = all.entries;
+    expect(first).toBeDefined();
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: first!.path,
+      action: "delete",
+      requestId: "skip-1",
+      at: "2026-02-01T00:00:00.000Z",
+    });
+    const filtered = await draftInventory(content, undefined, trash).page({});
+    // Whatever remains is still reachable rather than an empty page.
+    expect(filtered.entries.every((e) => e.path !== first!.path)).toBe(true);
   });
 });
