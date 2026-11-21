@@ -110,6 +110,18 @@ describe("claim family frequency (#404)", () => {
     expect(a.observations[0]!.rate).toBe(0);
   });
 
+  it("rejects a period with more matched posts than analysed posts", () => {
+    expect(() =>
+      assessClaimFamilyFrequency({
+        ...base,
+        periods: [
+          { period: "2025-H1", matchedPosts: 20, distinctOccurrences: 20, analysedPosts: 20 },
+          { period: "2025-H2", matchedPosts: 30, distinctOccurrences: 30, analysedPosts: 20 },
+        ],
+      }),
+    ).toThrow(/cannot exceed/);
+  });
+
   it("returns a qualified no-assessment for unknown coverage", () => {
     const a = assessClaimFamilyFrequency({ ...base, coverage: "unknown" });
     expect(a.kind).toBe("no-assessment");

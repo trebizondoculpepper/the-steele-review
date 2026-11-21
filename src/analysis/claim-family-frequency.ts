@@ -25,7 +25,11 @@ export const FrequencyPeriodSchema = z
     /** Posts analysed in this period: the denominator for the rate. Zero is a valid, empty period. */
     analysedPosts: z.number().int().min(0),
   })
-  .strict();
+  .strict()
+  // Matched posts are distinct posts within the analysed ones: never more.
+  .refine((p) => p.matchedPosts <= p.analysedPosts, {
+    message: "matchedPosts cannot exceed analysedPosts",
+  });
 export type FrequencyPeriod = z.infer<typeof FrequencyPeriodSchema>;
 
 export const FrequencyInputSchema = z
