@@ -289,8 +289,14 @@ export class CollectionWorker {
             (error as { retryable?: boolean }).retryable === true ||
             (error as { reason?: string }).reason === "cancelled" ||
             keep.signal.aborted;
-          this.config.store.fail(claim, "transcription-failed", retryable);
-          if (retryable) {
+          // No intelligible speech is a durable verdict on this source revision (#234).
+          const unusable = (error as { reason?: string }).reason === "empty-transcript";
+          this.config.store.fail(
+            claim,
+            unusable ? "transcription-unusable" : "transcription-failed",
+            retryable && !unusable,
+          );
+          if (retryable && !unusable) {
             message.nak(this.retryDelayMs);
             return { result: "retry", item };
           }
