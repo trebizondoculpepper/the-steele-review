@@ -20,7 +20,9 @@ export interface DashboardView {
   path: string;
   title: string;
   /** Returns trusted HTML for the page body; untrusted text must go through `escapeHtml`. */
-  render(): Promise<string> | string;
+  render(url: URL): Promise<string> | string;
+  /** Hidden from navigation (detail pages reached by link). */
+  hidden?: boolean;
 }
 
 const HTML_ESCAPES: Record<string, string> = {
@@ -54,14 +56,24 @@ header strong { font-size: 1rem; }
 nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
 nav a[aria-current="page"] { color: var(--accent); font-weight: 600; }
 main { padding: 1rem; max-width: 72rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.wrap { overflow-x: auto; }
+code { font-size: 0.85em; word-break: break-all; }
+.s-done, .s-completed { color: #2e8540; } .s-failed { color: #c0392b; font-weight: 600; }
+.s-pending { color: #b7791f; } .s-not-reached, .s-not-started, .s-unknown { color: var(--muted); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+dt { color: var(--muted); }
 .empty { color: var(--muted); }
 `;
 
 function page(views: DashboardView[], current: DashboardView, body: string): string {
   const nav = views
+    .filter((v) => !v.hidden)
     .map(
       (v) =>
-        `<a href="${escapeHtml(v.path)}"${v === current ? ' aria-current="page"' : ""}>${escapeHtml(v.title)}</a>`,
+        `<a href="${escapeHtml(v.path)}"${v === current || (current.hidden && current.path.startsWith(`${v.path}/`)) ? ' aria-current="page"' : ""}>${escapeHtml(v.title)}</a>`,
     )
     .join("");
   return `<!doctype html>
@@ -103,7 +115,8 @@ export function dashboardHandler(views: DashboardView[] = DEFAULT_VIEWS) {
       response.writeHead(405, { allow: "GET, HEAD", ...SECURITY_HEADERS }).end();
       return;
     }
-    const path = new URL(request.url ?? "/", "http://dashboard.invalid").pathname;
+    const url = new URL(request.url ?? "/", "http://dashboard.invalid");
+    const path = url.pathname;
     if (path === "/health") {
       response.writeHead(200, { "content-type": "application/json", ...SECURITY_HEADERS });
       response.end(method === "HEAD" ? undefined : JSON.stringify({ ok: true }));
@@ -121,7 +134,7 @@ export function dashboardHandler(views: DashboardView[] = DEFAULT_VIEWS) {
     }
     let body: string;
     try {
-      body = await view.render();
+      body = await view.render(url);
     } catch {
       // Never echo internal errors: they may name hosts or paths.
       body = '<p class="empty">This view is unavailable right now.</p>';

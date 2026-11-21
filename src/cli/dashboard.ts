@@ -1,30 +1,87 @@
 /**
- * LAN-only operator dashboard (#375).
+ * LAN-only operator dashboard (#375, #377).
  *
  *   dashboard
  *
- * Serves the dashboard shell over HTTP. No login, by owner decision: restrict
+ * Serves the dashboard over HTTP. No login, by owner decision: restrict
  * exposure with the Compose port binding (STEELE_DASHBOARD_BIND), which is
- * configured privately for the home LAN.
+ * configured privately for the home LAN. Read-only.
  *
- * Configuration (environment):
- *   STEELE_DASHBOARD_PORT?   listen port inside the container (default 8090)
+ * Configuration (environment), each optional; an unconfigured source is shown
+ * as such on the page:
+ *   STEELE_DASHBOARD_PORT?                           listen port (default 8090)
+ *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY[_FILE]? full-text index (article list)
+ *   STEELE_FULLTEXT_INDEX?                           index name (default steele-source-text-v1)
+ *   RESTATE_INGRESS_URL                              ArticleRun results
+ *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured-source archive (read only)
+ *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   content repository (read only)
  */
 import { z } from "zod";
-import { createDashboardServer } from "../dashboard/server.js";
+import { elasticsearchConnection } from "../config/credentials.js";
+import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ElasticsearchController } from "../controllers/elasticsearch.js";
+import { tracePost } from "../diagnostics/post-trace.js";
+import { indexArticles, restateRuns } from "../dashboard/adapters.js";
+import { articleViews } from "../dashboard/article-views.js";
+import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
 
 const env = z
-  .object({ STEELE_DASHBOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(8090) })
-  .safeParse(process.env);
+  .object({
+    STEELE_DASHBOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(8090),
+    RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }).optional(),
+  })
+  .safeParse(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== "")));
 if (!env.success) {
-  console.error("dashboard: invalid STEELE_DASHBOARD_PORT");
+  console.error("dashboard: invalid STEELE_DASHBOARD_PORT or RESTATE_INGRESS_URL");
   process.exit(2);
 }
+const e = process.env;
+const store = (path?: string, repository?: string) =>
+  path && repository ? new GitArtifactStore({ repoPath: path, repository }) : undefined;
 
-const server = createDashboardServer();
+let es: ElasticsearchController | undefined;
+if (e.ELASTICSEARCH_URL) {
+  try {
+    const conn = elasticsearchConnection();
+    es = new ElasticsearchController(conn.url, conn.apiKey);
+  } catch {
+    console.error("dashboard: Elasticsearch configuration is unusable");
+    process.exit(2);
+  }
+}
+const archive = store(e.STEELE_ARCHIVE_PATH, e.STEELE_ARCHIVE_REPOSITORY);
+const content = store(e.STEELE_CONTENT_PATH, e.STEELE_CONTENT_REPOSITORY);
+
+const views = [
+  DEFAULT_VIEWS[0]!,
+  ...articleViews({
+    ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
+    ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
+    trace: (post) =>
+      tracePost({
+        post,
+        ...(archive ? { archive } : {}),
+        ...(content ? { content } : {}),
+      }),
+  }),
+];
+
+const server = createDashboardServer(views);
 server.listen(env.data.STEELE_DASHBOARD_PORT, "0.0.0.0", () => {
-  console.log(JSON.stringify({ event: "dashboard", state: "serving" }));
+  console.log(
+    JSON.stringify({
+      event: "dashboard",
+      state: "serving",
+      sources: {
+        index: Boolean(es),
+        runs: Boolean(env.data.RESTATE_INGRESS_URL),
+        archive: Boolean(archive),
+        content: Boolean(content),
+      },
+    }),
+  );
 });
-const stop = () => server.close(() => process.exit(0));
+const stop = () =>
+  server.close(() => void Promise.resolve(es?.close()).finally(() => process.exit(0)));
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
