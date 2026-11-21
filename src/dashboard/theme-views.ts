@@ -16,22 +16,22 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
       if (!themes)
         return '<p class="empty">The content repository is not configured for the dashboard.</p>';
       const query = (url.searchParams.get("q") ?? "").slice(0, 200);
-      const offset = Math.max(0, Number.parseInt(url.searchParams.get("offset") ?? "0", 10) || 0);
-      const listing = await themes.list({ query, offset });
+      const after = url.searchParams.get("after") ?? undefined;
+      const listing = await themes.list({ query, ...(after ? { after } : {}) });
       const search = `<form method="get" action="/themes"><label>Filter titles and descriptions <input name="q" value="${escapeHtml(query)}" maxlength="200"></label> <button>Filter</button></form>`;
       if (listing.state === "unavailable") {
         return `${search}<p class="empty">Saved themes are unavailable right now.</p>`;
       }
       const notes = [
         listing.partial
-          ? "Only the first saved extractions were scanned; results may be incomplete."
+          ? "This page reached its scan bound before finding a full page of matches; continue to scan further."
           : "",
         listing.unreadable ? `${listing.unreadable} saved extraction(s) could not be read.` : "",
       ]
         .filter(Boolean)
         .map((n) => `<p class="empty">${escapeHtml(n)}</p>`)
         .join("");
-      if (listing.rows.length === 0) {
+      if (listing.rows.length === 0 && listing.next === undefined) {
         return `${search}${notes}<p class="empty">${query ? "No saved themes match this filter." : "No saved themes yet."}</p>`;
       }
       const rows = listing.rows
@@ -42,8 +42,8 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
         .join("");
       const next =
         listing.next !== undefined
-          ? `<p><a href="/themes?${escapeHtml(new URLSearchParams({ ...(query ? { q: query } : {}), offset: String(listing.next) }).toString())}">Next page</a></p>`
-          : "";
+          ? `<p><a href="/themes?${escapeHtml(new URLSearchParams({ ...(query ? { q: query } : {}), after: listing.next }).toString())}">Continue</a> — saved extractions are listed in storage order, a page at a time.</p>`
+          : "<p>End of the saved extractions.</p>";
       return `${search}${notes}<p>Extractor proposals, one per saved post extraction. Similar titles from different posts stay separate; they are not canonical themes. <a href="/themes/catalogue">Canonical catalogue</a></p>
 <div class="wrap"><table><thead><tr><th>Title</th><th>Description</th><th>Post</th><th>Extracted</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;
     },

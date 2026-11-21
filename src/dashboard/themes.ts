@@ -15,6 +15,8 @@ import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
 
 export const THEME_RESULT_SCAN = 200;
 export const THEME_PAGE = 25;
+/** Artifact paths requested per listing call while scanning. */
+const THEME_LIST_PAGE = 50;
 const RESULT_PATH = /^theme-proposals\/([^/]+)\/([^/]+)\/[^/]+\.json$/;
 
 export interface ThemeRow {
@@ -36,9 +38,12 @@ export interface ThemeRow {
 export interface ThemeListing {
   state: "ok" | "unavailable";
   rows: ThemeRow[];
-  /** More matching rows exist beyond this page. */
-  next?: number;
-  /** The scan of saved extractions reached its bound: results may be incomplete. */
+  /**
+   * Continuation cursor: the last saved extraction scanned. Absent when every
+   * extraction after the previous cursor has been scanned.
+   */
+  next?: string;
+  /** This request stopped at its scan bound before finding a full page. */
   partial: boolean;
   unreadable: number;
 }
@@ -58,7 +63,7 @@ export interface CanonicalTheme {
 }
 
 export interface ThemesPort {
-  list(options: { query?: string; offset?: number }): Promise<ThemeListing>;
+  list(options: { query?: string; after?: string }): Promise<ThemeListing>;
   detail(result: string, id: string): Promise<ThemeDetail | undefined>;
   catalogue(): Promise<{ state: "ok" | "unavailable" | "none"; themes: CanonicalTheme[] }>;
 }
@@ -92,43 +97,47 @@ export function savedThemes(content: Store): ThemesPort {
   };
 
   return {
-    async list({ query, offset = 0 }) {
-      let paths: string[];
-      try {
-        paths = (await content.list("theme-proposals", THEME_RESULT_SCAN + 1)).filter((p) =>
-          RESULT_PATH.test(p),
-        );
-      } catch {
-        return { state: "unavailable", rows: [], partial: false, unreadable: 0 };
-      }
-      const partial = paths.length > THEME_RESULT_SCAN;
+    async list({ query, after }) {
+      // Bounded per request, resumable by cursor: every saved extraction is
+      // eventually reachable without an unbounded scan (#493).
+      const q = query?.trim().toLowerCase();
+      const matches = (r: ThemeRow) =>
+        !q || r.title.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q);
       const rows: ThemeRow[] = [];
       let unreadable = 0;
-      for (const path of paths.slice(0, THEME_RESULT_SCAN)) {
-        const r = await readResult(path);
-        if (!r) unreadable++;
-        else rows.push(...r);
+      let scanned = 0;
+      let cursor = after;
+      let exhausted = false;
+      while (rows.length < THEME_PAGE && scanned < THEME_RESULT_SCAN) {
+        let paths: string[];
+        try {
+          paths = await content.list("theme-proposals", THEME_LIST_PAGE, cursor);
+        } catch {
+          return { state: "unavailable", rows: [], partial: false, unreadable: 0 };
+        }
+        if (paths.length === 0) {
+          exhausted = true;
+          break;
+        }
+        for (const path of paths) {
+          cursor = path;
+          if (!RESULT_PATH.test(path)) continue;
+          scanned++;
+          const r = await readResult(path);
+          if (!r) unreadable++;
+          else rows.push(...r.filter(matches));
+          if (rows.length >= THEME_PAGE || scanned >= THEME_RESULT_SCAN) break;
+        }
+        if (paths.length < THEME_LIST_PAGE && cursor === paths.at(-1)) {
+          exhausted = true;
+          break;
+        }
       }
-      const q = query?.trim().toLowerCase();
-      const matching = q
-        ? rows.filter(
-            (r) =>
-              r.title.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q),
-          )
-        : rows;
-      // Stable order: by title, then post, then the saved extraction.
-      matching.sort(
-        (a, b) =>
-          a.title.localeCompare(b.title) ||
-          a.postId.localeCompare(b.postId) ||
-          a.result.localeCompare(b.result),
-      );
-      const page = matching.slice(offset, offset + THEME_PAGE);
       return {
         state: "ok",
-        rows: page,
-        ...(offset + THEME_PAGE < matching.length ? { next: offset + THEME_PAGE } : {}),
-        partial,
+        rows,
+        ...(exhausted ? {} : cursor ? { next: cursor } : {}),
+        partial: !exhausted && rows.length < THEME_PAGE,
         unreadable,
       };
     },
