@@ -377,6 +377,20 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
     expect(s.drafts).toHaveLength(1);
   });
 
+  it("spends the attempt budget on a permanent rejection instead of waiting forever", async () => {
+    const payload = await approvedPayload();
+    const s = fakeSubstack();
+    s.faults.create = Array.from({ length: 10 }, () => new SubstackError("invalid-response", 422));
+    const d = new SubstackDraftDestination(s);
+    const decisions = [];
+    for (let i = 0; i < 6; i++) decisions.push(await handle(payload, d));
+    expect(decisions.slice(0, 5).every((x) => x.action === "nak" && x.reason === "retry")).toBe(
+      true,
+    );
+    expect(decisions[5]).toMatchObject({ action: "term", reason: "exhausted" });
+    expect(s.drafts).toHaveLength(0);
+  });
+
   it("reconciles a lost create before any retry, so exactly one draft exists", async () => {
     const payload = await approvedPayload();
     const s = fakeSubstack();

@@ -89,7 +89,14 @@ export class SubstackDraftDestination implements DestinationAdapter {
     return { body: JSON.stringify(preview), contentType: SUBSTACK_CONTENT_TYPE };
   }
 
-  private unavailable(error: SubstackError): DestinationUnavailableError {
+  /**
+   * Waiting without spending the attempt budget is only for conditions that
+   * resolve by themselves or by the owner (session, rate limit, outage). A
+   * permanent rejection (invalid request or response) is returned as a plain
+   * error, so it spends attempts and ends in an inspectable failure.
+   */
+  private unavailable(error: SubstackError): Error {
+    if (error.code === "invalid-response") return new Error(`substack: ${error.code}`);
     if (error.code === "auth-expired") {
       return new DestinationUnavailableError("auth-expired", this.options.authRetryMs);
     }
