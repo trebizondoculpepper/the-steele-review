@@ -11,6 +11,10 @@ updates:
       # One weekly PR for minor and patch updates; majors stay separate.
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # The client major must match the Elasticsearch server (8.17); upgrade both together.
+      - dependency-name: "@elastic/elasticsearch"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directory: /
