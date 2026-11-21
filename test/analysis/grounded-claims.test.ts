@@ -119,6 +119,26 @@ describe("claimRecordId", () => {
 });
 
 describe("extractGroundedClaims", () => {
+  it("does not reuse an unattributed extraction for a newly explicit byline", async () => {
+    const provider = model(RESPONSE, RESPONSE);
+    const input = { provider, artifacts: content, source: source(), themes };
+    const legacy = await extractGroundedClaims(input);
+    const attributed = await extractGroundedClaims({
+      ...input,
+      source: { ...source(), author: "Guest Author" },
+    });
+    expect(legacy.status).toBe("extracted");
+    expect(attributed.status).toBe("extracted");
+    if (legacy.status !== "extracted" || attributed.status !== "extracted") return;
+    expect(attributed.reused).toBe(false);
+    expect(attributed.recordRef.path).not.toBe(legacy.recordRef.path);
+    expect(attributed.record.claims[0].occurrence).toMatchObject({
+      publisher: { author: "Guest Author" },
+    });
+    expect(
+      await extractGroundedClaims({ ...input, source: { ...source(), author: "Guest Author" } }),
+    ).toMatchObject({ reused: true });
+  });
   it("accepts themed, self-contained assertions and keeps the rest as candidates (#182)", async () => {
     const indexed: Array<{ id: string; doc: { themes: string[] } }> = [];
     const index = {
@@ -375,9 +395,9 @@ describe("record versions (#182)", () => {
       candidateReasons("assertion", ["geoengineering"], "Stop signs prevent accidents"),
     ).toEqual([]);
     expect(candidateReasons("assertion", ["geoengineering"], "Vote rigging happened")).toEqual([]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Fight back was the headline")).toEqual(
-      [],
-    );
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Fight back was the headline"),
+    ).toEqual([]);
   });
 
   it("accepts a short exact quotation that is self-contained", () => {

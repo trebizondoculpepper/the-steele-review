@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { postByline } from "./byline.js";
 import {
   SubstackItemSchema,
   postIdFromCanonicalUrl,
@@ -113,6 +114,8 @@ export function normaliseArchivePost(
     title: post.data.title?.trim(),
   };
   const publishedAt = toIso(post.data.post_date);
+  const author = postByline(post.data.publishedBylines);
+  if (author) candidate.author = author;
   if (publishedAt) candidate.publishedAt = publishedAt;
   const parsed = SubstackItemSchema.safeParse(candidate);
   return parsed.success ? parsed.data : { skip: "entry failed metadata validation" };

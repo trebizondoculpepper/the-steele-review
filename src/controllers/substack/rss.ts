@@ -1,6 +1,7 @@
 import Parser from "rss-parser";
 import {
   SubstackItemSchema,
+  normalisePostAuthor,
   postIdFromCanonicalUrl,
   type SubstackItem,
 } from "../../content/substack-item.js";
@@ -74,6 +75,7 @@ export function normaliseFeedItems(
       url,
       title: entry.title?.trim(),
       publishedAt: isoDate(entry.isoDate ?? entry.pubDate),
+      author: normalisePostAuthor(entry.creator),
     };
     if (candidate.publishedAt === undefined) delete candidate.publishedAt;
     const parsed = SubstackItemSchema.safeParse(candidate);

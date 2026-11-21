@@ -8,6 +8,7 @@ import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
  * Verify a package draft against its exact evidence package (#150).
@@ -30,7 +31,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 export const VERIFICATION_REPORT_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PACKAGE_VERIFY_PROMPT: ExtractionPrompt = {
-  version: "package-verifier-v1",
+  version: "package-verifier-v2",
   instructions: readFileSync(
     new URL("../prompts/verifier/package-verifier.md", import.meta.url),
     "utf8",
@@ -230,7 +231,8 @@ export async function verifyPackageDraft(input: {
         { system: prompt.instructions, user, maxOutputChars: 30_000 },
         AbortSignal.timeout(180_000),
       );
-    } catch {
+    } catch (error) {
+      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
       failure = "provider-failed";
       continue;
     }

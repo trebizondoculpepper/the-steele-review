@@ -64,8 +64,10 @@ const pages: Record<string, string | WebAdapterError> = {
   "https://example.org/gone": new WebAdapterError("not-found"),
   "https://author.substack.com/p/post": TREATY,
 };
+let fetched = 0;
 const fetcher: PageFetcher = {
   async fetch(url) {
+    fetched++;
     const p = pages[url];
     if (p instanceof WebAdapterError) throw p;
     if (p === undefined) throw new WebAdapterError("not-found");
@@ -98,6 +100,45 @@ const run = (s: SonarClient, extra: Record<string, unknown> = {}) =>
   });
 
 describe("research runner", () => {
+  it("stops recoverably when the support judge runs out of credit, reusing the saved report (#407)", async () => {
+    const s1 = sonar(["https://treaties.un.org/enmod"]);
+    const brokeJudge: SupportJudge = {
+      judge: async () => {
+        throw new ModelProviderError("credit-exhausted", 402);
+      },
+    };
+    const first = await run(s1, { judge: brokeJudge });
+    const fetchedAfterFirst = fetched;
+    expect(first).toMatchObject({ result: { outcome: "failed", failure: "budget-exceeded" } });
+    expect(await artifacts.lookup(`research-jobs/${first.jobId}/result.json`)).toBeUndefined();
+    // Credit restored: the saved report is reused (no second paid call).
+    const s2 = sonar(["https://treaties.un.org/enmod"]);
+    const second = await run(s2);
+    expect(s2.calls).toBe(0);
+    expect(second.jobId).toBe(first.jobId);
+    // The saved source snapshot is what gets judged, not a fresh fetch.
+    expect(fetched).toBe(fetchedAfterFirst);
+    expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
+  });
+
+  it("saves nothing terminal on exhausted credit, so the same job runs after credit returns (#407)", async () => {
+    const broke = sonar([], new ModelProviderError("credit-exhausted", 402));
+    const first = await run(broke);
+    expect(first).toMatchObject({
+      status: "finished",
+      reused: false,
+      result: { outcome: "failed", failure: "budget-exceeded" },
+    });
+    expect(await artifacts.lookup(`research-jobs/${first.jobId}/result.json`)).toBeUndefined();
+    // Credit restored: the same job ID runs again and completes.
+    const restored = sonar(["https://treaties.un.org/enmod"]);
+    const second = await run(restored);
+    expect(restored.calls).toBe(1);
+    expect(second.jobId).toBe(first.jobId);
+    expect(second).toMatchObject({ status: "finished", reused: false });
+    expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
+  });
+
   it("completes when every citation is archived with a verified supporting passage", async () => {
     const out = await run(sonar(["https://treaties.un.org/enmod"]));
     expect(out.status === "finished" && out.result.outcome).toBe("complete");

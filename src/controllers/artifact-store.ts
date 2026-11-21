@@ -123,6 +123,13 @@ exit 0
 `;
 }
 
+/**
+ * Bounded retry budget for a write that lost a compare-and-swap race. Writes
+ * are idempotent, so a larger budget only trades latency under extreme
+ * contention for fewer spurious failures when several workers commit at once.
+ */
+const MAX_WRITE_ATTEMPTS = 12;
+
 export class GitArtifactStore {
   private readonly branch: string;
   private readonly ref: string;
@@ -254,10 +261,12 @@ export class GitArtifactStore {
           // A held ref lock may be another live writer, not a stale lock:
           // retry it too, and report it only once the budget is spent.
           (error.code !== "concurrent-update" && error.code !== "interrupted-commit") ||
-          attempt >= 8
+          attempt >= MAX_WRITE_ATTEMPTS
         )
           throw error;
-        await new Promise((r) => setTimeout(r, 20 * attempt + Math.random() * 50));
+        // Bounded backoff: enough for a competing writer to finish without
+        // making a genuinely stuck lock wait for seconds.
+        await new Promise((r) => setTimeout(r, Math.min(100, 20 * attempt) + Math.random() * 40));
       }
     }
   }

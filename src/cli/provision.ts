@@ -20,6 +20,10 @@
  *   STEELE_PUBLISHER_CONSUMERS? comma-separated durable consumers on the
  *                              publication stream, one per destination (#315);
  *                              default none
+ *   STEELE_PUBLISHER_NEW_ONLY_CONSUMERS? the same, but starting from approvals
+ *                              published after provisioning: for live
+ *                              destinations such as Substack (#385), so an
+ *                              existing backlog never becomes real drafts
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
  *   STEELE_RESEARCH_COLLECTION_INDEX?     default steele-research-collection-v1 (#225)
  *
@@ -58,6 +62,15 @@ const EnvSchema = z.object({
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
   STEELE_RESEARCH_REINDEX_CONSUMER: z.string().min(1).default("steele-research-indexer"),
   STEELE_PUBLISHER_CONSUMERS: z
+    .string()
+    .default("")
+    .transform((v) =>
+      v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  STEELE_PUBLISHER_NEW_ONLY_CONSUMERS: z
     .string()
     .default("")
     .transform((v) =>
@@ -132,20 +145,29 @@ async function main(): Promise<number> {
       filterSubject: RESEARCH_REINDEX_SUBJECT,
     });
     // One durable consumer per destination, each with its own position (#315).
-    for (const name of c.STEELE_PUBLISHER_CONSUMERS) {
+    const publisherConsumers = [
+      ...c.STEELE_PUBLISHER_CONSUMERS.map((name) => ({ name, newOnly: false })),
+      ...c.STEELE_PUBLISHER_NEW_ONLY_CONSUMERS.map((name) => ({ name, newOnly: true })),
+    ];
+    for (const { name, newOnly } of publisherConsumers) {
       report[`publisherConsumer:${name}`] = await provisionDurableConsumer(nats, {
         stream: names.get(PUBLICATION_STREAM)!,
         name,
+        newOnly,
         filterSubject: ARTICLE_APPROVED_SUBJECT,
         // A finite budget sized above the handler's own: a restart can leave a
         // claim "busy" for its 10-minute lease (about 120 redeliveries at 5 s),
         // and the handler terms after five claimed attempts. Failures before a
         // claim (an unreadable artifact) still stop, after about 2.5 hours of
         // 30-second retries, instead of looping forever.
-        maxDeliver: PUBLISHER_MAX_DELIVER,
+        // Live destinations (new-only) must never silently drop an approval
+        // while they wait, for example on an expired session: unlimited broker
+        // deliveries (-1); the handler still terms after five claimed attempts.
+        maxDeliver: newOnly ? -1 : PUBLISHER_MAX_DELIVER,
       });
     }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
+    await es.addMappingFields(c.STEELE_FULLTEXT_INDEX, { author: { type: "keyword" } });
     report.researchIndex = await es.provisionIndex(
       c.STEELE_RESEARCH_COLLECTION_INDEX,
       RESEARCH_COLLECTION_INDEX_MAPPING,

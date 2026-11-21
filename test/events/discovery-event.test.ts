@@ -130,6 +130,7 @@ describe("schema export", () => {
     const dictionary = discoveryEventFieldDictionary();
     expect(dictionary.map((f) => f.field).sort()).toEqual(
       [
+        "author",
         "ingestionReason",
         "postId",
         "publicationId",

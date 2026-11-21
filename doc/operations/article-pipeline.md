@@ -41,6 +41,45 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 
 ## Model choices
 
+Claim extraction requests at most 32,768 output tokens (also bounded by the
+200,000-character stage limit), in both the manual command and article worker.
+Other model stages retain their existing limits. Structured claim arrays can
+exceed the general provider's 8,192-token default even for a modest transcript;
+a response cut off there is invalid JSON, not evidence that the source has no
+claims. Attempts remain bounded, and grounding/schema validation is unchanged.
+
+### Recovering a completed extraction failure
+
+A terminal workflow result is retained: ordinary resubmission of that captured
+revision returns the existing result. Deploying a fix does not restart it.
+Do not alter the source version, delete repositories, or change the normal
+`articleRunKey` merely to bypass that protection.
+
+For a controlled rehearsal that failed before any approval or publication,
+retain the failed run and its input, confirm there are no later-stage effects,
+and explicitly submit the same validated input through the existing Restate
+workflow client under an operator-recorded rehearsal key (the normal key plus
+a unique rehearsal suffix). Record that key once and reuse it on every retry;
+never generate a new key on each delivery. The exact archived artifact and
+source version stay unchanged. Saved extraction results can be reused.
+Ordinary capture delivery and the standard CLI continue to use the normal key.
+This is an explicit operator recovery, not an automatic restart loop or a new
+default workflow identity. Coordinate with the rehearsal owner before starting
+downstream research, and retain the configured request/cost bounds.
+
+### Provider credit exhaustion (#407)
+
+The monetary control is the model provider's own per-key budget (OpenRouter), managed outside the application; there is no separate spending ledger or dollar gate. When it runs out, the provider returns a typed `credit-exhausted` error (HTTP 402), and the run treats it as an operational block, not an editorial result:
+
+- Model stages (themes, claims, draft, verify) stop at once instead of retrying or reporting `provider-failed`/`malformed-output`. A research job that failed for lack of credit (`budget-exceeded`) stops the run at coverage, so no article is written from a false evidence gap.
+- The run ends with the terminal reason `<stage>: credit-exhausted`. Nothing is marked as a finding about the article, and no hot retry loop runs.
+- Each occurrence writes a sanitised `provider.condition` line locally (correlation ID, stage, revision; no key, prompt, endpoint or response). Sentry receives an `article.pipeline` milestone at warning level with outcome `credit-exhausted`, at most once per stage per 10 minutes, so a queue of stalled runs cannot flood it.
+- The dashboard shows an actionable warning on the Articles list and on the run's trace.
+
+**Recovery.** Add credit or raise the key's limit with the provider first. Then recover each affected revision with the explicit operator recovery above ("Recovering a completed extraction failure"): resubmit the same validated input under one recorded recovery key. Content-addressed stage results (themes, claims, research jobs, packages) are reused, so completed work is not paid for twice. Do not resubmit under a new key per attempt.
+
+### Stage model selection
+
 `STEELE_MODEL` is the default for model-backed stages; `STEELE_MODEL_THEMES`, `STEELE_MODEL_CLAIMS`, `STEELE_MODEL_WRITER` and `STEELE_MODEL_SUPPORT` override per stage. Research uses `STEELE_RESEARCH_MODEL` (Sonar) with its configured timeout and token limits.
 
 ## Starting runs from captured content (#270)
@@ -113,7 +152,6 @@ Provision the destination consumers explicitly, once:
 STEELE_PUBLISHER_CONSUMERS=steele-dummy-publisher-a,steele-dummy-publisher-b node dist/cli/provision.js
 ```
 
-
 ## Find activity for one original post
 
 To look up a known post, run
@@ -162,7 +200,6 @@ verification report against the saved draft and waits for both simulated
 receipts with the same full draft hash. The default wait is two minutes.
 Set `STEELE_FIXTURE_TIMEOUT_MS` to adjust it. A failure prints only the stage
 and outcome. Keep the resulting fixture evidence with the deployment record.
-
 
 Use the isolated Compose file with a dedicated writable directory, a unique
 Compose project name and a pinned image that includes the dummy publishers.

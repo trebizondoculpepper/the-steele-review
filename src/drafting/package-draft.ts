@@ -6,6 +6,7 @@ import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-stor
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 
 /**
@@ -27,7 +28,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v3";
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v4";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
@@ -213,7 +214,10 @@ export function renderPackageDraft(
   }
   // Narrative development: earlier passages are quoted evidence (dated,
   // linked); the comparison text is generated analysis, labelled as such.
-  if (draft.narrative) {
+  // An unattended run leaves absent history out of the article entirely (#370).
+  const omitNarrative =
+    pkg.context?.history.status === "gap" && pkg.context.history.omitWhenAbsent === true;
+  if (draft.narrative && !omitNarrative) {
     if (draft.narrative.status === "limited") {
       lines.push(draft.narrative.limitation, "");
     } else {
@@ -379,13 +383,17 @@ export async function draftFromPackage(input: {
         ? pkg.context.history.comparisons.map((c, i) => ({
             index: i,
             kind: c.kind,
+            ...(c.pattern ? { pattern: c.pattern } : {}),
             uncertainty: c.uncertainty,
             earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
             comparison: c.comparison.text,
             ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
             ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
           }))
-        : { gap: pkg.context?.history.reason ?? "no historical comparison" },
+        : {
+            gap: pkg.context?.history.reason ?? "no historical comparison",
+            ...(pkg.context?.history.omitWhenAbsent ? { omit: true } : {}),
+          },
     background:
       pkg.context?.background.status === "available"
         ? pkg.context.background.passages.map((p, i) => ({
@@ -416,6 +424,7 @@ export async function draftFromPackage(input: {
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
+      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
       lastFailure = "provider-failed";
       providerError = error instanceof ModelProviderError ? error.code : "unavailable";
       // An unknown or rejected model is not retried with the same request.

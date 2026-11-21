@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
   CandidateSnapshotSchema,
   MalformedResponseSchema,
@@ -35,6 +35,7 @@ import {
 } from "./extraction.js";
 import type { OccurrenceIndexPort } from "./occurrence-indexer.js";
 import type { CatalogueTheme } from "./theme-catalogue.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
  * Source-grounded claims linked to themes (#144).
@@ -64,15 +65,6 @@ import type { CatalogueTheme } from "./theme-catalogue.js";
  * Equivalent-claim matching across different wordings is #145; here the
  * normalised key is exact normalised text.
  */
-
-function loadAnalysisPrompt(name: string): ExtractionPrompt {
-  const instructions = readFileSync(
-    new URL(`../prompts/analysis/${name}.md`, import.meta.url),
-    "utf8",
-  ).trim();
-  const hash = createHash("sha256").update(instructions).digest("hex");
-  return { version: `analysis-${name}-sha256:${hash}`, instructions };
-}
 
 export const DEFAULT_GROUNDED_CLAIM_PROMPT = loadAnalysisPrompt("grounded-claims-v6");
 
@@ -313,17 +305,15 @@ export function claimExtractionPath(
   promptVersion: string,
   /** The exact theme result the claims link to; part of the cache identity. */
   themeResult?: string,
+  /** Explicit byline is grounding metadata; never reuse an unattributed cache for it. */
+  sourceAuthor?: string,
 ): string {
-  const key = createHash("sha256")
-    .update(
-      JSON.stringify(
-        themeResult === undefined
-          ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
-          : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult],
-      ),
-    )
-    .digest("hex")
-    .slice(0, 16);
+  const identity =
+    themeResult === undefined
+      ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
+      : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult];
+  if (sourceAuthor !== undefined) identity.push(`author:${sourceAuthor}`);
+  const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
   return `claim-extractions/${post.publicationId}/${post.postId}/${sourceVersion.slice(7, 39)}-${key}.json`;
 }
 
@@ -384,6 +374,7 @@ export async function extractGroundedClaims(input: {
     input.provider.modelVersion,
     prompt.version,
     input.themeResult,
+    source.author,
   );
 
   let record: ClaimExtractionRecord;
@@ -419,7 +410,8 @@ export async function extractGroundedClaims(input: {
           { system: prompt.instructions, user, maxOutputChars: maxResponseChars },
           input.signal ?? new AbortController().signal,
         );
-      } catch {
+      } catch (error) {
+        rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
         failure = "provider-failed";
         continue;
       }

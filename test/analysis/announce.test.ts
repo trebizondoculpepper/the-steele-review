@@ -9,7 +9,10 @@ import {
 } from "../../src/analysis/announce.js";
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import { extractGroundedClaims } from "../../src/analysis/grounded-claims.js";
-import { proposeThemes } from "../../src/analysis/theme-proposals.js";
+import {
+  DEFAULT_THEME_PROPOSAL_PROMPT,
+  proposeThemes,
+} from "../../src/analysis/theme-proposals.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore, type ArtifactRef } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
@@ -121,7 +124,7 @@ describe("announcePost", { timeout: 60_000 }, () => {
     expect(data).toMatchObject({
       ...post,
       counts: { themeProposals: 1, acceptedClaims: 1, candidates: 0, rejected: 0 },
-      themes: { prompt: "theme-proposals-v2", schema: 1 },
+      themes: { prompt: DEFAULT_THEME_PROPOSAL_PROMPT.version, schema: 1 },
       claims: { schema: 3 },
     });
 

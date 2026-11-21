@@ -48,6 +48,13 @@ export const SubstackItemSchema = z
       .max(500)
       .regex(/\S/)
       .describe("Post title as published. Informational only; never used as identity."),
+    author: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Explicit source byline, when supplied; never inferred from publication identity."),
     publishedAt: z.iso
       .datetime({ offset: true })
       .optional()
@@ -65,6 +72,12 @@ export const SubstackItemSchema = z
   });
 
 export type SubstackItem = z.infer<typeof SubstackItemSchema>;
+
+/** Invalid optional attribution must not discard an otherwise usable post. */
+export function normalisePostAuthor(value: unknown): string | undefined {
+  const parsed = SubstackItemSchema.shape.author.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /** Validate untrusted metadata, throwing a ZodError if it is malformed. */
 export function parseSubstackItem(input: unknown): SubstackItem {

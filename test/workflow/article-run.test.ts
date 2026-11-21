@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import type { ResearchRequest } from "../../src/research/job.js";
 import { researchJobId } from "../../src/research/job.js";
 import {
@@ -71,7 +72,12 @@ const stages: ArticleStages = {
     if (post.postId === "incomplete") throw new StageError("source", "incomplete-capture");
     return ref(`theme-proposals/${post.postId}.json`);
   },
-  claims: async (post) => (calls.claims++, ref(`claim-extractions/${post.postId}.json`)),
+  claims: async (post) => {
+    calls.claims++;
+    // Synthetic provider credit exhaustion (#407): no paid request.
+    if (post.postId === "no-credit") throw new ModelProviderError("credit-exhausted", 402);
+    return ref(`claim-extractions/${post.postId}.json`);
+  },
   planResearch: async (themes) => {
     calls.plan++;
     const post = themes.path.split("/")[1].replace(".json", "");
@@ -213,6 +219,18 @@ describe("unattended article run on Restate (#243)", () => {
       outcome: "failed",
       reason: "invalid-input",
     });
+  }, 60_000);
+
+  it("ends a run blocked on provider credit with a terminal, non-editorial reason, without retrying", async () => {
+    const before = calls.claims;
+    const run = ingress.workflowClient(Workflow, articleRunKey(input("no-credit")));
+    await run.workflowSubmit(input("no-credit"));
+    expect(await run.workflowAttach()).toMatchObject({
+      outcome: "failed",
+      reason: "claims: credit-exhausted",
+    });
+    // One call: credit exhaustion is never retried inside the run.
+    expect(calls.claims).toBe(before + 1);
   }, 60_000);
 
   it("hands an approval to publishing once, and a rejected draft emits none", async () => {

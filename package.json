@@ -41,7 +41,8 @@
     "captured-bridge": "node --enable-source-maps dist/cli/captured-bridge.js",
     "article-run": "node --enable-source-maps dist/cli/article-run.js",
     "install-wake-hook": "node --enable-source-maps dist/cli/install-wake-hook.js",
-    "verify-package-draft": "node --enable-source-maps dist/cli/verify-package-draft.js"
+    "verify-package-draft": "node --enable-source-maps dist/cli/verify-package-draft.js",
+    "telegram-session": "node --enable-source-maps dist/cli/telegram-session.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
@@ -53,6 +54,7 @@
     "cloudevents": "^10.0.0",
     "html-to-text": "^10.0.1",
     "rss-parser": "^3.13.0",
+    "teleproto": "^1.233.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

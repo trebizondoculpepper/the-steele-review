@@ -19,6 +19,25 @@ const post = (n: number) => ({
 });
 const POSTS = Array.from({ length: 7 }, (_, i) => post(i));
 
+it("retains a single explicit archive byline, with missing or multiple authors left unknown", () => {
+  expect(
+    normaliseArchivePost(
+      { ...post(0), publishedBylines: [{ name: "Guest Author" }] },
+      "example-pub",
+    ),
+  ).toMatchObject({ author: "Guest Author" });
+  for (const publishedBylines of [
+    undefined,
+    [],
+    [{ name: "One" }, { name: "Two" }],
+    [{ name: " " }],
+  ]) {
+    expect(
+      normaliseArchivePost({ ...post(0), publishedBylines }, "example-pub"),
+    ).not.toHaveProperty("author");
+  }
+});
+
 type Page = { posts: unknown[]; nextCursor?: string | null };
 /** Serve pages keyed by cursor ("" for the first page). */
 function archiveFetch(pages: Record<string, Page | number>) {

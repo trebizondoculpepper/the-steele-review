@@ -35,7 +35,11 @@ import { transcriptTimingsFor } from "../content/embedding-consumer.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
-import { openRouterFromEnv, type ModelUsage } from "../controllers/openrouter.js";
+import {
+  CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS,
+  openRouterFromEnv,
+  type ModelUsage,
+} from "../controllers/openrouter.js";
 
 const EnvSchema = z.object({
   STEELE_PUBLICATION_ID: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
@@ -66,7 +70,13 @@ async function main(argv: string[]): Promise<number> {
   let provider;
   let es: ElasticsearchController | undefined;
   try {
-    provider = openRouterFromEnv({}, { onUsage: (u) => usage.push(u) });
+    provider = openRouterFromEnv(
+      {},
+      {
+        onUsage: (u) => usage.push(u),
+        maxOutputTokens: CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS,
+      },
+    );
     if (process.env.ELASTICSEARCH_URL || process.env.ELASTICSEARCH_URL_FILE) {
       const conn = elasticsearchConnection();
       es = new ElasticsearchController(conn.url, conn.apiKey);
@@ -140,6 +150,7 @@ async function main(argv: string[]): Promise<number> {
         postId: post.postId,
         url: record.item.url,
         ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+        ...(record.item.author ? { author: record.item.author } : {}),
         // Supplied transcript timings, aligned the same way as for passages.
         ...transcriptTimingsFor(record),
       },

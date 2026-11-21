@@ -15,6 +15,18 @@ const item: SubstackItem = {
   url: "https://example-pub.substack.com/p/a-post",
   title: "A post",
 };
+
+it("uses a fetched single byline over discovery and does not guess a coauthor", async () => {
+  for (const [publishedBylines, expected] of [
+    [[{ name: "  Guest Author  " }], "Guest Author"],
+    [[{ name: "One" }, { name: "Two" }], undefined],
+    [[{ name: "x".repeat(201) }], undefined],
+  ] as const) {
+    const { c } = collector({ [POST_PATH]: { ...basePost, publishedBylines } });
+    const result = await c.collect({ ...item, author: "Feed Author" });
+    expect(result.item.author).toBe(expected);
+  }
+});
 const segments = [
   { start: 1.5, end: 4, text: " First sentence.", words: [{ word: " First" }] },
   { start: 4.2, end: 7.9, text: " Second sentence." },
@@ -274,13 +286,14 @@ describe.skipIf(!liveUrl || !liveId || !livePost)("live collection", () => {
 describe("preview image (#277)", () => {
   const PUBLICATION_PATH = "/api/v1/publication";
   const generic = "https://substack.com/img/podcast/generic.png";
-  const videoFrame =
-    "https://substackcdn.com/video_upload/post/a-post/uuid/transcoded-00001.png";
+  const videoFrame = "https://substackcdn.com/video_upload/post/a-post/uuid/transcoded-00001.png";
   const uploaded = "https://substackcdn.com/public/images/uuid_1200x800.png";
 
   const collectWith = async (post: object, publication?: object) =>
-    collector({ [POST_PATH]: { ...basePost, ...post }, ...(publication ? { [PUBLICATION_PATH]: publication } : {}) })
-      .c.collect(item);
+    collector({
+      [POST_PATH]: { ...basePost, ...post },
+      ...(publication ? { [PUBLICATION_PATH]: publication } : {}),
+    }).c.collect(item);
 
   it("keeps a post-specific video frame", async () => {
     const result = await collectWith({ type: "video", cover_image: videoFrame });

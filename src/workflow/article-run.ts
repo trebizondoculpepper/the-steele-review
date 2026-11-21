@@ -1,3 +1,8 @@
+import {
+  CREDIT_EXHAUSTED,
+  isCreditExhausted,
+  reportCreditExhausted,
+} from "../observability/provider-condition.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import * as restate from "@restatedev/restate-sdk";
 import { articleRunTarget } from "../content/article-run-target.js";
@@ -207,6 +212,15 @@ export function articleRunWorkflow(stages: ArticleStages) {
             logPipeline(input, name, "completed", input.sourceVersion);
             return result;
           } catch (error) {
+            // Exhausted provider credit is an operational block (#407): recorded
+            // once, terminal (no hot retries), and never an editorial result.
+            if (
+              isCreditExhausted(error) ||
+              (error instanceof StageError && error.reason === CREDIT_EXHAUSTED)
+            ) {
+              reportCreditExhausted(input, name, input.sourceVersion);
+              throw new restate.TerminalError(`${name}: ${CREDIT_EXHAUSTED}`);
+            }
             logPipeline(input, name, "failed", input.sourceVersion);
             if (error instanceof StageError) throw new restate.TerminalError(error.message);
             throw error;

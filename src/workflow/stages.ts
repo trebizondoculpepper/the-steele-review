@@ -12,16 +12,22 @@ import {
 import type { OperationStore } from "../controllers/operation-store.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 import { verifyWithRevisions } from "../drafting/package-verify.js";
+import {
+  saveSpeakerComparisons,
+  type SpeakerComparisonDeps,
+} from "../drafting/speaker-comparisons.js";
 import { saveWriterPackage } from "../drafting/writer-package.js";
 import type { PageFetcher } from "../research/gap-research.js";
 import { researchJobId, type ResearchRequest } from "../research/job.js";
 import {
   assessPostCoverage,
+  CoverageRecordSchema,
   type CommissionedJob,
   type ThemeShortlister,
 } from "../research/librarian.js";
 import { runResearchJob, type SupportJudge } from "../research/runner.js";
 import type { SonarClient } from "../research/sonar.js";
+import { CREDIT_EXHAUSTED } from "../observability/provider-condition.js";
 import { recordApproval } from "../publishing/approved-article.js";
 import {
   StageError,
@@ -64,6 +70,11 @@ export function articleStages(deps: {
     judge?: SupportJudge;
     monitoredHosts?: string[];
   };
+  /**
+   * Same-speaker history for the essay (#370). Optional: without it, or when
+   * nothing is found, the article simply has no historical section.
+   */
+  history?: SpeakerComparisonDeps;
   owner: string;
 }): ArticleStages {
   const loadSource = async (post: ArticleRunInput) => {
@@ -165,6 +176,7 @@ export function articleStages(deps: {
           postId: post.postId,
           url: record.item.url,
           ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+          ...(record.item.author ? { author: record.item.author } : {}),
           ...transcriptTimingsFor(record),
         },
       });
@@ -199,6 +211,19 @@ export function articleStages(deps: {
     },
 
     async coverage(themes, claims, pinned: PinnedResearch[]) {
+      // Research that stopped for lack of provider credit is not a gap in the
+      // evidence: stop the run so the article is not written from it (#407).
+      if (
+        pinned.some(
+          (p) =>
+            p.outcome === "finished" &&
+            p.job.status === "finished" &&
+            p.job.result?.outcome === "failed" &&
+            p.job.result?.failure === "budget-exceeded",
+        )
+      ) {
+        throw new StageError("research", CREDIT_EXHAUSTED);
+      }
       // Exactly the results pinned at the deadline; nothing later.
       const byJob = new Map(pinned.map((p) => [p.jobId, p]));
       const out = await assessPostCoverage({
@@ -229,10 +254,24 @@ export function articleStages(deps: {
     },
 
     async package(coverage) {
+      let comparisons: ArtifactRef[] = [];
+      if (deps.history) {
+        const record = CoverageRecordSchema.parse(JSON.parse(await deps.content.read(coverage)));
+        const claimResult = await deps.content.lookup(record.claimResult.path);
+        if (claimResult) {
+          comparisons = await saveSpeakerComparisons({
+            content: deps.content,
+            claimResult,
+            deps: deps.history,
+          });
+        }
+      }
       const { package: pkg, ref } = await saveWriterPackage({
         content: deps.content,
         archive: deps.archive,
         coverage,
+        comparisons,
+        historyGap: "omit",
       });
       return { ref: plain(ref), status: pkg.status };
     },

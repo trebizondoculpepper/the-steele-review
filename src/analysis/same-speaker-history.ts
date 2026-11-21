@@ -67,6 +67,9 @@ export interface SameSpeakerMatch {
   /** Exact text from the earlier passage. */
   quote: string;
   statement: string;
+  /** The whole earlier passage and its offsets in the archived source text. */
+  passage: string;
+  span: { start: number; end: number };
   artifact: ArtifactReference;
   sourceVersion: string;
   /** `grouping` when the normalised assertion is identical; otherwise the model judged it. */
@@ -124,9 +127,9 @@ export function verifiedSpeaker(o: ClaimOccurrence): VerifiedSpeaker | undefined
   return undefined;
 }
 
-const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
+export const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
 
-function speakerFilter(s: VerifiedSpeaker): unknown {
+export function speakerFilter(s: VerifiedSpeaker): unknown {
   // The same person may be quoted in one post and write in their own voice in
   // another, so both attributions of the name are searched.
   return {
@@ -273,6 +276,8 @@ export async function findSameSpeakerHistory(input: {
     speaker: verifiedSpeaker(o) ?? speaker,
     quote,
     statement: o.statement,
+    passage: o.passage,
+    span: o.span,
     artifact: o.artifact,
     sourceVersion: o.sourceVersion,
     matchedBy,

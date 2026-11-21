@@ -20,6 +20,12 @@ import {
   parseCapturedContentEvent,
 } from "../../src/events/captured-content-event.js";
 import type { SubstackItem } from "../../src/content/substack-item.js";
+import { parseFeed } from "../../src/controllers/substack/rss.js";
+import { SubstackContentCollector } from "../../src/controllers/substack/collect.js";
+import { extractGroundedClaims } from "../../src/analysis/grounded-claims.js";
+import { sourceVersionFor } from "../../src/content/fulltext-document.js";
+import type { ClaimOccurrence } from "../../src/analysis/claim-occurrence.js";
+import { findSameSpeakerHistory } from "../../src/analysis/same-speaker-history.js";
 
 const item: SubstackItem = {
   publicationId: "example-pub",
@@ -119,6 +125,106 @@ function setup(options: {
 }
 
 describe("CollectionWorker", () => {
+  it("carries explicit bylines from discovery through capture and claims into same-speaker history", async () => {
+    const posts = await parseFeed(
+      `<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <channel><title>Synthetic</title>${["earlier", "current", "anonymous"]
+        .map(
+          (id, i) => `
+      <item><title>${id}</title><link>https://example-pub.substack.com/p/${id}</link>
+      <pubDate>${new Date(Date.UTC(2026, i, 1)).toUTCString()}</pubDate>
+      ${i < 2 ? "<dc:creator>Dr Synthetic</dc:creator>" : ""}</item>`,
+        )
+        .join("")}
+      </channel></rss>`,
+      "example-pub",
+    );
+    const collector = new SubstackContentCollector({
+      publicationUrl: "https://example-pub.substack.com/",
+      fetch: (async (url) =>
+        new Response(
+          JSON.stringify({
+            slug: new URL(String(url)).pathname.split("/").at(-1),
+            audience: "everyone",
+            body_html: "<p>Towers control the weather.</p>",
+          }),
+        )) as typeof fetch,
+    });
+    const { worker, store } = setup({ collect: (call) => collector.collect(posts[call - 1]) });
+    await mkdir(join(dir, "content"));
+    const content = new GitArtifactStore({ repoPath: join(dir, "content"), repository: "content" });
+    await content.initialise();
+    const indexed: ClaimOccurrence[] = [];
+    const provider = {
+      modelVersion: "fixture",
+      complete: async () =>
+        JSON.stringify({
+          claims: [
+            {
+              statement: "Towers control the weather.",
+              passage: "Towers control the weather.",
+              claimType: "factual",
+              kind: "assertion",
+              speaker: { kind: "author-voice" },
+              qualifiers: [],
+              entities: [],
+              dates: [],
+              themeIds: ["weather"],
+            },
+          ],
+        }),
+    };
+    for (const post of posts) {
+      const event = createDiscoveryEvent(post, { reason: "live" });
+      expect(
+        await worker.handle(
+          message("live", new TextEncoder().encode(serializeDiscoveryEvent(event))),
+        ),
+      ).toBe("collected");
+      const saved = (await store.existing(post))!;
+      expect(saved.record.item.author).toBe(post.author);
+      const result = await extractGroundedClaims({
+        provider,
+        artifacts: content,
+        themes: [{ id: "weather", name: "Weather", definition: "Weather narratives" }],
+        index: {
+          indexDocument: async (_index, _id, doc) => {
+            indexed.push(doc as ClaimOccurrence);
+          },
+        },
+        source: {
+          text: saved.record.text,
+          sourceVersion: sourceVersionFor(saved.record.text),
+          artifact: {
+            repository: saved.artifact.repository,
+            commit: saved.artifact.commit,
+            path: saved.artifact.path,
+            hash: `sha256:${saved.artifact.sha256}`,
+          },
+          publicationId: post.publicationId,
+          postId: post.postId,
+          url: post.url,
+          publishedAt: post.publishedAt,
+          author: saved.record.item.author,
+        },
+      });
+      expect(result.status).toBe("extracted");
+    }
+    const search = {
+      search: async () =>
+        indexed.map((occurrence) => ({ id: occurrence.occurrenceId, source: occurrence })),
+    };
+    const history = await findSameSpeakerHistory({ search, occurrence: indexed[1], provider });
+    expect(history.outcome).toBe("matches");
+    expect(history.matches[0]).toMatchObject({
+      postId: "earlier",
+      speaker: { name: "Dr Synthetic", basis: "post-author" },
+    });
+    expect(indexed[2].publisher.author).toBeUndefined();
+    expect(
+      (await findSameSpeakerHistory({ search, occurrence: indexed[2], provider })).outcome,
+    ).toBe("speaker-unverified");
+  });
   it("collects, commits, acknowledges and hands off a text-ready event", async () => {
     const { worker, published, captured } = setup({});
     const m = message("backfill");

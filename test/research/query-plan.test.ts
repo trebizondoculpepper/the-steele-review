@@ -54,7 +54,7 @@ describe("QueryPlanner", () => {
       { gapId: "g1", query: "example-pub synthetic fees raised" },
     ]);
     expect(outcome.modelVersion).toBe("synthetic-model-v1");
-    expect(outcome.promptVersion).toBe("research-query-plan-v1");
+    expect(outcome.promptVersion).toMatch(/^research-query-plan-v1-sha256:[0-9a-f]{64}$/);
   });
 
   it("shares one allowance across several gaps", async () => {

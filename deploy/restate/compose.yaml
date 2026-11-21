@@ -48,11 +48,59 @@ services:
       STEELE_RESEARCH_MODEL: ${STEELE_RESEARCH_MODEL:-}
       STEELE_RESEARCH_TIMEOUT_MS: ${STEELE_RESEARCH_TIMEOUT_MS:-}
       STEELE_RESEARCH_MAX_OUTPUT_TOKENS: ${STEELE_RESEARCH_MAX_OUTPUT_TOKENS:-}
+      # Same-speaker history in the essay (#370). Off while ELASTICSEARCH_URL is
+      # empty; the article then has no historical section.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      # Optional API key for an authenticated index. Use the direct form, or set
+      # the _FILE form to a path inside a mounted secret; empty values are ignored.
+      ELASTICSEARCH_API_KEY: ${ELASTICSEARCH_API_KEY:-}
+      ELASTICSEARCH_API_KEY_FILE: ${ELASTICSEARCH_API_KEY_FILE:-}
+      STEELE_MODEL_HISTORY: ${STEELE_MODEL_HISTORY:-}
     volumes:
       - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
       - ${STEELE_CONTENT_DIR}:/data/content
       - ${STEELE_STATE_DIR}:/data/state
     secrets: [openrouter]
+    networks: [steele]
+
+  # LAN-only operator dashboard (#375). No login by owner decision: exposure
+  # is set by STEELE_DASHBOARD_BIND, configured privately (for example the
+  # Pi's LAN address and a port). The default binds to loopback only.
+  dashboard:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/dashboard.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    environment:
+      # Read-only sources (#377); each is optional and shown as unconfigured
+      # when empty.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      ELASTICSEARCH_API_KEY: ${ELASTICSEARCH_API_KEY:-}
+      RESTATE_INGRESS_URL: http://restate:8080
+      # Archived-revision trigger (#379): off unless the exact browser origin is
+      # set; research bounds default in the service. Empty values are ignored.
+      STEELE_DASHBOARD_ORIGIN: ${STEELE_DASHBOARD_ORIGIN:-}
+      STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: ${STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT:-}
+      STEELE_DASHBOARD_RESEARCH_DEADLINE_MS: ${STEELE_DASHBOARD_RESEARCH_DEADLINE_MS:-}
+      STEELE_DASHBOARD_DESTINATIONS: ${STEELE_DASHBOARD_DESTINATIONS:-}
+      STEELE_ARCHIVE_PATH: /data/archive
+      STEELE_ARCHIVE_REPOSITORY: ${STEELE_ARCHIVE_REPOSITORY}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+    volumes:
+      - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
+      - ${STEELE_CONTENT_DIR}:/data/content:ro
+    ports:
+      - "${STEELE_DASHBOARD_BIND:-127.0.0.1:8090}:8090"
     networks: [steele]
 
   # Publishes approved articles from the worker's state outbox to
@@ -120,6 +168,34 @@ services:
       - ${STEELE_STATE_DIR}:/data/state
     networks: [steele]
 
+  # Live Substack destination, draft-only (#385). Delivery stays off until
+  # STEELE_SUBSTACK_DELIVERY=live (the one-draft proof, #384). Its consumer
+  # must be provisioned new-only (STEELE_PUBLISHER_NEW_ONLY_CONSUMERS) so an
+  # existing approval backlog never becomes real drafts. The origin and the
+  # session file path are private deployment settings.
+  substack-publisher:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/substack-publisher.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      disable: true
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      NATS_URL: ${NATS_URL}
+      NATS_TOKEN: ${NATS_TOKEN:-}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
+      STEELE_SUBSTACK_ORIGIN: ${STEELE_SUBSTACK_ORIGIN}
+      STEELE_SUBSTACK_SESSION_FILE: /run/secrets/substack-session
+      STEELE_SUBSTACK_DELIVERY: ${STEELE_SUBSTACK_DELIVERY:-off}
+    volumes:
+      - ${STEELE_CONTENT_DIR}:/data/content
+      - ${STEELE_STATE_DIR}:/data/state
+    secrets: [substack-session]
+    networks: [steele]
+
 volumes:
   restate-data:
 
@@ -129,3 +205,5 @@ networks:
 secrets:
   openrouter:
     file: ${OPENROUTER_KEY_FILE}
+  substack-session:
+    file: ${SUBSTACK_SESSION_FILE:-/dev/null}

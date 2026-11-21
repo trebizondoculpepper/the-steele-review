@@ -51,6 +51,7 @@ const identityFields = SubstackItemSchema.pick({
   postId: true,
   url: true,
   title: true,
+  author: true,
   publishedAt: true,
   updatedAt: true,
 });
@@ -135,6 +136,7 @@ export function createFulltextDocument(
     postId: item.postId,
     url: item.url,
     title: item.title,
+    ...(item.author === undefined ? {} : { author: item.author }),
     ...(item.publishedAt === undefined ? {} : { publishedAt: item.publishedAt }),
     ...(item.updatedAt === undefined ? {} : { updatedAt: item.updatedAt }),
     text: input.text,
@@ -199,6 +201,7 @@ export const FULLTEXT_INDEX_MAPPING: ElasticsearchIndexMapping = {
     },
     publishedAt: { type: "date" },
     updatedAt: { type: "date" },
+    author: { type: "keyword" },
     text: { type: "text" },
     acquisitionOrigin: { type: "keyword" },
     sourceVersion: { type: "keyword" },
