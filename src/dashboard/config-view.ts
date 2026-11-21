@@ -29,9 +29,14 @@ function valueCell(setting: InspectedSetting): string {
 }
 
 export function renderConfig(inspected: readonly InspectedSetting[]): string {
-  if (inspected.length === 0) return '<p class="empty">No settings are registered.</p>';
+  // The dashboard only observes its own process environment and files. Other
+  // services can receive different values, so the page says whose view this is
+  // rather than implying it describes the whole deployment (#544).
+  const scope =
+    '<p class="limitation">Settings observed by this dashboard process. Other services may be configured differently.</p>';
+  if (inspected.length === 0) return `${scope}<p class="empty">No settings are registered.</p>`;
   const domains = [...new Set(inspected.map((s) => s.domain))].sort();
-  return domains
+  const body = domains
     .map((domain) => {
       const rows = inspected
         .filter((s) => s.domain === domain)
@@ -43,6 +48,7 @@ export function renderConfig(inspected: readonly InspectedSetting[]): string {
       return `<h2>${esc(domain)}</h2><table><thead><tr><th>Setting</th><th>Description</th><th>Value</th><th>State</th><th>Origin</th></tr></thead><tbody>${rows}</tbody></table>`;
     })
     .join("");
+  return `${scope}${body}`;
 }
 
 /** The page body from the runtime environment and saved configuration file. */

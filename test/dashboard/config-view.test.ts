@@ -3,6 +3,11 @@ import { inspectSettings, resolveSettings, SETTINGS } from "../../src/config/set
 import { renderConfig } from "../../src/dashboard/config-view.js";
 
 describe("read-only config page (#544)", () => {
+  it("says the page describes this process, not the whole deployment", () => {
+    const html = renderConfig(inspectSettings(resolveSettings({} as NodeJS.ProcessEnv)));
+    expect(html).toContain("observed by this dashboard process");
+  });
+
   it("shows state and origin for every registered setting", () => {
     const html = renderConfig(inspectSettings(resolveSettings({} as NodeJS.ProcessEnv)));
     expect(html).toContain("<table>");
