@@ -48,8 +48,8 @@ describe("canonical theme store (#528)", () => {
     await themes.ensure(theme);
     await themes.ensure({ ...theme, id: "aerial-spraying", title: "Aerial spraying" });
     expect(await themes.list()).toEqual([
-      "themes/aerial-spraying.json",
-      "themes/geoengineering.json",
+      "canonical-themes/aerial-spraying.json",
+      "canonical-themes/geoengineering.json",
     ]);
   });
 
@@ -59,6 +59,15 @@ describe("canonical theme store (#528)", () => {
     // Simulate the other assessment winning between read and write.
     const second = await themes.ensure({ ...theme, createdAt: "2026-03-01T00:00:00.000Z" });
     expect(second).toEqual(first);
+  });
+
+  it("does not list per-post theme extraction artifacts", async () => {
+    const themes = new ThemeStore(artifacts);
+    await themes.ensure(theme);
+    // Extraction results share a similar shape under themes/; the canonical
+    // listing must ignore them.
+    await artifacts.write("themes/pub/p1/abc.json", "{}\n");
+    expect(await themes.list()).toEqual(["canonical-themes/geoengineering.json"]);
   });
 
   it("returns nothing for an unknown theme", async () => {

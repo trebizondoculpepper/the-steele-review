@@ -27,8 +27,13 @@ export const CanonicalThemeSchema = z
   .strict();
 export type CanonicalTheme = z.infer<typeof CanonicalThemeSchema>;
 
+/**
+ * Canonical themes live under their own prefix: `themes/` already holds
+ * per-post extraction results (`themes/<publication>/<post>/...`), and mixing
+ * the two would make a canonical listing return non-canonical records.
+ */
 export function themePath(id: string): string {
-  return `themes/${id}.json`;
+  return `canonical-themes/${id}.json`;
 }
 
 export class ThemeStore {
@@ -65,6 +70,6 @@ export class ThemeStore {
 
   /** Themes in stable ID order, bounded. */
   async list(limit = 500): Promise<string[]> {
-    return this.artifacts.list("themes", limit);
+    return this.artifacts.list("canonical-themes", limit);
   }
 }
