@@ -167,3 +167,25 @@ describe("dummy-publisher", { timeout: 180_000 }, () => {
     ).toHaveLength(2);
   });
 });
+
+describe("publisher consumer provisioning", () => {
+  it("applies an explicit delivery budget to an existing consumer", async () => {
+    const config = {
+      stream: PUBLICATION_STREAM,
+      name: "dummy-legacy",
+      filterSubject: ARTICLE_APPROVED_SUBJECT,
+    };
+    expect(await provisionDurableConsumer(nats, config)).toBe("created");
+    const jsm = await nats.manager();
+    expect((await jsm.consumers.info(PUBLICATION_STREAM, "dummy-legacy")).config.max_deliver).toBe(
+      10,
+    );
+    expect(await provisionDurableConsumer(nats, { ...config, maxDeliver: 300 })).toBe("updated");
+    expect((await jsm.consumers.info(PUBLICATION_STREAM, "dummy-legacy")).config.max_deliver).toBe(
+      300,
+    );
+    expect(await provisionDurableConsumer(nats, { ...config, maxDeliver: 300 })).toBe("unchanged");
+    // Without an explicit budget an existing consumer is left as it is.
+    expect(await provisionDurableConsumer(nats, config)).toBe("unchanged");
+  });
+});

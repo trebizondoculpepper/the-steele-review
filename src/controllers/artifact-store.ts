@@ -251,7 +251,9 @@ export class GitArtifactStore {
       } catch (error) {
         if (
           !(error instanceof ArtifactStoreError) ||
-          error.code !== "concurrent-update" ||
+          // A held ref lock may be another live writer, not a stale lock:
+          // retry it too, and report it only once the budget is spent.
+          (error.code !== "concurrent-update" && error.code !== "interrupted-commit") ||
           attempt >= 8
         )
           throw error;
