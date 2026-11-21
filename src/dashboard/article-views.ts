@@ -62,7 +62,6 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       }
       const recent = await deps.articles.recent(RECENT_LIMIT);
       if (recent.length === 0) return '<p class="empty">No archived articles are indexed yet.</p>';
-      let creditBlocked = 0;
       const rowsHtml = await Promise.all(
         recent.map(async (a) => {
           let summary = "unknown";
@@ -70,7 +69,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
             try {
               const s = await deps.runs.status(a);
               if (s.state === "finished" && isCreditBlocked(s.result.reason)) {
-                creditBlocked++;
+                // Per-run only: a historical failure must not banner the page.
                 summary = "credit-exhausted";
               } else if (s.state === "finished") {
                 // Editorial meaning, not just workflow termination (#486).
@@ -99,7 +98,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
           return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
-      return `${creditBlocked ? creditWarning(creditBlocked) : ""}<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
+      return `<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
 <div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>`;
     },

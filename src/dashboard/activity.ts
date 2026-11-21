@@ -232,5 +232,19 @@ export function renderActivity(feed: ActivityFeed): string {
       }</td></tr>`;
     })
     .join("");
-  return `${limitation}<table><thead><tr><th>Time</th><th>Component</th><th>Source</th><th>State</th><th>Error</th><th>Run</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const creditStopped = events.filter((e) => e.errorCategory === "provider-credit");
+  const notice =
+    creditStopped.length === 0
+      ? ""
+      : `<p class="warning" role="alert"><strong>Provider credit exhausted.</strong> ${creditStopped.length} run${
+          creditStopped.length === 1 ? "" : "s"
+        } stopped because the model provider's credit budget ran out. This is not a finding about any article. Affected runs: ${creditStopped
+          .map(
+            (e) =>
+              `${esc(e.at ?? "unknown time")} ${esc([e.publicationId, e.postId].filter(Boolean).join("/"))}${
+                e.link ? ` (<a href="${esc(e.link)}">run</a>)` : ""
+              }`,
+          )
+          .join("; ")}.</p>`;
+  return `${limitation}${notice}<table><thead><tr><th>Time</th><th>Component</th><th>Source</th><th>State</th><th>Error</th><th>Run</th></tr></thead><tbody>${rows}</tbody></table>`;
 }

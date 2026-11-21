@@ -73,7 +73,7 @@ describe("provider credit exhaustion (#407)", () => {
     expect(calls).toBe(1);
   });
 
-  it("shows an actionable, secret-free dashboard warning", async () => {
+  it("warns on the run detail and marks the row, without a page-wide banner", async () => {
     const result = {
       outcome: "failed" as const,
       reason: "claims: credit-exhausted",
@@ -98,7 +98,10 @@ describe("provider credit exhaustion (#407)", () => {
       runs: { status: async () => ({ state: "finished", result }) },
     });
     const page = await list!.render(new URL("http://x/articles"));
-    expect(page).toContain("1 recent run stopped");
+    // The historical failure stays visible on its own row (#511)…
     expect(page).toContain('<span class="s-credit-exhausted">credit-exhausted</span>');
+    // …but no longer banners the whole listing.
+    expect(page).not.toContain("recent run stopped");
+    expect(page).not.toContain("Add credit or raise the key");
   });
 });
