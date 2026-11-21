@@ -12,6 +12,8 @@ import {
   readPublicationPayload,
   sameArtifact,
   PublicationPayloadError,
+  PublicationPayloadSchema,
+  publicationManifestHash,
   type PublicationPayload,
 } from "../drafting/publication-payload.js";
 import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
@@ -235,6 +237,38 @@ export type DeliveryDecision =
     }
   | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
 
+const DeliveryIntentSchema = z.looseObject({
+  key: z.string().min(1),
+  at: z.iso.datetime({ offset: true }).optional(),
+  /** The original approved version, retained even if equal content is approved again. */
+  article: ArticleApprovedDataSchema.optional(),
+});
+const SavedPreviewSchema = z.looseObject({
+  body: z.string().max(2_000_000),
+  contentType: z.string().min(1).max(200),
+  publication: PublicationPayloadSchema.optional(),
+});
+
+async function readApprovedContent(
+  content: Pick<GitArtifactStore, "read">,
+  article: ArticleApprovedData,
+) {
+  const markdown = await content.read(fromRef(article.draft));
+  const report = PackageVerificationReportSchema.parse(
+    JSON.parse(await content.read(fromRef(article.approval))),
+  );
+  const loaded = article.publication
+    ? { ref: article.publication, ...(await readPublicationPayload(content, article.publication)) }
+    : undefined;
+  if (
+    !approvalValidFor(report, markdown, loaded) ||
+    !sameArtifact(report.draft, article.draft) ||
+    !sameArtifact(report.package, article.package)
+  )
+    throw new ApprovalError("approval does not match the draft");
+  return { markdown, publication: loaded?.payload };
+}
+
 function deliveryDirectory(
   article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
   destination: Pick<DestinationAdapter, "name" | "action">,
@@ -323,24 +357,9 @@ async function deliverApprovedArticle(
   let markdown: string;
   let publication: PublicationPayload | undefined;
   try {
-    markdown = await input.content.read(fromRef(event.draft));
-    const report = PackageVerificationReportSchema.parse(
-      JSON.parse(await input.content.read(fromRef(event.approval))),
-    );
-    const loaded = event.publication
-      ? {
-          ref: event.publication,
-          ...(await readPublicationPayload(input.content, event.publication)),
-        }
-      : undefined;
-    publication = loaded?.payload;
-    if (
-      !approvalValidFor(report, markdown, loaded) ||
-      !sameArtifact(report.draft, event.draft) ||
-      !sameArtifact(report.package, event.package)
-    ) {
-      return { action: "term", reason: "approval-mismatch" };
-    }
+    const checked = await readApprovedContent(input.content, event);
+    markdown = checked.markdown;
+    publication = checked.publication;
   } catch (error) {
     // Only a confirmed mismatch or missing artifact is final; anything else is transient.
     if (
@@ -352,7 +371,8 @@ async function deliverApprovedArticle(
     if (
       error instanceof z.ZodError ||
       error instanceof SyntaxError ||
-      error instanceof PublicationPayloadError
+      error instanceof PublicationPayloadError ||
+      error instanceof ApprovalError
     ) {
       return { action: "term", reason: "approval-mismatch" };
     }
@@ -394,47 +414,110 @@ async function deliverApprovedArticle(
   if (claim.kind !== "claimed")
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
-  const preview = destination.render({
-    markdown,
-    data: event,
-    ...(publication ? { publication } : {}),
-  });
-  await writeOnce(input.content, `${dir}/preview.json`, preview);
   try {
-    let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
-    // An earlier uncertain attempt must be reconciled before any retry.
-    // The uncertain marker is a durable, write-once artifact beside the receipt.
-    // Intent, with its time, is durable before any external attempt, so
-    // reconciliation can tell whether a listing covers the attempt.
-    const intentRef = await input.content.lookup(`${dir}/intent.json`);
-    const intentAt = intentRef
-      ? (JSON.parse(await input.content.read(intentRef)) as { at?: string }).at
-      : (await writeOnce(input.content, `${dir}/intent.json`, {
-          key,
-          at: now.toISOString(),
-          draft: event.draft,
-          ...(event.publication ? { publication: event.publication } : {}),
+    const holdUncertain = (): DeliveryDecision => {
+      input.operations.yieldClaim(claim.claim);
+      return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
+    };
+    const priorIntent = await input.content.lookup(`${dir}/intent.json`);
+    const priorPreview = await input.content.lookup(`${dir}/preview.json`);
+    const uncertain = await input.content.lookup(`${dir}/uncertain.json`);
+    // An orphaned uncertain attempt has no authoritative original version.
+    if (!priorIntent && (uncertain || (publication?.mode === "structured" && priorPreview)))
+      return holdUncertain();
+    const currentArticle: ArticleApprovedData = {
+      publicationId: event.publicationId,
+      postId: event.postId,
+      draft: event.draft,
+      approval: event.approval,
+      package: event.package,
+      approvedAt: event.approvedAt,
+      ...(event.publication ? { publication: event.publication } : {}),
+    };
+    const candidate = `${JSON.stringify({ key, at: now.toISOString(), article: currentArticle }, null, 2)}\n`;
+    // Intent precedes preview and any external action. Re-read the retained
+    // write-once result rather than assuming this caller won the write.
+    const intentRef =
+      priorIntent ?? (await writeOnce(input.content, `${dir}/intent.json`, candidate));
+    const rawIntent = await input.content.read(intentRef);
+    const parsedIntent = DeliveryIntentSchema.safeParse(JSON.parse(rawIntent));
+    if (!parsedIntent.success || parsedIntent.data.key !== key) return holdUncertain();
+    const intent = parsedIntent.data;
+    let deliveryArticle = currentArticle;
+    let deliveryMarkdown = markdown;
+    let deliveryPublication = publication;
+    if (intent.article) {
+      const original = await readApprovedContent(input.content, intent.article);
+      const originalHash =
+        original.publication?.mode === "structured"
+          ? original.publication.contentHash
+          : intent.article.draft.hash;
+      if (
+        originalHash !== (publicationHash ?? event.draft.hash) ||
+        intent.article.publicationId !== event.publicationId ||
+        intent.article.postId !== event.postId
+      )
+        return holdUncertain();
+      deliveryArticle = intent.article;
+      deliveryMarkdown = original.markdown;
+      deliveryPublication = original.publication;
+    } else {
+      // Old intent records know only body identity. Never invent a manifest
+      // for a structured side effect whose original provenance is unknown.
+      if (publication?.mode === "structured") return holdUncertain();
+      deliveryArticle = {
+        publicationId: event.publicationId,
+        postId: event.postId,
+        draft: event.draft,
+        approval: event.approval,
+        package: event.package,
+        approvedAt: event.approvedAt,
+      };
+      deliveryPublication = undefined;
+    }
+    const previewRef =
+      priorPreview ??
+      (await writeOnce(
+        input.content,
+        `${dir}/preview.json`,
+        destination.render({
+          markdown: deliveryMarkdown,
+          data: deliveryArticle,
+          ...(deliveryPublication ? { publication: deliveryPublication } : {}),
         }),
-        now.toISOString());
-    // An intent left by an earlier attempt that produced no receipt is
-    // unresolved too: the process may have stopped after the destination acted
-    // but before the receipt was committed. Reconcile before any new attempt.
-    if (intentRef || (await input.content.lookup(`${dir}/uncertain.json`))) {
-      const r = await destination.reconcile(key, { preview, ...(intentAt ? { intentAt } : {}) });
+      ));
+    const preview = SavedPreviewSchema.parse(JSON.parse(await input.content.read(previewRef)));
+    if (
+      preview.publication &&
+      (!deliveryArticle.publication ||
+        publicationManifestHash(preview.publication) !== deliveryArticle.publication.hash)
+    )
+      return holdUncertain();
+    let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
+    // A previous or concurrently retained intent may have acted already. Its
+    // original preview and timestamp, not the newer event's, drive reconciliation.
+    if (priorIntent || rawIntent !== candidate || uncertain) {
+      const r = await destination.reconcile(key, {
+        preview,
+        ...(intent.at ? { intentAt: intent.at } : {}),
+      });
       if (r === "unknown") {
         input.operations.fail(claim.claim, "uncertain-delivery", true);
         return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
       }
       if (r.delivered) delivered = r.delivered;
     }
-    delivered ??= await destination.deliver(preview, key);
+    if (!delivered) {
+      input.operations.renew(claim.claim, 10 * 60_000);
+      delivered = await destination.deliver(preview, key);
+    }
     const receipt = DeliveryReceiptSchema.parse({
       destination: destination.name,
       action: destination.action,
       ...delivered,
-      draftHash: event.draft.hash,
+      draftHash: deliveryArticle.draft.hash,
       ...(publicationHash ? { publicationHash } : {}),
-      ...(event.publication ? { publication: event.publication } : {}),
+      ...(deliveryArticle.publication ? { publication: deliveryArticle.publication } : {}),
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);

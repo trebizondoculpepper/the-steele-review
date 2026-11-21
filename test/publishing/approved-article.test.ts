@@ -368,4 +368,127 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     expect(new Set(destination.deliveries).size).toBe(2);
     expect(await handle(secondEvent.payload)).toMatchObject({ action: "ack", outcome: "reused" });
   });
+  it.each(["lost-response", "receipt-write"])(
+    "retains the original manifest and preview after %s followed by equal content with new provenance",
+    async (fault) => {
+      const originalReport = await approved();
+      const first = await recordApproval({ content, operations, report: originalReport });
+      if (!first.data.publication) throw new Error("expected payload");
+      const originalEvent = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0]!.payload;
+      const { payload: original } = await readPublicationPayload(content, first.data.publication);
+      const simulated = new SimulatedDestination("site", "draft", {
+        uncertainTimes: fault === "lost-response" ? 1 : 0,
+      });
+      let reconciledPreview: unknown;
+      let configuredByline = "Original configured author";
+      let renders = 0;
+      const destination = {
+        name: simulated.name,
+        action: simulated.action,
+        supportsPublicationPayload: true,
+        render: (input: Parameters<typeof simulated.render>[0]) => {
+          renders++;
+          return { ...simulated.render(input), bylines: [configuredByline] };
+        },
+        deliver: simulated.deliver.bind(simulated),
+        reconcile: async (key: string, context?: { preview: unknown }) => {
+          reconciledPreview = context?.preview;
+          return simulated.reconcile(key);
+        },
+      };
+      const failing =
+        fault === "receipt-write"
+          ? new Proxy(content, {
+              get(target, prop) {
+                if (prop === "write")
+                  return async (path: string, body: string) => {
+                    if (path.endsWith("/receipt.json")) throw new Error("simulated disk full");
+                    return target.write(path, body);
+                  };
+                const value = Reflect.get(target, prop);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            })
+          : content;
+      const handle = (payload: string, store = content) =>
+        handleApprovedArticle({
+          payload,
+          destination,
+          schedule: { delayMs: 0 },
+          content: store,
+          operations,
+          owner: "t",
+        });
+      expect(await handle(originalEvent, failing)).toMatchObject({ action: "nak" });
+      expect(simulated.deliveries).toHaveLength(1);
+      configuredByline = "Changed configured author";
+      const changed = JSON.parse(await content.read(artifactRef(original.metadata)));
+      changed.draftedAt = "2026-01-02T00:00:00Z";
+      const meta = await content.write(
+        original.metadata.path.replace(/\.json$/, "-next.json"),
+        JSON.stringify(changed),
+      );
+      const next = await savePublicationPayload({
+        content,
+        metadata: meta,
+        body: artifactRef(original.body),
+        post: { publicationId: "pub", postId: "p1" },
+      });
+      expect(next.payload.contentHash).toBe(original.contentHash);
+      const report = PackageVerificationReportSchema.parse(
+        JSON.parse(await content.read(originalReport)),
+      );
+      const nextReport = await content.write(
+        "verifications/pub/p1/next.json",
+        JSON.stringify({ ...report, publication: artifactReference(next.ref) }),
+      );
+      const second = await recordApproval({ content, operations, report: nextReport });
+      const event = operations
+        .duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)
+        .find((e) => e.eventId === second.eventId);
+      if (!event) throw new Error("missing second event");
+      const result = await handle(event.payload);
+      expect(result).toMatchObject({ action: "ack", outcome: "delivered" });
+      if (result.action !== "ack") throw new Error("expected receipt");
+      expect(simulated.deliveries).toHaveLength(1);
+      expect(JSON.parse(await content.read(result.receipt))).toMatchObject({
+        publication: first.data.publication,
+        publicationHash: original.contentHash,
+      });
+      expect(reconciledPreview).toMatchObject({
+        publication: original,
+        bylines: ["Original configured author"],
+      });
+      expect(renders).toBe(1);
+      expect(await handle(event.payload)).toMatchObject({ action: "ack", outcome: "reused" });
+    },
+  );
+
+  it("holds a structured attempt when an old intent has no authoritative manifest", async () => {
+    const first = await recordApproval({ content, operations, report: await approved() });
+    if (!first.data.publication) throw new Error("expected payload");
+    const event = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0]!.payload;
+    const { payload } = await readPublicationPayload(content, first.data.publication);
+    const revision = payload.contentHash.slice(7, 39);
+    const key = `publish:site:draft:${revision}`;
+    await content.write(
+      `publications/site/draft/pub/p1/${revision}/intent.json`,
+      JSON.stringify({ key, at: "2026-01-01T00:00:00Z" }),
+    );
+    const destination = new SimulatedDestination("site", "draft");
+    const out = await handleApprovedArticle({
+      payload: event,
+      destination,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+    });
+    expect(out).toMatchObject({ action: "nak", reason: "uncertain" });
+    expect(destination.deliveries).toHaveLength(0);
+    expect(operations.operationStatus(key)).toMatchObject({
+      status: "released",
+      attempts: 1,
+    });
+  });
 });
