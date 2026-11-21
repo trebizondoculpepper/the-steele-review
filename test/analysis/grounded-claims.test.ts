@@ -498,6 +498,47 @@ describe("configured source attribution (#462)", () => {
     for (const a of kinds["quoted"] ?? []) expect(a).toBeUndefined();
   });
 
+  it("refreshes or clears the author on re-extracted history occurrences", async () => {
+    const authors = async () => {
+      const out: unknown[] = [];
+      for (const path of await content.list("claims", 1000)) {
+        const rec = JSON.parse(await content.read((await content.lookup(path))!));
+        for (const o of rec.occurrences ?? [])
+          if (o.postId === "p-attr-refresh" && o.speakerKind === "author-voice") out.push(o.author);
+      }
+      return out;
+    };
+    await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-refresh"),
+      themes,
+    });
+    expect((await authors()).every((a) => a === undefined)).toBe(true);
+    await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-refresh"),
+      themes,
+      attribution,
+    });
+    const set = await authors();
+    expect(set.length).toBeGreaterThan(0);
+    expect(set.every((a) => (a as { name: string }).name === "Configured Author")).toBe(true);
+    await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-refresh"),
+      themes,
+      attribution: {
+        status: "unknown",
+        reason: "ambiguous-byline",
+        sourceMetadataVersion: attribution.sourceMetadataVersion,
+      },
+    });
+    expect((await authors()).every((a) => a === undefined)).toBe(true);
+  }, 60_000);
+
   it("re-extracts under a changed configuration instead of relabelling", async () => {
     const first = await extractGroundedClaims({
       provider: model(RESPONSE),

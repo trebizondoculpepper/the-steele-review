@@ -730,22 +730,28 @@ export async function upsertClaimRecord(
     const added = items.filter((c) => !known.has((c.occurrence as ClaimOccurrence).occurrenceId));
     // An occurrence re-extracted under a newer extraction (for example against
     // theme proposals) keeps its identity but points at the latest extraction.
-    const reextracted = new Set(
+    // Re-extracted occurrences, with the speaker kind this extraction found.
+    const reextracted = new Map(
       items
-        .map((c) => (c.occurrence as ClaimOccurrence).occurrenceId)
-        .filter((id) => known.has(id)),
+        .map((c) => c.occurrence as ClaimOccurrence)
+        .filter((o) => known.has(o.occurrenceId))
+        .map((o) => [o.occurrenceId, o.speaker.kind] as const),
     );
-    const occurrences = current.occurrences.map((o) =>
-      reextracted.has(o.occurrenceId) && o.extraction !== extractionRef
-        ? {
-            ...o,
-            extraction: extractionRef,
-            extractions: [...new Set([...(o.extractions ?? [o.extraction]), extractionRef])].slice(
-              -100,
-            ),
-          }
-        : o,
-    );
+    const occurrences = current.occurrences.map((o) => {
+      if (!reextracted.has(o.occurrenceId) || o.extraction === extractionRef) return o;
+      // The author follows the latest extraction: set, replaced or cleared.
+      // Earlier attributions stay readable through each referenced extraction
+      // record in `extractions`.
+      const { author: _previous, ...rest } = o;
+      return {
+        ...rest,
+        extraction: extractionRef,
+        extractions: [...new Set([...(o.extractions ?? [o.extraction]), extractionRef])].slice(
+          -100,
+        ),
+        ...authorFor(reextracted.get(o.occurrenceId)!, attribution),
+      };
+    });
     const refreshed = occurrences.some((o, i) => o !== current.occurrences[i]);
     const themeIds = [
       ...new Set([...current.themeIds, ...items.flatMap((c) => c.themeIds)]),
