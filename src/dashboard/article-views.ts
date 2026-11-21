@@ -11,6 +11,7 @@ import {
   type RunStatusPort,
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
+import type { ThemesPort } from "./themes.js";
 
 /** Article list and per-revision trace pages (#377). */
 
@@ -18,6 +19,8 @@ export const RECENT_LIMIT = 25;
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
 export interface ArticleViewDeps {
+  /** Saved theme proposals for the trace page (#496). */
+  themes?: ThemesPort;
   articles?: RecentArticlesPort;
   runs?: RunStatusPort;
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
@@ -118,6 +121,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.content ? { content: deps.content } : {}),
         ...(deps.receipts ? { receipts: deps.receipts } : {}),
         ...(deps.source ? { source: deps.source } : {}),
+        ...(deps.themes ? { themes: deps.themes } : {}),
       });
       const trigger =
         deps.canTrigger && t.sourceVersion
@@ -231,6 +235,30 @@ export function renderTrace(t: ArticleTrace): string {
         })
         .join("")}</tbody></table></div>${t.recovery.receiptsTruncated ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>' : ""}`
     : "";
+  const themes = t.themes
+    ? (() => {
+        const label =
+          t.themes.state === "unavailable"
+            ? "saved themes are unavailable"
+            : t.themes.state === "not-analysed"
+              ? "no theme proposals are saved for this exact revision"
+              : t.themes.state === "partial"
+                ? "the theme scan was incomplete"
+                : "";
+        const list =
+          t.themes.themes.length === 0
+            ? ""
+            : `<ul>${t.themes.themes
+                .map((theme: { result: string; id: string; title: string; description?: string }) => {
+                  const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                  return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                    theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                  } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                })
+                .join("")}</ul>`;
+        return `<h2>Themes</h2>${list}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
+      })()
+    : "";
   const recovery = t.recovery
     ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>${
         t.recovery.workflowKey
@@ -291,5 +319,5 @@ export function renderTrace(t: ArticleTrace): string {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${source}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${themes}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
 }

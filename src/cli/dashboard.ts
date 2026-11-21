@@ -204,6 +204,7 @@ const views = [
         }
       : {}),
     ...(archive ? { source: archivedSource(archive) } : {}),
+    ...(content ? { themes: savedThemes(content) } : {}),
   }),
   // Every saved draft with its exact verification and delivery status (#440).
   ...draftViews(
