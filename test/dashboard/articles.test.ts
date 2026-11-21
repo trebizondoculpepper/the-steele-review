@@ -112,6 +112,38 @@ describe("article run summaries (#377)", () => {
     expect(summariseRun({ state: "running" }).editorial).toBe("none");
   });
 
+  it("does not claim dispatch approval when none was recorded (#486)", () => {
+    const without = summariseRun({
+      state: "finished",
+      result: { ...verified, approvalEvent: undefined },
+    });
+    expect(without.approvalRecorded).toBe(false);
+    const htmlWithout = renderTrace({
+      post,
+      correlationId: "cid",
+      editorial: without.editorial,
+      ...without,
+      receipts: [],
+      receiptsTruncated: false,
+      source: { state: "not-configured" },
+    });
+    expect(htmlWithout).toContain("no dispatch approval recorded");
+    expect(htmlWithout).not.toContain("approval recorded for dispatch");
+
+    const withApproval = summariseRun({ state: "finished", result: verified });
+    expect(withApproval.approvalRecorded).toBe(true);
+    const htmlWith = renderTrace({
+      post,
+      correlationId: "cid",
+      editorial: withApproval.editorial,
+      ...withApproval,
+      receipts: [],
+      receiptsTruncated: false,
+      source: { state: "not-configured" },
+    });
+    expect(htmlWith).toContain("approval recorded for dispatch");
+  });
+
   it("renders a rejected draft as unsuccessful without delivery (#486)", () => {
     const summary = summariseRun({
       state: "finished",

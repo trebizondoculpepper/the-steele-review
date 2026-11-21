@@ -176,6 +176,8 @@ export interface ArticleTrace {
   summary: RunSummary;
   /** What the workflow concluded editorially; `none` for failures and pending work. */
   editorial: EditorialOutcome;
+  /** True only when a dispatch approval handoff was actually recorded. */
+  approvalRecorded?: boolean;
   /** When a running workflow last reported progress (#439). */
   lastUpdate?: string;
   outcome?: string;
@@ -283,7 +285,14 @@ export function summariseRun(
   now: number = Date.now(),
 ): Pick<
   ArticleTrace,
-  "summary" | "editorial" | "outcome" | "reason" | "stages" | "research" | "lastUpdate"
+  | "summary"
+  | "editorial"
+  | "approvalRecorded"
+  | "outcome"
+  | "reason"
+  | "stages"
+  | "research"
+  | "lastUpdate"
 > {
   const idx = (s: StageName) => STAGES.indexOf(s);
   switch (run.state) {
@@ -390,19 +399,20 @@ export function summariseRun(
         };
       }
       const verified = r.outcome === "verified";
+      const approvalRecorded = "approvalEvent" in r && Boolean(r.approvalEvent);
       const stages = rows(idx("delivery"));
       stages[idx("verification")] = {
         stage: "verification",
         state: verified ? "done" : "failed",
         detail: verified ? "approved" : `rejected${reason ? `: ${reason}` : ""}`,
       };
-      stages[idx("delivery")] =
-        "approvalEvent" in r && r.approvalEvent
-          ? { stage: "delivery", state: "done", detail: "approval recorded for dispatch" }
-          : { stage: "delivery", state: "not-reached" };
+      stages[idx("delivery")] = approvalRecorded
+        ? { stage: "delivery", state: "done", detail: "approval recorded for dispatch" }
+        : { stage: "delivery", state: "not-reached" };
       return {
         summary: "completed",
         editorial: editorialOutcomeOf(r.outcome),
+        approvalRecorded,
         ...base,
         stages,
       };

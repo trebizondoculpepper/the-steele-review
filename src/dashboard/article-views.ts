@@ -164,10 +164,16 @@ ${mismatch}
 }
 
 /** Human wording for the editorial outcome (#486). Never implies delivery. */
-export function editorialText(editorial: EditorialOutcome, outCome?: string): string {
+export function editorialText(
+  editorial: EditorialOutcome,
+  outCome?: string,
+  approvalRecorded = false,
+): string {
   switch (editorial) {
     case "verified":
-      return "verified — approval recorded for dispatch";
+      return approvalRecorded
+        ? "verified — approval recorded for dispatch"
+        : "verified — no dispatch approval recorded";
     case "rejected":
       return "verification rejected — this draft was not approved";
     case "evidence-gap":
@@ -186,7 +192,10 @@ export function renderTrace(t: ArticleTrace): string {
     ["Correlation ID", `<code>${escapeHtml(t.correlationId)}</code>`],
     ["Revision", t.sourceVersion ? `<code>${escapeHtml(t.sourceVersion)}</code>` : "unknown"],
     ["Workflow", badge(t.summary)],
-    ["Editorial outcome", escapeHtml(editorialText(t.editorial, t.outcome))],
+    [
+      "Editorial outcome",
+      escapeHtml(editorialText(t.editorial, t.outcome, t.approvalRecorded === true)),
+    ],
     ...(t.summary === "pending"
       ? [
           [
