@@ -10,6 +10,7 @@ import type { OperationStore } from "../controllers/operation-store.js";
 import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
+  ArticleApprovedDataSchema,
   createArticleApprovedEvent,
   parseArticleApprovedEvent,
   type ArticleApprovedData,
@@ -119,6 +120,10 @@ export const DeliveryReceiptSchema = z
     action: z.string(),
     /** True for placeholder deliveries that made no external call. */
     simulated: z.boolean(),
+    draftHash: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
     externalId: z.string().optional(),
     url: z.string().optional(),
     deliveredAt: z.string(),
@@ -165,6 +170,39 @@ export type DeliveryDecision =
   | { action: "ack"; outcome: "delivered" | "reused"; receipt: ArtifactRef }
   | { action: "nak"; delayMs: number; reason: "scheduled" | "busy" | "retry" | "uncertain" }
   | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
+
+function deliveryDirectory(
+  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft">,
+  destination: Pick<DestinationAdapter, "name" | "action">,
+): string {
+  const revision = article.draft.hash.replace(/^sha256:/, "").slice(0, 32);
+  return `publications/${destination.name}/${destination.action}/${article.publicationId}/${article.postId}/${revision}`;
+}
+
+/** Read durable proof for both dummy destinations for one exact approved revision. */
+export async function readDummyDeliveryProof(
+  content: Pick<GitArtifactStore, "lookup" | "read">,
+  article: ArticleApprovedData,
+): Promise<{ a: ArtifactRef; b: ArtifactRef } | undefined> {
+  const approved = ArticleApprovedDataSchema.parse(article);
+  const read = async (name: string) => {
+    const dir = deliveryDirectory(approved, { name, action: "draft" });
+    const ref = await content.lookup(`${dir}/receipt.json`);
+    if (!ref) return undefined;
+    const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+    if (
+      !receipt.simulated ||
+      receipt.destination !== name ||
+      receipt.action !== "draft" ||
+      receipt.draftHash !== approved.draft.hash
+    ) {
+      throw new ApprovalError("dummy receipt does not prove the approved draft");
+    }
+    return ref;
+  };
+  const [a, b] = await Promise.all([read("dummy-a"), read("dummy-b")]);
+  return a && b ? { a, b } : undefined;
+}
 
 /** Handle one approved-article delivery for one destination. */
 export async function handleApprovedArticle(input: {
@@ -232,7 +270,7 @@ async function deliverApprovedArticle(
   const { destination } = input;
   const revision = event.draft.hash.replace(/^sha256:/, "").slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
-  const dir = `publications/${destination.name}/${destination.action}/${event.publicationId}/${event.postId}/${revision}`;
+  const dir = deliveryDirectory(event, destination);
   // A receipt committed before a crash is the durable result: record completion
   // from it rather than delivering again or giving up on attempt limits.
   const committed = await input.content.lookup(`${dir}/receipt.json`);
@@ -273,6 +311,7 @@ async function deliverApprovedArticle(
       destination: destination.name,
       action: destination.action,
       ...delivered,
+      draftHash: event.draft.hash,
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);
