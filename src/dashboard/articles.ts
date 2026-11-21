@@ -318,13 +318,16 @@ export async function traceArticle(input: {
       verification = undefined;
     }
   }
+  // Receipts belong to the run's exact draft. Use the run result's own
+  // reference even when reading the draft text failed, and show none when the
+  // run has no draft at all: an earlier revision's delivery must never appear
+  // under a run that produced nothing.
+  const runDraftHash =
+    finished && "draft" in finished && finished.draft ? finished.draft.sha256 : undefined;
   let receipts: ReceiptView[] = [];
-  if (input.receipts) {
+  if (input.receipts && runDraftHash) {
     try {
-      receipts = await input.receipts.receiptsFor(
-        post,
-        draft ? `sha256:${draft.hash}` : undefined,
-      );
+      receipts = await input.receipts.receiptsFor(post, `sha256:${runDraftHash}`);
     } catch {
       receipts = [];
     }

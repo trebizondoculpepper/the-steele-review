@@ -189,6 +189,44 @@ describe("article pages (#377)", () => {
     expect(html).toContain("approved");
   });
 
+  it("binds receipts to the run's draft even when its text is unreadable", async () => {
+    const asked: Array<string | undefined> = [];
+    const t = await traceArticle({
+      post,
+      articles,
+      runs: runs({ p1: { state: "finished", result: verified } }),
+      content: {
+        draft: async () => undefined,
+        verification: async () => undefined,
+      },
+      receipts: {
+        receiptsFor: async (_post, hash) => {
+          asked.push(hash);
+          return [];
+        },
+      },
+    });
+    expect(asked).toEqual([`sha256:${"b".repeat(64)}`]);
+    expect(t.draft).toBeUndefined();
+  });
+
+  it("shows no receipts when the run produced no draft", async () => {
+    let asked = 0;
+    const t = await traceArticle({
+      post,
+      articles,
+      runs: runs({ p1: { state: "finished", result: claimFailure } }),
+      receipts: {
+        receiptsFor: async () => {
+          asked++;
+          return [];
+        },
+      },
+    });
+    expect(t.receipts).toEqual([]);
+    expect(asked).toBe(0);
+  });
+
   it("lists recent articles with run state, escaping titles", async () => {
     const [list] = articleViews({ articles, runs: runs({ p1: { state: "running" } }) });
     const html = await list!.render(new URL("http://x/articles"));
