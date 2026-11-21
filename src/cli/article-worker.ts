@@ -29,7 +29,10 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { writerModel } from "../config/writer-model.js";
-import { openRouterFromEnv } from "../controllers/openrouter.js";
+import {
+  CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS,
+  openRouterFromEnv,
+} from "../controllers/openrouter.js";
 import { PublicPageFetcher } from "../controllers/research-web.js";
 import { LexicalShortlister } from "../research/librarian.js";
 import { sonarFromEnv } from "../research/sonar.js";
@@ -58,12 +61,17 @@ function main(): number {
   const c = env.data;
   // Per-stage model choices, defaulting to STEELE_MODEL.
   const model = (override: string) =>
-    openRouterFromEnv({
-      env: {
-        ...process.env,
-        ...(process.env[override] ? { STEELE_MODEL: process.env[override] } : {}),
+    openRouterFromEnv(
+      {
+        env: {
+          ...process.env,
+          ...(process.env[override] ? { STEELE_MODEL: process.env[override] } : {}),
+        },
       },
-    });
+      override === "STEELE_MODEL_CLAIMS"
+        ? { maxOutputTokens: CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS }
+        : {},
+    );
   // Same-speaker history needs the occurrence index; without it the essay
   // simply has no historical section.
   let history;

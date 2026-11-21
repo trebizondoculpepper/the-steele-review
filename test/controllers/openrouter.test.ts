@@ -3,6 +3,7 @@ import { ClaimExtractor } from "../../src/analysis/extraction.js";
 import { CredentialError } from "../../src/config/credentials.js";
 import {
   ModelProviderError,
+  CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS,
   OpenRouterProvider,
   codeForStatus,
   openRouterFromEnv,
@@ -48,6 +49,29 @@ async function failure(promise: Promise<unknown>): Promise<ModelProviderError> {
 }
 
 describe("OpenRouterProvider", () => {
+  it("allows claim extraction to exceed the short-response cap without dropping the character bound", async () => {
+    const limits: number[] = [];
+    const p = openRouterFromEnv(
+      { env: { OPENROUTER_API_KEY: KEY, STEELE_MODEL: "vendor/m" } },
+      {
+        maxOutputTokens: CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS,
+        fetch: (async (_url, init) => {
+          const limit = JSON.parse(String(init?.body)).max_tokens;
+          limits.push(limit);
+          // Reproduce a structured array cut off at the former 8192-token cap.
+          return ok(limit > 8192 ? '{"claims":[]}' : '{"claims":[');
+        }) as typeof fetch,
+      },
+    );
+    const result = await p.complete(
+      { ...req, maxOutputChars: 200_000 },
+      new AbortController().signal,
+    );
+    expect(JSON.parse(result)).toEqual({ claims: [] });
+    expect(limits).toEqual([32_768]);
+    await p.complete(req, new AbortController().signal);
+    expect(limits[1]).toBe(Math.ceil(req.maxOutputChars / 3));
+  });
   it("sends one bounded chat request and returns the content with usage", async () => {
     const { p, calls, usage } = provider(() =>
       ok('{"claims":[]}', { usage: { prompt_tokens: 10, completion_tokens: 3, cost: 0.0001 } }),

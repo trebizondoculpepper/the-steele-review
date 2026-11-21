@@ -17,6 +17,11 @@ import { readCredential, type CredentialSource } from "../config/credentials.js"
 
 export const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
+/** Structured claim arrays need more room than a short prose response (#393).
+ * This remains a hard ceiling, also bounded by the request's character limit.
+ */
+export const CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS = 32_768;
+
 export type ModelProviderErrorCode =
   | "credit-exhausted"
   | "rate-limited"
@@ -243,7 +248,7 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
  */
 export function openRouterFromEnv(
   source: CredentialSource = {},
-  extra: Pick<OpenRouterConfig, "onUsage" | "fetch" | "timeoutMs"> = {},
+  extra: Pick<OpenRouterConfig, "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens"> = {},
 ): OpenRouterProvider {
   const env = source.env ?? process.env;
   const apiKey = readCredential("OPENROUTER_API_KEY", { ...source, required: true });
