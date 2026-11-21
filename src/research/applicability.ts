@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { Claim } from "../analysis/claim.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
@@ -27,15 +28,7 @@ import type { ResearchCandidate } from "./research-store.js";
  * - No external research happens here; gaps are what #40 would research.
  */
 
-export const DEFAULT_APPLICABILITY_PROMPT: ExtractionPrompt = {
-  version: "research-applicability-v1",
-  instructions: [
-    "Decide whether each existing research entry applies to the new claim.",
-    "applicability: applicable (answers this claim), partial (stable background applies, specifics do not) or not-applicable (different subject, even if similar wording).",
-    "List the evidence items (url and exact passage) from that entry that support reuse, and the incident-specific details of the new claim that the entry does not cover as gaps.",
-    'Respond with JSON only: {"assessments":[{"entryId","applicability","rationale","reuseEvidence":[{"url","passage"}],"gaps":[]}],"gaps":[]}.',
-  ].join("\n"),
-};
+export const DEFAULT_APPLICABILITY_PROMPT = loadPromptFile("research", "applicability-v1");
 
 const ModelAssessmentSchema = z
   .object({
