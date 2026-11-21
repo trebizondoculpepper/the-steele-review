@@ -1,6 +1,6 @@
 import type { PostTrace } from "../diagnostics/post-trace.js";
 import { postCorrelationId } from "../observability/post-correlation.js";
-import type { ArticleRunFinal } from "../workflow/article-run.js";
+import type { ArticleRunFinal, Ref } from "../workflow/article-run.js";
 
 /**
  * Archived articles and their runs, for the dashboard (#377).
@@ -38,6 +38,44 @@ export type RunState =
   | { state: "unavailable" }
   | { state: "not-configured" };
 
+/** Content for one saved draft (markdown, untrusted) and its exact hash. */
+export interface DraftView {
+  hash: string;
+  text: string;
+}
+
+/** Verifier outcome bound to the exact draft revision it checked. */
+export interface VerificationView {
+  outcome: string;
+  /** True only when the report's draft hash equals the run's saved draft. */
+  matchesDraft: boolean;
+  draftHash?: string;
+}
+
+/** One publisher/destination receipt for an approved revision. */
+export interface ReceiptView {
+  destination: string;
+  action: string;
+  simulated: boolean;
+  deliveredAt: string;
+  /** Present only for a confirmed real delivery over HTTPS. */
+  url?: string;
+}
+
+/** Reads saved drafts and verification reports through the artifact controller. */
+export interface ArticleContentPort {
+  draft(ref: Ref): Promise<string | undefined>;
+  verification(ref: Ref): Promise<{ outcome: string; draftHash?: string } | undefined>;
+}
+
+/** Delivery receipts recorded for one article. */
+export interface ReceiptsPort {
+  receiptsFor(
+    post: { publicationId: string; postId: string },
+    draftHash?: string,
+  ): Promise<ReceiptView[]>;
+}
+
 export interface RunStatusPort {
   /** The ArticleRun workflow for this exact revision. */
   status(post: { publicationId: string; postId: string; sourceVersion: string }): Promise<RunState>;
@@ -74,6 +112,9 @@ export interface ArticleTrace {
   stages: StageRow[];
   research: Array<{ jobId: string; outcome: string }>;
   trace?: PostTrace;
+  draft?: DraftView;
+  verification?: VerificationView;
+  receipts: ReceiptView[];
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -215,6 +256,10 @@ export async function traceArticle(input: {
   runs?: RunStatusPort;
   /** The existing per-post trace (#174). */
   trace?: () => Promise<PostTrace>;
+  /** Saved drafts and verification reports (#378). */
+  content?: ArticleContentPort;
+  /** Delivery receipts (#378). */
+  receipts?: ReceiptsPort;
 }): Promise<ArticleTrace> {
   const { post } = input;
   let article: ArchivedArticle | undefined;
@@ -244,11 +289,54 @@ export async function traceArticle(input: {
   } else if (input.runs) {
     run = { state: "unavailable" };
   }
+  const summary = summariseRun(run);
+  const finished = run.state === "finished" ? run.result : undefined;
+  let draft: DraftView | undefined;
+  if (finished && "draft" in finished && finished.draft && input.content) {
+    try {
+      const text = await input.content.draft(finished.draft);
+      if (text !== undefined) draft = { hash: finished.draft.sha256, text };
+    } catch {
+      draft = undefined;
+    }
+  }
+  let verification: VerificationView | undefined;
+  if (finished && "verification" in finished && finished.verification && input.content) {
+    try {
+      const report = await input.content.verification(finished.verification);
+      if (report) {
+        verification = {
+          outcome: report.outcome,
+          matchesDraft:
+            draft !== undefined &&
+            report.draftHash !== undefined &&
+            report.draftHash === `sha256:${draft.hash}`,
+          ...(report.draftHash ? { draftHash: report.draftHash } : {}),
+        };
+      }
+    } catch {
+      verification = undefined;
+    }
+  }
+  let receipts: ReceiptView[] = [];
+  if (input.receipts) {
+    try {
+      receipts = await input.receipts.receiptsFor(
+        post,
+        draft ? `sha256:${draft.hash}` : undefined,
+      );
+    } catch {
+      receipts = [];
+    }
+  }
   return {
     post,
     correlationId: postCorrelationId(post),
     ...(sourceVersion ? { sourceVersion } : {}),
-    ...summariseRun(run),
+    ...summary,
     ...(trace ? { trace } : {}),
+    ...(draft ? { draft } : {}),
+    ...(verification ? { verification } : {}),
+    receipts,
   };
 }

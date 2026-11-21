@@ -30,7 +30,12 @@ import { systemStatusSource } from "../dashboard/status-adapters.js";
 import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
-import { indexArticles, restateRuns } from "../dashboard/adapters.js";
+import {
+  contentArticleView,
+  contentReceipts,
+  indexArticles,
+  restateRuns,
+} from "../dashboard/adapters.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
 
@@ -104,6 +109,9 @@ const views = [
         ...(archive ? { archive } : {}),
         ...(content ? { content } : {}),
       }),
+    ...(content
+      ? { content: contentArticleView(content), receipts: contentReceipts(content) }
+      : {}),
   }),
   statusView(
     systemStatusSource({

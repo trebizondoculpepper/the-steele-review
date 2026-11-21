@@ -131,6 +131,64 @@ describe("article pages (#377)", () => {
     expect(html).toContain('<span class="s-failed">failed</span>');
   });
 
+  it("renders the saved draft safely with its verification and receipts", async () => {
+    const t = {
+      post,
+      correlationId: "cid",
+      summary: "completed" as const,
+      stages: [],
+      research: [],
+      draft: { hash: "c".repeat(64), text: "<script>alert('x')</script> A claim." },
+      verification: {
+        outcome: "redraft",
+        matchesDraft: false,
+        draftHash: `sha256:${"d".repeat(64)}`,
+      },
+      receipts: [
+        {
+          destination: "dummy-a",
+          action: "draft",
+          simulated: true,
+          deliveredAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          destination: "real",
+          action: "publish",
+          simulated: false,
+          deliveredAt: "2026-01-01T00:00:00Z",
+          url: "https://example.test/post",
+        },
+      ],
+    };
+    const html = renderTrace(t);
+    // Article markup is shown as text, never executed.
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+    // A report for another revision is called out, not presented as approval.
+    expect(html).toContain("does not bind to the saved draft");
+    expect(html).toContain("redraft");
+    // Simulated deliveries are labelled; only the real receipt carries a link.
+    expect(html).toContain("simulated");
+    expect(html).toContain('href="https://example.test/post"');
+    expect(html).toContain("delivered");
+    expect(html).not.toContain(">published<");
+  });
+
+  it("confirms a verification that binds to the exact draft", () => {
+    const html = renderTrace({
+      post,
+      correlationId: "cid",
+      summary: "completed",
+      stages: [],
+      research: [],
+      draft: { hash: "c".repeat(64), text: "body" },
+      verification: { outcome: "approved", matchesDraft: true },
+      receipts: [],
+    });
+    expect(html).toContain("binds to the exact saved draft");
+    expect(html).toContain("approved");
+  });
+
   it("lists recent articles with run state, escaping titles", async () => {
     const [list] = articleViews({ articles, runs: runs({ p1: { state: "running" } }) });
     const html = await list!.render(new URL("http://x/articles"));
