@@ -1,5 +1,9 @@
+import { logPipeline } from "../observability/pipeline-log.js";
 import type { OperationStore } from "../controllers/operation-store.js";
-import { ARTICLE_APPROVED_SUBJECT } from "../events/article-approved-event.js";
+import {
+  ARTICLE_APPROVED_SUBJECT,
+  parseArticleApprovedEvent,
+} from "../events/article-approved-event.js";
 
 /**
  * Approval outbox dispatch (#271, for #244).
@@ -31,15 +35,24 @@ export async function dispatchApprovedArticles(input: {
     input.limit ?? 200,
     ARTICLE_APPROVED_SUBJECT,
   )) {
+    let outcome: "sent" | "retry";
     try {
       await input.publisher.publish(pending.subject, new TextEncoder().encode(pending.payload), {
         msgId: pending.eventId,
       });
       input.operations.markEventSent(pending.eventId);
       sent++;
+      outcome = "sent";
     } catch {
       input.operations.markEventRetry(pending.eventId, input.retryDelayMs ?? 60_000);
       retrying++;
+      outcome = "retry";
+    }
+    // Legacy or malformed outbox payloads cannot disrupt delivery diagnostics.
+    try {
+      logPipeline(parseArticleApprovedEvent(pending.payload), "approval-dispatch", outcome);
+    } catch {
+      // The settled outbox record remains authoritative.
     }
   }
   return { sent, retrying };

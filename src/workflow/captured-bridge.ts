@@ -1,3 +1,4 @@
+import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
 
@@ -80,18 +81,27 @@ export async function handleCapturedContent(
   } catch {
     return { action: "term", reason: "invalid-event" };
   }
-  if (event.ingestionReason !== "live")
-    return { action: "ack", outcome: "skipped", reason: "not-live" };
-  if (!options.enabledSources.has(event.source.namespace))
-    return { action: "ack", outcome: "skipped", reason: "source-disabled" };
-  if (!event.complete) return { action: "ack", outcome: "skipped", reason: "incomplete" };
-
   const input = articleRunInputFor(event, options.researchDeadlineMs, options.researchRequestLimit);
+  const skipReason =
+    event.ingestionReason !== "live"
+      ? "not-live"
+      : !options.enabledSources.has(event.source.namespace)
+        ? "source-disabled"
+        : !event.complete
+          ? "incomplete"
+          : undefined;
+  if (skipReason) {
+    logPipeline(input, "capture-bridge", skipReason, input.sourceVersion);
+    return { action: "ack", outcome: "skipped", reason: skipReason };
+  }
+
   const key = articleRunKey(input);
   try {
     const outcome = await options.submit(key, input);
+    logPipeline(input, "capture-bridge", outcome, input.sourceVersion);
     return { action: "ack", outcome, key };
   } catch {
+    logPipeline(input, "capture-bridge", "submission-failed", input.sourceVersion);
     return {
       action: "nak",
       delayMs: options.retryDelayMs ?? 30_000,

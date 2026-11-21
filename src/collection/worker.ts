@@ -1,3 +1,5 @@
+import { postCorrelationId } from "../observability/post-correlation.js";
+import { logPipeline } from "../observability/pipeline-log.js";
 import type { SubstackItem } from "../content/substack-item.js";
 import type { ArtifactRef } from "../controllers/artifact-store.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
@@ -134,7 +136,7 @@ export class CollectionWorker {
           acquisitionMethod: record.provenance.method,
           complete: record.complete,
         },
-        { causationId },
+        { causationId, correlationId: postCorrelationId(record.item) },
       );
       // The source-neutral captured-content handoff (#269), committed with
       // the text-ready event; existing indexing consumers are unchanged.
@@ -164,6 +166,7 @@ export class CollectionWorker {
   /** Handle one delivered discovery event. Acknowledges only after durable state. */
   async handle(message: DeliveredMessage, signal?: AbortSignal): Promise<WorkerOutcome> {
     const outcome = await this.process(message, signal);
+    if (outcome.item) logPipeline(outcome.item, "collection", outcome.result);
     this.config.onOutcome?.(outcome.result, outcome.item);
     return outcome.result;
   }

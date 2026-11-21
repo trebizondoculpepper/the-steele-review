@@ -1,3 +1,4 @@
+import { postCorrelationId } from "../observability/post-correlation.js";
 import { randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -77,7 +78,7 @@ export function createDiscoveryEvent(
     ...SubstackItemSchema.parse(item),
     ingestionReason: options.reason,
   });
-  const extensions: Record<string, string> = {};
+  const extensions: Record<string, string> = { postcorrelationid: postCorrelationId(data) };
   if (options.correlationId !== undefined) {
     extensions.correlationid = ExtensionSchema.parse(options.correlationId);
   }

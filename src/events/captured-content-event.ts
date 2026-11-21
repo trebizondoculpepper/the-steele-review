@@ -1,3 +1,5 @@
+import { articleRunTarget } from "../content/article-run-target.js";
+import { postCorrelationId } from "../observability/post-correlation.js";
 import { createHash } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
@@ -86,6 +88,7 @@ export function createCapturedContentEvent(
       type: CAPTURED_CONTENT_EVENT_TYPE_V1,
       time: now().toISOString(),
       subject: `${valid.source.namespace}/${valid.itemId}`,
+      correlationid: postCorrelationId(articleRunTarget(valid.source.namespace, valid.itemId)),
       datacontenttype: "application/json",
       dataschema: CAPTURED_CONTENT_DATASCHEMA_V1,
       data: valid,

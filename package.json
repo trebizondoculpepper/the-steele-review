@@ -49,6 +49,7 @@
     "@nats-io/transport-node": "^3.5.0",
     "@restatedev/restate-sdk": "1.18.4",
     "@restatedev/restate-sdk-clients": "1.18.4",
+    "@sentry/node": "^11.16.0",
     "cloudevents": "^10.0.0",
     "html-to-text": "^10.0.1",
     "rss-parser": "^3.13.0",
