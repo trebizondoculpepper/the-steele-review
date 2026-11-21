@@ -63,6 +63,7 @@ let active = 0;
 let maxActive = 0;
 const pinnedByPost = new Map<string, PinnedResearch[]>();
 const plans = new Map<string, string[]>();
+const researchSubjects: string[] = [];
 
 const stages: ArticleStages = {
   themes: async (post) => {
@@ -78,6 +79,7 @@ const stages: ArticleStages = {
   },
   research: async (req) => {
     calls.research++;
+    researchSubjects.push(req.subject!);
     active++;
     maxActive = Math.max(maxActive, active);
     try {
@@ -363,7 +365,6 @@ describe("unattended article run on Restate (#243)", () => {
     // Earlier tests can leave slow jobs queued under the shared concurrency rule.
     const post = { ...input("capped"), researchRequestLimit: 2, researchDeadlineMs: 60_000 };
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
-    const before = calls.research;
     await client.workflowSubmit(post);
     await client.workflowSubmit({ ...post, researchRequestLimit: 3 }).catch(() => undefined);
     const result = await client.workflowAttach();
@@ -373,6 +374,9 @@ describe("unattended article run on Restate (#243)", () => {
       "finished",
       "not-commissioned",
     ]);
-    expect(calls.research - before).toBe(2);
+    expect(researchSubjects.filter((subject) => subject.startsWith("cap-")).sort()).toEqual([
+      "cap-first",
+      "cap-second",
+    ]);
   }, 120_000);
 });
