@@ -1,0 +1,45 @@
+# Opt-in Sentry Logs for the isolated fixture (#361). Use with fixture.compose.yaml:
+#
+#   SENTRY_DSN_PATH=<private DSN file> docker compose -p <project> \
+#     -f fixture.compose.yaml -f fixture.sentry.compose.yaml up -d
+#
+# The base fixture network is internal (no egress). This override gives only
+# the application services a second, egress-capable network so milestone logs
+# can reach Sentry, and mounts the DSN as a file (SENTRY_DSN_FILE); the DSN
+# never appears in the environment or in this file. The fixture still has no
+# model keys, host ports or live publishers.
+x-sentry: &sentry
+  networks: [default, telemetry]
+  secrets: [sentry-dsn]
+
+x-sentry-env: &sentry-env
+  SENTRY_DSN_FILE: /run/secrets/sentry-dsn
+
+services:
+  article-worker:
+    <<: *sentry
+    environment:
+      <<: *sentry-env
+  capture-bridge:
+    <<: *sentry
+    environment:
+      <<: *sentry-env
+  approval-dispatcher:
+    <<: *sentry
+    environment:
+      <<: *sentry-env
+  dummy-publisher-a:
+    <<: *sentry
+    environment:
+      <<: *sentry-env
+  dummy-publisher-b:
+    <<: *sentry
+    environment:
+      <<: *sentry-env
+
+networks:
+  telemetry: {}
+
+secrets:
+  sentry-dsn:
+    file: ${SENTRY_DSN_PATH:?Set the private Sentry DSN file path}
