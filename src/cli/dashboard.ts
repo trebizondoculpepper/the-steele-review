@@ -36,6 +36,7 @@ import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
+  archivedSource,
   contentArticleView,
   contentReceipts,
   indexArticles,
@@ -167,6 +168,7 @@ const views = [
           }),
         }
       : {}),
+    ...(archive ? { source: archivedSource(archive) } : {}),
   }),
   // Every saved draft with its exact verification and delivery status (#440).
   ...draftViews(
