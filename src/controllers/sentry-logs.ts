@@ -14,7 +14,7 @@ type Milestone = {
 
 let enabled: boolean | undefined;
 
-export function exportPipelineLog(attributes: Milestone): void {
+export function exportPipelineLog(attributes: Milestone, level: "info" | "warn" = "info"): void {
   try {
     if (enabled === undefined) {
       enabled = false;
@@ -47,7 +47,7 @@ export function exportPipelineLog(attributes: Milestone): void {
       );
       if (!enabled) console.warn(JSON.stringify({ event: "sentry-logs", outcome: "disabled" }));
     }
-    if (enabled) logger.info(message, attributes);
+    if (enabled) logger[level](message, attributes);
   } catch {
     enabled = false;
     console.warn(JSON.stringify({ event: "sentry-logs", outcome: "disabled" }));

@@ -27,6 +27,7 @@ import {
 } from "../research/librarian.js";
 import { runResearchJob, type SupportJudge } from "../research/runner.js";
 import type { SonarClient } from "../research/sonar.js";
+import { CREDIT_EXHAUSTED } from "../observability/provider-condition.js";
 import { recordApproval } from "../publishing/approved-article.js";
 import {
   StageError,
@@ -210,6 +211,19 @@ export function articleStages(deps: {
     },
 
     async coverage(themes, claims, pinned: PinnedResearch[]) {
+      // Research that stopped for lack of provider credit is not a gap in the
+      // evidence: stop the run so the article is not written from it (#407).
+      if (
+        pinned.some(
+          (p) =>
+            p.outcome === "finished" &&
+            p.job.status === "finished" &&
+            p.job.result?.outcome === "failed" &&
+            p.job.result?.failure === "budget-exceeded",
+        )
+      ) {
+        throw new StageError("research", CREDIT_EXHAUSTED);
+      }
       // Exactly the results pinned at the deadline; nothing later.
       const byJob = new Map(pinned.map((p) => [p.jobId, p]));
       const out = await assessPostCoverage({

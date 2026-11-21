@@ -11,12 +11,7 @@ import { escapeHtml, type DashboardView } from "./server.js";
  */
 
 export type ServiceState = "healthy" | "unavailable" | "not-configured";
-export type FeedPollState =
-  | "current"
-  | "stale"
-  | "no-poll-yet"
-  | "unavailable"
-  | "not-configured";
+export type FeedPollState = "current" | "stale" | "no-poll-yet" | "unavailable" | "not-configured";
 export type ArchiveState = "ok" | "unavailable" | "not-configured";
 export type IndexState =
   | "current"
@@ -83,12 +78,10 @@ export function statusView(source: StatusSource): DashboardView {
         snapshot.pipelineState !== "healthy"
           ? `<p>${badge(snapshot.pipelineState)}</p>`
           : snapshot.operations.length === 0
-          ? '<p class="empty">No operations recorded yet.</p>'
-          : `<div class="wrap"><table><thead><tr><th>Operation status</th><th>Count</th></tr></thead><tbody>${snapshot.operations
-              .map(
-                (o) => `<tr><td>${escapeHtml(o.status)}</td><td>${o.count}</td></tr>`,
-              )
-              .join("")}</tbody></table></div>`;
+            ? '<p class="empty">No operations recorded yet.</p>'
+            : `<div class="wrap"><table><thead><tr><th>Operation status</th><th>Count</th></tr></thead><tbody>${snapshot.operations
+                .map((o) => `<tr><td>${escapeHtml(o.status)}</td><td>${o.count}</td></tr>`)
+                .join("")}</tbody></table></div>`;
       const archive =
         snapshot.archive.state === "ok"
           ? `${snapshot.archive.captured ?? 0} captured${snapshot.archive.truncated ? " (scan truncated)" : ""}`

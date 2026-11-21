@@ -17,6 +17,7 @@ import {
 } from "./rejection.js";
 import { normaliseThemeLabel } from "./theme.js";
 import type { CatalogueTheme } from "./theme-catalogue.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
  * Per-post theme proposals (#181; owner decisions recorded in
@@ -236,7 +237,8 @@ export async function proposeThemes(input: {
         { system: prompt.instructions, user, maxOutputChars: maxResponseChars },
         input.signal ?? new AbortController().signal,
       );
-    } catch {
+    } catch (error) {
+      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
       failure = "provider-failed";
       continue;
     }

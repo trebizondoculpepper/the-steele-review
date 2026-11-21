@@ -6,6 +6,7 @@ import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-stor
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
+import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 
 /**
@@ -423,6 +424,7 @@ export async function draftFromPackage(input: {
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
+      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
       lastFailure = "provider-failed";
       providerError = error instanceof ModelProviderError ? error.code : "unavailable";
       // An unknown or rejected model is not retried with the same request.
