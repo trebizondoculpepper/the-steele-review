@@ -66,7 +66,12 @@ const UnresolvedVerificationSchema = z
   })
   .strict();
 
-const persistedRef = (r: { repository: string; commit: string; path: string; hash: string }): Ref => ({
+const persistedRef = (r: {
+  repository: string;
+  commit: string;
+  path: string;
+  hash: string;
+}): Ref => ({
   repository: r.repository,
   commit: r.commit,
   path: r.path,
@@ -74,14 +79,10 @@ const persistedRef = (r: { repository: string; commit: string; path: string; has
 });
 
 /** Saved drafts and verification reports, read at their exact pinned revision. */
-export function contentArticleView(
-  content: Pick<GitArtifactStore, "lookupAt">,
-): ArticleContentPort {
+export function contentArticleView(content: Pick<GitArtifactStore, "read">): ArticleContentPort {
   const read = async (ref: Ref): Promise<string | undefined> => {
     try {
-      const found = await content.lookupAt(ref.commit, ref.path);
-      if (!found || found.ref.sha256 !== ref.sha256) return undefined;
-      return found.content;
+      return await content.read(ref);
     } catch {
       return undefined;
     }
@@ -154,7 +155,11 @@ export function contentReceipts(
     .map((name) => `publications/${name}`);
   return {
     async receiptsFor(post, draftHash) {
-      const revision = draftHash?.replace(/^sha256:/, "").slice(0, 32);
+      const fullHash = draftHash?.replace(/^sha256:/, "");
+      if (fullHash !== undefined && !/^[0-9a-f]{64}$/.test(fullHash)) {
+        return { receipts: [], truncated: false };
+      }
+      const revision = fullHash?.slice(0, 32);
       const receipts: ReceiptView[] = [];
       let truncated = false;
 
@@ -165,7 +170,7 @@ export function contentReceipts(
           for (const path of paths) {
             const match = RECEIPT_PATH.exec(path);
             if (!match) continue;
-            const [, , , publicationId, postId, rev] = match;
+            const [, destination, action, publicationId, postId, rev] = match;
             if (publicationId !== post.publicationId || postId !== post.postId) continue;
             if (revision && rev !== revision) continue;
             if (receipts.length >= limit) {
@@ -176,6 +181,17 @@ export function contentReceipts(
               const ref = await content.lookup(path);
               if (!ref) continue;
               const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+              // A path is only a candidate: bind the payload to its destination,
+              // action and full draft hash before presenting delivery evidence.
+              const receiptHash = receipt.draftHash?.replace(/^sha256:/, "");
+              if (
+                receipt.destination !== destination ||
+                receipt.action !== action ||
+                receiptHash === undefined ||
+                receiptHash.slice(0, 32) !== rev ||
+                (fullHash !== undefined && receiptHash !== fullHash)
+              )
+                continue;
               const confirmed =
                 !receipt.simulated &&
                 typeof receipt.url === "string" &&
