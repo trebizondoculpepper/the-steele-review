@@ -9,6 +9,7 @@ import {
   type ReconcileContext,
 } from "../approved-article.js";
 import type { ArticleApprovedData } from "../../events/article-approved-event.js";
+import type { PublicationPayload } from "../../drafting/publication-payload.js";
 import { SubstackError, type SubstackClient, type SubstackDraft } from "./client.js";
 import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
 
@@ -91,13 +92,28 @@ export class SubstackDraftDestination implements DestinationAdapter {
     };
   }
 
-  render({ markdown, data }: { markdown: string; data: ArticleApprovedData }): DestinationPreview {
+  /** The approved structured fields are used verbatim, never re-derived (#458). */
+  readonly supportsPublicationPayload = true;
+
+  render({
+    markdown,
+    data,
+    publication,
+  }: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview {
     // A top-level heading becomes the title rather than body text.
     const bodyMarkdown = markdown.replace(/^# .+\n+/m, "");
     const body = markdownToProseMirror(bodyMarkdown);
+    // Structured approvals carry the exact verified title and subtitle. A
+    // legacy body-only approval keeps the documented fallback: the draft
+    // heading, with no subtitle, because none was ever verified.
+    const structured = publication?.mode === "structured" ? publication.fields : undefined;
     const preview = {
-      title: titleOf(markdown, data),
-      subtitle: "",
+      title: structured?.title ?? titleOf(markdown, data),
+      subtitle: structured?.subtitle ?? "",
       body,
       fingerprint: bodyFingerprint(body),
       ...(this.bylineId === undefined ? {} : { bylineId: this.bylineId }),
@@ -124,6 +140,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
 
   private matches(draft: SubstackDraft, preview: z.infer<typeof PreviewBodySchema>): boolean {
     if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body) return false;
+    // Title, subtitle and body must all match the approved payload: two
+    // approvals can differ only in subtitle while sharing title and body.
+    if ((draft.draft_subtitle ?? "") !== preview.subtitle) return false;
     // A requested byline must be evidenced by the read-back. A draft that
     // dropped it is never claimed as delivered with attribution.
     if (preview.bylineId !== undefined) {
@@ -191,7 +210,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
     const p = PreviewBodySchema.parse(JSON.parse(context.preview.body));
     const intentAt = context.intentAt ? Date.parse(context.intentAt) : NaN;
     const found: SubstackDraft[] = [];
-    let sameTitle = 0;
+    // Same headline (title only) makes a listing inconclusive: a draft that
+    // shares the title but carries a different subtitle may be an ambiguous
+    // earlier attempt. Same submission (title and subtitle) is the stricter
+    // count used to claim this approval was delivered.
+    let sameHeadline = 0;
+    let sameSubmission = 0;
     let covered = false;
     try {
       for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
@@ -200,7 +224,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
           offset: page * RECONCILE_PAGE_SIZE,
         });
         found.push(...drafts.filter((d) => this.matches(d, p)));
-        sameTitle += drafts.filter((d) => (d.draft_title ?? "") === p.title).length;
+        const headline = drafts.filter((d) => (d.draft_title ?? "") === p.title);
+        sameHeadline += headline.length;
+        sameSubmission += headline.filter((d) => (d.draft_subtitle ?? "") === p.subtitle).length;
         if (drafts.length < RECONCILE_PAGE_SIZE) {
           covered = true; // the complete list
           break;
@@ -223,8 +249,8 @@ export class SubstackDraftDestination implements DestinationAdapter {
     }
     // A same-title draft whose body differs (for example one that read back
     // differently) is ambiguous: an operator decides, nothing is re-created.
-    if (found.length === 1 && sameTitle === 1) return { delivered: receiptFor(found[0]!) };
-    if (sameTitle === 0 && covered) return { delivered: false };
+    if (found.length === 1 && sameSubmission === 1) return { delivered: receiptFor(found[0]!) };
+    if (sameHeadline === 0 && covered) return { delivered: false };
     return "unknown";
   }
 }

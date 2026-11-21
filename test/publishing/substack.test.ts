@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import { publicationContentHash } from "../../src/drafting/publication-payload.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { ARTICLE_APPROVED_SUBJECT } from "../../src/events/article-approved-event.js";
 import {
@@ -262,6 +263,63 @@ describe("Substack draft destination (#385)", () => {
     expect(s.drafts[0]!.is_published).toBe(false);
   });
 
+  it("maps the approved structured title and subtitle verbatim (#458)", () => {
+    const d = new SubstackDraftDestination(fakeSubstack());
+    const ref = {
+      repository: "content",
+      commit: "a".repeat(40),
+      path: "publication/x/manifest.json",
+      hash: `sha256:${"b".repeat(64)}`,
+    };
+    const fields = {
+      title: "Approved title",
+      subtitle: "Approved subtitle",
+      excerpt: "Approved excerpt stays in content artifacts.",
+    };
+    const bodyOnly = { body: { hash: `sha256:${"c".repeat(64)}` } };
+    const payload = {
+      mode: "structured" as const,
+      schemaVersion: 1 as const,
+      metadata: ref,
+      body: ref,
+      fields,
+      contentHash: publicationContentHash({ ...bodyOnly, ...{ mode: "structured" as const, fields } }),
+    };
+    const preview = JSON.parse(
+      d.render({ markdown: WRITER_MARKDOWN, data, publication: payload }).body,
+    );
+    expect(preview.title).toBe("Approved title");
+    expect(preview.subtitle).toBe("Approved subtitle");
+    // The excerpt is not mapped onto an unverified platform field.
+    expect(JSON.stringify(preview)).not.toContain(fields.excerpt);
+  });
+
+  it("falls back to the draft heading for a legacy body-only approval (#458)", () => {
+    const d = new SubstackDraftDestination(fakeSubstack());
+    const publication = {
+      mode: "legacy-body-only" as const,
+      schemaVersion: 1 as const,
+      metadata: {
+        repository: "content",
+        commit: "a".repeat(40),
+        path: "publication/x/manifest.json",
+        hash: `sha256:${"b".repeat(64)}`,
+      },
+      body: {
+        repository: "content",
+        commit: "a".repeat(40),
+        path: "drafts/x.md",
+        hash: `sha256:${"c".repeat(64)}`,
+      },
+      contentHash: `sha256:${"c".repeat(64)}`,
+    };
+    const preview = JSON.parse(
+      d.render({ markdown: WRITER_MARKDOWN, data, publication }).body,
+    );
+    expect(preview.subtitle).toBe("");
+    expect(preview.title.length).toBeGreaterThan(0);
+  });
+
   it("selects the configured byline and confirms it on read-back (#459)", async () => {
     const s = fakeSubstack();
     const d = new SubstackDraftDestination(s, { bylineId: "42" });
@@ -327,6 +385,39 @@ describe("Substack draft destination (#385)", () => {
       delivered: { simulated: false, externalId: "100" },
     });
     expect(s.drafts).toHaveLength(1);
+  });
+
+  it("does not reconcile a draft whose subtitle differs from the approved payload (#458)", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s);
+    const ref = {
+      repository: "content",
+      commit: "a".repeat(40),
+      path: "publication/x/manifest.json",
+      hash: `sha256:${"b".repeat(64)}`,
+    };
+    const fields = { title: "T", subtitle: "Approved subtitle", excerpt: "E" };
+    const publication = {
+      mode: "structured" as const,
+      schemaVersion: 1 as const,
+      metadata: ref,
+      body: ref,
+      fields,
+      contentHash: publicationContentHash({
+        mode: "structured" as const,
+        fields,
+        body: { hash: `sha256:${"c".repeat(64)}` },
+      }),
+    };
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data, publication });
+    s.faults.create = ["lost"];
+    await expect(d.deliver(preview, "k")).rejects.toBeInstanceOf(UncertainDeliveryError);
+    // Same title and body, different subtitle: a different approval.
+    s.drafts[0]!.draft_subtitle = "Some other subtitle";
+    const intentAt = new Date(Date.now() - 1000).toISOString();
+    // Ambiguous, not "not delivered": a same-headline draft exists, so nothing
+    // is re-created and an operator decides.
+    expect(await d.reconcile("k", { preview, intentAt })).toBe("unknown");
   });
 
   it("only reports not-delivered when the listing covers the attempt", async () => {
