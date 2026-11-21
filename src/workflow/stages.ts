@@ -210,6 +210,7 @@ export function articleStages(deps: {
           const jobId = researchJobId(request);
           const p = byJob.get(jobId);
           if (p?.outcome === "finished") return p.job;
+          if (p?.outcome === "not-commissioned") return { jobId, status: "not-commissioned" };
           // Timed out, failed, or not part of the pinned batch: an explicit gap.
           return {
             jobId,

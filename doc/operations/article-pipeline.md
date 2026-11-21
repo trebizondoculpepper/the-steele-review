@@ -86,6 +86,17 @@ record using the operation diagnostic. After restoring Restate, recover by
 submitting the original captured event for that exact revision through the
 configured bridge. Reusing the workflow key also covers a submission whose
 response was lost.
+
+### Limit research requests for a run
+
+Set `STEELE_RESEARCH_REQUEST_LIMIT=2` on the capture bridge, or pass
+`article-run --research-request-limit 2` for a manual submission. The workflow
+takes the first two requests in the librarian's order and records the rest as
+uncommissioned gaps. An omitted limit preserves the full plan, and zero disables
+research commissioning for the run. The limit is part of the original workflow
+input and changing it on duplicate submission does not rerun that revision.
+The shared concurrency cap and the batch deadline still apply independently.
+
 ## Approval dispatch and dummy publishers (#314, #315)
 
 The Restate stack also runs these services:
