@@ -85,6 +85,8 @@ describe("provider credit exhaustion (#407)", () => {
       post,
       correlationId: postCorrelationId(post),
       ...summariseRun({ state: "finished", result }),
+      receipts: [],
+      receiptsTruncated: false,
     });
     expect(html).toContain("Provider credit exhausted");
     expect(html).toContain("not a finding about any article");

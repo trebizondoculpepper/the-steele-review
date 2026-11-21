@@ -19,6 +19,7 @@
  *   NATS_URL, NATS_TOKEN[_FILE]?                     broker health
  *   STEELE_CATCHUP_CHECKPOINT_PATH?                  index catch-up checkpoint
  *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
+ *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
@@ -30,7 +31,12 @@ import { systemStatusSource } from "../dashboard/status-adapters.js";
 import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
-import { indexArticles, restateRuns } from "../dashboard/adapters.js";
+import {
+  contentArticleView,
+  contentReceipts,
+  indexArticles,
+  restateRuns,
+} from "../dashboard/adapters.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
 
@@ -104,6 +110,17 @@ const views = [
         ...(archive ? { archive } : {}),
         ...(content ? { content } : {}),
       }),
+    ...(content
+      ? {
+          content: contentArticleView(content),
+          receipts: contentReceipts(content, {
+            destinations: (e.STEELE_DASHBOARD_DESTINATIONS ?? "")
+              .split(",")
+              .map((d) => d.trim())
+              .filter(Boolean),
+          }),
+        }
+      : {}),
   }),
   statusView(
     systemStatusSource({
