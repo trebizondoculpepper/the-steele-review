@@ -41,6 +41,34 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 
 ## Model choices
 
+Claim extraction requests at most 32,768 output tokens (also bounded by the
+200,000-character stage limit), in both the manual command and article worker.
+Other model stages retain their existing limits. Structured claim arrays can
+exceed the general provider's 8,192-token default even for a modest transcript;
+a response cut off there is invalid JSON, not evidence that the source has no
+claims. Attempts remain bounded, and grounding/schema validation is unchanged.
+
+### Recovering a completed extraction failure
+
+A terminal workflow result is retained: ordinary resubmission of that captured
+revision returns the existing result. Deploying a fix does not restart it.
+Do not alter the source version, delete repositories, or change the normal
+`articleRunKey` merely to bypass that protection.
+
+For a controlled rehearsal that failed before any approval or publication,
+retain the failed run and its input, confirm there are no later-stage effects,
+and explicitly submit the same validated input through the existing Restate
+workflow client under an operator-recorded rehearsal key (the normal key plus
+a unique rehearsal suffix). Record that key once and reuse it on every retry;
+never generate a new key on each delivery. The exact archived artifact and
+source version stay unchanged. Saved extraction results can be reused.
+Ordinary capture delivery and the standard CLI continue to use the normal key.
+This is an explicit operator recovery, not an automatic restart loop or a new
+default workflow identity. Coordinate with the rehearsal owner before starting
+downstream research, and retain the configured request/cost bounds.
+
+### Stage model selection
+
 `STEELE_MODEL` is the default for model-backed stages; `STEELE_MODEL_THEMES`, `STEELE_MODEL_CLAIMS`, `STEELE_MODEL_WRITER` and `STEELE_MODEL_SUPPORT` override per stage. Research uses `STEELE_RESEARCH_MODEL` (Sonar) with its configured timeout and token limits.
 
 ## Starting runs from captured content (#270)
