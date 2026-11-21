@@ -15,6 +15,7 @@ import {
   SimulatedDestination,
   handleApprovedArticle,
   recordApproval,
+  readDummyDeliveryProof,
 } from "../../src/publishing/approved-article.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
@@ -190,6 +191,39 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
         await content.lookup(tg.receipt.path.replace("receipt.json", "preview.json")),
       ).toBeDefined();
     }
+  });
+
+  it("proves both dummy receipts belong to the same exact draft", async () => {
+    const report = await approved();
+    const { data } = await recordApproval({ content, operations, report });
+    const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0].payload;
+    base = Date.parse(data.approvedAt);
+    const handle = (name: string) =>
+      handleApprovedArticle({
+        payload,
+        destination: new SimulatedDestination(name, "draft"),
+        schedule: { delayMs: 0 },
+        content,
+        operations,
+        owner: "fixture",
+        now: at(0),
+      });
+
+    const a = await handle("dummy-a");
+    expect(await readDummyDeliveryProof(content, data)).toBeUndefined();
+    const b = await handle("dummy-b");
+    if (a.action !== "ack" || b.action !== "ack") throw new Error("missing dummy receipt");
+    expect(await readDummyDeliveryProof(content, data)).toEqual({ a: a.receipt, b: b.receipt });
+    const differentDraft = {
+      ...data,
+      draft: {
+        ...data.draft,
+        hash: data.draft.hash.slice(0, -1) + (data.draft.hash.endsWith("0") ? "1" : "0"),
+      },
+    };
+    await expect(readDummyDeliveryProof(content, differentDraft)).rejects.toThrow("does not prove");
+    expect(await handle("dummy-b")).toMatchObject({ action: "ack", outcome: "reused" });
+    expect(await readDummyDeliveryProof(content, data)).toEqual({ a: a.receipt, b: b.receipt });
   });
 
   it("reconciles an uncertain delivery before retrying, so it is never sent twice", async () => {

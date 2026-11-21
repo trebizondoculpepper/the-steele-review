@@ -124,3 +124,38 @@ dispatcher, and both publisher outcomes when those stages participate.
 With no DSN, the same milestones appear in local stdout as JSON. Remote
 export sends an allowlisted set of pipeline fields with fixed event messages.
 Keep local logs for container and broker diagnostics.
+
+## Deployed fixture runner (#319)
+
+Run `node dist/cli/article-fixture-smoke.js <synthetic-post-id>` against the
+isolated fixture deployment. Set `STEELE_FIXTURE_DEPLOYMENT=1` and use
+separate archive and content repositories named `fixture-archive` and
+`fixture-content`. The runner needs their paths, the fixture NATS connection
+and `STEELE_CONTENT_STREAM`, and `RESTATE_INGRESS_URL`. It seeds a synthetic
+archive record when absent. Use a fresh post ID for each run. The fixture
+bridge allows only `substack/steele-fixture` and
+`node dist/cli/article-fixture-worker.js` serves the actual workflow stages
+with deterministic providers. Use a separate Restate deployment and event
+streams with dummy destinations only. The fixture worker refuses OpenRouter
+credentials.
+
+The command checks that the workflow key is unused, emits the captured event
+over NATS, then attaches to the run started by the bridge. It checks the
+verification report against the saved draft and waits for both simulated
+receipts with the same full draft hash. The default wait is two minutes.
+Set `STEELE_FIXTURE_TIMEOUT_MS` to adjust it. A failure prints only the stage
+and outcome. Keep the resulting fixture evidence with the deployment record.
+
+
+Use the isolated Compose file with a dedicated writable directory, a unique
+Compose project name and a pinned image that includes the dummy publishers.
+Set `STEELE_IMAGE`, `STEELE_FIXTURE_DIR`, and the owning UID and GID if they
+differ from the defaults. From the repository root, run:
+
+```sh
+docker compose -p steele-fixture -f deploy/restate/fixture.compose.yaml run --rm smoke fixture-one
+```
+
+The stack provisions its own broker and archives and registers the fixture
+worker. Keep the fixture data and the run's output for inspection. The
+Compose network is internal and exposes no host ports.
