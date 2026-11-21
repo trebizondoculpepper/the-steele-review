@@ -116,6 +116,23 @@ describe("claims browser (#494)", { timeout: 60_000 }, () => {
     expect(byTheme.rows.every((r) => r.themes.some((t) => t.id === themeId))).toBe(true);
   });
 
+  it("labels version-1 extractions as legacy, never accepted", async () => {
+    await extraction("p6");
+    const ref = (await content.lookup("claim-extractions/pub/p6/full.json"))!;
+    const v1 = JSON.parse(await content.read(ref));
+    v1.schemaVersion = 1;
+    delete v1.candidates;
+    await content.write("claim-extractions/pub/p6/v1.json", JSON.stringify(v1));
+    const claims = savedClaims(content);
+    const rows = (await claims.list({ post: "p6" })).rows.filter((r) =>
+      r.result.endsWith("v1.json"),
+    );
+    expect(rows.filter((r) => r.category === "accepted")).toHaveLength(0);
+    expect(rows.filter((r) => r.category === "legacy")).toHaveLength(2);
+    const accepted = (await claims.list({ post: "p6", category: "accepted" })).rows;
+    expect(accepted.some((r) => r.result.endsWith("v1.json"))).toBe(false);
+  });
+
   it("reads rejected text from the snapshot fields", async () => {
     await extraction("p4");
     const rows = (

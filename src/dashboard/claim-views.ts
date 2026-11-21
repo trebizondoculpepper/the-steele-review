@@ -5,6 +5,7 @@ import { escapeHtml, type DashboardView } from "./server.js";
 
 const CATEGORY_LABEL: Record<ClaimCategory, string> = {
   accepted: "accepted (theme-linked)",
+  legacy: "legacy (version-1 extraction, not certified)",
   candidate: "candidate (awaiting triage)",
   rejected: "rejected (diagnostic)",
 };
@@ -41,7 +42,7 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
       const post = url.searchParams.get("post") ?? "";
       const theme = url.searchParams.get("theme") ?? "";
       const categoryRaw = url.searchParams.get("category") ?? "";
-      const category = (["accepted", "candidate", "rejected"] as const).find(
+      const category = (["accepted", "legacy", "candidate", "rejected"] as const).find(
         (c) => c === categoryRaw,
       );
       const after = url.searchParams.get("after") ?? undefined;
@@ -54,7 +55,7 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
       const listing = await claims.list({ ...filter, ...(after ? { after } : {}) });
       const option = (v: string, label: string) =>
         `<option value="${v}"${categoryRaw === v ? " selected" : ""}>${escapeHtml(label)}</option>`;
-      const form = `<form method="get" action="/claims"><label>Text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Post <input name="post" value="${escapeHtml(post)}" maxlength="300"></label> <label>Category <select name="category">${option("", "all")}${option("accepted", CATEGORY_LABEL.accepted)}${option("candidate", CATEGORY_LABEL.candidate)}${option("rejected", CATEGORY_LABEL.rejected)}</select></label>${theme ? `<input type="hidden" name="theme" value="${escapeHtml(theme)}">` : ""} <button>Filter</button></form>`;
+      const form = `<form method="get" action="/claims"><label>Text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Post <input name="post" value="${escapeHtml(post)}" maxlength="300"></label> <label>Category <select name="category">${option("", "all")}${option("accepted", CATEGORY_LABEL.accepted)}${option("legacy", CATEGORY_LABEL.legacy)}${option("candidate", CATEGORY_LABEL.candidate)}${option("rejected", CATEGORY_LABEL.rejected)}</select></label>${theme ? `<input type="hidden" name="theme" value="${escapeHtml(theme)}">` : ""} <button>Filter</button></form>`;
       if (listing.state === "unavailable")
         return `${form}<p class="empty">Saved claims are unavailable right now.</p>`;
       const notes = [
@@ -97,7 +98,7 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
     async render(url) {
       if (!claims)
         return '<p class="empty">The content repository is not configured for the dashboard.</p>';
-      const category = (["accepted", "candidate", "rejected"] as const).find(
+      const category = (["accepted", "legacy", "candidate", "rejected"] as const).find(
         (c) => c === url.searchParams.get("category"),
       );
       const index = Number.parseInt(url.searchParams.get("index") ?? "", 10);
@@ -171,7 +172,7 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
     async render(url) {
       if (!claims)
         return '<p class="empty">The content repository is not configured for the dashboard.</p>';
-      const category = (["accepted", "candidate", "rejected"] as const).find(
+      const category = (["accepted", "legacy", "candidate", "rejected"] as const).find(
         (c) => c === url.searchParams.get("category"),
       );
       const index = Number.parseInt(url.searchParams.get("index") ?? "", 10);

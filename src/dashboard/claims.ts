@@ -21,7 +21,11 @@ export const CLAIM_PAGE = 25;
 const LIST_PAGE = 50;
 const RESULT_PATH = /^claim-extractions\/([^/]+)\/([^/]+)\/[^/]+\.json$/;
 
-export type ClaimCategory = "accepted" | "candidate" | "rejected";
+/**
+ * `legacy`: claims in schema-version-1 extractions, which predate the current
+ * acceptance checks; shown as such, never certified as accepted.
+ */
+export type ClaimCategory = "accepted" | "legacy" | "candidate" | "rejected";
 export interface SourceArtifact {
   repository: string;
   commit: string;
@@ -168,7 +172,7 @@ export function savedClaims(content: Store, archive?: Archive): ClaimsPort {
       rec.claims.forEach((c, index) =>
         rows.push({
           ...base,
-          category: "accepted",
+          category: rec.schemaVersion === 1 ? "legacy" : "accepted",
           index,
           ...(str((c.claim as Record<string, unknown> | undefined)?.statement)
             ? { statement: str((c.claim as Record<string, unknown>).statement) }
