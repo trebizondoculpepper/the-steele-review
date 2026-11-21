@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type { MechanicalPolicy } from "./mechanical-policy.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { writeOnce } from "../research/job.js";
 import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
@@ -347,6 +348,7 @@ export type RevisionLoopOutcome =
  * existing revision limit. After that, save an unresolved result.
  */
 export async function verifyWithRevisions(input: {
+  mechanicalPolicy?: Partial<MechanicalPolicy>;
   content: GitArtifactStore;
   operations: OperationStore;
   archive: GitArtifactStore;
@@ -403,6 +405,7 @@ export async function verifyWithRevisions(input: {
     const redraft = await draftFromPackage({
       content: input.content,
       operations: input.operations,
+      mechanicalPolicy: input.mechanicalPolicy,
       revisionInputs: [metadata, verified.ref],
       archive: input.archive,
       package: input.package,

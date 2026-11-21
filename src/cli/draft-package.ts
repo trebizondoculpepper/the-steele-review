@@ -1,3 +1,4 @@
+import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
 /**
  * Draft one article from a saved writer package (#149).
  *
@@ -115,6 +116,7 @@ async function main(): Promise<number> {
   try {
     const out = await draftFromPackage({
       operations,
+      mechanicalPolicy: writerMechanicalPolicy(process.env),
       ...(values["writer-recovery-id"] ? { writerRecoveryId: values["writer-recovery-id"] } : {}),
       content,
       archive,
@@ -134,6 +136,7 @@ async function main(): Promise<number> {
             reused: out.reused,
             draft: `${out.draft.commit.slice(0, 12)}:${out.draft.path}`,
             metadata: out.metadata.path,
+            mechanicalRun: out.mechanicalRun,
             retention: out.retention,
             writerAttempts: out.writerAttempts,
           }
@@ -146,6 +149,7 @@ async function main(): Promise<number> {
                 : out.status,
             ...(requested?.success ? { model: requested.data } : {}),
             ...("reason" in out ? { reason: out.reason } : {}),
+            ...("mechanicalRun" in out ? { mechanicalRun: out.mechanicalRun } : {}),
             ...("writerAttempts" in out ? { writerAttempts: out.writerAttempts } : {}),
             ...("validationFailure" in out ? { validationFailure: out.validationFailure } : {}),
             ...("diagnostics" in out && out.diagnostics

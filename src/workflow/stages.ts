@@ -1,3 +1,4 @@
+import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult, proposeThemes } from "../analysis/theme-proposals.js";
@@ -52,6 +53,7 @@ const plain = (r: ArtifactRef): Ref => ({
 });
 
 export function articleStages(deps: {
+  mechanicalPolicy?: MechanicalPolicy;
   archive: GitArtifactStore;
   content: GitArtifactStore;
   operations: OperationStore;
@@ -279,6 +281,7 @@ export function articleStages(deps: {
     async draft(pkg, sourceUrl) {
       const out = await draftFromPackage({
         operations: deps.operations,
+        mechanicalPolicy: deps.mechanicalPolicy,
         content: deps.content,
         archive: deps.archive,
         package: pkg,
@@ -305,6 +308,7 @@ export function articleStages(deps: {
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
       const out = await verifyWithRevisions({
         operations: deps.operations,
+        mechanicalPolicy: deps.mechanicalPolicy,
         content: deps.content,
         archive: deps.archive,
         package: pkg,

@@ -96,3 +96,31 @@ when retrying that recovery. Existing raw output is always reused. Timeouts,
 unknown transport failures, and interrupted calls cannot use this mechanism to
 silently purchase another response. Workflow entry points do not generate these
 operator recovery tokens automatically.
+
+### Mechanical repair policy
+
+`STEELE_WRITER_TURN_LIMIT` sets total writer turns (default **3**: initial output
+plus at most two corrections; range 1–10). `STEELE_WRITER_DEADLINE_MS` sets one
+shared deadline for that mechanical loop (default 300000 ms, maximum 900000 ms).
+The article worker, `draft-package`, and revision-enabled `verify-package-draft`
+load these settings. `--single-attempt` can still lower the manual draft budget.
+Independent verifier-requested editorial revisions keep their separate bound;
+each writer/redraft invocation has its own mechanical policy and private record.
+
+For schema errors confined to title, subtitle, or excerpt, the correction request
+contains only the invalid fields, their allowlisted errors, and exact constraints.
+Valid metadata, body sections, and citation arrays are not sent to that correction
+call and cannot be overwritten by its patch. Unexpected patch keys are rejected.
+Every correction response is committed before checking it; a permitted patch is
+merged into the retained candidate and the result is committed before full
+mechanical revalidation. The excerpt limit remains 500 characters.
+
+Syntax/truncation, nested schema errors, and structural evidence-reference errors
+use an explicitly recorded format/schema/evidence fallback rather than pretending
+to provide arbitrary nested field-only editing. Private `writer-mechanical-runs/`
+records link policy, each turn's mode, raw attempt, derived candidate, diagnostics,
+and terminal outcome. `writer-candidates/` holds derived merge artifacts and parent
+references, distinct from returned model output and accepted articles. Exhaustion
+retains everything without approval. A restarted loop reuses identical saved
+responses; it does not buy them again. All successful payloads still require
+independent verification of their exact body and publication fields.

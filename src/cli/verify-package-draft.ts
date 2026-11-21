@@ -1,3 +1,4 @@
+import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
 /**
  * Verify a package draft against its exact evidence package (#150).
  *
@@ -116,6 +117,7 @@ async function main(): Promise<number> {
       };
       const out = await verifyWithRevisions({
         operations,
+        mechanicalPolicy: writerMechanicalPolicy(process.env),
         content,
         archive,
         package: pkg,
