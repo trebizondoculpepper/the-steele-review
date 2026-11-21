@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -110,6 +111,39 @@ describe("dummy-publisher", { timeout: 180_000 }, () => {
     );
 
     const encode = (s: string) => new TextEncoder().encode(s);
+    const wrongDraft = JSON.parse(payload);
+    wrongDraft.data.draft.hash = `sha256:${"0".repeat(64)}`;
+    const rejected = [
+      { body: "{", reason: "invalid-event" },
+      { body: JSON.stringify(wrongDraft), reason: "approval-mismatch" },
+    ];
+    for (const { body, reason } of rejected) {
+      const digest = createHash("sha256").update(encode(body)).digest("hex");
+      await nats.publish(ARTICLE_APPROVED_SUBJECT, encode(body), { msgId: `rejected-${digest}` });
+      await until("both rejected", () =>
+        [lines.a, lines.b].every((entries) =>
+          entries.some((entry) => entry.action === "term" && entry.reason === reason),
+        )
+          ? true
+          : undefined,
+      );
+      const observer = new OperationStore({ path: statePath });
+      try {
+        for (const destination of ["dummy-a", "dummy-b"]) {
+          expect(
+            observer.operationStatus(`publisher-rejected:${destination}:${digest}`),
+          ).toMatchObject({
+            status: "failed",
+            errorCode: reason,
+          });
+        }
+      } finally {
+        observer.close();
+      }
+    }
+    expect(
+      (await content.list("publications", 100)).filter((p) => p.endsWith("receipt.json")),
+    ).toHaveLength(0);
     await nats.publish(ARTICLE_APPROVED_SUBJECT, encode(payload), { msgId: eventId });
     const delivered = (x: "a" | "b") =>
       lines[x].find((l) => l.event === "dummy-publisher" && l.outcome === "delivered");

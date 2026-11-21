@@ -24,6 +24,7 @@
  *
  * Status lines are sanitised JSON. SIGTERM/SIGINT stop after the in-flight message.
  */
+import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import { z } from "zod";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
@@ -102,6 +103,13 @@ async function main(): Promise<number> {
           log({ action: "nak", reason: decision.reason });
           m.nak(decision.delayMs);
         } else {
+          // A content digest stays stable across redelivery and identifies even
+          // malformed payloads without trusting or retaining their content.
+          const digest = createHash("sha256").update(m.data).digest("hex");
+          operations.recordPermanentFailure(
+            `publisher-rejected:${destination.name}:${digest}`,
+            decision.reason,
+          );
           log({ action: "term", reason: decision.reason });
           m.term();
         }
