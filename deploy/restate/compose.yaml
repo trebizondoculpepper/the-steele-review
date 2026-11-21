@@ -48,6 +48,10 @@ services:
       STEELE_RESEARCH_MODEL: ${STEELE_RESEARCH_MODEL:-}
       STEELE_RESEARCH_TIMEOUT_MS: ${STEELE_RESEARCH_TIMEOUT_MS:-}
       STEELE_RESEARCH_MAX_OUTPUT_TOKENS: ${STEELE_RESEARCH_MAX_OUTPUT_TOKENS:-}
+      # Same-speaker history in the essay (#370). Off while ELASTICSEARCH_URL is
+      # empty; the article then has no historical section.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      STEELE_MODEL_HISTORY: ${STEELE_MODEL_HISTORY:-}
     volumes:
       - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
       - ${STEELE_CONTENT_DIR}:/data/content

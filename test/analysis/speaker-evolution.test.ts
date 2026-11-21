@@ -53,6 +53,8 @@ const match = (post: string, publishedAt: string, quote: string): SameSpeakerMat
   speaker: { name: NAME, basis: "named-speaker" },
   quote,
   statement: quote,
+  passage: quote,
+  span: { start: 0, end: quote.length },
   artifact: ref(post),
   sourceVersion: h("f"),
   matchedBy: "model",

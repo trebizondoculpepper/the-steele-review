@@ -16,12 +16,17 @@
  *                                                    per-stage overrides
  *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_OUTPUT_TOKENS?
  *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
+ *   ELASTICSEARCH_URL?, ELASTICSEARCH_API_KEY[_FILE]?  claim-occurrence index; enables same-speaker
+ *                                                    history in the essay (#370)
+ *   STEELE_MODEL_HISTORY?                            model for history matching and comparison
  *   STEELE_ARTICLE_WORKER_PORT?                      default 9080
  */
 import { hostname } from "node:os";
 import * as restate from "@restatedev/restate-sdk";
 import { z } from "zod";
+import { elasticsearchConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { writerModel } from "../config/writer-model.js";
 import { openRouterFromEnv } from "../controllers/openrouter.js";
@@ -59,6 +64,21 @@ function main(): number {
         ...(process.env[override] ? { STEELE_MODEL: process.env[override] } : {}),
       },
     });
+  // Same-speaker history needs the occurrence index; without it the essay
+  // simply has no historical section.
+  let history;
+  if (process.env.ELASTICSEARCH_URL) {
+    try {
+      const es = elasticsearchConnection();
+      history = {
+        search: new ElasticsearchController(es.url, es.apiKey),
+        provider: model("STEELE_MODEL_HISTORY"),
+      };
+    } catch {
+      console.error("article-worker: Elasticsearch or history model is not configured");
+      return 2;
+    }
+  }
   let stages;
   let sonar;
   let writer;
@@ -94,6 +114,7 @@ function main(): number {
             }
           : {}),
       },
+      ...(history ? { history } : {}),
       owner: `article-worker@${hostname()}:${process.pid}`,
     });
   } catch {

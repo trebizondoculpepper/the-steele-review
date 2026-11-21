@@ -133,7 +133,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const meta = JSON.parse(await content.read(out.metadata));
     expect(meta).toMatchObject({
       package: { path: ref.path },
-      templateVersion: "package-explainer-v3",
+      templateVersion: "package-explainer-v4",
       modelVersion: "fake/writer",
     });
   });
