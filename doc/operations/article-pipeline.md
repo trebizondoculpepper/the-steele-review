@@ -12,6 +12,16 @@ docker compose -f deploy/restate/compose.yaml up -d
 RESTATE_ADMIN_URL=http://127.0.0.1:9070 ARTICLE_WORKER_URL=http://article-worker:9080 deploy/restate/register.sh
 ```
 
+`register.sh` is idempotent and is the readiness check. It fails unless the admin API is healthy and the registration exposes both `ArticleRun` and `Research`. Rerun it after every worker image change.
+
+Deployment settings:
+
+- Pin `STEELE_IMAGE` by digest (`ghcr.io/...@sha256:...`), not by a moving tag.
+- `RESTATE_INGRESS_BIND` and `RESTATE_ADMIN_BIND` default to `127.0.0.1:8080` and `127.0.0.1:9070`. Override them on hosts where those ports are taken, and keep them on loopback.
+- `STEELE_UID` and `STEELE_GID` (default 1000) must own the bind-mounted repositories and the state directory.
+- The worker gets its own health check, an HTTP/2 probe of `/health` on 9080, because the image default probes the HTTP API on port 3000.
+- The worker validates that an OpenRouter key file is present at startup but makes no provider call until a run starts.
+
 Start (or replay) one post:
 
 ```sh
@@ -44,4 +54,3 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 - **Handoff to publishing:** when verification approves a draft, the workflow records one approved-article event through `recordApproval` and the outbox (#262), and returns its ID as `approvalEvent`. A rejected, unresolved or unverified draft emits nothing.
 
 Configuration: `NATS_URL`, `NATS_TOKEN?`, `STEELE_CONTENT_STREAM`, `STEELE_CAPTURED_CONSUMER` (provisioned separately, filtered to `steele.v1.content.captured`), `RESTATE_INGRESS_URL`, `STEELE_ARTICLE_SOURCES`, optional `STEELE_RESEARCH_DEADLINE_MS` (default 30 minutes) and `STEELE_BRIDGE_RETRY_DELAY_MS`.
-

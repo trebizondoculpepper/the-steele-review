@@ -10,14 +10,28 @@ services:
     volumes:
       - restate-data:/restate-data
     ports:
-      - "127.0.0.1:8080:8080" # ingress
-      - "127.0.0.1:9070:9070" # admin API
+      # Host bindings stay on loopback; override them where 8080 or 9070 is taken.
+      - "${RESTATE_INGRESS_BIND:-127.0.0.1:8080}:8080" # ingress
+      - "${RESTATE_ADMIN_BIND:-127.0.0.1:9070}:9070" # admin API
     networks: [steele]
 
   article-worker:
     image: ${STEELE_IMAGE:-steele-review:latest}
     command: ["node", "--enable-source-maps", "dist/cli/article-worker.js"]
     restart: unless-stopped
+    # Must own the bind-mounted repositories and state directory.
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    # The image's default check probes the HTTP API on 3000; the worker serves
+    # the Restate SDK over HTTP/2 on 9080, so probe its /health instead.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const c=require('node:http2').connect('http://127.0.0.1:9080');c.on('error',()=>process.exit(1));const r=c.request({':path':'/health'});r.on('response',h=>process.exit(h[':status']===200?0:1));r.on('error',()=>process.exit(1));r.end()"
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
     environment:
       STEELE_ARCHIVE_PATH: /data/archive
       STEELE_ARCHIVE_REPOSITORY: ${STEELE_ARCHIVE_REPOSITORY}
