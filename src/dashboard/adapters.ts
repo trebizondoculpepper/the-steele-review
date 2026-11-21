@@ -158,9 +158,13 @@ export function contentReceipts(
       };
 
       if (prefixes.length > 0) {
-        for (const prefix of prefixes) {
-          await scanPrefix(prefix);
-          if (receipts.length >= RECEIPT_LIMIT) break;
+        for (let index = 0; index < prefixes.length; index++) {
+          await scanPrefix(prefixes[index]!);
+          if (receipts.length >= RECEIPT_LIMIT) {
+            // Destinations after this one were never scanned.
+            if (index < prefixes.length - 1) truncated = true;
+            break;
+          }
         }
       } else {
         await scanPrefix("publications");

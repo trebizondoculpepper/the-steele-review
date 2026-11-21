@@ -147,6 +147,23 @@ describe("contentReceipts", () => {
     expect(scoped.receipts.map((r) => r.destination)).toEqual(["dummy-b"]);
   });
 
+  it("marks truncation when destinations remain unscanned at the limit", async () => {
+    const rev = "c".repeat(32);
+    const destinations = Array.from({ length: 21 }, (_, n) => `dest-${n}`);
+    for (const destination of destinations) {
+      await content.write(
+        `publications/${destination}/draft/pub/p1/${rev}/receipt.json`,
+        `${JSON.stringify(receipt({ destination }))}\n`,
+      );
+    }
+    const result = await contentReceipts(content, { destinations }).receiptsFor(
+      { publicationId: "pub", postId: "p1" },
+      `sha256:${rev}`,
+    );
+    expect(result.receipts).toHaveLength(20);
+    expect(result.truncated).toBe(true);
+  });
+
   it("omits unreadable receipts instead of guessing", async () => {
     await content.write("publications/x/draft/pub/p1/" + "e".repeat(32) + "/receipt.json", "{bad");
     expect(
