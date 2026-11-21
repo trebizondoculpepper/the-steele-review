@@ -48,6 +48,23 @@ const STAGE_ORDER: readonly string[] = [
   "delivery",
 ];
 
+/**
+ * Workflow progress names are not the dashboard's stage names: the producer
+ * emits `package`, `draft`, `verify` and `recover`. Map them so the feed shows
+ * a stage rather than a generic run.
+ */
+const PROGRESS_STAGE: Record<string, string> = {
+  package: "drafting",
+  draft: "drafting",
+  verify: "verification",
+  recover: "article-run",
+  capture: "capture",
+  themes: "themes",
+  claims: "claims",
+  research: "research",
+  delivery: "delivery",
+};
+
 /** Failure categories are mapped to a closed set; anything else stays generic. */
 function categoryOf(reason: string): string {
   if (/credit|402/i.test(reason)) return "provider-credit";
@@ -79,12 +96,19 @@ function eventsFor(
     return [
       {
         ...base,
-        component: stage && STAGE_ORDER.includes(stage as StageName) ? stage : "article-run",
+        component:
+          stage === undefined
+            ? "article-run"
+            : (PROGRESS_STAGE[stage] ??
+              (STAGE_ORDER.includes(stage as StageName) ? stage : "article-run")),
         state: "started",
         ...(at ? { at } : {}),
       },
     ];
   }
+  // A recovered run reports the original failure with the recovery attached;
+  // both are real activity and both must be visible.
+  const recovery = run.recovery ? eventsFor(run.recovery, post) : [];
   const final = run.result;
   const at = "at" in final && typeof final.at === "string" ? final.at : undefined;
   if (final.outcome === "failed") {
@@ -97,9 +121,13 @@ function eventsFor(
         state: "failed",
         errorCategory: categoryOf(reason),
       },
+      ...recovery,
     ];
   }
-  return [{ ...base, ...(at ? { at } : {}), component: "article-run", state: "completed" }];
+  return [
+    ...recovery,
+    { ...base, ...(at ? { at } : {}), component: "article-run", state: "completed" },
+  ];
 }
 
 /** Recent article-stage activity, bounded and newest first. */

@@ -39,6 +39,26 @@ describe("console activity (#479)", () => {
     expect(thrown[0]).toMatchObject({ state: "unknown" });
   });
 
+  it("maps workflow progress names to dashboard stages", async () => {
+    const events = await collectActivity(
+      input({ state: "running", progress: { stage: "verify", status: "running", at: "2026-02-01T00:00:00Z" } }),
+    );
+    expect(events[0]).toMatchObject({ component: "verification", state: "started" });
+  });
+
+  it("shows a recovery run alongside the original failure", async () => {
+    const events = await collectActivity(
+      input({
+        state: "finished",
+        result: { outcome: "failed", reason: "credit-exhausted", at: "2026-02-01T00:00:00Z" },
+        recovery: { state: "finished", result: { outcome: "verified", at: "2026-02-02T00:00:00Z" } },
+      } as RunState),
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ state: "failed", errorCategory: "provider-credit" });
+    expect(events[1]).toMatchObject({ state: "completed" });
+  });
+
   it("emits nothing for a run that never started", async () => {
     expect(await collectActivity(input({ state: "not-started" }))).toEqual([]);
   });
