@@ -135,7 +135,8 @@ function eventsFor(
   // both are real activity and both must be visible.
   const recovery = run.recovery ? eventsFor(run.recovery, post) : [];
   const final = run.result;
-  const at = "at" in final && typeof final.at === "string" ? final.at : undefined;
+  // The workflow stamps its own terminal time; nothing is inferred here.
+  const at = typeof final.completedAt === "string" ? final.completedAt : undefined;
   if (final.outcome === "failed") {
     const reason = "reason" in final && typeof final.reason === "string" ? final.reason : "failed";
     return [

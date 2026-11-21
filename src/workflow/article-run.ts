@@ -79,6 +79,8 @@ export interface ArticleRunResult {
   research: { jobId: string; outcome: PinnedResearch["outcome"] }[];
   /** The approved-article event recorded for a verified draft (#262). */
   approvalEvent?: string;
+  /** When this run reached a terminal outcome, for operators (#479). */
+  completedAt?: string;
 }
 
 /**
@@ -416,17 +418,30 @@ export function articleRunWorkflow(stages: ArticleStages) {
           (await ctx.get<RunProgress>(PROGRESS_KEY)) ?? null,
       ),
       run: async (ctx: restate.WorkflowContext, raw: ArticleRunInput): Promise<ArticleRunFinal> => {
+        // Replay-safe: the workflow clock, never the process clock.
+        const completedAt = async () => new Date(await ctx.date.now()).toISOString();
         const parsed = ArticleRunInputSchema.safeParse(raw);
-        if (!parsed.success) return { outcome: "failed", reason: "invalid-input", research: [] };
+        if (!parsed.success)
+          return {
+            outcome: "failed",
+            reason: "invalid-input",
+            research: [],
+            completedAt: await completedAt(),
+          };
         try {
           const result = await runStages(ctx, parsed.data);
           logPipeline(parsed.data, "article-run", result.outcome, parsed.data.sourceVersion);
-          return result;
+          return { ...result, completedAt: await completedAt() };
         } catch (error) {
           // A permanent stage failure ends the run with its recorded reason.
           if (error instanceof restate.TerminalError) {
             logPipeline(parsed.data, "article-run", "failed", parsed.data.sourceVersion);
-            return { outcome: "failed", reason: error.message.slice(0, 300), research: [] };
+            return {
+              outcome: "failed",
+              reason: error.message.slice(0, 300),
+              research: [],
+              completedAt: await completedAt(),
+            };
           }
           throw error;
         }
@@ -438,5 +453,5 @@ export function articleRunWorkflow(stages: ArticleStages) {
 /** A run's final result: a full result, or a failure before stage outputs existed. */
 export type ArticleRunFinal =
   | ArticleRunResult
-  | { outcome: "failed"; reason: string; research: [] };
+  | { outcome: "failed"; reason: string; research: []; completedAt?: string };
 export type ArticleRunApi = ReturnType<typeof articleRunWorkflow>;

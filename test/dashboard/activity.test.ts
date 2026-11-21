@@ -23,7 +23,7 @@ describe("console activity (#479)", () => {
 
   it("shows a failed run with a sanitised error category", async () => {
     const { events } = await collectActivity(
-      input({ state: "finished", result: { outcome: "failed", reason: "credit-exhausted", at: "2026-02-01T00:00:00Z" } } as RunState),
+      input({ state: "finished", result: { outcome: "failed", reason: "credit-exhausted", completedAt: "2026-02-01T00:00:00Z" } } as RunState),
     );
     expect(events[0]).toMatchObject({ state: "failed", errorCategory: "provider-credit" });
     // The raw reason never reaches the page.
@@ -50,8 +50,8 @@ describe("console activity (#479)", () => {
     const { events } = await collectActivity(
       input({
         state: "finished",
-        result: { outcome: "failed", reason: "credit-exhausted", at: "2026-02-01T00:00:00Z" },
-        recovery: { state: "finished", result: { outcome: "verified", at: "2026-02-02T00:00:00Z" } },
+        result: { outcome: "failed", reason: "credit-exhausted", completedAt: "2026-02-01T00:00:00Z" },
+        recovery: { state: "finished", result: { outcome: "verified", completedAt: "2026-02-02T00:00:00Z" } },
       } as RunState),
     );
     expect(events).toHaveLength(2);
