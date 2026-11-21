@@ -20,6 +20,7 @@
  * Never calls a model or reads content. Status lines are sanitised JSON.
  * SIGTERM/SIGINT stop after the in-flight pass.
  */
+import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { NatsController } from "../controllers/nats.js";
@@ -74,17 +75,10 @@ async function main(argv: string[]): Promise<number> {
         console.error(JSON.stringify({ event: "approval-dispatch", state: "pass-failed" }));
       else if (result.sent || result.retrying)
         console.log(JSON.stringify({ event: "approval-dispatch", ...result }));
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, c.STEELE_APPROVAL_DISPATCH_INTERVAL_MS);
-        abort.signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true },
-        );
-      });
+      // An abortable timer: no listener outlives its interval.
+      await sleep(c.STEELE_APPROVAL_DISPATCH_INTERVAL_MS, undefined, {
+        signal: abort.signal,
+      }).catch(() => undefined);
     }
     return 0;
   } catch {
