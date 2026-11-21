@@ -154,15 +154,55 @@ describe("read-only open", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it("stays unavailable while a WAL sidecar means a writer may be live", () => {
+  it("reads live WAL-backed state without touching claims or events (#454)", () => {
+    const dir = directory();
+    const path = join(dir, "operations.db");
+    const store = storeAt(path);
+    // An active writer: the store stays open, so the WAL sidecar is live.
+    store.claim("op-live", "worker", 60_000);
+    const done = store.claim("op-done", "worker", 60_000);
+    if (done.kind !== "claimed") throw new Error("unexpected claim");
+    store.complete(done.claim, { artifact }, [
+      { eventId: "evt-live", subject: "synthetic", payload: "{}" },
+    ]);
+    expect(existsSync(`${path}-wal`)).toBe(true);
+
+    const opened = OperationInspector.open(path);
+    expect(opened.status).toBe("available");
+    if (opened.status !== "available") return;
+    try {
+      expect(opened.inspector.statusCounts()).toEqual([
+        { status: "claimed", count: 1 },
+        { status: "completed", count: 1 },
+      ]);
+      expect(opened.inspector.inspect("op-done")).toMatchObject({
+        status: "completed",
+        pendingEvents: { pending: 1, sent: 0 },
+      });
+    } finally {
+      opened.inspector.close();
+    }
+
+    // The inspection neither changed rows nor removed the live WAL.
+    expect(existsSync(`${path}-wal`)).toBe(true);
+    expect(store.operationStatus("op-done")?.status).toBe("completed");
+    expect(store.operationStatus("op-live")?.status).toBe("claimed");
+    store.close();
+  });
+
+  it("returns unavailable for an orphaned WAL instead of creating -shm", () => {
     const dir = directory();
     const path = join(dir, "operations.db");
     const store = storeAt(path);
     store.claim("op-wal", "worker", 60_000);
     store.close();
     writeFileSync(`${path}-wal`, "");
-    expect(OperationInspector.open(path)).toEqual({ status: "unavailable" });
-    expect(existsSync(`${path}-wal`)).toBe(true);
+    const before = readdirSync(dir).sort();
+    const opened = OperationInspector.open(path);
+    expect(opened.status).toBe("unavailable");
+    // Opening must not create a shared-memory file next to the database.
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(existsSync(`${path}-shm`)).toBe(false);
   });
 
   it("handles '?' and '#' in the database path without ambiguity", () => {
@@ -191,6 +231,8 @@ describe("read-only open", () => {
     expect(info?.key).toBe("op-link");
 
     writeFileSync(`${target}-wal`, "");
+    // An orphaned WAL (no shared-memory partner) is unavailable, and the
+    // symlink resolution must not be bypassed into creating sidecars.
     expect(OperationInspector.open(link)).toEqual({ status: "unavailable" });
   });
 
