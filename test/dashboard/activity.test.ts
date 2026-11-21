@@ -96,3 +96,31 @@ describe("console activity (#479)", () => {
     expect(html).toContain("inspect");
   });
 });
+
+describe("credit notice on activity, not the article list (#511)", () => {
+  it("lists credit-stopped runs with time and link on the activity page", () => {
+    const html = renderActivity({
+      discoveryLimited: false,
+      events: [
+        {
+          kind: "article-stage",
+          component: "article-run",
+          publicationId: "pub",
+          postId: "p1",
+          state: "failed",
+          errorCategory: "provider-credit",
+          at: "2026-02-01T00:00:00Z",
+          link: "/articles/trace?publication=pub&post=p1",
+        },
+      ],
+    });
+    expect(html).toContain("Provider credit exhausted");
+    expect(html).toContain("2026-02-01T00:00:00Z");
+    expect(html).toContain("/articles/trace?publication=pub&amp;post=p1");
+  });
+
+  it("shows no credit notice when no run was credit-stopped", () => {
+    const html = renderActivity({ discoveryLimited: false, events: [] });
+    expect(html).not.toContain("Provider credit exhausted");
+  });
+});
