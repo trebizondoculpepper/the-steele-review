@@ -193,10 +193,9 @@ export async function findSameSpeakerHistory(input: {
           speakerFilter(speaker),
           { range: { sourcePublishedAt: { lt: current.sourcePublishedAt } } },
         ],
-        must_not: [
-          { term: { postId: current.postId } },
-          { term: { sourceVersion: current.sourceVersion } },
-        ],
+        // By post identity only: an earlier post with identical text (same source
+        // hash) is still history, and reposts are collapsed below.
+        must_not: [{ term: { postId: current.postId } }],
         should: [
           { term: { "grouping.key": current.grouping.key } },
           { match: { statement: current.statement } },
