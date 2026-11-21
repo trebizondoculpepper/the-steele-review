@@ -85,22 +85,24 @@ describe("themes browser (#493)", { timeout: 60_000 }, () => {
     );
   });
 
-  it("reaches a filter match that lies beyond the first 200 extractions", async () => {
+  it("reaches a filter match that lies beyond the per-request scan limit", async () => {
     const fx = librarianFixtures(content);
     await fx.analysis("seed", claim("c0", "s0"), "Ordinary");
     const [seedPath] = await content.list("theme-proposals/pub/seed", 5);
     const template = JSON.parse(await content.read((await content.lookup(seedPath!))!));
-    // 210 saved extractions in storage order; only the last one matches.
-    for (let i = 0; i < 210; i++) {
+    // Five saved extractions in storage order; only the last one matches. A
+    // small scan limit exercises the same cursor logic without hundreds of
+    // Git commits (which made this test exceed its timeout under load).
+    for (let i = 0; i < 5; i++) {
       const postId = `p${String(i).padStart(3, "0")}`;
       const doc = structuredClone(template);
       doc.post.postId = postId;
       doc.proposals = [
-        { ...doc.proposals[0], title: i === 209 ? "Hidden needle" : `Ordinary ${i}` },
+        { ...doc.proposals[0], title: i === 4 ? "Hidden needle" : `Ordinary ${i}` },
       ];
       await content.write(`theme-proposals/pub/${postId}/x.json`, JSON.stringify(doc));
     }
-    const themes = savedThemes(content);
+    const themes = savedThemes(content, { scanLimit: 2 });
     let page = await themes.list({ query: "needle" });
     const found: string[] = [];
     for (let i = 0; i < 10; i++) {

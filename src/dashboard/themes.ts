@@ -70,7 +70,11 @@ export interface ThemesPort {
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
 
-export function savedThemes(content: Store): ThemesPort {
+export function savedThemes(
+  content: Store,
+  options: { scanLimit?: number } = {},
+): ThemesPort {
+  const scanLimit = options.scanLimit ?? THEME_RESULT_SCAN;
   const readResult = async (path: string): Promise<ThemeRow[] | undefined> => {
     const m = RESULT_PATH.exec(path);
     if (!m) return undefined;
@@ -108,7 +112,7 @@ export function savedThemes(content: Store): ThemesPort {
       let scanned = 0;
       let cursor = after;
       let exhausted = false;
-      while (rows.length < THEME_PAGE && scanned < THEME_RESULT_SCAN) {
+      while (rows.length < THEME_PAGE && scanned < scanLimit) {
         let paths: string[];
         try {
           paths = await content.list("theme-proposals", THEME_LIST_PAGE, cursor);
@@ -126,7 +130,7 @@ export function savedThemes(content: Store): ThemesPort {
           const r = await readResult(path);
           if (!r) unreadable++;
           else rows.push(...r.filter(matches));
-          if (rows.length >= THEME_PAGE || scanned >= THEME_RESULT_SCAN) break;
+          if (rows.length >= THEME_PAGE || scanned >= scanLimit) break;
         }
         if (paths.length < THEME_LIST_PAGE && cursor === paths.at(-1)) {
           exhausted = true;
