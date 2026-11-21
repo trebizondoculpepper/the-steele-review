@@ -51,6 +51,10 @@ const writerResponse = (
   text = "The ENMOD Convention prohibits hostile environmental modification.",
 ) =>
   JSON.stringify({
+    title: "A treaty already bans weather weapons",
+    subtitle: "What the post claims, and what the evidence shows",
+    excerpt:
+      "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
     summary: "The post says a treaty bans weather weapons and that a payment funded an attack.",
     themes: ["Weather warfare"],
     responses: [
