@@ -39,7 +39,12 @@ beforeEach(async () => {
   await archive.write(
     collectionArtifactPath(post),
     JSON.stringify({
-      item: { ...post, url: "https://pub.example.com/p/weather", title: "Weather" },
+      item: {
+        ...post,
+        url: "https://pub.example.com/p/weather",
+        title: "Weather",
+        author: "Dr Synthetic",
+      },
       ingestionReason: "backfill",
       text: TEXT,
       complete: true,
@@ -193,6 +198,8 @@ describe("article stages composed (#243)", () => {
       /capture-identity-mismatch/,
     );
     const claims = await stages.claims(input, themes);
+    const savedClaims = JSON.parse(await content.read(claims));
+    expect(savedClaims.claims[0].occurrence.publisher.author).toBe("Dr Synthetic");
     const requests = await stages.planResearch(themes, claims);
     expect(requests).toHaveLength(1);
     // The treaty request finishes; nothing else is pinned, so any other claim stays a gap.

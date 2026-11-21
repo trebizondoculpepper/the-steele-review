@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   FeedParseError,
   SubstackRssDiscovery,
+  normaliseFeedItems,
   parseFeed,
 } from "../../../src/controllers/substack/rss.js";
 import { DiscoveryFetchError } from "../../../src/controllers/substack/http.js";
@@ -37,6 +38,17 @@ function fakeFetch(handler: Handler) {
 
 const noSleep = async () => {};
 
+it("retains a bounded explicit feed byline without guessing missing or invalid authors", async () => {
+  for (const creator of ["  Dr Synthetic  ", undefined, " ", "x".repeat(201)]) {
+    const items = normaliseFeedItems(
+      [{ title: "Post", link: "https://example-pub.substack.com/p/post", creator }],
+      "example-pub",
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].author).toBe(creator === "  Dr Synthetic  " ? "Dr Synthetic" : undefined);
+  }
+});
+
 function discovery(
   handler: Handler,
   extra: Partial<ConstructorParameters<typeof SubstackRssDiscovery>[0]> = {},
@@ -66,6 +78,7 @@ describe("parseFeed", () => {
       postId: "third-synthetic-post",
       url: "https://example-pub.substack.com/p/third-synthetic-post",
       title: "Third synthetic post",
+      author: "Example Author",
       publishedAt: "2026-02-02T09:00:00.000Z",
     });
     expect(items[2]).not.toHaveProperty("publishedAt");

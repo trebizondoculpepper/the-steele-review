@@ -45,6 +45,11 @@ const build = (overrides: Partial<Parameters<typeof createFulltextDocument>[0]> 
   );
 
 describe("FulltextDocument", () => {
+  it("projects an explicit byline additively and leaves legacy documents unattributed", () => {
+    expect(build({ item: { ...item, author: "Guest Author" } }).author).toBe("Guest Author");
+    expect(FULLTEXT_INDEX_MAPPING.properties.author).toEqual({ type: "keyword" });
+    expect(build()).not.toHaveProperty("author");
+  });
   it("builds a complete document carrying identity, text and provenance", () => {
     const doc = build();
     expect(doc).toEqual({

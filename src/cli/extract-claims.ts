@@ -150,6 +150,7 @@ async function main(argv: string[]): Promise<number> {
         postId: post.postId,
         url: record.item.url,
         ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+        ...(record.item.author ? { author: record.item.author } : {}),
         // Supplied transcript timings, aligned the same way as for passages.
         ...transcriptTimingsFor(record),
       },

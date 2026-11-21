@@ -175,6 +175,7 @@ export function articleStages(deps: {
           postId: post.postId,
           url: record.item.url,
           ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+          ...(record.item.author ? { author: record.item.author } : {}),
           ...transcriptTimingsFor(record),
         },
       });

@@ -146,6 +146,7 @@ async function main(): Promise<number> {
       });
     }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
+    await es.addMappingFields(c.STEELE_FULLTEXT_INDEX, { author: { type: "keyword" } });
     report.researchIndex = await es.provisionIndex(
       c.STEELE_RESEARCH_COLLECTION_INDEX,
       RESEARCH_COLLECTION_INDEX_MAPPING,

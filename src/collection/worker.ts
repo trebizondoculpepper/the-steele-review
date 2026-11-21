@@ -251,7 +251,7 @@ export class CollectionWorker {
       if (acquired.kind === "text") {
         method = acquired.provenance.method;
         record = {
-          item,
+          item: { ...item, author: acquired.item.author },
           ingestionReason: reason,
           text: acquired.text,
           complete: acquired.complete,
@@ -309,7 +309,7 @@ export class CollectionWorker {
         method = "machine-transcript";
         const t = job.transcript;
         record = {
-          item,
+          item: { ...item, author: acquired.item.author },
           ingestionReason: reason,
           text: [acquired.articleText, t.text].filter(Boolean).join("\n\n"),
           complete: t.complete,
