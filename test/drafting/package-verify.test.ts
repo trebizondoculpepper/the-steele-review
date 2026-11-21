@@ -143,7 +143,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(fresh.calls).toBe(1);
     expect(redone.draft.path).not.toBe(draft.path);
     const meta = JSON.parse(await content.read(redone.metadata));
-    expect(meta.promptVersion).toMatch(/^writer-package-explainer-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
+    expect(meta.promptVersion).toMatch(
+      /^writer-package-explainer-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/,
+    );
 
     // Redraft: the revision instructions' wording is part of its identity.
     const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
@@ -163,7 +165,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(rewordedRedraft.draft.path).not.toBe(firstRedraft.draft.path);
     const m1 = JSON.parse(await content.read(firstRedraft.metadata));
     const m2 = JSON.parse(await content.read(rewordedRedraft.metadata));
-    expect(m1.revisionPromptVersion).toMatch(/^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
+    expect(m1.revisionPromptVersion).toMatch(
+      /^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/,
+    );
     expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
@@ -276,7 +280,8 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
           expect(input.publication.title).toBe(changed.fields.title);
           expect(input.publication.subtitle).toBe(changed.fields.subtitle);
           expect(input.publication.excerpt).toBe(changed.fields.excerpt);
-          expect(request.system).toContain("Publication metadata");
+          expect(request.system).toContain("title, subtitle and excerpt");
+          expect(request.system).toContain("same distinction between fact and opinion");
           return JSON.stringify({
             verdict: "redraft",
             issues: [
