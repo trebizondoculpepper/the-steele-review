@@ -239,10 +239,13 @@ const trashStore = content && env.data.STEELE_DASHBOARD_TRASH === "1"
   ? new DraftTrashStore(content)
   : undefined;
 const trashAction = trashStore?.action();
+// Actions need their exact origin for the same-origin check: without it, no
+// action route is registered at all.
+const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
 const actions =
-  trigger || trashAction
+  (trigger || trashAction) && actionOrigin
     ? {
-        origin: env.data.STEELE_DASHBOARD_ORIGIN!,
+        origin: actionOrigin,
         routes: {
           ...(trigger ? { "/articles/run": trigger.submit } : {}),
           ...(recovery ? { "/articles/recover": recovery.submit } : {}),
