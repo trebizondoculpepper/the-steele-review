@@ -134,6 +134,11 @@ async function main(): Promise<number> {
         stream: names.get(PUBLICATION_STREAM)!,
         name,
         filterSubject: ARTICLE_APPROVED_SUBJECT,
+        // Unlimited broker redelivery: the handler owns the attempt budget (its
+        // claim gives up after five attempts and terms the message), and a
+        // restart can leave a claim "busy" for its full lease; a broker limit
+        // would run out first and strand that destination's receipt.
+        maxDeliver: -1,
       });
     }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);

@@ -57,6 +57,7 @@ beforeAll(async () => {
       stream: PUBLICATION_STREAM,
       name: `dummy-${x}`,
       filterSubject: ARTICLE_APPROVED_SUBJECT,
+      maxDeliver: -1, // as provision.ts configures publisher consumers
     });
 }, 120_000);
 
@@ -77,23 +78,19 @@ describe("dummy-publisher", { timeout: 180_000 }, () => {
     operations.close();
 
     for (const x of ["a", "b"] as const) {
-      const child = spawn(
-        process.execPath,
-        ["--import", "tsx", "src/cli/dummy-publisher.ts"],
-        {
-          env: {
-            ...process.env,
-            NATS_URL: url,
-            STEELE_CONTENT_PATH: join(dir, "content"),
-            STEELE_CONTENT_REPOSITORY: "content",
-            STEELE_STATE_PATH: statePath,
-            STEELE_PUBLISHER_DESTINATION: `dummy-${x}`,
-            STEELE_PUBLISHER_CONSUMER: `dummy-${x}`,
-            STEELE_PUBLISHER_RETRY_DELAY_MS: "500",
-          },
-          stdio: ["ignore", "pipe", "inherit"],
+      const child = spawn(process.execPath, ["--import", "tsx", "src/cli/dummy-publisher.ts"], {
+        env: {
+          ...process.env,
+          NATS_URL: url,
+          STEELE_CONTENT_PATH: join(dir, "content"),
+          STEELE_CONTENT_REPOSITORY: "content",
+          STEELE_STATE_PATH: statePath,
+          STEELE_PUBLISHER_DESTINATION: `dummy-${x}`,
+          STEELE_PUBLISHER_CONSUMER: `dummy-${x}`,
+          STEELE_PUBLISHER_RETRY_DELAY_MS: "500",
         },
-      );
+        stdio: ["ignore", "pipe", "inherit"],
+      });
       children.push(child);
       let buffer = "";
       child.stdout!.on("data", (chunk: Buffer) => {
