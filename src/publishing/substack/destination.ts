@@ -9,6 +9,7 @@ import {
   type ReconcileContext,
 } from "../approved-article.js";
 import type { ArticleApprovedData } from "../../events/article-approved-event.js";
+import type { PublicationPayload } from "../../drafting/publication-payload.js";
 import { SubstackError, type SubstackClient, type SubstackDraft } from "./client.js";
 import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
 
@@ -91,13 +92,28 @@ export class SubstackDraftDestination implements DestinationAdapter {
     };
   }
 
-  render({ markdown, data }: { markdown: string; data: ArticleApprovedData }): DestinationPreview {
+  /** The approved structured fields are used verbatim, never re-derived (#458). */
+  readonly supportsPublicationPayload = true;
+
+  render({
+    markdown,
+    data,
+    publication,
+  }: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview {
     // A top-level heading becomes the title rather than body text.
     const bodyMarkdown = markdown.replace(/^# .+\n+/m, "");
     const body = markdownToProseMirror(bodyMarkdown);
+    // Structured approvals carry the exact verified title and subtitle. A
+    // legacy body-only approval keeps the documented fallback: the draft
+    // heading, with no subtitle, because none was ever verified.
+    const structured = publication?.mode === "structured" ? publication.fields : undefined;
     const preview = {
-      title: titleOf(markdown, data),
-      subtitle: "",
+      title: structured?.title ?? titleOf(markdown, data),
+      subtitle: structured?.subtitle ?? "",
       body,
       fingerprint: bodyFingerprint(body),
       ...(this.bylineId === undefined ? {} : { bylineId: this.bylineId }),
