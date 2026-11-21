@@ -1,6 +1,7 @@
 import type { PostTrace } from "../diagnostics/post-trace.js";
 import { postCorrelationId } from "../observability/post-correlation.js";
-import type { ArticleRunFinal, Ref } from "../workflow/article-run.js";
+import { articleRunKey, type ArticleRunFinal, type Ref } from "../workflow/article-run.js";
+import { recoveryWorkflowKey } from "./recovery.js";
 
 /**
  * Archived articles and their runs, for the dashboard (#377).
@@ -38,7 +39,12 @@ export type RunState =
       /** The run's own durable progress (#439); null before its first stage, absent if unreadable. */
       progress?: { stage: string; status: "running" | "completed"; at: string } | null;
     }
-  | { state: "finished"; result: ArticleRunFinal }
+  | {
+      state: "finished";
+      result: ArticleRunFinal;
+      /** The recorded recovery run for this revision, when one was started (#480). */
+      recovery?: RunState;
+    }
   | { state: "unavailable" }
   | { state: "not-configured" };
 
@@ -164,6 +170,21 @@ export interface ArticleTrace {
   receiptsTruncated: boolean;
   /** Retained captured source for this post (#446). */
   source: CapturedSource;
+  /** Latest recorded recovery run for this revision (#480), when started. */
+  recovery?: {
+    summary: RunSummary;
+    outcome?: string;
+    reason?: string;
+    /** Exact recovery workflow identity. */
+    workflowKey?: string;
+    /** Stage progress while the recovery is still running. */
+    progress?: { stage: string; status: "running" | "completed"; at: string } | null;
+    /** The recovery's own saved artifacts, never the original run's. */
+    draft?: DraftView;
+    verification?: VerificationView;
+    receipts?: ReceiptView[];
+    receiptsTruncated?: boolean;
+  };
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -398,66 +419,101 @@ export async function traceArticle(input: {
     }
   }
   const summary = summariseRun(run);
-  const finished = run.state === "finished" ? run.result : undefined;
-  let draft: DraftView | undefined;
-  if (finished && "draft" in finished && finished.draft && input.content) {
-    try {
-      const text = await input.content.draft(finished.draft);
-      if (text !== undefined) draft = { hash: finished.draft.sha256, text };
-    } catch {
-      draft = undefined;
-    }
-  }
-  let verification: VerificationView | undefined;
-  if (finished && "verification" in finished && finished.verification && input.content) {
-    try {
-      const report = await input.content.verification(finished.verification);
-      if (report) {
-        verification = {
-          outcome: report.outcome,
-          matchesDraft:
-            draft !== undefined &&
-            report.draftHash !== undefined &&
-            report.draftHash === `sha256:${draft.hash}`,
-          ...(report.draftHash ? { draftHash: report.draftHash } : {}),
-          ...(report.publicationHash ? { publicationHash: report.publicationHash } : {}),
-        };
+
+  // Projection of one run's own artifacts. Used for the original run and for
+  // its recovery, so a successful recovery shows its own draft, verification
+  // and receipts rather than the failed run's.
+  const project = async (result: ArticleRunFinal) => {
+    let draft: DraftView | undefined;
+    if ("draft" in result && result.draft && input.content) {
+      try {
+        const text = await input.content.draft(result.draft);
+        if (text !== undefined) draft = { hash: result.draft.sha256, text };
+      } catch {
+        draft = undefined;
       }
-    } catch {
-      verification = undefined;
     }
-  }
-  // Receipts belong to the run's exact draft. Use the run result's own
-  // reference even when reading the draft text failed, and show none when the
-  // run has no draft at all: an earlier revision's delivery must never appear
-  // under a run that produced nothing.
-  const runDraftHash =
-    finished && "draft" in finished && finished.draft ? finished.draft.sha256 : undefined;
-  let receipts: ReceiptView[] = [];
-  let receiptsTruncated = false;
-  if (input.receipts && runDraftHash) {
-    try {
-      const result = await input.receipts.receiptsFor(
-        post,
-        `sha256:${runDraftHash}`,
-        verification?.publicationHash,
-      );
-      receipts = result.receipts;
-      receiptsTruncated = result.truncated;
-    } catch {
-      receipts = [];
+    let verification: VerificationView | undefined;
+    if ("verification" in result && result.verification && input.content) {
+      try {
+        const report = await input.content.verification(result.verification);
+        if (report) {
+          verification = {
+            outcome: report.outcome,
+            matchesDraft:
+              draft !== undefined &&
+              report.draftHash !== undefined &&
+              report.draftHash === `sha256:${draft.hash}`,
+            ...(report.draftHash ? { draftHash: report.draftHash } : {}),
+            ...(report.publicationHash ? { publicationHash: report.publicationHash } : {}),
+          };
+        }
+      } catch {
+        verification = undefined;
+      }
     }
+    const runDraftHash = "draft" in result && result.draft ? result.draft.sha256 : undefined;
+    let receipts: ReceiptView[] = [];
+    let receiptsTruncated = false;
+    if (input.receipts && runDraftHash) {
+      try {
+        const found = await input.receipts.receiptsFor(
+          post,
+          `sha256:${runDraftHash}`,
+          verification?.publicationHash,
+        );
+        receipts = found.receipts;
+        receiptsTruncated = found.truncated;
+      } catch {
+        receipts = [];
+      }
+    }
+    return { draft, verification, receipts, receiptsTruncated };
+  };
+
+  const empty = {
+    draft: undefined as DraftView | undefined,
+    verification: undefined as VerificationView | undefined,
+    receipts: [] as ReceiptView[],
+    receiptsTruncated: false,
+  };
+  const finished = run.state === "finished" ? run.result : undefined;
+  const own = finished ? await project(finished) : empty;
+
+  // The recovery is shown alongside the original failure, with its own exact
+  // identity, progress and final artifacts.
+  let recovery: ArticleTrace["recovery"];
+  if (run.state === "finished" && run.recovery) {
+    const r = run.recovery;
+    const recovered = summariseRun(r);
+    const artifacts = r.state === "finished" ? await project(r.result) : empty;
+    recovery = {
+      summary: recovered.summary,
+      workflowKey:
+        sourceVersion === undefined
+          ? undefined
+          : recoveryWorkflowKey(articleRunKey({ ...post, sourceVersion })),
+      ...(recovered.outcome ? { outcome: recovered.outcome } : {}),
+      ...(recovered.reason ? { reason: recovered.reason } : {}),
+      ...(r.state === "running" ? { progress: r.progress ?? null } : {}),
+      ...(artifacts.draft ? { draft: artifacts.draft } : {}),
+      ...(artifacts.verification ? { verification: artifacts.verification } : {}),
+      ...(artifacts.receipts.length > 0 ? { receipts: artifacts.receipts } : {}),
+      ...(artifacts.receiptsTruncated ? { receiptsTruncated: true } : {}),
+    };
   }
+
   return {
     post,
     correlationId: postCorrelationId(post),
     ...(sourceVersion ? { sourceVersion } : {}),
     ...summary,
     ...(trace ? { trace } : {}),
-    ...(draft ? { draft } : {}),
-    ...(verification ? { verification } : {}),
-    receipts,
-    receiptsTruncated,
+    ...(own.draft ? { draft: own.draft } : {}),
+    ...(own.verification ? { verification: own.verification } : {}),
+    receipts: own.receipts,
+    receiptsTruncated: own.receiptsTruncated,
     source,
+    ...(recovery ? { recovery } : {}),
   };
 }

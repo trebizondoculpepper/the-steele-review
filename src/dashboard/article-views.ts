@@ -25,6 +25,8 @@ export interface ArticleViewDeps {
   /** Retained captured source for the detail page (#446). */
   source?: SourcePort;
   canTrigger?: boolean;
+  /** Recovery of a stopped run is configured (#480). */
+  canRecover?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
 }
@@ -36,6 +38,10 @@ const badge = (state: string, text = state) =>
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
+  const recoveryLink = (publicationId: string, postId: string, revision: string) =>
+    escapeHtml(
+      `${deps.actionOrigin ?? ""}/articles/recover?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
+    );
   const runLink = (publicationId: string, postId: string, revision: string) =>
     escapeHtml(
       `${deps.actionOrigin ?? ""}/articles/run?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
@@ -112,7 +118,12 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         deps.canTrigger && t.sourceVersion
           ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
-      return trigger + renderTrace(t);
+      // A run stopped on provider credit can be recovered explicitly (#480).
+      const recovery =
+        deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
+          ? `<p><a href="${recoveryLink(publicationId, postId, t.sourceVersion)}">Recover stopped run</a></p>`
+          : "";
+      return trigger + recovery + renderTrace(t);
     },
   };
   return [list, detail];
@@ -171,6 +182,35 @@ export function renderTrace(t: ArticleTrace): string {
         `<tr><td>${escapeHtml(s.stage)}</td><td>${badge(s.state)}</td><td>${s.detail ? escapeHtml(s.detail) : ""}</td></tr>`,
     )
     .join("");
+  const recoveryDraft = t.recovery?.draft
+    ? `<h3>Recovery draft</h3><p>Saved revision <code>sha256:${escapeHtml(t.recovery.draft.hash)}</code>.</p><pre>${escapeHtml(t.recovery.draft.text)}</pre>`
+    : "";
+  const recoveryVerification = t.recovery?.verification
+    ? `<h3>Recovery verification</h3><p>${badge(t.recovery.verification.outcome === "approved" ? "done" : "failed", t.recovery.verification.outcome)}${t.recovery.verification.matchesDraft ? " · binds to the recovery draft" : " · does not bind to the recovery draft"}</p>`
+    : "";
+  const recoveryReceipts = t.recovery?.receipts?.length
+    ? `<h3>Recovery delivery receipts</h3><div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${t.recovery.receipts
+        .map((r) => {
+          const confirmed =
+            !r.simulated && typeof r.url === "string" && r.url.startsWith("https://");
+          const link = confirmed
+            ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
+            : "";
+          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+        })
+        .join("")}</tbody></table></div>${t.recovery.receiptsTruncated ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>' : ""}`
+    : "";
+  const recovery = t.recovery
+    ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>${
+        t.recovery.workflowKey
+          ? `<p>Recovery run <code>${escapeHtml(t.recovery.workflowKey)}</code></p>`
+          : ""
+      }${
+        t.recovery.progress
+          ? `<p>${escapeHtml(t.recovery.progress.stage)} ${t.recovery.progress.status} at ${escapeHtml(t.recovery.progress.at.slice(0, 19).replace("T", " "))} UTC</p>`
+          : ""
+      }${recoveryDraft}${recoveryVerification}${recoveryReceipts}`
+    : "";
   const researchRows = t.research
     .map(
       (r) =>
@@ -220,5 +260,5 @@ export function renderTrace(t: ArticleTrace): string {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${source}${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
 }
