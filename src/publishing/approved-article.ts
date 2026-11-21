@@ -1,3 +1,4 @@
+import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -7,6 +8,14 @@ import {
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
+import {
+  readPublicationPayload,
+  sameArtifact,
+  PublicationPayloadError,
+  PublicationPayloadSchema,
+  publicationManifestHash,
+  type PublicationPayload,
+} from "../drafting/publication-payload.js";
 import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
@@ -83,7 +92,14 @@ export async function recordApproval(input: {
   if (report.outcome !== "approved") throw new ApprovalError("report does not approve the draft");
   const draft = fromRef(report.draft);
   const markdown = await input.content.read(draft); // hash-verified read
-  if (!approvalValidFor(report, markdown))
+  const publication =
+    report.schemaVersion === 2
+      ? {
+          ref: report.publication,
+          ...(await readPublicationPayload(input.content, report.publication)),
+        }
+      : undefined;
+  if (!approvalValidFor(report, markdown, publication))
     throw new ApprovalError("approval does not match the draft");
   const pkg = JSON.parse(await input.content.read(fromRef(report.package))) as {
     post: { publicationId: string; postId: string };
@@ -94,6 +110,7 @@ export async function recordApproval(input: {
     postId: pkg.post.postId,
     draft: report.draft,
     approval: toRef(input.report),
+    ...(report.schemaVersion === 2 ? { publication: report.publication } : {}),
     package: report.package,
     approvedAt: report.verifiedAt,
   };
@@ -112,6 +129,8 @@ export interface DestinationPreview {
   /** Rendered content in the destination's own format. */
   body: string;
   contentType: string;
+  /** Exact saved payload, retained by simulated previews; live adapters map approved fields explicitly. */
+  publication?: PublicationPayload;
 }
 
 export const DeliveryReceiptSchema = z
@@ -120,6 +139,12 @@ export const DeliveryReceiptSchema = z
     action: z.string(),
     /** True for placeholder deliveries that made no external call. */
     simulated: z.boolean(),
+    publicationHash: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
+    /** Manifest actually used for this delivery; retained unchanged on identical-content reuse. */
+    publication: ArtifactReferenceSchema.optional(),
     draftHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
@@ -169,7 +194,13 @@ export interface ReconcileContext {
 export interface DestinationAdapter {
   readonly name: string;
   readonly action: string;
-  render(article: { markdown: string; data: ArticleApprovedData }): DestinationPreview;
+  /** Opt in only when render consumes the exact structured fields without substitutions. */
+  readonly supportsPublicationPayload?: boolean;
+  render(article: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview;
   deliver(
     preview: DestinationPreview,
     key: string,
@@ -195,6 +226,7 @@ export type DeliveryDecision =
       action: "nak";
       delayMs: number;
       reason:
+        | "unsupported-payload"
         | "scheduled"
         | "busy"
         | "retry"
@@ -205,11 +237,44 @@ export type DeliveryDecision =
     }
   | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
 
+const DeliveryIntentSchema = z.looseObject({
+  key: z.string().min(1),
+  at: z.iso.datetime({ offset: true }).optional(),
+  /** The original approved version, retained even if equal content is approved again. */
+  article: ArticleApprovedDataSchema.optional(),
+});
+const SavedPreviewSchema = z.looseObject({
+  body: z.string().max(2_000_000),
+  contentType: z.string().min(1).max(200),
+  publication: PublicationPayloadSchema.optional(),
+});
+
+async function readApprovedContent(
+  content: Pick<GitArtifactStore, "read">,
+  article: ArticleApprovedData,
+) {
+  const markdown = await content.read(fromRef(article.draft));
+  const report = PackageVerificationReportSchema.parse(
+    JSON.parse(await content.read(fromRef(article.approval))),
+  );
+  const loaded = article.publication
+    ? { ref: article.publication, ...(await readPublicationPayload(content, article.publication)) }
+    : undefined;
+  if (
+    !approvalValidFor(report, markdown, loaded) ||
+    !sameArtifact(report.draft, article.draft) ||
+    !sameArtifact(report.package, article.package)
+  )
+    throw new ApprovalError("approval does not match the draft");
+  return { markdown, publication: loaded?.payload };
+}
+
 function deliveryDirectory(
-  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft">,
+  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
   destination: Pick<DestinationAdapter, "name" | "action">,
+  contentHash = article.draft.hash,
 ): string {
-  const revision = article.draft.hash.replace(/^sha256:/, "").slice(0, 32);
+  const revision = contentHash.replace(/^sha256:/, "").slice(0, 32);
   return `publications/${destination.name}/${destination.action}/${article.publicationId}/${article.postId}/${revision}`;
 }
 
@@ -219,8 +284,18 @@ export async function readDummyDeliveryProof(
   article: ArticleApprovedData,
 ): Promise<{ a: ArtifactRef; b: ArtifactRef } | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
+  const payload = approved.publication
+    ? (await readPublicationPayload(content, approved.publication)).payload
+    : undefined;
+  if (payload && !sameArtifact(payload.body, approved.draft))
+    throw new ApprovalError("dummy receipt does not prove the approved draft");
+  const publicationHash = payload?.mode === "structured" ? payload.contentHash : undefined;
   const read = async (name: string) => {
-    const dir = deliveryDirectory(approved, { name, action: "draft" });
+    const dir = deliveryDirectory(
+      approved,
+      { name, action: "draft" },
+      publicationHash ?? approved.draft.hash,
+    );
     const ref = await content.lookup(`${dir}/receipt.json`);
     if (!ref) return undefined;
     const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
@@ -228,7 +303,8 @@ export async function readDummyDeliveryProof(
       !receipt.simulated ||
       receipt.destination !== name ||
       receipt.action !== "draft" ||
-      receipt.draftHash !== approved.draft.hash
+      receipt.draftHash !== approved.draft.hash ||
+      receipt.publicationHash !== publicationHash
     ) {
       throw new ApprovalError("dummy receipt does not prove the approved draft");
     }
@@ -279,14 +355,11 @@ async function deliverApprovedArticle(
 
   // Re-check the approval against the exact stored bytes.
   let markdown: string;
+  let publication: PublicationPayload | undefined;
   try {
-    markdown = await input.content.read(fromRef(event.draft));
-    const report = PackageVerificationReportSchema.parse(
-      JSON.parse(await input.content.read(fromRef(event.approval))),
-    );
-    if (!approvalValidFor(report, markdown) || report.draft.hash !== event.draft.hash) {
-      return { action: "term", reason: "approval-mismatch" };
-    }
+    const checked = await readApprovedContent(input.content, event);
+    markdown = checked.markdown;
+    publication = checked.publication;
   } catch (error) {
     // Only a confirmed mismatch or missing artifact is final; anything else is transient.
     if (
@@ -295,20 +368,33 @@ async function deliverApprovedArticle(
     ) {
       return { action: "term", reason: "approval-mismatch" };
     }
-    if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    if (
+      error instanceof z.ZodError ||
+      error instanceof SyntaxError ||
+      error instanceof PublicationPayloadError ||
+      error instanceof ApprovalError
+    ) {
       return { action: "term", reason: "approval-mismatch" };
     }
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
   }
 
   const { destination } = input;
-  const revision = event.draft.hash.replace(/^sha256:/, "").slice(0, 32);
+  const publicationHash = publication?.mode === "structured" ? publication.contentHash : undefined;
+  const revision = (publicationHash ?? event.draft.hash).replace(/^sha256:/, "").slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
-  const dir = deliveryDirectory(event, destination);
+  const dir = deliveryDirectory(event, destination, publicationHash ?? event.draft.hash);
   // A receipt committed before a crash is the durable result: record completion
   // from it rather than delivering again or giving up on attempt limits.
   const committed = await input.content.lookup(`${dir}/receipt.json`);
   if (committed) {
+    const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(committed)));
+    if (
+      receipt.publicationHash !== publicationHash ||
+      receipt.draftHash !== event.draft.hash ||
+      (publicationHash !== undefined && receipt.publication === undefined)
+    )
+      return { action: "term", reason: "approval-mismatch" };
     input.operations.reconcileCompleted(
       key,
       { path: committed.path, commit: committed.commit },
@@ -316,6 +402,8 @@ async function deliverApprovedArticle(
     );
     return { action: "ack", outcome: "reused", receipt: committed };
   }
+  if (publication?.mode === "structured" && destination.supportsPublicationPayload !== true)
+    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "unsupported-payload" };
   const claim = input.operations.claim(key, input.owner, 10 * 60_000, 5);
   if (claim.kind === "completed") {
     const saved = await input.content.lookup(`${dir}/receipt.json`);
@@ -326,56 +414,110 @@ async function deliverApprovedArticle(
   if (claim.kind !== "claimed")
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
-  // The preview (including any pinned byline, #459) is durable before the
-  // external attempt. A retry must reuse the stored one: re-rendering after a
-  // configuration change could otherwise alter or lose the pinned attribution.
-  const storedPreview = await input.content.lookup(`${dir}/preview.json`);
-  let preview: DestinationPreview;
-  if (storedPreview) {
-    try {
-      preview = JSON.parse(await input.content.read(storedPreview)) as DestinationPreview;
-    } catch (error) {
-      // A repository read failure is operational: retry rather than abandon an
-      // approval that may still reconcile to an existing draft.
-      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
-        input.operations.yieldClaim(claim.claim);
-        return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
-      }
-      input.operations.fail(claim.claim, "invalid-preview", false);
-      return { action: "term", reason: "approval-mismatch" };
-    }
-  } else {
-    preview = destination.render({ markdown, data: event });
-    await writeOnce(input.content, `${dir}/preview.json`, preview);
-  }
   try {
+    const holdUncertain = (): DeliveryDecision => {
+      input.operations.yieldClaim(claim.claim);
+      return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
+    };
+    const priorIntent = await input.content.lookup(`${dir}/intent.json`);
+    const priorPreview = await input.content.lookup(`${dir}/preview.json`);
+    const uncertain = await input.content.lookup(`${dir}/uncertain.json`);
+    // An orphaned uncertain attempt has no authoritative original version.
+    if (!priorIntent && (uncertain || (publication?.mode === "structured" && priorPreview)))
+      return holdUncertain();
+    const currentArticle: ArticleApprovedData = {
+      publicationId: event.publicationId,
+      postId: event.postId,
+      draft: event.draft,
+      approval: event.approval,
+      package: event.package,
+      approvedAt: event.approvedAt,
+      ...(event.publication ? { publication: event.publication } : {}),
+    };
+    const candidate = `${JSON.stringify({ key, at: now.toISOString(), article: currentArticle }, null, 2)}\n`;
+    // Intent precedes preview and any external action. Re-read the retained
+    // write-once result rather than assuming this caller won the write.
+    const intentRef =
+      priorIntent ?? (await writeOnce(input.content, `${dir}/intent.json`, candidate));
+    const rawIntent = await input.content.read(intentRef);
+    const parsedIntent = DeliveryIntentSchema.safeParse(JSON.parse(rawIntent));
+    if (!parsedIntent.success || parsedIntent.data.key !== key) return holdUncertain();
+    const intent = parsedIntent.data;
+    let deliveryArticle = currentArticle;
+    let deliveryMarkdown = markdown;
+    let deliveryPublication = publication;
+    if (intent.article) {
+      const original = await readApprovedContent(input.content, intent.article);
+      const originalHash =
+        original.publication?.mode === "structured"
+          ? original.publication.contentHash
+          : intent.article.draft.hash;
+      if (
+        originalHash !== (publicationHash ?? event.draft.hash) ||
+        intent.article.publicationId !== event.publicationId ||
+        intent.article.postId !== event.postId
+      )
+        return holdUncertain();
+      deliveryArticle = intent.article;
+      deliveryMarkdown = original.markdown;
+      deliveryPublication = original.publication;
+    } else {
+      // Old intent records know only body identity. Never invent a manifest
+      // for a structured side effect whose original provenance is unknown.
+      if (publication?.mode === "structured") return holdUncertain();
+      deliveryArticle = {
+        publicationId: event.publicationId,
+        postId: event.postId,
+        draft: event.draft,
+        approval: event.approval,
+        package: event.package,
+        approvedAt: event.approvedAt,
+      };
+      deliveryPublication = undefined;
+    }
+    const previewRef =
+      priorPreview ??
+      (await writeOnce(
+        input.content,
+        `${dir}/preview.json`,
+        destination.render({
+          markdown: deliveryMarkdown,
+          data: deliveryArticle,
+          ...(deliveryPublication ? { publication: deliveryPublication } : {}),
+        }),
+      ));
+    const preview = SavedPreviewSchema.parse(JSON.parse(await input.content.read(previewRef)));
+    if (
+      preview.publication &&
+      (!deliveryArticle.publication ||
+        publicationManifestHash(preview.publication) !== deliveryArticle.publication.hash)
+    )
+      return holdUncertain();
     let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
-    // An earlier uncertain attempt must be reconciled before any retry.
-    // The uncertain marker is a durable, write-once artifact beside the receipt.
-    // Intent, with its time, is durable before any external attempt, so
-    // reconciliation can tell whether a listing covers the attempt.
-    const intentRef = await input.content.lookup(`${dir}/intent.json`);
-    const intentAt = intentRef
-      ? (JSON.parse(await input.content.read(intentRef)) as { at?: string }).at
-      : (await writeOnce(input.content, `${dir}/intent.json`, { key, at: now.toISOString() }),
-        now.toISOString());
-    // An intent left by an earlier attempt that produced no receipt is
-    // unresolved too: the process may have stopped after the destination acted
-    // but before the receipt was committed. Reconcile before any new attempt.
-    if (intentRef || (await input.content.lookup(`${dir}/uncertain.json`))) {
-      const r = await destination.reconcile(key, { preview, ...(intentAt ? { intentAt } : {}) });
+    // A previous or concurrently retained intent may have acted already. Its
+    // original preview and timestamp, not the newer event's, drive reconciliation.
+    if (priorIntent || rawIntent !== candidate || uncertain) {
+      const r = await destination.reconcile(key, {
+        preview,
+        ...(intent.at ? { intentAt: intent.at } : {}),
+      });
       if (r === "unknown") {
         input.operations.fail(claim.claim, "uncertain-delivery", true);
         return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
       }
       if (r.delivered) delivered = r.delivered;
     }
-    delivered ??= await destination.deliver(preview, key);
+    if (!delivered) {
+      input.operations.renew(claim.claim, 10 * 60_000);
+      delivered = await destination.deliver(preview, key);
+    }
     const receipt = DeliveryReceiptSchema.parse({
       destination: destination.name,
       action: destination.action,
       ...delivered,
-      draftHash: event.draft.hash,
+      draftHash: deliveryArticle.draft.hash,
+      ...(publicationHash ? { publicationHash } : {}),
+      ...(deliveryArticle.publication ? { publication: deliveryArticle.publication } : {}),
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);
@@ -405,6 +547,7 @@ async function deliverApprovedArticle(
  * credentials. `failTimes` makes it fail its first deliveries, for tests.
  */
 export class SimulatedDestination implements DestinationAdapter {
+  readonly supportsPublicationPayload = true;
   readonly deliveries: string[] = [];
   private failures: number;
   constructor(
@@ -415,10 +558,19 @@ export class SimulatedDestination implements DestinationAdapter {
   ) {
     this.failures = options.failTimes ?? 0;
   }
-  render({ markdown, data }: { markdown: string; data: ArticleApprovedData }): DestinationPreview {
+  render({
+    markdown,
+    data,
+    publication,
+  }: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview {
     return {
       body: `<!-- ${this.name} preview for ${data.publicationId}/${data.postId} -->\n${markdown}`,
       contentType: "text/markdown",
+      ...(publication ? { publication } : {}),
     };
   }
   async deliver(_preview: DestinationPreview, key: string) {

@@ -47,3 +47,8 @@ The report is saved under `verifications/<publication>/<post>/` and names the dr
 
 When the package is built with the archive (as the Restate pipeline and `writer-package` do), `source.originalUrl` and `source.title` are copied from the pinned capture record, the same bytes the analysis used. `draftFromPackage` takes the link from the package: a caller-supplied URL (`draft-package --source-url`, or the workflow's `sourceUrl`) is optional and must match, otherwise the draft fails as `source-url-mismatch` before any model call. Packages built before #276 have no pinned URL; for those the caller's URL is required (`no-source-url` otherwise) and is part of the draft identity. The article opens with an explicit Markdown link, `Original post: [<title>](<url>)`.
 
+
+
+## Publication metadata verification (#457)
+
+New verification reads the saved `metadata.fields` and body as one immutable manifest. Schema-v2 reports pin that payload, and the verifier checks every reader-visible factual field against the same pinned source and evidence. Any changed title, subtitle, excerpt, body or pinned metadata version needs a different verification identity. Identical inputs reuse the saved report. Schema-v1 reports remain readable as body-only verification and cannot approve unseen metadata. The Markdown body remains the existing evidence-validated rendering; no second body or title is regenerated during handoff.

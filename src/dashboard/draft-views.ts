@@ -12,7 +12,7 @@ const STATUS_LABEL: Record<DraftEntry["status"], [string, string]> = {
 };
 const badge = (e: DraftEntry) => {
   const [css, text] = STATUS_LABEL[e.status];
-  return `<span class="s-${css}">${escapeHtml(text)}</span>`;
+  return `<span class="s-${css}">${escapeHtml(e.approvalScope === "body-only" ? `body-only ${text}` : text)}</span>`;
 };
 const delivery = (e: DraftEntry) => {
   if (e.receipts.length === 0) return e.receiptsTruncated ? "receipt scan incomplete" : "none";
@@ -32,7 +32,7 @@ const fieldsSection = (e: DraftEntry) => {
   const value = (v?: string) =>
     v === undefined ? NOT_SAVED : `<span class="draft-text">${escapeHtml(v)}</span>`;
   return `<h2>Publication fields</h2>
-<p class="empty">Verification currently covers the article body only; these fields are shown as saved and are not yet verified (#457).</p>
+<p class="empty">${e.approvalScope === "publication" ? "The verification result above covers these exact saved fields and body." : "No payload-aware verification is bound to these fields; any body-only result does not approve them."}</p>
 <dl><dt>Title</dt><dd>${value(e.title)}</dd><dt>Subtitle</dt><dd>${value(e.subtitle)}</dd><dt>Excerpt</dt><dd>${value(e.excerpt)}</dd></dl>`;
 };
 const viewLink = (path: string) => `/drafts/view?path=${encodeURIComponent(path)}`;
@@ -89,7 +89,14 @@ export function draftViews(inventory?: DraftInventoryPort): DashboardView[] {
       const e = found.entry;
       const facts: [string, string][] = [
         ["Post", `${escapeHtml(e.publicationId)}/${escapeHtml(e.postId)}`],
+
         ["Verification", badge(e)],
+        ...(e.publicationHash
+          ? ([["Publication payload", `<code>${escapeHtml(e.publicationHash)}</code>`]] as [
+              string,
+              string,
+            ][])
+          : []),
         ["Delivery", delivery(e)],
         ...(e.hash
           ? ([["Draft hash", `<code>${escapeHtml(e.hash)}</code>`]] as [string, string][])

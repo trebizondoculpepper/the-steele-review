@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
+import {
+  artifactReference,
+  readPublicationPayload,
+  sameArtifact,
+} from "../drafting/publication-payload.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
 import type { ReceiptView, ReceiptsPort } from "./articles.js";
 
@@ -41,6 +46,8 @@ export interface DraftEntry {
   title?: string;
   subtitle?: string;
   excerpt?: string;
+  approvalScope?: "publication" | "body-only";
+  publicationHash?: string;
   draftedAt?: string;
   promptVersion?: string;
   modelVersion?: string;
@@ -61,6 +68,15 @@ export interface DraftInventoryPort {
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read" | "lookupAt">;
+type Binding = {
+  outcome: "approved" | "redraft";
+  publicationHash?: string;
+  scope: "publication" | "body-only";
+};
+const metadataKey = (
+  ref: { repository: string; commit: string; path: string; hash: string },
+  bodyHash: string,
+) => JSON.stringify([ref.repository, ref.commit, ref.path, ref.hash, bodyHash]);
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
 export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftInventoryPort {
@@ -70,7 +86,7 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
    * read failed: absence of a verdict then proves nothing.
    */
   const reportsFor = async (publicationId: string, postId: string) => {
-    const bound = new Map<string, "approved" | "redraft">();
+    const bound = new Map<string, Binding>();
     let incomplete = false;
     let after: string | undefined;
     for (let page = 0; ; page++) {
@@ -93,9 +109,23 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
             JSON.parse(await content.read(ref)),
           );
           if (!parsed.success) continue; // legacy or wrapper formats bind nothing here
-          const key = `${parsed.data.draft.repository}|${parsed.data.draft.hash}`;
-          // Approval for one exact draft is never overridden by another report.
-          if (bound.get(key) !== "approved") bound.set(key, parsed.data.outcome);
+          const report = parsed.data;
+          let key: string;
+          let binding: Binding;
+          if (report.schemaVersion === 2) {
+            const { payload } = await readPublicationPayload(content, report.publication);
+            if (!sameArtifact(payload.body, report.draft)) continue;
+            key = metadataKey(payload.metadata, report.draft.hash);
+            binding = {
+              outcome: report.outcome,
+              ...(payload.mode === "structured" ? { publicationHash: payload.contentHash } : {}),
+              scope: payload.mode === "structured" ? "publication" : "body-only",
+            };
+          } else {
+            key = `${report.draft.repository}|${report.draft.hash}`;
+            binding = { outcome: report.outcome, scope: "body-only" };
+          }
+          if (bound.get(key)?.outcome !== "approved") bound.set(key, binding);
         } catch {
           incomplete = true; // an unreadable report may have been this draft's verdict
         }
@@ -108,13 +138,15 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
 
   const entryFor = async (
     path: string,
-    reports: { bound: Map<string, "approved" | "redraft">; incomplete: boolean },
+    reports: { bound: Map<string, Binding>; incomplete: boolean },
   ): Promise<{ entry: DraftEntry; markdown?: string }> => {
     const m = METADATA_PATH.exec(path)!;
     const base = { path, publicationId: m[1]!, postId: m[2]!, receipts: [] as ReceiptView[] };
     let meta;
+    let metadataRef;
     try {
       const ref = await content.lookup(path);
+      metadataRef = ref;
       if (!ref) throw new Error("missing");
       meta = PackageDraftMetadataSchema.parse(JSON.parse(await content.read(ref)));
     } catch {
@@ -157,14 +189,20 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
     }
     // The hash of the bytes actually read, not a name or a recorded claim.
     const hash = `sha256:${createHash("sha256").update(draft.content).digest("hex")}`;
-    const verdict = reports.bound.get(`${draft.ref.repository}|${hash}`);
+    const legacy = reports.bound.get(`${draft.ref.repository}|${hash}`);
+    const binding = metadataRef
+      ? reports.bound.get(metadataKey(artifactReference(metadataRef), hash))
+      : undefined;
+    const matched = binding ?? (meta.fields === undefined ? legacy : undefined);
+    const verdict = matched?.outcome;
+    const legacyMetadataGap = meta.fields !== undefined && !binding && legacy !== undefined;
     let delivered: { receipts: ReceiptView[]; truncated: boolean } = {
       receipts: [],
       truncated: false,
     };
-    if (receipts) {
+    if (receipts && (binding || meta.fields === undefined)) {
       try {
-        delivered = await receipts.receiptsFor(base, hash);
+        delivered = await receipts.receiptsFor(base, hash, matched?.publicationHash);
       } catch {
         delivered = { receipts: [], truncated: true };
       }
@@ -174,6 +212,11 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
         ...base,
         ...info,
         hash,
+        ...(matched ? { approvalScope: matched.scope } : {}),
+        ...(matched?.publicationHash ? { publicationHash: matched.publicationHash } : {}),
+        ...(legacyMetadataGap
+          ? { limitation: "legacy verification covers only the body, not these generated fields" }
+          : {}),
         // No verdict from a partial scan is "incomplete", never "unverified".
         status: verdict ?? (reports.incomplete ? "incomplete" : "unverified"),
         ...(!verdict && reports.incomplete

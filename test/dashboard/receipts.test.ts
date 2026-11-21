@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { VERIFICATION_REPORT_SCHEMA_VERSION } from "../../src/drafting/package-verify.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { contentArticleView, contentReceipts } from "../../src/dashboard/adapters.js";
 import type { Ref } from "../../src/workflow/article-run.js";
@@ -33,7 +32,7 @@ const persisted = (r: Ref) => ({
 });
 
 const report = (draft: Ref) => ({
-  schemaVersion: VERIFICATION_REPORT_SCHEMA_VERSION,
+  schemaVersion: 1,
   outcome: "approved",
   draft: persisted(draft),
   package: persisted(draft),

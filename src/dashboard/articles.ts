@@ -53,6 +53,7 @@ export interface VerificationView {
   outcome: string;
   /** True only when the report's draft hash equals the run's saved draft. */
   matchesDraft: boolean;
+  publicationHash?: string;
   draftHash?: string;
 }
 
@@ -70,7 +71,9 @@ export interface ReceiptView {
 export interface ArticleContentPort {
   draft(ref: Ref): Promise<string | undefined>;
   /** A verification report, or the report inside an unresolved wrapper. */
-  verification(ref: Ref): Promise<{ outcome: string; draftHash?: string } | undefined>;
+  verification(
+    ref: Ref,
+  ): Promise<{ outcome: string; draftHash?: string; publicationHash?: string } | undefined>;
 }
 
 /**
@@ -112,6 +115,7 @@ export interface ReceiptsPort {
   receiptsFor(
     post: { publicationId: string; postId: string },
     draftHash?: string,
+    publicationHash?: string,
   ): Promise<ReceiptsResult>;
 }
 
@@ -416,6 +420,7 @@ export async function traceArticle(input: {
             report.draftHash !== undefined &&
             report.draftHash === `sha256:${draft.hash}`,
           ...(report.draftHash ? { draftHash: report.draftHash } : {}),
+          ...(report.publicationHash ? { publicationHash: report.publicationHash } : {}),
         };
       }
     } catch {
@@ -432,7 +437,11 @@ export async function traceArticle(input: {
   let receiptsTruncated = false;
   if (input.receipts && runDraftHash) {
     try {
-      const result = await input.receipts.receiptsFor(post, `sha256:${runDraftHash}`);
+      const result = await input.receipts.receiptsFor(
+        post,
+        `sha256:${runDraftHash}`,
+        verification?.publicationHash,
+      );
       receipts = result.receipts;
       receiptsTruncated = result.truncated;
     } catch {

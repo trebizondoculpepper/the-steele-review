@@ -8,6 +8,14 @@ import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import {
+  savePublicationPayload,
+  sameArtifact,
+  artifactReference,
+  publicationManifestHash,
+  type PublicationPayload,
+} from "./publication-payload.js";
+import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
 import { promptIdentity } from "./prompt-identity.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
@@ -29,10 +37,10 @@ import { rethrowCreditExhausted } from "../observability/provider-condition.js";
  * `unresolved` result rather than overriding the verifier.
  */
 
-export const VERIFICATION_REPORT_SCHEMA_VERSION = 1;
+export const VERIFICATION_REPORT_SCHEMA_VERSION = 2;
 
 export const DEFAULT_PACKAGE_VERIFY_PROMPT: ExtractionPrompt = {
-  version: "package-verifier-v2",
+  version: "package-verifier-v3",
   instructions: readFileSync(
     new URL("../prompts/verifier/package-verifier.md", import.meta.url),
     "utf8",
@@ -55,9 +63,9 @@ const ModelVerdictSchema = z
   .object({ verdict: z.enum(["approved", "redraft"]), issues: z.array(Issue).max(50) })
   .strict();
 
-export const PackageVerificationReportSchema = z
+const LegacyPackageVerificationReportSchema = z
   .object({
-    schemaVersion: z.literal(VERIFICATION_REPORT_SCHEMA_VERSION),
+    schemaVersion: z.literal(1),
     outcome: z.enum(["approved", "redraft"]),
     /** Exact draft verified; approval is valid only for this content hash. */
     draft: Ref,
@@ -71,6 +79,13 @@ export const PackageVerificationReportSchema = z
     verifiedAt: z.string(),
   })
   .strict();
+export const PackageVerificationReportSchema = z.discriminatedUnion("schemaVersion", [
+  LegacyPackageVerificationReportSchema,
+  LegacyPackageVerificationReportSchema.extend({
+    schemaVersion: z.literal(VERIFICATION_REPORT_SCHEMA_VERSION),
+    publication: ArtifactReferenceSchema,
+  }).strict(),
+]);
 export type PackageVerificationReport = z.infer<typeof PackageVerificationReportSchema>;
 
 const toRef = (r: ArtifactRef) => ({
@@ -143,8 +158,21 @@ export function deterministicIssues(pkg: WriterPackage, markdown: string): Verif
 }
 
 /** True when the report approves exactly this draft text. */
-export function approvalValidFor(report: PackageVerificationReport, markdown: string): boolean {
-  return report.outcome === "approved" && report.draft.hash === `sha256:${sha256(markdown)}`;
+export function approvalValidFor(
+  report: PackageVerificationReport,
+  markdown: string,
+  publication?: { ref: ArtifactReference; payload: PublicationPayload },
+): boolean {
+  if (report.outcome !== "approved" || report.draft.hash !== `sha256:${sha256(markdown)}`)
+    return false;
+  // A legacy report approves its body only, never metadata attached afterwards.
+  if (report.schemaVersion === 1) return publication === undefined;
+  return (
+    publication !== undefined &&
+    sameArtifact(report.publication, publication.ref) &&
+    sameArtifact(report.draft, publication.payload.body) &&
+    publicationManifestHash(publication.payload) === publication.ref.hash
+  );
 }
 
 export type VerifyOutcome =
@@ -176,19 +204,38 @@ export async function verifyPackageDraft(input: {
   const pkgRef = toArtifactRef(meta.package);
   const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(pkgRef)));
 
+  const publication = await savePublicationPayload({
+    content: input.content,
+    metadata: input.metadata,
+    body: draftRef,
+    post: pkg.post,
+  });
+
   // Bound to the exact verifier wording, not only its semantic version (#430).
   const promptId = promptIdentity(prompt.version, prompt.instructions);
   const key = sha256(
-    JSON.stringify([toRef(draftRef), meta.package, input.verifier.modelVersion, promptId]),
+    JSON.stringify([
+      toRef(draftRef),
+      artifactReference(publication.ref),
+      meta.package,
+      input.verifier.modelVersion,
+      promptId,
+    ]),
   ).slice(0, 32);
   const path = `verifications/${pkg.post.publicationId}/${pkg.post.postId}/${key}.json`;
   const saved = await input.content.lookup(path);
   if (saved) {
-    return {
-      status: "verified",
-      report: PackageVerificationReportSchema.parse(JSON.parse(await input.content.read(saved))),
-      ref: saved,
-    };
+    const report = PackageVerificationReportSchema.parse(
+      JSON.parse(await input.content.read(saved)),
+    );
+    if (
+      report.schemaVersion !== 2 ||
+      !sameArtifact(report.publication, artifactReference(publication.ref)) ||
+      !sameArtifact(report.draft, toRef(draftRef)) ||
+      !sameArtifact(report.package, meta.package)
+    )
+      return { status: "context-unavailable", reason: "verification-version-mismatch" };
+    return { status: "verified", report, ref: saved };
   }
 
   const loaded = await loadPinnedContext({
@@ -211,6 +258,10 @@ export async function verifyPackageDraft(input: {
   const checks = deterministicIssues(pkg, markdown);
   const user = JSON.stringify({
     draft: markdown,
+    publication:
+      publication.payload.mode === "structured"
+        ? { mode: "structured", ...publication.payload.fields }
+        : { mode: "legacy-body-only" },
     post: loaded.context.source.text,
     themes: loaded.context.themes.proposals.map((t) => t.title),
     claims: pkg.claims.map((c) => ({
@@ -257,6 +308,7 @@ export async function verifyPackageDraft(input: {
       : "approved";
   const report = PackageVerificationReportSchema.parse({
     schemaVersion: VERIFICATION_REPORT_SCHEMA_VERSION,
+    publication: artifactReference(publication.ref),
     outcome,
     draft: toRef(draftRef),
     package: meta.package,

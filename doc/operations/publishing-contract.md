@@ -16,6 +16,7 @@ Registered in `src/events/registry.ts` under the messaging standard (`doc/archit
 | `postId` | slug | Source post within that publication. |
 | `draft` | artifact reference | The exact approved Markdown draft revision (repository, commit, path, `sha256:` hash). |
 | `approval` | artifact reference | The package verification report that approved exactly that draft. |
+| `publication` | optional artifact reference | Exact versioned metadata/body payload for v2 verification; absent only on legacy body-only approvals. |
 | `package` | artifact reference | The evidence (writer) package the draft was written from. |
 | `approvedAt` | ISO 8601 date-time | The verifier's `verifiedAt`: when the approving verification ran, not when the event was recorded. It is fixed by the report, so re-recording the same approval yields the same event. Destination schedules count from it. |
 
@@ -35,6 +36,7 @@ Each destination runs its own durable consumer and calls `handleApprovedArticle`
 - It waits for its own schedule (`delayMs` after approval) by asking for redelivery.
 - It keeps its own intent, status and receipt under the key `publish:<destination>:<action>:<revision>`, so one destination's failure or retry never touches another's.
 - It saves a preview (`publications/<destination>/<action>/<publication>/<post>/<revision>/preview.json`) before delivery and a receipt (`receipt.json`) after. Duplicate delivery reuses the saved receipt.
+- Intent records retain the original approved artifact references before any external attempt. Retries reuse the saved adapter preview, including its configured byline; a later approval of identical content cannot replace the original manifest or attribute its delivery to a newer provenance lineage. Legacy structured intents without an authoritative original manifest remain on operational hold.
 - A delivery whose outcome is unknown is recorded with an `uncertain.json` marker; the next attempt asks the adapter to reconcile before sending again, so an uncertain delivery is never repeated blindly.
 
 Adapters implement `DestinationAdapter`: `render` (own format and capabilities), idempotent `deliver`, and `reconcile`. `SimulatedDestination` is the placeholder used for the end-to-end proof: it makes no external call and needs no credentials, and its receipt is marked `simulated: true`, which is the terminal publishing result for that test.
@@ -49,3 +51,16 @@ Adapters implement `DestinationAdapter`: `render` (own format and capabilities),
 - the dispatcher publishes both approvals;
 - two independent simulated destinations each save a receipt per approved revision, one of them after a failed first attempt;
 - replaying a captured event and an approval event creates no new draft or delivery.
+
+
+## Exact publication payloads (#457)
+
+New verification reports use schema v2 and pin a schema-v1 manifest under `publication-payloads/<publication>/<post>/`. The manifest uses canonical JSON bytes and carries exact metadata and body artifact references plus a validated reader-visible `contentHash` and either the saved `fields` (`structured`) or an explicit `legacy-body-only` mode. The independent verifier receives title, subtitle and excerpt alongside the same body and pinned evidence; a body-only approval never approves fields attached later. Model verification remains distinct from any manual editorial decision.
+
+Approval events carry the optional `publication` reference. Publishers read and validate those pinned artifacts again, check the report binds that complete payload, and pass the saved fields/references unchanged to the adapter. For payload-aware events, delivery operation keys, artifact directories and receipt `publicationHash` use a canonical reader-visible content hash (title, subtitle, excerpt and body hash) (truncated only in the directory/key segment), while `draftHash` still records the body. A title-only change therefore cannot reuse an older approval or receipt. Exact manifest references remain the approval identity; changing only provenance still requires its own verification, while identical reader-visible bytes reuse the existing delivery receipt within that destination/action. The receipt retains the manifest actually delivered rather than relabelling it with newer provenance. Legacy events retain their body-only behavior and cannot acquire generated fields.
+
+Adapters must opt into `supportsPublicationPayload` before structured delivery. Without that capability the publisher returns `unsupported-payload`, makes no external attempt and spends no attempt budget. After an adapter upgrade, the same event/key resumes normally, including reconciliation of any existing intent. Substack mapping is a separate change (#458); this contract does not enable it. Deploy payload-aware consumers before enabling new payload-producing workers; older strict event readers do not understand the added reference. No feature deployment is performed by this contract change.
+
+The read-only draft inventory binds status and receipts to the exact metadata/body association, displays all saved generated fields as escaped text, and labels legacy verification explicitly as body-only. Equal body bytes with different titles never share full-payload approval status or receipts.
+
+Manual decision records from #447 remain body-only. This change does not apply those dispositions to generated metadata. Full-payload manual targets and action integration are tracked in #449, after atomic claim-owned state completion is corrected; no manual approval is fabricated here.

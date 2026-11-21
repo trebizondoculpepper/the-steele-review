@@ -26,6 +26,8 @@ export const ArticleApprovedDataSchema = z
     draft: ArtifactReferenceSchema,
     /** The verification report that approved exactly that draft. */
     approval: ArtifactReferenceSchema,
+    /** Present for payload-aware verification; absent only for legacy body-only approvals. */
+    publication: ArtifactReferenceSchema.optional(),
     /** The evidence package the draft was written from. */
     package: ArtifactReferenceSchema,
     approvedAt: z.iso.datetime({ offset: true }),

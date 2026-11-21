@@ -1,3 +1,8 @@
+import {
+  readPublicationPayload,
+  savePublicationPayload,
+  artifactReference,
+} from "../../src/drafting/publication-payload.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +14,7 @@ import {
 } from "../../src/drafting/package-draft.js";
 import {
   DEFAULT_PACKAGE_VERIFY_PROMPT,
+  PackageVerificationReportSchema,
   approvalValidFor,
   deterministicIssues,
   verifyPackageDraft,
@@ -137,7 +143,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(fresh.calls).toBe(1);
     expect(redone.draft.path).not.toBe(draft.path);
     const meta = JSON.parse(await content.read(redone.metadata));
-    expect(meta.promptVersion).toMatch(/^writer-package-explainer-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
+    expect(meta.promptVersion).toMatch(
+      /^writer-package-explainer-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/,
+    );
 
     // Redraft: the revision instructions' wording is part of its identity.
     const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
@@ -157,7 +165,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(rewordedRedraft.draft.path).not.toBe(firstRedraft.draft.path);
     const m1 = JSON.parse(await content.read(firstRedraft.metadata));
     const m2 = JSON.parse(await content.read(rewordedRedraft.metadata));
-    expect(m1.revisionPromptVersion).toMatch(/^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
+    expect(m1.revisionPromptVersion).toMatch(
+      /^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/,
+    );
     expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
@@ -185,6 +195,131 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(reverified.report.promptVersion).toMatch(/\+sha256:[0-9a-f]{16}$/);
   });
 
+  it.each(["title", "subtitle", "excerpt", "body"])(
+    "does not reuse approval after a %s-only change",
+    async (field) => {
+      const { metadata, draft } = await drafted();
+      const first = await verifyPackageDraft({
+        content,
+        archive,
+        metadata,
+        verifier: model("fake/verifier", APPROVE),
+      });
+      if (first.status !== "verified" || first.report.schemaVersion !== 2)
+        throw new Error("expected report");
+      const original = await readPublicationPayload(content, first.report.publication);
+      const changed = JSON.parse(await content.read(metadata));
+      let body = draft;
+      if (field === "body") {
+        body = await content.write(
+          draft.path.replace(/\.md$/, "-changed.md"),
+          `${original.markdown}\nA careful qualification.\n`,
+        );
+        changed.draft = `${body.commit}:${body.path}`;
+      } else changed.fields[field] = `Changed ${field}`;
+      const revised = await content.write(
+        metadata.path.replace(/\.json$/, "-changed.json"),
+        JSON.stringify(changed),
+      );
+      const payload = await savePublicationPayload({
+        content,
+        metadata: revised,
+        body,
+        post: { publicationId: "pub", postId: "p1" },
+      });
+      expect(
+        approvalValidFor(first.report, await content.read(body), {
+          ref: artifactReference(payload.ref),
+          payload: payload.payload,
+        }),
+      ).toBe(false);
+      const checker = model("fake/verifier", APPROVE);
+      const second = await verifyPackageDraft({
+        content,
+        archive,
+        metadata: revised,
+        verifier: checker,
+      });
+      if (second.status !== "verified") throw new Error(second.status);
+      expect(checker.calls).toBe(1);
+      expect(second.ref.path).not.toBe(first.ref.path);
+      expect(
+        approvalValidFor(first.report, original.markdown, {
+          ref: first.report.publication,
+          payload: original.payload,
+        }),
+      ).toBe(true);
+      const replay = model("fake/verifier", APPROVE);
+      const reused = await verifyPackageDraft({
+        content,
+        archive,
+        metadata: revised,
+        verifier: replay,
+      });
+      expect(reused.status).toBe("verified");
+      expect(replay.calls).toBe(0);
+    },
+  );
+
+  it("sends reader-visible metadata to the independent verifier and rejects unsupported metadata", async () => {
+    const { metadata } = await drafted();
+    const changed = JSON.parse(await content.read(metadata));
+    changed.fields.title = "The treaty proves all weather control is harmless";
+    const revised = await content.write(
+      metadata.path.replace(/\.json$/, "-unsupported.json"),
+      JSON.stringify(changed),
+    );
+    const out = await verifyPackageDraft({
+      content,
+      archive,
+      metadata: revised,
+      verifier: {
+        modelVersion: "fake/metadata-verifier",
+        complete: async (request) => {
+          const input = JSON.parse(request.user);
+          expect(input.publication.title).toBe(changed.fields.title);
+          expect(input.publication.subtitle).toBe(changed.fields.subtitle);
+          expect(input.publication.excerpt).toBe(changed.fields.excerpt);
+          expect(request.system).toContain("title, subtitle and excerpt");
+          expect(request.system).toContain("same distinction between fact and opinion");
+          return JSON.stringify({
+            verdict: "redraft",
+            issues: [
+              {
+                passage: input.publication.title,
+                reason: "The supplied treaty passage does not establish harmlessness.",
+                severity: "substantive",
+              },
+            ],
+          });
+        },
+      },
+    });
+    expect(out).toMatchObject({ status: "verified", report: { outcome: "redraft" } });
+  });
+
+  it("never extends a legacy body-only report to unseen publication fields", async () => {
+    const { metadata, draft } = await drafted();
+    const verified = await verifyPackageDraft({
+      content,
+      archive,
+      metadata,
+      verifier: model("fake/verifier", APPROVE),
+    });
+    if (verified.status !== "verified" || verified.report.schemaVersion !== 2)
+      throw new Error("expected report");
+    const candidate = { ...verified.report, schemaVersion: 1 } as Record<string, unknown>;
+    delete candidate.publication;
+    const legacy = PackageVerificationReportSchema.parse(candidate);
+    const publication = {
+      ref: verified.report.publication,
+      ...(await readPublicationPayload(content, verified.report.publication)),
+    };
+    const markdown = await content.read(draft);
+    expect(approvalValidFor(legacy, markdown)).toBe(true);
+    expect(approvalValidFor(legacy, markdown, publication)).toBe(false);
+  });
+
   it("approves an accurate, qualified draft, and the approval binds to the exact text", async () => {
     const { metadata, draft } = await drafted();
     const out = await verifyPackageDraft({
@@ -196,8 +331,25 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     if (out.status !== "verified") throw new Error(out.status);
     expect(out.report).toMatchObject({ outcome: "approved", issues: [{ severity: "minor" }] });
     const md = await content.read(draft);
-    expect(approvalValidFor(out.report, md)).toBe(true);
-    expect(approvalValidFor(out.report, `${md}\nEdited.`)).toBe(false);
+    if (out.report.schemaVersion !== 2) throw new Error("expected payload-aware report");
+    const publication = {
+      ref: out.report.publication,
+      ...(await readPublicationPayload(content, out.report.publication)),
+    };
+    expect(approvalValidFor(out.report, md, publication)).toBe(true);
+    expect(approvalValidFor(out.report, md)).toBe(false);
+    if (publication.payload.mode === "structured") {
+      expect(
+        approvalValidFor(out.report, md, {
+          ...publication,
+          payload: {
+            ...publication.payload,
+            fields: { ...publication.payload.fields, title: "A substituted title" },
+          },
+        }),
+      ).toBe(false);
+    }
+    expect(approvalValidFor(out.report, `${md}\nEdited.`, publication)).toBe(false);
     expect(out.ref.path).toMatch(/^verifications\/pub\/p1\//);
   });
 
