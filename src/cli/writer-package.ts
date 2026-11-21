@@ -1,3 +1,4 @@
+import { postAttribution, sourceMetadataFromEnv } from "../content/source-metadata.js";
 /**
  * Build the writer's evidence package from a saved librarian coverage record (#148).
  *
@@ -87,7 +88,9 @@ async function main(): Promise<number> {
     comparisons.push(found);
   }
   try {
+    const metadata = sourceMetadataFromEnv(process.env);
     const { package: pkg, ref } = await saveWriterPackage({
+      resolveAuthor: (item) => postAttribution(metadata, item),
       content,
       ...(archive ? { archive } : {}),
       coverage,

@@ -11,7 +11,14 @@ export const ObservedDateSchema = z.union([
   z.iso.datetime({ offset: true }).max(100),
   z.iso.date(),
 ]);
-export const OriginalMediumSchema = z.enum(["written", "video", "audio", "mixed", "unknown"]);
+export const OriginalMediumSchema = z.enum([
+  "written",
+  "video",
+  "audio",
+  "image",
+  "mixed",
+  "unknown",
+]);
 export const TemporalContextSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -199,6 +206,9 @@ export function sourceContextFor(
   } else if (p.postType === "video") {
     medium = "video";
     basis = "archived-post-type";
+  } else if (p.postType === "image") {
+    medium = "image";
+    basis = "archived-post-type";
   } else if (p.postType === "audio") {
     medium = "audio";
     basis = "archived-post-type";
@@ -311,4 +321,33 @@ export function sourceContextMatches(
     r.path === archive.path &&
     r.hash === `sha256:${archive.sha256}`
   );
+}
+
+export class SourceContextError extends Error {
+  constructor(readonly code: "unavailable" | "mismatch") {
+    super(`source context ${code}`);
+    this.name = "SourceContextError";
+  }
+}
+export async function readSourceContext(
+  content: Pick<GitArtifactStore, "read">,
+  reference: ArtifactRef,
+  archive: ArtifactRef,
+  sourceVersion: string,
+  post: { publicationId: string; postId: string; url?: string },
+): Promise<SourceContext> {
+  let context: SourceContext;
+  try {
+    context = SourceContextSchema.parse(JSON.parse(await content.read(reference)));
+  } catch {
+    throw new SourceContextError("unavailable");
+  }
+  if (
+    !sourceContextMatches(context, archive, sourceVersion) ||
+    context.source.id !== post.publicationId ||
+    context.source.postId !== post.postId ||
+    (post.url !== undefined && context.source.url !== post.url)
+  )
+    throw new SourceContextError("mismatch");
+  return context;
 }

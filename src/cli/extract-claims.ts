@@ -1,3 +1,4 @@
+import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 /**
  * Manual command (#144): extract source-grounded claims for one post, link
  * them to the themes detected for it (#143), save the extraction and the
@@ -152,7 +153,12 @@ async function main(argv: string[]): Promise<number> {
       publicationId: post.publicationId,
       ...(record.item.author ? { author: record.item.author } : {}),
     });
+    const sourceContext = await saveSourceContext(
+      content,
+      sourceContextFor(record, ref, attribution),
+    );
     const outcome = await extractGroundedClaims({
+      sourceContext,
       provider,
       ...(attribution ? { attribution } : {}),
       artifacts: content,

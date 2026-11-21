@@ -43,7 +43,7 @@ export interface CollectionProvenance {
   /** "aligned" segments carry timestamps from Substack's aligned transcript. */
   transcriptVariant?: "aligned";
   postType?: string;
-  originalMedium?: "written" | "video" | "audio" | "mixed" | "unknown";
+  originalMedium?: "written" | "video" | "audio" | "image" | "mixed" | "unknown";
   mediaUploadKind?: "audio" | "video";
   originalMediaUploadId?: string;
   observedPublishedAt?: string;
@@ -269,9 +269,11 @@ export class SubstackContentCollector {
         ? "video"
         : post.podcastUpload?.id || post.type === "audio"
           ? "audio"
-          : (post.type === "newsletter" || post.type === "text") && !post.podcast_url
-            ? "written"
-            : "unknown";
+          : post.type === "image"
+            ? "image"
+            : (post.type === "newsletter" || post.type === "text") && !post.podcast_url
+              ? "written"
+              : "unknown";
     const baseProvenance = {
       sourceUrl: item.url,
       acquiredAt: this.now().toISOString(),
