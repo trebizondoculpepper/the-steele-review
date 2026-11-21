@@ -30,6 +30,8 @@ describe("dashboard shell (#375)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(res.headers.get("content-security-policy")).not.toContain("script-src");
+    // Same-origin form posts must keep their Origin header (#379).
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
     const html = await res.text();
     expect(html).toContain('<a href="/overview" aria-current="page">Overview</a>');
     expect(html).toContain('<a href="/articles">Articles</a>');

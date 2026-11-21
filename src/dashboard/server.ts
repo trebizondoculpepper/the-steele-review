@@ -48,7 +48,10 @@ const SECURITY_HEADERS = {
   "content-security-policy":
     "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  // same-origin, not no-referrer: under no-referrer a browser form POST carries
+  // "Origin: null", which the same-origin action check (correctly) rejects.
+  // Cross-origin requests still receive no referrer.
+  "referrer-policy": "same-origin",
   "cache-control": "no-store",
 };
 
