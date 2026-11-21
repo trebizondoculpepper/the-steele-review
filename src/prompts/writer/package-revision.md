@@ -1,1 +1,3 @@
 Revise the draft so every listed passage is fixed: remove or correct each unsupported or misleading assertion the verifier identified, keeping everything else supported by the evidence. Do not add new claims, sources or certainty to compensate.
+
+Keep the article's `title`, `subtitle` and `excerpt` under the same house definitions as the first draft: the title is a short, pithy hook that teases the article accurately; the subtitle adds a reason to read, preferably posing the central question; the excerpt is a three-sentence summary distinct from a quotation or new evidence. Do not repeat them as headings in the body. The roughly 900-word body target is an editorial aim, never a reason to pad thin evidence.
