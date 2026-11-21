@@ -58,6 +58,8 @@ import { claimViews } from "../dashboard/claim-views.js";
 import { savedClaims } from "../dashboard/claims.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { collectActivity, renderActivity } from "../dashboard/activity.js";
+import { renderConfig } from "../dashboard/config-view.js";
+import { inspectSettings, resolveSettings } from "../config/settings.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -183,8 +185,17 @@ const activityView =
         },
       ]
     : [];
+// Read-only configuration projection (#544).
+const configView = [
+  {
+    path: "/config",
+    title: "Configuration",
+    render: () => renderConfig(inspectSettings(resolveSettings(process.env))),
+  },
+];
 const views = [
   overview,
+  ...configView,
   ...activityView,
   ...(trigger ? [trigger.view] : []),
   ...(recovery ? [recovery.view] : []),
