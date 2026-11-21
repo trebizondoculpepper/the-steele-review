@@ -25,7 +25,9 @@ const countProbe = {
   ],
 };
 
-const checkpoint = (state?: { commit?: string }): CatchUpCheckpointStore => ({
+const checkpoint = (
+  state?: { commit?: string; wholePublication?: boolean; publicationId?: string },
+): CatchUpCheckpointStore => ({
   load: async () => state,
   save: async () => undefined,
 });
@@ -88,6 +90,24 @@ describe("systemStatusSource", () => {
       now: () => NOW,
     });
     expect((await source.read()).indexCatchUp).toEqual({ state: "behind", pendingChanges: 3 });
+  });
+
+  it("reports a filtered or scoped checkpoint as incomplete coverage", async () => {
+    const filtered = systemStatusSource({
+      runtime: {},
+      archive: archive({ head: "aaa" }),
+      checkpoint: checkpoint({ commit: "aaa", wholePublication: false }),
+      now: () => NOW,
+    });
+    expect((await filtered.read()).indexCatchUp).toEqual({ state: "incomplete" });
+
+    const scoped = systemStatusSource({
+      runtime: {},
+      archive: archive({ head: "aaa" }),
+      checkpoint: checkpoint({ commit: "aaa", publicationId: "pub" }),
+      now: () => NOW,
+    });
+    expect((await scoped.read()).indexCatchUp).toEqual({ state: "incomplete" });
   });
 
   it("treats an index with no checkpoint as pending", async () => {

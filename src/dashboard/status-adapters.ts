@@ -1,4 +1,7 @@
-import type { CatchUpCheckpointStore } from "../collection/index-catchup.js";
+import type {
+  CatchUpCheckpointState,
+  CatchUpCheckpointStore,
+} from "../collection/index-catchup.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { collectRuntimeStatus, type RuntimeStatusDependencies } from "../diagnostics/runtime-status.js";
 import { readDiscoveryStatus } from "../discovery/status.js";
@@ -86,11 +89,21 @@ async function archiveProgress(deps: StatusAdapterDeps): Promise<StatusSnapshot[
   }
 }
 
+/**
+ * True when the checkpoint proves whole-archive coverage. A filtered replay or
+ * a publication-scoped pass (`wholePublication: false`, or a recorded
+ * publication) only covered part of the archive, so it cannot make the index
+ * "current".
+ */
+const coversWholeArchive = (state: CatchUpCheckpointState): boolean =>
+  state.wholePublication !== false && typeof state.publicationId !== "string";
+
 async function indexCatchUpFor(deps: StatusAdapterDeps): Promise<StatusSnapshot["indexCatchUp"]> {
   if (!deps.archive || !deps.checkpoint) return { state: "not-configured" };
   try {
     const state = await deps.checkpoint.load();
     if (!state?.commit) return { state: "pending" };
+    if (!coversWholeArchive(state)) return { state: "incomplete" };
     const since = await deps.archive.changesSince(state.commit);
     if (!since.head) return { state: "unavailable" };
     if (since.head === state.commit) return { state: "current" };

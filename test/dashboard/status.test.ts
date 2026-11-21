@@ -55,6 +55,11 @@ describe("statusView", () => {
     expect(html).not.toContain("captured");
   });
 
+  it("labels incomplete index coverage", async () => {
+    const html = await render(snapshot({ indexCatchUp: { state: "incomplete" } }));
+    expect(html).toContain(">incomplete<");
+  });
+
   it("reports a truncated archive scan", async () => {
     const html = await render(snapshot({ archive: { state: "ok", captured: 2000, truncated: true } }));
     expect(html).toContain("scan truncated");

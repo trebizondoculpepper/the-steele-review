@@ -13,7 +13,13 @@ import { escapeHtml, type DashboardView } from "./server.js";
 export type ServiceState = "healthy" | "unavailable" | "not-configured";
 export type FeedPollState = "current" | "stale" | "unavailable" | "not-configured";
 export type ArchiveState = "ok" | "unavailable" | "not-configured";
-export type IndexState = "current" | "behind" | "pending" | "unavailable" | "not-configured";
+export type IndexState =
+  | "current"
+  | "behind"
+  | "pending"
+  | "incomplete"
+  | "unavailable"
+  | "not-configured";
 
 export interface StatusSnapshot {
   /** When the snapshot was collected; each source was bounded around this time. */
@@ -40,6 +46,7 @@ const TONE: Record<string, string> = {
   stale: "pending",
   behind: "pending",
   pending: "pending",
+  incomplete: "pending",
   unavailable: "failed",
   "not-configured": "unknown",
 };

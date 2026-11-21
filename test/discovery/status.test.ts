@@ -58,6 +58,29 @@ describe("discovery status file", () => {
     expect(status).not.toHaveProperty("lastPublished");
   });
 
+  it("serialises concurrent writes so the last state wins", async () => {
+    const dir = directory();
+    const path = join(dir, "status.json");
+    // The runner emits an outcome update and a waiting update in one tick.
+    await Promise.all([
+      writeDiscoveryStatus(path, {
+        at: "2026-01-01T00:00:00.000Z",
+        state: "running",
+        runs: 1,
+        consecutiveFailures: 0,
+      }),
+      writeDiscoveryStatus(path, {
+        at: "2026-01-01T00:00:01.000Z",
+        state: "waiting",
+        runs: 1,
+        consecutiveFailures: 0,
+        nextDelayMs: 60_000,
+      }),
+    ]);
+    expect(await readDiscoveryStatus(path)).toMatchObject({ state: "waiting", runs: 1 });
+    expect(readdirSync(dir)).toEqual(["status.json"]);
+  });
+
   it("treats a missing or malformed file as absent", async () => {
     const dir = directory();
     expect(await readDiscoveryStatus(join(dir, "absent.json"))).toBeUndefined();

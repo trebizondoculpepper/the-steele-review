@@ -31,11 +31,30 @@ export type DiscoveryStatusInput = Omit<DiscoveryStatus, "schemaVersion" | "at">
   at?: string;
 };
 
+/**
+ * One write chain per path. The runner emits two updates in the same tick
+ * (outcome, then waiting), so concurrent writes must not share a temp file or
+ * publish an older state after a newer one.
+ */
+const writes = new Map<string, Promise<void>>();
+let counter = 0;
+
 /** Write the status atomically so a reader never sees a partial file. */
-export async function writeDiscoveryStatus(
+export function writeDiscoveryStatus(
   path: string,
   status: DiscoveryStatusInput,
 ): Promise<void> {
+  const previous = writes.get(path) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => writeAtomic(path, status));
+  writes.set(path, next);
+  return next.finally(() => {
+    if (writes.get(path) === next) writes.delete(path);
+  });
+}
+
+async function writeAtomic(path: string, status: DiscoveryStatusInput): Promise<void> {
   const record: DiscoveryStatus = {
     schemaVersion: DISCOVERY_STATUS_SCHEMA_VERSION,
     at: status.at ?? new Date().toISOString(),
@@ -46,7 +65,7 @@ export async function writeDiscoveryStatus(
     ...(status.lastPublished === undefined ? {} : { lastPublished: status.lastPublished }),
     ...(status.nextDelayMs === undefined ? {} : { nextDelayMs: status.nextDelayMs }),
   };
-  const temporary = `${path}.tmp`;
+  const temporary = `${path}.${process.pid}.${++counter}.tmp`;
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o644 });
   await rename(temporary, path);
 }
