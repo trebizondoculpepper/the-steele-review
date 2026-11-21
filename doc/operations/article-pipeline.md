@@ -54,3 +54,19 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 - **Handoff to publishing:** when verification approves a draft, the workflow records one approved-article event through `recordApproval` and the outbox (#262), and returns its ID as `approvalEvent`. A rejected, unresolved or unverified draft emits nothing.
 
 Configuration: `NATS_URL`, `NATS_TOKEN?`, `STEELE_CONTENT_STREAM`, `STEELE_CAPTURED_CONSUMER` (provisioned separately, filtered to `steele.v1.content.captured`), `RESTATE_INGRESS_URL`, `STEELE_ARTICLE_SOURCES`, optional `STEELE_RESEARCH_DEADLINE_MS` (default 30 minutes) and `STEELE_BRIDGE_RETRY_DELAY_MS`.
+
+## Approval dispatch and dummy publishers (#314, #315)
+
+The Restate stack also runs these services:
+
+- **`approval-dispatcher`** drains the approval outbox in the article worker's state file to `steele.v1.article.approved` on `STEELE_PUBLICATION`. It uses the event ID as the message ID, so the broker deduplicates repeats. `approval-dispatcher --once` drains once and prints the counts.
+- **`dummy-publisher-a` and `dummy-publisher-b`** are placeholder destinations. Each has its own durable consumer (`steele-dummy-publisher-a` or `-b`) and destination name (`dummy-a` or `dummy-b`).
+  - Each one re-checks the approval against the stored bytes and writes a receipt marked `simulated` under `publications/<destination>/draft/<publication>/<post>/<revision>/` in the content repository.
+  - They make no external calls.
+  - A redelivered approval reuses the existing receipt.
+
+Provision the destination consumers explicitly, once:
+
+```sh
+STEELE_PUBLISHER_CONSUMERS=steele-dummy-publisher-a,steele-dummy-publisher-b node dist/cli/provision.js
+```
