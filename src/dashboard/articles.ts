@@ -3,6 +3,7 @@ import { postCorrelationId } from "../observability/post-correlation.js";
 import { articleRunKey, type ArticleRunFinal, type Ref } from "../workflow/article-run.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import type { ArticleThemes, ThemesPort } from "./themes.js";
+import type { ArticleClaims, ClaimsPort } from "./claims.js";
 
 /**
  * Archived articles and their runs, for the dashboard (#377).
@@ -195,6 +196,8 @@ export interface ArticleTrace {
   source: CapturedSource;
   /** Saved theme proposals for exactly this revision (#496). */
   themes?: ArticleThemes;
+  /** Saved claim occurrences for exactly this revision (#497). */
+  claims?: ArticleClaims;
   /** Latest recorded recovery run for this revision (#480), when started. */
   recovery?: {
     summary: RunSummary;
@@ -437,6 +440,8 @@ export async function traceArticle(input: {
   source?: SourcePort;
   /** Saved theme proposals for this exact revision (#496). */
   themes?: ThemesPort;
+  /** Saved claims for this exact revision (#497). */
+  claims?: ClaimsPort;
 }): Promise<ArticleTrace> {
   const { post } = input;
   let article: ArchivedArticle | undefined;
@@ -483,6 +488,21 @@ export async function traceArticle(input: {
       themes = await input.themes.forPost(post, sourceVersion);
     } catch {
       themes = { state: "unavailable", themes: [] };
+    }
+  }
+  // Claims are listed for the same exact revision, from the saved extraction.
+  let claims: ArticleClaims | undefined;
+  if (input.claims && sourceVersion) {
+    try {
+      claims = await input.claims.forPost(post, sourceVersion);
+    } catch {
+      claims = {
+        state: "unavailable",
+        accepted: [],
+        legacy: [],
+        candidates: [],
+        rejected: [],
+      };
     }
   }
   const summary = summariseRun(run);
@@ -582,6 +602,7 @@ export async function traceArticle(input: {
     receiptsTruncated: own.receiptsTruncated,
     source,
     ...(themes ? { themes } : {}),
+    ...(claims ? { claims } : {}),
     ...(recovery ? { recovery } : {}),
   };
 }
