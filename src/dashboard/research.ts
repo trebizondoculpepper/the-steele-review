@@ -4,6 +4,7 @@ import {
   ResearchManifestSchema,
   ResearchRequestSchema,
   ResearchResultSchema,
+  researchJobId,
 } from "../research/job.js";
 
 /**
@@ -46,7 +47,8 @@ export interface ResearchCitation {
   retrieval?: string;
   /** `supported` only when the saved record says an archived passage supports it. */
   support?: string;
-  passages: string[];
+  /** Supporting passages, each with the requested claim it was checked against. */
+  passages: { passage: string; claimRecordId?: string }[];
   /** Recorded source classification, e.g. `monitored-source` (the claimant's own material). */
   sourceType?: string;
   confidenceRationale?: string;
@@ -74,6 +76,8 @@ export interface ResearchDocument {
   citations?: ResearchCitation[];
   omittedCitations?: number;
   gaps?: string[];
+  /** Saved job records that failed their binding to this report (shown, never trusted). */
+  provenanceProblems?: string[];
   /** Dossier theme id, when recorded. */
   themeId?: string;
 }
@@ -136,7 +140,7 @@ export function savedResearch(content: Store): ResearchPort {
           citations: d.metadata.citations.map((c) => ({
             url: c.url,
             title: c.title,
-            passages: [c.passage],
+            passages: [{ passage: c.passage }],
           })),
           gaps: d.metadata.gaps,
         };
@@ -169,10 +173,42 @@ export function savedResearch(content: Store): ResearchPort {
           return undefined;
         }
       };
+      // Schema validity is not provenance: each sibling must be bound to this
+      // job and this exact report, or it is treated as unreadable.
+      const problems: string[] = [];
       const request = ResearchRequestSchema.safeParse(await sibling("request.json"));
-      const manifest = ResearchManifestSchema.safeParse(await sibling("manifest.json"));
-      const result = ResearchResultSchema.safeParse(await sibling("result.json"));
-      const req = request.success ? request.data : undefined;
+      let requestBound = false;
+      if (request.success) {
+        try {
+          requestBound = researchJobId(request.data) === jobId;
+        } catch {
+          requestBound = false;
+        }
+        if (!requestBound) problems.push("request does not belong to this job");
+      }
+      const parsedManifest = ResearchManifestSchema.safeParse(await sibling("manifest.json"));
+      const manifestBound =
+        parsedManifest.success &&
+        parsedManifest.data.jobId === jobId &&
+        parsedManifest.data.report.path === path &&
+        parsedManifest.data.report.hash === `sha256:${found.ref.sha256}`;
+      if (parsedManifest.success && !manifestBound) {
+        problems.push("citation manifest does not belong to this report");
+      }
+      const manifest = manifestBound
+        ? parsedManifest
+        : ({ success: false } as { success: false; data?: undefined });
+      const parsedResult = ResearchResultSchema.safeParse(await sibling("result.json"));
+      const resultBound =
+        parsedResult.success &&
+        parsedResult.data.jobId === jobId &&
+        (!parsedResult.data.manifest ||
+          parsedResult.data.manifest.path === `research-jobs/${jobId}/manifest.json`);
+      if (parsedResult.success && !resultBound) problems.push("result does not belong to this job");
+      const result = resultBound
+        ? parsedResult
+        : ({ success: false } as { success: false; data?: undefined });
+      const req = request.success && requestBound ? request.data : undefined;
       const citations: ResearchCitation[] | undefined = manifest.success
         ? manifest.data.citations.map((c) => ({
             url: c.url,
@@ -180,7 +216,10 @@ export function savedResearch(content: Store): ResearchPort {
             ...(c.support ? { support: c.support } : {}),
             ...(c.sourceType ? { sourceType: c.sourceType } : {}),
             ...(c.confidenceRationale ? { confidenceRationale: c.confidenceRationale } : {}),
-            passages: c.passages.map((p) => p.passage),
+            passages: c.passages.map((p) => ({
+              passage: p.passage,
+              claimRecordId: p.claimRecordId,
+            })),
           }))
         : Array.isArray(report.citations)
           ? report.citations
@@ -222,6 +261,7 @@ export function savedResearch(content: Store): ResearchPort {
           ? { omittedCitations: report.omittedCitations }
           : {}),
         ...(manifest.success ? { gaps: manifest.data.gaps } : {}),
+        ...(problems.length ? { provenanceProblems: problems } : {}),
         text: report.report,
       };
     } catch {

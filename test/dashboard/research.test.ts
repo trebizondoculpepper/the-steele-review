@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { renderDossier } from "../../src/research/dossier.js";
+import { researchJobId } from "../../src/research/job.js";
 import { savedResearch } from "../../src/dashboard/research.js";
 import { researchViews } from "../../src/dashboard/research-views.js";
 
@@ -18,7 +19,15 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-const JOB = `research-${"a".repeat(32)}`;
+const REQUEST = {
+  schemaVersion: 1,
+  origin: "manual",
+  subject: "5G towers",
+  pass: 1,
+  claims: [{ claimRecordId: "claim-towers", statement: "Towers emit weapons.", themeIds: [] }],
+  corpusRefs: [],
+};
+const JOB = researchJobId(REQUEST);
 
 async function corpus() {
   await content.write(
@@ -27,17 +36,7 @@ async function corpus() {
   );
   // An overlapping subject from another report.
   await content.write("research-reports/manual/5g/two.md", "# 5G second look\n\nMasts.");
-  await content.write(
-    `research-jobs/${JOB}/request.json`,
-    JSON.stringify({
-      schemaVersion: 1,
-      origin: "manual",
-      subject: "5G towers",
-      pass: 1,
-      claims: [],
-      corpusRefs: [],
-    }),
-  );
+  await content.write(`research-jobs/${JOB}/request.json`, JSON.stringify(REQUEST));
   const report = await content.write(
     `research-jobs/${JOB}/report.json`,
     JSON.stringify({
@@ -62,7 +61,12 @@ async function corpus() {
       jobId: JOB,
       report: ref,
       citations: [
-        { url: "https://a.example/x", retrieval: "archived", support: "unverified", passages: [] },
+        {
+          url: "https://a.example/x",
+          retrieval: "archived",
+          support: "unverified",
+          passages: [{ claimRecordId: "claim-towers", passage: "towers passage" }],
+        },
         { url: "https://b.example/y", retrieval: "inaccessible", passages: [] },
         {
           url: "https://pub.example.com/p/own",
@@ -181,6 +185,7 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
       new URL(`http://x/research/view?${new URLSearchParams({ path: job.path, at: job.commit })}`),
     );
     expect(jobPage).toContain("not verified evidence");
+    expect(jobPage).toContain("checked against: Towers emit weapons.");
     // A monitored source is labelled as the claimant's own material, never as support.
     expect(jobPage).toContain("not independent support");
     expect(jobPage).not.toContain("an archived passage supports");
@@ -197,6 +202,27 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
       savedResearch({ list: async () => Promise.reject(new Error("x")) } as never),
     );
     expect(await down!.render(new URL("http://x/research"))).toContain("unavailable right now");
+  });
+
+  it("ignores job records that are not bound to the report", async () => {
+    await corpus();
+    // A schema-valid manifest from another job, swapped into this one.
+    const other = `research-${"c".repeat(32)}`;
+    await content.write(`research-jobs/${other}/report.md`, "# Unrelated\n\nText.");
+    const ref = (await content.lookup(`research-jobs/${JOB}/manifest.json`))!;
+    const swapped = JSON.parse(await content.read(ref));
+    await content.write(`research-jobs/${other}/manifest.json`, JSON.stringify(swapped));
+    await content.write(`research-jobs/${other}/request.json`, JSON.stringify(REQUEST));
+    const doc = await savedResearch(content).detail(
+      `research-jobs/${other}/report.md`,
+      (await content.lookup(`research-jobs/${other}/report.md`))!.commit,
+    );
+    expect(doc?.citations).toBeUndefined();
+    expect(doc?.subject).toBeUndefined();
+    expect(doc?.provenanceProblems).toEqual([
+      "request does not belong to this job",
+      "citation manifest does not belong to this report",
+    ]);
   });
 
   it("lists Markdown research-subject reports once per job", async () => {

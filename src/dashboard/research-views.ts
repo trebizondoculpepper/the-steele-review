@@ -23,7 +23,7 @@ const SUPPORT_LABEL: Record<string, string> = {
   unverified: "retrieved, but support is topical or uncertain (not verified evidence)",
   "not-checked": "no support check ran (not verified evidence)",
 };
-const citationHtml = (c: ResearchCitation) => {
+const citationHtml = (c: ResearchCitation, claims: Map<string, string>) => {
   const status = [
     c.retrieval ? `retrieval: ${c.retrieval}` : "",
     c.support
@@ -40,7 +40,7 @@ const citationHtml = (c: ResearchCitation) => {
     status.unshift(`source type: ${c.sourceType}`);
   }
   if (c.confidenceRationale) status.push(`rationale: ${c.confidenceRationale}`);
-  return `<li>${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("")}</li>`;
+  return `<li>${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p.passage)}</blockquote>${p.claimRecordId ? `<span class="empty">checked against: ${escapeHtml(claims.get(p.claimRecordId) ?? "a claim not in the saved request")} <code>${escapeHtml(p.claimRecordId)}</code></span>` : ""}`).join("")}</li>`;
 };
 
 export function researchViews(research?: ResearchPort): DashboardView[] {
@@ -153,19 +153,23 @@ export function researchViews(research?: ResearchPort): DashboardView[] {
           ]);
         }
       }
+      const claimStatements = new Map((d.claims ?? []).map((c) => [c.claimRecordId, c.statement]));
+      const provenance = d.provenanceProblems?.length
+        ? `<p class="empty">${escapeHtml(`Saved job records were ignored because they could not be bound to this report: ${d.provenanceProblems.join("; ")}.`)}</p>`
+        : "";
       const citations =
         d.citations === undefined
           ? `<p class="empty">${d.kind === "imported-report" ? "This is an imported report: no structured citations were recorded. Any sources appear only as written in the text below and have not been checked." : "No citation record could be read for this document."}</p>`
           : d.citations.length === 0
             ? '<p class="empty">No citations recorded.</p>'
-            : `<ol>${d.citations.map(citationHtml).join("")}</ol>${d.omittedCitations ? `<p class="empty">${d.omittedCitations} further citation(s) were omitted when saved.</p>` : ""}`;
+            : `<ol>${d.citations.map((c) => citationHtml(c, claimStatements)).join("")}</ol>${d.omittedCitations ? `<p class="empty">${d.omittedCitations} further citation(s) were omitted when saved.</p>` : ""}`;
       const gaps = d.gaps?.length
         ? `<h2>Recorded gaps</h2><ul>${d.gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul>`
         : "";
       return `<p><a href="/research">All research</a></p>
 <h2>${escapeHtml(d.title)}</h2>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-<h2>Citations</h2>${citations}${gaps}
+<h2>Citations</h2>${provenance}${citations}${gaps}
 <h2>Saved text</h2><p class="empty">Shown as saved Markdown source; links in it are not followed.</p>
 <pre>${escapeHtml(d.text)}</pre>`;
     },
