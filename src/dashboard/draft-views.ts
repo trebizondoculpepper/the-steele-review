@@ -108,6 +108,7 @@ export function draftViews(inventory?: DraftInventoryPort): DashboardView[] {
         ...(e.limitation ? ([["Limitation", escapeHtml(e.limitation)]] as [string, string][]) : []),
       ];
       return `<p><a href="/drafts?${escapeHtml(new URLSearchParams({ publication: e.publicationId, post: e.postId }).toString())}">All drafts for this post</a></p>
+<p><a href="/reviews?${escapeHtml(new URLSearchParams({ publication: e.publicationId, post: e.postId }).toString())}">Verifier history</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 ${fieldsSection(e)}
 ${found.markdown !== undefined ? `<h2>Body</h2><p>Shown as text; its markup is never executed.</p><pre class="draft-text">${escapeHtml(found.markdown)}</pre>` : ""}`;
