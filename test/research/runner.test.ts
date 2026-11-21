@@ -155,6 +155,29 @@ describe("research runner", () => {
     expect(fetched).toBe(before);
   });
 
+  it("reuses a retained report written under the legacy prompt wording (#443)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify({
+        ...validReport(jobId, ["https://treaties.un.org/enmod"]),
+        promptVersion: "sonar-research-v1",
+      })}\n`,
+    );
+    const paid = sonar(["https://treaties.un.org/enmod"]);
+    const paused: SupportJudge = {
+      judge: async () => {
+        throw new ModelProviderError("credit-exhausted", 402);
+      },
+    };
+    // Reused (no paid report call) but paused later, not rejected.
+    expect(await run(paid, { judge: paused })).toMatchObject({
+      result: { outcome: "failed", failure: "budget-exceeded" },
+    });
+    expect(paid.calls).toBe(0);
+  });
+
   it("rejects a retained report for another job or prompt identity (#432)", async () => {
     const dirName = await jobDir();
     await artifacts.write(
