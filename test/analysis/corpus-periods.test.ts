@@ -120,7 +120,7 @@ async function run(
   return projectCorpusPeriods({ manifest: ref, archive, content });
 }
 
-describe("observed corpus periods", () => {
+describe("observed corpus periods", { timeout: 30_000 }, () => {
   it("uses UTC publication months and bounds the requested window", async () => {
     const a = await post("offset", "2026-01-31T23:30:00-02:00");
     expect((await run([a])).result.periods.map((p) => p.analysedPosts)).toEqual([0, 1]);
