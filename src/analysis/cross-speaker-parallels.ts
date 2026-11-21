@@ -251,7 +251,7 @@ export async function findCrossSpeakerParallels(input: {
       sourceVersion: c.o.sourceVersion,
     };
     // One parallel per other speaker: the earliest dated account.
-    const name = c.speaker.name.toLowerCase();
+    const name = collapse(c.speaker.name).toLowerCase();
     const prior = bySpeaker.get(name);
     if (!prior) accepted++;
     if (!prior || Date.parse(parallel.publishedAt) < Date.parse(prior.publishedAt)) {
