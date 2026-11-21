@@ -20,7 +20,7 @@ This inventory can rank established but unresearched themes so useful dossiers c
 
 ## Browsing and writer handoff
 
-The researched-themes default requested in #517 is a browser filter, not the definition of canonical existence. Show proposals and their mappings separately, and make established unresearched themes available for prioritisation. Theme details link to actual dossier documents and their saved versions.
+Themes lists established topics, including unresearched themes, with titles and descriptions. Claims remains its own browser. Dossiers is a separate section for browsing the research collections related to themes; Theme mappings is a permanent indexed collection of proposal-to-canonical-topic decisions. Research coverage can be filtered without defining unresearched topics out of the theme catalogue. Show raw proposals and their mappings separately. Theme details link to actual dossier documents and their saved versions where research exists.
 
 The article trace (#525) explains extracted themes and claims, mapping decisions and reuse, existing evidence, remaining gaps, commissioned research and proposed topics not commissioned. It must distinguish current work from historical failures and stage timestamps from heartbeats.
 
