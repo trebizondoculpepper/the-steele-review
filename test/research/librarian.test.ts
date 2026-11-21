@@ -526,6 +526,22 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
     expect(out.record.claims[0].status).toBe("claimant-only");
   });
 
+  it("records a canonical theme without commissioning research (#528)", async () => {
+    const r = researcher(() => ({ passages: [] }));
+    const a = await analysis("p1", [claims[0]], "Mercury");
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const dossierId = out.record.mappings[0].dossierId;
+    const { ThemeStore } = await import("../../src/research/theme-store.js");
+    const theme = await new ThemeStore(artifacts).get(dossierId);
+    expect(theme).toBeDefined();
+    expect(theme!.title.length).toBeGreaterThan(0);
+  });
+
   it("reuses a saved catalogue decision instead of recalculating it (#518)", async () => {
     const r = researcher(() => ({ passages: [] }));
     const first = await analysis("p1", [claims[0]], "Mercury");

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
 import { ThemeMappingCatalogue } from "./theme-mappings.js";
+import { ThemeStore } from "./theme-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import {
@@ -642,6 +643,8 @@ export async function assessPostCoverage(input: {
     input.claimResult,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
+  // Canonical themes exist independently of research (#528).
+  const themeStore = new ThemeStore(input.artifacts);
   for (const proposal of themes.proposals) {
     const p = { ...proposal, description: proposal.description ?? "" };
     const kept = savedMapping.get(p.id);
@@ -671,6 +674,12 @@ export async function assessPostCoverage(input: {
         method: "catalogue",
         rationale: `reused saved catalogue decision (${catalogued.key})`,
       });
+      await themeStore.ensure({
+        id: dossierId,
+        title: existing.get(dossierId)?.metadata.title ?? p.title,
+        ...(p.description ? { description: p.description } : {}),
+        createdAt: now,
+      });
       continue;
     }
     const shortlist = await input.shortlister.shortlist(p, summaries);
@@ -691,6 +700,12 @@ export async function assessPostCoverage(input: {
       method: shortlist.method,
       ...(shortlist.limitation ? { limitation: shortlist.limitation } : {}),
       rationale: decision.rationale,
+    });
+    await themeStore.ensure({
+      id: dossierId,
+      title: existing.get(dossierId)?.metadata.title ?? p.title,
+      ...(p.description ? { description: p.description } : {}),
+      createdAt: now,
     });
     // Only an accepted equivalence teaches the catalogue: a new dossier is
     // this post's own invention and must not become a global default.
