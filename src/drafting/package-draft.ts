@@ -42,7 +42,7 @@ export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "package-draft-v9",
+  version: "package-draft-v10",
   instructions: readFileSync(
     new URL("../prompts/writer/package-explainer.md", import.meta.url),
     "utf8",
