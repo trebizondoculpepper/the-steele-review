@@ -118,6 +118,11 @@ export class OpenRouterSonarClient implements SonarClient {
     this.fetchImpl = config.fetch ?? fetch;
   }
 
+  /** Effective non-secret settings, for deployment checks (#317). */
+  get settings(): { model: string; timeoutMs: number; maxOutputTokens: number } {
+    return { model: this.model, ...this.limits };
+  }
+
   async research(
     prompt: { system: string; user: string },
     signal: AbortSignal,

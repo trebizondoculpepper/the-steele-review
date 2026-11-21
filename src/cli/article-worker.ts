@@ -59,7 +59,11 @@ function main(): number {
       },
     });
   let stages;
+  let sonar;
+  let writer;
   try {
+    sonar = sonarFromEnv();
+    writer = model("STEELE_MODEL_WRITER");
     stages = articleStages({
       archive: new GitArtifactStore({
         repoPath: c.STEELE_ARCHIVE_PATH,
@@ -73,12 +77,12 @@ function main(): number {
       models: {
         themes: model("STEELE_MODEL_THEMES"),
         claims: model("STEELE_MODEL_CLAIMS"),
-        writer: model("STEELE_MODEL_WRITER"),
+        writer,
         verifier: model("STEELE_MODEL_VERIFIER"),
       },
       shortlister: new LexicalShortlister(),
       research: {
-        sonar: sonarFromEnv(),
+        sonar,
         fetcher: new PublicPageFetcher(),
         judge: new ModelSupportJudge(model("STEELE_MODEL_SUPPORT")),
         ...(c.STEELE_MONITORED_HOSTS
@@ -104,6 +108,9 @@ function main(): number {
       event: "article-worker",
       state: "serving",
       port: c.STEELE_ARTICLE_WORKER_PORT,
+      // Effective settings, never credentials (#317).
+      writerModel: writer.modelVersion,
+      research: sonar.settings,
     }),
   );
   return 0;
