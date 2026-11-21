@@ -615,10 +615,8 @@ export async function draftFromPackage(input: {
             feedback: input.revision.feedback,
             ...(input.revision.observations?.length
               ? {
-                  nonBlockingObservations: {
-                    note: "Minor issues from the same review. Not required for approval; address them only where doing so is accurate and supported by the evidence.",
-                    items: input.revision.observations,
-                  },
+                  // Guidance lives in package-revision.md (content-hashed); only data here.
+                  nonBlockingObservations: input.revision.observations,
                 }
               : {}),
             ...(input.previousDraft

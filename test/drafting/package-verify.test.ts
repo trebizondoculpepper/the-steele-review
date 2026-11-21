@@ -13,6 +13,11 @@ import {
   DEFAULT_PACKAGE_DRAFT_PROMPT,
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
+import { readFileSync } from "node:fs";
+const DEFAULT_REVISION_TEXT = readFileSync(
+  new URL("../../src/prompts/writer/package-revision.md", import.meta.url),
+  "utf8",
+);
 import {
   renderPackageDraft,
   modelCitationIssues,
@@ -913,14 +918,13 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     const revision = loadRevision(users[0]!).revision as {
       feedback: { passage: string }[];
       previousFields: { title: string; subtitle: string; excerpt: string };
-      nonBlockingObservations: { note: string; items: { passage: string }[] };
+      nonBlockingObservations: { passage: string }[];
     };
     // Only substantive issues are required feedback; the minor one is context.
     expect(revision.feedback.map((f) => f.passage)).toEqual(["proves"]);
-    expect(revision.nonBlockingObservations.items.map((i) => i.passage)).toEqual([
-      "Florida filing",
-    ]);
-    expect(revision.nonBlockingObservations.note).toMatch(/Not required for approval/);
+    expect(revision.nonBlockingObservations.map((i) => i.passage)).toEqual(["Florida filing"]);
+    // The guidance is in the content-hashed prompt file, not hard-coded.
+    expect(DEFAULT_REVISION_TEXT).toMatch(/not required for approval/);
     expect(Object.keys(revision.previousFields).sort()).toEqual(["excerpt", "subtitle", "title"]);
     // The saved writer attempt pins the exact prior body, metadata and verifier report.
     const manifests: { kind: string; context: { path: string }[] }[] = [];
