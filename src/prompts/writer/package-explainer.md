@@ -51,3 +51,5 @@ Editorial definitions for that copy (our house style, not a destination API spec
 - The body is the roughly 900-word essay; keep it an editorial aim and never pad a thin evidence package to reach it.
 Copy every `claimRecordId` exactly from the provided claims. Never generate an ID or quote.
 `evidence` lists the indices of that claim's supplied evidence items that the text relies on.
+
+Citation contract: never write numbered citation markers such as [0], [1] or [2] in any prose field. Those indices are local to one claim's evidence list and the final article's Sources numbering is built by the application from the structured `evidence` arrays. Put the references only in `evidence` (and `history`/`background` where the schema asks); the rendered article will attach the correct global numbers. Prose that contains a bracketed number is rejected and redrafted.

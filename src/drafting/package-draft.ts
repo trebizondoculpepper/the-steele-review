@@ -204,6 +204,47 @@ export function draftProblems(pkg: WriterPackage, draft: PackageModelDraft): str
   return problems;
 }
 
+/**
+ * Numeric citation markers a model writes into prose (#491).
+ *
+ * The model sees evidence indices local to one claim (`0` means that claim's
+ * first item), while the rendered article has one deduplicated, one-based
+ * Sources list built by application code. A model-written `[0]` therefore has
+ * no deterministic meaning, so such markers are rejected as bounded draft
+ * validation feedback instead of being trusted or silently deleted.
+ *
+ * Markdown links (`[text](url)`) are not citations and are ignored.
+ */
+const MODEL_CITATION = /\[(\d+(?:\s*[,;\u2013-]\s*\d+)*)\](?!\()/g;
+
+/** Prose fields whose text becomes part of the rendered article. */
+export function modelCitationProblems(draft: PackageModelDraft): string[] {
+  const problems: string[] = [];
+  const scan = (field: string, text: string | undefined) => {
+    if (!text) return;
+    for (const match of text.matchAll(MODEL_CITATION)) {
+      problems.push(
+        `${field} contains a model-written citation marker ${match[0]}; final references are rendered by the application`,
+      );
+    }
+  };
+  scan("summary", draft.summary);
+  for (const r of draft.responses) scan(`response ${r.claimRecordId}`, r.text);
+  if (draft.narrative) {
+    scan("narrative", draft.narrative.status === "supported" ? draft.narrative.text : draft.narrative.limitation);
+  }
+  if (draft.widerContext) {
+    scan(
+      "wider context",
+      draft.widerContext.status === "supported"
+        ? draft.widerContext.text
+        : draft.widerContext.limitation,
+    );
+  }
+  for (const limitation of draft.limitations) scan("limitation", limitation);
+  return problems;
+}
+
 /** Readable Markdown with numbered sources traceable to the package's evidence. */
 export function renderPackageDraft(
   pkg: WriterPackage,
@@ -622,7 +663,7 @@ export async function draftFromPackage(input: {
     }
     if ((completion as string) === "length-limit") kind = "truncated-output";
     if (!kind && parsed) {
-      const problems = draftProblems(pkg, parsed);
+      const problems = [...draftProblems(pkg, parsed), ...modelCitationProblems(parsed)];
       if (problems.length > 0) {
         kind = "evidence-validation";
         lastProblems = problems;
