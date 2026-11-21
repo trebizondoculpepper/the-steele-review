@@ -1,4 +1,4 @@
-import { AckPolicy } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import type { NatsController } from "./nats.js";
 
 /**
@@ -76,6 +76,8 @@ export interface DurableConsumerConfig {
   /** Durable consumer name, e.g. steele-collector. */
   name: string;
   filterSubject: string;
+  /** Start at messages published after provisioning. */
+  newOnly?: boolean;
   /** How long a delivered message may stay unacknowledged before redelivery. */
   ackWaitMs?: number;
   /** Bound on deliveries per message. */
@@ -84,7 +86,7 @@ export interface DurableConsumerConfig {
 
 export class ConsumerConflictError extends Error {
   constructor() {
-    super("existing consumer has a different filter or ack policy; refusing to modify it");
+    super("existing consumer has a different filter or delivery policy; refusing to modify it");
     this.name = "ConsumerConflictError";
   }
 }
@@ -112,7 +114,9 @@ export async function provisionDurableConsumer(
     // ack policy would let unprocessed messages be treated as handled.
     if (
       existing.config.filter_subject !== config.filterSubject ||
-      existing.config.ack_policy !== AckPolicy.Explicit
+      existing.config.ack_policy !== AckPolicy.Explicit ||
+      (config.newOnly &&
+        (existing.config.deliver_policy !== DeliverPolicy.New || existing.config.deliver_subject))
     ) {
       throw new ConsumerConflictError();
     }
@@ -122,6 +126,7 @@ export async function provisionDurableConsumer(
     durable_name: config.name,
     filter_subject: config.filterSubject,
     ack_policy: AckPolicy.Explicit,
+    ...(config.newOnly ? { deliver_policy: DeliverPolicy.New } : {}),
     ack_wait: (config.ackWaitMs ?? 5 * 60 * 1000) * 1_000_000,
     max_deliver: config.maxDeliver ?? 10,
   });

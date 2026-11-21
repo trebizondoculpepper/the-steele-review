@@ -64,9 +64,13 @@ consumer with explicit acknowledgement, the captured-content subject filter,
 and new-only delivery before starting the bridge. Check the consumer's filter
 and delivery policy before reusing it.
 
-Start only the bridge after Restate and the worker are registered.
+Run the explicit provisioner with an image that includes it and a broker
+credential authorised to manage that consumer. The provisioner refuses a
+conflicting consumer without changing it. Then start the bridge with the
+runtime credential after Restate and the worker are registered.
 
 ```sh
+docker compose -f deploy/restate/compose.yaml -f deploy/restate/bridge.compose.yaml run --rm --no-deps captured-bridge node dist/cli/provision-captured-bridge.js
 docker compose -f deploy/restate/compose.yaml -f deploy/restate/bridge.compose.yaml up -d --no-deps captured-bridge
 ```
 
