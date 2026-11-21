@@ -128,6 +128,39 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     });
   });
 
+  it("shows all saved publication fields with the body, and labels legacy drafts (#469)", async () => {
+    const long = `https://example.org/${"a".repeat(400)}`;
+    const body = `First paragraph <b>bold</b>.\n\nSecond paragraph ${long}`;
+    const withFields = await saveDraft("p6", body, "A <i>careful</i> title");
+    const legacy = await saveDraft("p7", "Legacy body only.");
+    const [, view] = draftViews(draftInventory(content));
+    const html = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(withFields.metadata)}`),
+    );
+    expect(html).toContain("A &lt;i&gt;careful&lt;/i&gt; title");
+    expect(html).toMatch(/<dt>Subtitle<\/dt><dd><span class="draft-text">s<\/span>/);
+    expect(html).toMatch(/<dt>Excerpt<\/dt><dd><span class="draft-text">e<\/span>/);
+    expect(html).toContain(
+      '<pre class="draft-text">First paragraph &lt;b&gt;bold&lt;/b&gt;.\n\nSecond paragraph',
+    );
+    expect(html).toContain(long); // exact stored text, wrapped by CSS only
+    expect(html).toContain("not yet verified");
+    const old = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(legacy.metadata)}`),
+    );
+    expect(old.match(/not saved \(this draft predates generated fields\)/g)).toHaveLength(3);
+  });
+
+  it("wraps draft text and long tokens within the viewport", async () => {
+    const { createDashboardServer } = await import("../../src/dashboard/server.js");
+    const server = createDashboardServer([{ path: "/x", title: "X", render: () => "" }]);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const css = await (await fetch(`http://127.0.0.1:${port}/x`)).text();
+    server.close();
+    expect(css).toMatch(/\.draft-text \{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
+  });
+
   it("pages honestly and escapes untrusted draft text", async () => {
     for (let i = 0; i < DRAFT_PAGE + 3; i++)
       await saveDraft(`post-${String(i).padStart(2, "0")}`, `Draft ${i}.`);

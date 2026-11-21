@@ -26,6 +26,15 @@ const delivery = (e: DraftEntry) => {
     )
     .join(", ");
 };
+const NOT_SAVED = '<span class="empty">not saved (this draft predates generated fields)</span>';
+/** Title, subtitle and excerpt as saved with the draft (#456, #469); never invented. */
+const fieldsSection = (e: DraftEntry) => {
+  const value = (v?: string) =>
+    v === undefined ? NOT_SAVED : `<span class="draft-text">${escapeHtml(v)}</span>`;
+  return `<h2>Publication fields</h2>
+<p class="empty">Verification currently covers the article body only; these fields are shown as saved and are not yet verified (#457).</p>
+<dl><dt>Title</dt><dd>${value(e.title)}</dd><dt>Subtitle</dt><dd>${value(e.subtitle)}</dd><dt>Excerpt</dt><dd>${value(e.excerpt)}</dd></dl>`;
+};
 const viewLink = (path: string) => `/drafts/view?path=${encodeURIComponent(path)}`;
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
@@ -80,7 +89,6 @@ export function draftViews(inventory?: DraftInventoryPort): DashboardView[] {
       const e = found.entry;
       const facts: [string, string][] = [
         ["Post", `${escapeHtml(e.publicationId)}/${escapeHtml(e.postId)}`],
-        ...(e.title ? ([["Title", escapeHtml(e.title)]] as [string, string][]) : []),
         ["Verification", badge(e)],
         ["Delivery", delivery(e)],
         ...(e.hash
@@ -94,7 +102,8 @@ export function draftViews(inventory?: DraftInventoryPort): DashboardView[] {
       ];
       return `<p><a href="/drafts?${escapeHtml(new URLSearchParams({ publication: e.publicationId, post: e.postId }).toString())}">All drafts for this post</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-${found.markdown !== undefined ? `<h2>Draft text</h2><p>Shown as text; its markup is never executed.</p><pre>${escapeHtml(found.markdown)}</pre>` : ""}`;
+${fieldsSection(e)}
+${found.markdown !== undefined ? `<h2>Body</h2><p>Shown as text; its markup is never executed.</p><pre class="draft-text">${escapeHtml(found.markdown)}</pre>` : ""}`;
     },
   };
   return [list, view];
