@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 
 /**
  * First-class, reusable theme mappings (#518).
@@ -45,10 +46,26 @@ export const ThemeMappingSchema = z
   .strict();
 export type ThemeMapping = z.infer<typeof ThemeMappingSchema>;
 
+/**
+ * Artifact-safe path segment: ASCII letters, digits and dashes only, with a
+ * short hash so distinct keys (including non-ASCII ones like "El Niño") can
+ * never share a file or produce an invalid path.
+ */
+function pathSegment(text: string): string {
+  const slug = text
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    // Keep ASCII only: the artifact store rejects non-ASCII path segments.
+    .replace(/[^A-Za-z0-9-]/g, "")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const digest = createHash("sha256").update(text).digest("hex").slice(0, 12);
+  return `${slug || "entry"}-${digest}`;
+}
+
 /** Stable artifact path for one mapping, including its optional scope. */
 export function themeMappingPath(m: Pick<ThemeMapping, "key" | "scope">): string {
-  const scope = m.scope === undefined ? "global" : `scope-${normaliseMappingKey(m.scope).replace(/ /g, "-")}`;
-  return `librarian/theme-mappings/${scope}/${normaliseMappingKey(m.key).replace(/ /g, "-")}.json`;
+  const scope = m.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(m.scope))}`;
+  return `librarian/theme-mappings/${scope}/${pathSegment(normaliseMappingKey(m.key))}.json`;
 }
 
 export interface ThemeMappingQuery {
@@ -90,12 +107,25 @@ export class ThemeMappingCatalogue {
       ...mapping,
     });
     const path = themeMappingPath(payload);
-    const existing = await this.artifacts.lookup(path);
-    if (existing) {
-      const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(existing)));
-      if (parsed.success) return parsed.data;
+    const read = async (): Promise<ThemeMapping | undefined> => {
+      const ref = await this.artifacts.lookup(path);
+      if (!ref) return undefined;
+      const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
+      return parsed.success ? parsed.data : undefined;
+    };
+    const existing = await read();
+    if (existing) return existing;
+    try {
+      await this.artifacts.write(path, `${JSON.stringify(payload, null, 2)}\n`);
+      return payload;
+    } catch (error) {
+      // A concurrent assessment may have written the same key first. The
+      // stored winner is authoritative, so reconcile to it instead of failing.
+      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+        const winner = await read();
+        if (winner) return winner;
+      }
+      throw error;
     }
-    await this.artifacts.write(path, `${JSON.stringify(payload, null, 2)}\n`);
-    return payload;
   }
 }
