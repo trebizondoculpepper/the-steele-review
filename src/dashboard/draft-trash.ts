@@ -46,6 +46,9 @@ export class TrashConflictError extends Error {
 
 export type TrashState = "active" | "trashed";
 
+/** Bound on pagination when reading marker history. */
+export const MAX_MARKER_PAGES = 20;
+
 export class DraftTrashStore {
   constructor(
     private readonly artifacts: Pick<GitArtifactStore, "write" | "lookup" | "read" | "list">,
@@ -74,7 +77,16 @@ export class DraftTrashStore {
     } catch (error) {
       if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
         const winner = await this.stored(path);
-        if (winner) return { marker: winner, recorded: false };
+        if (winner) {
+          const same =
+            winner.draftPath === payload.draftPath &&
+            winner.action === payload.action &&
+            winner.publicationHash === payload.publicationHash;
+          // A concurrent caller reusing this id for something else is a
+          // conflict, not a successful retry.
+          if (!same) throw new TrashConflictError();
+          return { marker: winner, recorded: false };
+        }
       }
       throw error;
     }
@@ -85,19 +97,39 @@ export class DraftTrashStore {
     const markers = await this.markers();
     const forDraft = markers.filter((m) => m.draftPath === draftPath);
     if (forDraft.length === 0) return "active";
-    const latest = forDraft.reduce((a, b) => (b.at > a.at || (b.at === a.at && b.requestId > a.requestId) ? b : a));
+    const latest = forDraft.reduce((a, b) => {
+      const at = Date.parse(a.at);
+      const bt = Date.parse(b.at);
+      // Offsets are legal in the schema, so order by instant, not by string.
+      if (bt !== at) return bt > at ? b : a;
+      return b.requestId > a.requestId ? b : a;
+    });
     return latest.action === "delete" ? "trashed" : "active";
   }
 
-  /** Recorded markers, oldest first by time then request id. */
+  /**
+   * Recorded markers, oldest first by instant then request id.
+   *
+   * The listing is paginated: `list()` returns paths in lexical order, so a
+   * single bounded page cannot be assumed to contain the newest action.
+   */
   async markers(limit = 1000): Promise<TrashMarker[]> {
-    const paths = await this.artifacts.list("draft-trash", limit);
     const out: TrashMarker[] = [];
-    for (const path of paths) {
-      const marker = await this.stored(path);
-      if (marker) out.push(marker);
+    let after: string | undefined;
+    for (let page = 0; page < MAX_MARKER_PAGES; page++) {
+      const paths = await this.artifacts.list("draft-trash", limit, after);
+      for (const path of paths) {
+        const marker = await this.stored(path);
+        if (marker) out.push(marker);
+      }
+      if (paths.length < limit) break;
+      after = paths[paths.length - 1];
     }
-    return out.sort((a, b) => (a.at === b.at ? a.requestId.localeCompare(b.requestId) : a.at.localeCompare(b.at)));
+    return out.sort((a, b) => {
+      const at = Date.parse(a.at);
+      const bt = Date.parse(b.at);
+      return at === bt ? a.requestId.localeCompare(b.requestId) : at - bt;
+    });
   }
 
   private async stored(path: string): Promise<TrashMarker | undefined> {

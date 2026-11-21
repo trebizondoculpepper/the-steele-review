@@ -75,6 +75,18 @@ describe("draft trash (#478)", () => {
     expect(await artifacts.lookup(draft)).toEqual(before);
   });
 
+  it("orders markers by instant, not by string, across UTC offsets", async () => {
+    await trash.mark({ ...deleteMarker, at: "2026-02-01T10:00:00+02:00" });
+    // 09:30Z is later than 08:00Z despite sorting earlier as a string.
+    await trash.mark({
+      ...deleteMarker,
+      action: "restore",
+      requestId: "req-2",
+      at: "2026-02-01T09:30:00Z",
+    });
+    expect(await trash.state(draft)).toBe("active");
+  });
+
   it("records markers at a stable versioned path", async () => {
     await trash.mark(deleteMarker);
     expect(trashMarkerPath("req-1")).toBe("draft-trash/req-1.json");
