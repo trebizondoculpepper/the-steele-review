@@ -1,7 +1,9 @@
 import { renderPostTrace, type PostTrace } from "../diagnostics/post-trace.js";
 import {
   traceArticle,
+  type ArticleContentPort,
   type ArticleTrace,
+  type ReceiptsPort,
   type RecentArticlesPort,
   type RunStatusPort,
 } from "./articles.js";
@@ -16,6 +18,8 @@ export interface ArticleViewDeps {
   articles?: RecentArticlesPort;
   runs?: RunStatusPort;
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
+  content?: ArticleContentPort;
+  receipts?: ReceiptsPort;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -77,6 +81,8 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.articles ? { articles: deps.articles } : {}),
         ...(deps.runs ? { runs: deps.runs } : {}),
         ...(deps.trace ? { trace: () => deps.trace!(post) } : {}),
+        ...(deps.content ? { content: deps.content } : {}),
+        ...(deps.receipts ? { receipts: deps.receipts } : {}),
       });
       return renderTrace(t);
     },
@@ -100,21 +106,53 @@ export function renderTrace(t: ArticleTrace): string {
         `<tr><td>${escapeHtml(s.stage)}</td><td>${badge(s.state)}</td><td>${s.detail ? escapeHtml(s.detail) : ""}</td></tr>`,
     )
     .join("");
-  const research = t.research.length
-    ? `<h2>Research</h2><div class="wrap"><table><thead><tr><th>Job</th><th>Outcome</th></tr></thead><tbody>${t.research
-        .map(
-          (r) =>
-            `<tr><td><code>${escapeHtml(r.jobId)}</code></td><td>${escapeHtml(r.outcome)}</td></tr>`,
-        )
-        .join("")}</tbody></table></div>`
+  const researchRows = t.research
+    .map(
+      (r) =>
+        `<tr><td><code>${escapeHtml(r.jobId)}</code></td><td>${escapeHtml(r.outcome)}</td></tr>`,
+    )
+    .join("");
+  const research = researchRows
+    ? `<h2>Research</h2><div class="wrap"><table><thead><tr><th>Job</th><th>Outcome</th></tr></thead><tbody>${researchRows}</tbody></table></div>`
     : "";
   // The existing post trace output is allowlisted text; it is shown escaped.
   const diagnostics = t.trace
     ? `<h2>Capture and analysis</h2><pre>${escapeHtml(renderPostTrace(t.trace))}</pre>`
     : "";
+  const draft = t.draft
+    ? `<h2>Draft</h2><p>Saved revision <code>sha256:${escapeHtml(t.draft.hash)}</code>. Shown as text; its markup is never executed.</p><pre>${escapeHtml(t.draft.text)}</pre>`
+    : "";
+  const verification = t.verification
+    ? `<h2>Verification</h2><p>${badge(t.verification.outcome === "approved" ? "done" : "failed", t.verification.outcome)} ${
+        t.verification.matchesDraft
+          ? "binds to the exact saved draft above."
+          : "does not bind to the saved draft (a different revision was checked)."
+      }</p>${t.verification.draftHash ? `<p>Report draft <code>${escapeHtml(t.verification.draftHash)}</code></p>` : ""}`
+    : "";
+  const receiptRows = t.receipts
+    .map((r) => {
+      const confirmed = !r.simulated && typeof r.url === "string" && r.url.startsWith("https://");
+      const link = confirmed
+        ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
+        : "";
+      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+    })
+    .join("");
+  const receipts =
+    receiptRows.length === 0 && !t.receiptsTruncated
+      ? ""
+      : `<h2>Delivery receipts</h2>${
+          t.receiptsTruncated
+            ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>'
+            : ""
+        }${
+          receiptRows.length === 0
+            ? ""
+            : `<div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${receiptRows}</tbody></table></div>`
+        }`;
   return `<p><a href="/articles">All articles</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${research}${diagnostics}`;
+${research}${draft}${verification}${receipts}${diagnostics}`;
 }
