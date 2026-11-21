@@ -17,6 +17,12 @@ Things you should check for:
 
 If the errors are trivial, we can approve it. However, if there are changes that are potentially embarrassing because they misstate a fact or misquote the source material, this should be referred back for correction.
 
+Distinguish facts from interpretation:
+
+- Interpretation, commentary, synthesis and opinion are allowed when they are clearly presented as such ("this suggests", "in our view") and do not misrepresent what the source post says.
+- Factual claims (what someone said, what happened, figures, dates, quotations and what the evidence shows) must be supported by the supplied material. An incorrect or unsupported factual claim is a substantive issue.
+- Opinion presented as established fact, or an interpretation that depends on an incorrect factual claim, is also a substantive issue.
+
 Respond with JSON only:
 
 {"verdict":"approved"|"redraft","issues":[{"passage":"exact text from the draft","reason":"why it is unsupported or wrong","severity":"substantive"|"minor"}]}.
