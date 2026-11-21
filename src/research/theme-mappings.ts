@@ -43,7 +43,7 @@ export const ThemeMappingSchema = z
   .object({
     schemaVersion: z.literal(THEME_MAPPING_SCHEMA_VERSION),
     /** Normalised proposal text the librarian recognised. */
-    key: z.string().min(1).max(300),
+    key: z.string().min(1).max(1400),
     /** The proposal wording exactly as assessed, for review. */
     proposal: z.string().min(1).max(300),
     /** The proposal description, which separates same-titled different topics. */

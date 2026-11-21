@@ -712,6 +712,8 @@ export async function assessPostCoverage(input: {
         saved.created = false;
         saved.rationale = "reconciled to the saved catalogue winner";
         dossierFor.set(p.id, winner.canonicalThemeId);
+        // The research subject follows the dossier this mapping now points at.
+        if (!subjects.has(winner.canonicalThemeId)) subjects.set(winner.canonicalThemeId, p.title);
       }
     }
   }
