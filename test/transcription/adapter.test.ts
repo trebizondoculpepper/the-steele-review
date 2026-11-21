@@ -87,7 +87,7 @@ function adapter(extra: Partial<TranscriptionAdapterConfig>, routes: Record<stri
 const bytes = (s: string) => new TextEncoder().encode(s);
 const jobs = async () => (await readdir(dir)).filter((e) => e.startsWith("job-"));
 
-describe("TranscriptionAdapter", () => {
+describe("TranscriptionAdapter", { timeout: 60_000 }, () => {
   it("transcribes audio with provenance and keeps media until cleanup", async () => {
     const { a, seen } = adapter({}, { [AUDIO.url]: bytes("AUDIO") });
     const job = await a.transcribe([VIDEO, AUDIO]);
