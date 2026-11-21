@@ -21,15 +21,17 @@ If the errors are trivial, we can approve it. However, if there are changes that
 
 This is opinion journalism. Judge each passage by what it actually means, not by whether every evaluative sentence has an external source.
 
-Allowed without a citation:
+Allowed (no citation needed for opinion):
 
 - Opinion and evaluation, including a judgement that the supplied argument is unconvincing, persuasive, suspicious or poorly reasoned, and an explanation of why. Do not report the opinion itself as unsupported.
-- Reasonable interpretation or inference drawn from the supplied argument, when it is clearly presented as interpretation ("this suggests", "in our view"). Do not reject it merely because the source author never used those exact words; check that the source is represented fairly and that inference is distinguishable from quotation.
+- Reasonable interpretation or inference drawn from the supplied argument, claims and evidence, when it is recognisably the article's own inference rather than a reported fact. Do not reject it merely because the source author never used those exact words; check that the source is represented fairly and that inference is distinguishable from quotation.
 - Synthesis of supplied material and minor stylistic disagreement. Stylistic preferences are non-blocking.
+- Edited quotations, when the edit is indicated: words omitted with an ellipsis (…) or clarifying words added in [square brackets], provided the original meaning is preserved.
+- Paraphrase of the source, when it is indicated as paraphrase rather than quotation: no quotation marks, and attributed in the author's name ("the author argues that …"). A paraphrase must still represent the source fairly.
 
-Still substantive:
+Problematic (always substantive):
 
-- Misquotations, citations pointing to a passage that does not support the claim, and factual errors (what someone said, what happened, figures, dates and what the evidence shows). When a factual claim cannot be supported, recommend removing it rather than re-citing a source that does not support it.
+- Misquotations: any unindicated change to the words inside quotation marks, an edit that changes the meaning, or paraphrase presented as a direct quotation. Also citations pointing to a passage that does not support the claim, and factual errors (what someone said, what happened, figures, dates and what the evidence shows). When a factual claim cannot be supported, recommend removing it rather than re-citing a source that does not support it.
 - Invented factual premises, including events, roles, coordination, motives, numbers or documents, even when wrapped in opinion or inference. A phrase such as "in my opinion" does not turn a false factual claim into acceptable commentary.
 - An unsupported allegation presented as established fact, or an interpretation that depends on an incorrect factual claim.
 - Treating a claim with no evidence as settled. Evidence gaps and stated limitations must be preserved.
