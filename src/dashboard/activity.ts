@@ -29,11 +29,34 @@ export interface ActivityEvent {
   link?: string;
 }
 
+/**
+ * Identifiers of runs that are recent or active, independent of when their
+ * source post was published. Without this the feed can only see activity for
+ * the newest source articles, so a run started today on an old post is
+ * invisible.
+ */
+export interface RunIndexPort {
+  recent(limit: number): Promise<
+    Array<{ publicationId: string; postId: string; sourceVersion: string }>
+  >;
+}
+
 export interface ActivityInput {
   articles: Pick<RecentArticlesPort, "recent">;
   runs: RunStatusPort;
-  /** How many recent articles to observe. */
+  /** Optional run index: discovered runs are merged with the newest articles. */
+  runIndex?: RunIndexPort;
+  /** How many events to observe. */
   limit?: number;
+}
+
+export interface ActivityFeed {
+  events: ActivityEvent[];
+  /**
+   * True when no run index was supplied, so discovery is limited to the newest
+   * source articles and the page must say so.
+   */
+  discoveryLimited: boolean;
 }
 
 export const ACTIVITY_PAGE_SIZE = 25;
@@ -133,20 +156,39 @@ function eventsFor(
 }
 
 /** Recent article-stage activity, newest observation first. */
-export async function collectActivity(input: ActivityInput): Promise<ActivityEvent[]> {
+export async function collectActivity(input: ActivityInput): Promise<ActivityFeed> {
   const limit = input.limit ?? ACTIVITY_PAGE_SIZE;
   const articles = await input.articles.recent(limit);
+
+  // Merge run-index discovery with the newest articles, deduplicated by the
+  // exact revision the workflow is keyed by.
+  let targeted = articles.map((a) => ({
+    publicationId: a.publicationId,
+    postId: a.postId,
+    sourceVersion: a.sourceVersion,
+  }));
+  if (input.runIndex) {
+    const indexed = await input.runIndex.recent(limit);
+    const seen = new Set(targeted.map((t) => `${t.publicationId}/${t.postId}@${t.sourceVersion}`));
+    for (const run of indexed) {
+      const key = `${run.publicationId}/${run.postId}@${run.sourceVersion}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        targeted = [...targeted, run];
+      }
+    }
+  }
   // Bounded concurrency: a slow or unreachable workflow endpoint must not
   // serialise the whole page, and must not open hundreds of sockets either.
   const out: ActivityEvent[] = [];
-  for (let i = 0; i < articles.length; i += ACTIVITY_CONCURRENCY) {
-    const batch = articles.slice(i, i + ACTIVITY_CONCURRENCY);
+  for (let i = 0; i < targeted.length; i += ACTIVITY_CONCURRENCY) {
+    const batch = targeted.slice(i, i + ACTIVITY_CONCURRENCY);
     const observed = await Promise.all(
-      batch.map(async (article) => {
-        const post = { publicationId: article.publicationId, postId: article.postId };
+      batch.map(async (target) => {
+        const post = { publicationId: target.publicationId, postId: target.postId };
         let run: RunState;
         try {
-          run = await input.runs.status({ ...post, sourceVersion: article.sourceVersion });
+          run = await input.runs.status(target);
         } catch {
           run = { state: "unavailable" };
         }
@@ -161,7 +203,7 @@ export async function collectActivity(input: ActivityInput): Promise<ActivityEve
     const bt = b.at === undefined ? Number.NEGATIVE_INFINITY : Date.parse(b.at);
     return bt - at;
   });
-  return out.slice(0, limit);
+  return { events: out.slice(0, limit), discoveryLimited: input.runIndex === undefined };
 }
 
 /** Escape untrusted text for the HTML activity table. */
@@ -172,9 +214,13 @@ function esc(value: string): string {
 }
 
 /** Read-only activity page body. Everything is escaped; links are internal. */
-export function renderActivity(events: readonly ActivityEvent[]): string {
+export function renderActivity(feed: ActivityFeed): string {
+  const { events } = feed;
+  const limitation = feed.discoveryLimited
+    ? '<p class="limitation">Showing activity for the most recent source posts only: no run index is configured, so a run on an older post is not listed here.</p>'
+    : "";
   if (events.length === 0)
-    return '<p class="empty">No recent activity has been observed.</p>';
+    return `${limitation}<p class="empty">No recent activity has been observed.</p>`;
   const rows = events
     .map((e) => {
       const correlation = [e.publicationId, e.postId].filter(Boolean).join("/");
@@ -185,5 +231,5 @@ export function renderActivity(events: readonly ActivityEvent[]): string {
       }</td></tr>`;
     })
     .join("");
-  return `<table><thead><tr><th>Time</th><th>Component</th><th>Source</th><th>State</th><th>Error</th><th>Run</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `${limitation}<table><thead><tr><th>Time</th><th>Component</th><th>Source</th><th>State</th><th>Error</th><th>Run</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
