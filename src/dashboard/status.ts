@@ -11,7 +11,12 @@ import { escapeHtml, type DashboardView } from "./server.js";
  */
 
 export type ServiceState = "healthy" | "unavailable" | "not-configured";
-export type FeedPollState = "current" | "stale" | "unavailable" | "not-configured";
+export type FeedPollState =
+  | "current"
+  | "stale"
+  | "no-poll-yet"
+  | "unavailable"
+  | "not-configured";
 export type ArchiveState = "ok" | "unavailable" | "not-configured";
 export type IndexState =
   | "current"
@@ -49,6 +54,7 @@ const TONE: Record<string, string> = {
   incomplete: "pending",
   unavailable: "failed",
   "not-configured": "unknown",
+  "no-poll-yet": "unknown",
 };
 
 const badge = (state: string) =>

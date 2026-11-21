@@ -160,6 +160,37 @@ describe("systemStatusSource", () => {
     });
   });
 
+  it("uses the last completed poll, not a later lifecycle update", async () => {
+    const dir = directory();
+    const path = join(dir, "discovery.json");
+    // A restart refreshed `at`, but the last real poll was long ago.
+    await writeDiscoveryStatus(path, {
+      at: "2026-01-01T09:59:30.000Z",
+      lastPollAt: "2026-01-01T06:00:00.000Z",
+      state: "waiting",
+      runs: 3,
+      consecutiveFailures: 0,
+    });
+    const source = systemStatusSource({ runtime: {}, discoveryStatusPath: path, now: () => NOW });
+    expect((await source.read()).feedPoll).toEqual({
+      state: "stale",
+      at: "2026-01-01T06:00:00.000Z",
+    });
+  });
+
+  it("reports a runner that has not completed a poll yet", async () => {
+    const dir = directory();
+    const path = join(dir, "discovery.json");
+    await writeDiscoveryStatus(path, {
+      at: "2026-01-01T09:59:30.000Z",
+      state: "running",
+      runs: 0,
+      consecutiveFailures: 0,
+    });
+    const source = systemStatusSource({ runtime: {}, discoveryStatusPath: path, now: () => NOW });
+    expect((await source.read()).feedPoll).toEqual({ state: "no-poll-yet" });
+  });
+
   it("reports a recent poll as current and a missing status file as unavailable", async () => {
     const dir = directory();
     const path = join(dir, "discovery.json");

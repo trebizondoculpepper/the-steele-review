@@ -69,6 +69,8 @@ async function main(): Promise<number> {
     subject: config.STEELE_DISCOVERY_SUBJECT,
     expectStream: config.STEELE_DISCOVERY_STREAM,
   });
+  let completedRuns = 0;
+  let lastPollAt: string | undefined;
   const runner = new PeriodicDiscoveryRunner({
     run: (signal) =>
       runDiscovery({
@@ -84,9 +86,21 @@ async function main(): Promise<number> {
       if (status.state === "waiting" || status.state === "stopped") {
         console.log(JSON.stringify({ event: "discovery", ...status }));
       }
+      // A lifecycle update is not a poll: only a completed run advances the
+      // last-poll time, so starting or stopping cannot make a stale feed look
+      // current.
+      const at = new Date().toISOString();
+      if (status.runs > completedRuns) {
+        completedRuns = status.runs;
+        lastPollAt = at;
+      }
       // Best effort: a status file that cannot be written must not stop polling.
       if (config.STEELE_DISCOVERY_STATUS_PATH) {
-        void writeDiscoveryStatus(config.STEELE_DISCOVERY_STATUS_PATH, status).catch(() => undefined);
+        void writeDiscoveryStatus(config.STEELE_DISCOVERY_STATUS_PATH, {
+          ...status,
+          at,
+          ...(lastPollAt ? { lastPollAt } : {}),
+        }).catch(() => undefined);
       }
     },
   });

@@ -15,8 +15,10 @@ export const DISCOVERY_STATUS_SCHEMA_VERSION = 1;
 export const DiscoveryStatusSchema = z
   .object({
     schemaVersion: z.literal(DISCOVERY_STATUS_SCHEMA_VERSION),
-    /** When this status was written (after the latest run completed). */
+    /** When this status record was written; lifecycle updates refresh it. */
     at: z.iso.datetime({ offset: true }),
+    /** When the last discovery poll completed; preserved across lifecycle updates. */
+    lastPollAt: z.iso.datetime({ offset: true }).optional(),
     state: z.enum(["idle", "running", "waiting", "stopping", "stopped"]),
     runs: z.number().int().min(0),
     consecutiveFailures: z.number().int().min(0),
@@ -58,6 +60,7 @@ async function writeAtomic(path: string, status: DiscoveryStatusInput): Promise<
   const record: DiscoveryStatus = {
     schemaVersion: DISCOVERY_STATUS_SCHEMA_VERSION,
     at: status.at ?? new Date().toISOString(),
+    ...(status.lastPollAt === undefined ? {} : { lastPollAt: status.lastPollAt }),
     state: status.state,
     runs: status.runs,
     consecutiveFailures: status.consecutiveFailures,

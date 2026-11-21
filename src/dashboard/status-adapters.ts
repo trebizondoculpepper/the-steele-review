@@ -70,12 +70,12 @@ async function feedPollFor(
   if (!deps.discoveryStatusPath) return { state: "not-configured" };
   const status = await readDiscoveryStatus(deps.discoveryStatusPath);
   if (!status) return { state: "unavailable" };
-  const age = observed.getTime() - Date.parse(status.at);
+  // Only a completed poll counts; lifecycle updates refresh `at` but not this.
+  const at = status.lastPollAt ?? (status.runs > 0 ? status.at : undefined);
+  if (at === undefined) return { state: "no-poll-yet" };
+  const age = observed.getTime() - Date.parse(at);
   const staleAfter = deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
-  return {
-    state: Number.isFinite(age) && age <= staleAfter ? "current" : "stale",
-    at: status.at,
-  };
+  return { state: Number.isFinite(age) && age <= staleAfter ? "current" : "stale", at };
 }
 
 async function archiveProgress(deps: StatusAdapterDeps): Promise<StatusSnapshot["archive"]> {

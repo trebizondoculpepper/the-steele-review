@@ -58,6 +58,22 @@ describe("discovery status file", () => {
     expect(status).not.toHaveProperty("lastPublished");
   });
 
+  it("round-trips the last completed poll separately from the write time", async () => {
+    const dir = directory();
+    const path = join(dir, "status.json");
+    await writeDiscoveryStatus(path, {
+      at: "2026-01-01T10:00:00.000Z",
+      lastPollAt: "2026-01-01T09:00:00.000Z",
+      state: "waiting",
+      runs: 2,
+      consecutiveFailures: 0,
+    });
+    expect(await readDiscoveryStatus(path)).toMatchObject({
+      at: "2026-01-01T10:00:00.000Z",
+      lastPollAt: "2026-01-01T09:00:00.000Z",
+    });
+  });
+
   it("serialises concurrent writes so the last state wins", async () => {
     const dir = directory();
     const path = join(dir, "status.json");
