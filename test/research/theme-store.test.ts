@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { DossierStore } from "../../src/research/dossier.js";
-import { ThemeStore, themePath } from "../../src/research/theme-store.js";
+import { listCanonicalThemes, ThemeStore, themePath } from "../../src/research/theme-store.js";
 
 let dir: string;
 let artifacts: GitArtifactStore;
@@ -68,6 +68,13 @@ describe("canonical theme store (#528)", () => {
     // listing must ignore them.
     await artifacts.write("themes/pub/p1/abc.json", "{}\n");
     expect(await themes.list()).toEqual(["canonical-themes/geoengineering.json"]);
+  });
+
+  it("fails rather than dropping an unreadable canonical theme from the inventory", async () => {
+    const themes = new ThemeStore(artifacts);
+    await themes.ensure(theme);
+    await artifacts.write(themePath("broken-theme"), "{not json");
+    await expect(listCanonicalThemes(themes)).rejects.toThrow();
   });
 
   it("returns nothing for an unknown theme", async () => {
