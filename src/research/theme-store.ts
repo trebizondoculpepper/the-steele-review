@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 
 /**
  * Canonical themes, independent of research (#528).
@@ -49,8 +49,18 @@ export class ThemeStore {
     const payload = CanonicalThemeSchema.parse({ schemaVersion: THEME_SCHEMA_VERSION, ...theme });
     const existing = await this.get(payload.id);
     if (existing) return existing;
-    await this.artifacts.write(themePath(payload.id), `${JSON.stringify(payload, null, 2)}\n`);
-    return payload;
+    try {
+      await this.artifacts.write(themePath(payload.id), `${JSON.stringify(payload, null, 2)}\n`);
+      return payload;
+    } catch (error) {
+      // A concurrent assessment may have established the same theme first; the
+      // stored record is authoritative, so reconcile instead of failing.
+      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+        const winner = await this.get(payload.id);
+        if (winner) return winner;
+      }
+      throw error;
+    }
   }
 
   /** Themes in stable ID order, bounded. */

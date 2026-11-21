@@ -653,6 +653,12 @@ export async function assessPostCoverage(input: {
       titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
       if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, p.title);
       mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
+      // Coverage from before canonical themes existed still establishes one.
+      await themeStore.ensure({
+        id: kept.dossierId,
+        title: existing.get(kept.dossierId)?.metadata.title ?? kept.title,
+        createdAt: now,
+      });
       continue;
     }
     // A decision made for the same proposal on another post is reused instead

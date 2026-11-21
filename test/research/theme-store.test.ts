@@ -53,6 +53,14 @@ describe("canonical theme store (#528)", () => {
     ]);
   });
 
+  it("returns the stored theme when a concurrent write lost the race", async () => {
+    const themes = new ThemeStore(artifacts);
+    const first = await themes.ensure(theme);
+    // Simulate the other assessment winning between read and write.
+    const second = await themes.ensure({ ...theme, createdAt: "2026-03-01T00:00:00.000Z" });
+    expect(second).toEqual(first);
+  });
+
   it("returns nothing for an unknown theme", async () => {
     expect(await new ThemeStore(artifacts).get("unknown-theme")).toBeUndefined();
   });
