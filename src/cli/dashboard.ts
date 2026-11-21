@@ -44,6 +44,8 @@ import {
 } from "../dashboard/adapters.js";
 import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
+import { draftViews } from "../dashboard/draft-views.js";
+import { draftInventory } from "../dashboard/drafts.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -166,6 +168,20 @@ const views = [
         }
       : {}),
   }),
+  // Every saved draft with its exact verification and delivery status (#440).
+  ...draftViews(
+    content
+      ? draftInventory(
+          content,
+          contentReceipts(content, {
+            destinations: (e.STEELE_DASHBOARD_DESTINATIONS ?? "")
+              .split(",")
+              .map((d) => d.trim())
+              .filter(Boolean),
+          }),
+        )
+      : undefined,
+  ),
   // Preserve old bookmarks without a second navigation entry or placeholder.
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
