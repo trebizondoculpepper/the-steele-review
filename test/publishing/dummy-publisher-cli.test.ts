@@ -111,7 +111,8 @@ describe("dummy-publisher", { timeout: 180_000 }, () => {
 
     const encode = (s: string) => new TextEncoder().encode(s);
     await nats.publish(ARTICLE_APPROVED_SUBJECT, encode(payload), { msgId: eventId });
-    const delivered = (x: "a" | "b") => lines[x].find((l) => l.outcome === "delivered");
+    const delivered = (x: "a" | "b") =>
+      lines[x].find((l) => l.event === "dummy-publisher" && l.outcome === "delivered");
     await until("both delivered", () => (delivered("a") && delivered("b") ? true : undefined));
     expect(delivered("a")!.receipt).toMatch(/^publications\/dummy-a\/draft\//);
     expect(delivered("b")!.receipt).toMatch(/^publications\/dummy-b\/draft\//);
@@ -124,7 +125,8 @@ describe("dummy-publisher", { timeout: 180_000 }, () => {
 
     // Redelivery under a new message ID: both reuse their receipts.
     await nats.publish(ARTICLE_APPROVED_SUBJECT, encode(payload), { msgId: `${eventId}-replay` });
-    const reused = (x: "a" | "b") => lines[x].find((l) => l.outcome === "reused");
+    const reused = (x: "a" | "b") =>
+      lines[x].find((l) => l.event === "dummy-publisher" && l.outcome === "reused");
     await until("both reused", () => (reused("a") && reused("b") ? true : undefined));
     expect(
       (await content.list("publications", 100)).filter((p) => p.endsWith("receipt.json")),

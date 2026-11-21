@@ -90,6 +90,7 @@ services:
       STEELE_STATE_PATH: /data/state/article-worker.sqlite
       STEELE_PUBLISHER_DESTINATION: dummy-a
       STEELE_PUBLISHER_CONSUMER: steele-dummy-publisher-a
+      SENTRY_DSN: ${SENTRY_DSN:-}
     volumes:
       - ${STEELE_CONTENT_DIR}:/data/content
       - ${STEELE_STATE_DIR}:/data/state
@@ -112,6 +113,7 @@ services:
       STEELE_STATE_PATH: /data/state/article-worker.sqlite
       STEELE_PUBLISHER_DESTINATION: dummy-b
       STEELE_PUBLISHER_CONSUMER: steele-dummy-publisher-b
+      SENTRY_DSN: ${SENTRY_DSN:-}
     volumes:
       - ${STEELE_CONTENT_DIR}:/data/content
       - ${STEELE_STATE_DIR}:/data/state
