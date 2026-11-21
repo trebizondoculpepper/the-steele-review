@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { ThemeMappingCatalogue, themeMappingPath } from "../../src/research/theme-mappings.js";
+import { ArtifactStoreError } from "../../src/controllers/artifact-store.js";
 
 // Synthetic catalogue only.
 let dir: string;
@@ -215,5 +216,61 @@ describe("mapping supersession (#518)", () => {
       decidedBy: by,
     });
     expect(again).toEqual(first);
+  });
+});
+
+describe("supersession correctness (#518)", () => {
+  const by = { publicationId: "pub", postId: "p1" };
+
+  it("lets a later correction from the same ID win", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    await catalogue.record({
+      proposal: "Directed energy",
+      canonicalThemeId: "a",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: by,
+      rationale: "topic",
+    });
+    await catalogue.supersede({
+      proposal: "Directed energy",
+      from: "a",
+      to: "b",
+      reason: "first merge",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: by,
+    });
+    await catalogue.supersede({
+      proposal: "Directed energy",
+      from: "a",
+      to: "c",
+      reason: "later reassessment",
+      decidedAt: "2026-01-03T00:00:00Z",
+      decidedBy: by,
+    });
+    expect(await catalogue.lookup({ proposal: "Directed energy" })).toMatchObject({
+      canonicalThemeId: "c",
+    });
+  });
+
+  it("propagates a storage failure instead of returning a stale mapping", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    await catalogue.record({
+      proposal: "Weather control",
+      canonicalThemeId: "weather",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: by,
+      rationale: "topic",
+    });
+    const failing = new ThemeMappingCatalogue({
+      lookup: (path: string) => artifacts.lookup(path),
+      read: (ref: never) => artifacts.read(ref),
+      write: (path: string, content: string) => artifacts.write(path, content),
+      list: async () => {
+        throw new ArtifactStoreError("git-failed");
+      },
+    });
+    await expect(failing.lookup({ proposal: "Weather control" })).rejects.toBeInstanceOf(
+      ArtifactStoreError,
+    );
   });
 });

@@ -158,8 +158,9 @@ export class ThemeMappingCatalogue {
     let current = mapping.canonicalThemeId;
     const seen = new Set([current]);
     for (let hops = 0; hops < 20; hops++) {
-      // The latest event from the current ID wins; ties keep the earlier event.
-      const next = supersessions.find((s) => s.from === current);
+      // The chronologically newest event from the current ID wins; ties keep
+      // the earlier event (stable sort in `supersessions`).
+      const next = [...supersessions].reverse().find((s) => s.from === current);
       if (!next || seen.has(next.to)) return current;
       seen.add(next.to);
       current = next.to;
@@ -175,24 +176,27 @@ export class ThemeMappingCatalogue {
       ? "global"
       : `scope-${pathSegment(normaliseMappingKey(mapping.scope))}`;
     const base = `librarian/theme-mappings/supersessions/${scope}/${pathSegment(normaliseMappingKey(mapping.key))}`;
-    let paths: string[];
-    try {
-      paths = await this.listPrefix(base);
-    } catch {
-      return [];
-    }
+    // Storage failures propagate: reporting "no supersessions" on a transient
+    // failure would let a stale canonical ID be reused as if current.
+    const paths = await this.listPrefix(base);
     const found: ThemeMappingSupersession[] = [];
     for (const path of paths.sort()) {
+      const ref = await this.artifacts.lookup(path);
+      if (!ref) continue;
+      let raw: string;
       try {
-        const ref = await this.artifacts.lookup(path);
-        if (!ref) continue;
-        const parsed = ThemeMappingSupersessionSchema.safeParse(
-          JSON.parse(await this.artifacts.read(ref)),
-        );
-        if (parsed.success) found.push(parsed.data);
-      } catch {
-        // An unreadable supersession is never guessed.
+        raw = await this.artifacts.read(ref);
+      } catch (error) {
+        if (error instanceof ArtifactStoreError && error.code === "git-failed") throw error;
+        continue;
       }
+      let parsed;
+      try {
+        parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(raw));
+      } catch {
+        continue; // malformed record: skipped, never guessed
+      }
+      if (parsed.success) found.push(parsed.data);
     }
     // Stable chronological order; equal timestamps keep path order.
     return found.sort((a, b) => a.decidedAt.localeCompare(b.decidedAt));
