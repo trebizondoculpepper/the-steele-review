@@ -4,10 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { VERIFICATION_REPORT_SCHEMA_VERSION } from "../../src/drafting/package-verify.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import {
-  contentArticleView,
-  contentReceipts,
-} from "../../src/dashboard/adapters.js";
+import { contentArticleView, contentReceipts } from "../../src/dashboard/adapters.js";
 import type { Ref } from "../../src/workflow/article-run.js";
 
 let dir: string;
@@ -53,6 +50,7 @@ const receipt = (over: Record<string, unknown>) => ({
   destination: "dummy-a",
   action: "draft",
   simulated: true,
+  draftHash: `sha256:${"c".repeat(64)}`,
   deliveredAt: "2026-01-01T00:00:00Z",
   ...over,
 });
@@ -97,6 +95,11 @@ describe("contentArticleView", { timeout: 30_000 }, () => {
   it("returns undefined for a mismatched hash or an unreadable report", async () => {
     const draftRef = ref(await content.write("articles/pub/p1/draft.md", "body"));
     const view = contentArticleView(content);
+    expect(await view.draft({ ...draftRef, repository: "other" })).toBeUndefined();
+    const reportRef = ref(
+      await content.write("verify/pub/p1/report.json", JSON.stringify(report(draftRef))),
+    );
+    expect(await view.verification({ ...reportRef, repository: "other" })).toBeUndefined();
     expect(await view.draft({ ...draftRef, sha256: "0".repeat(64) })).toBeUndefined();
 
     const broken = ref(await content.write("verify/pub/p1/bad.json", "{not json"));
@@ -160,8 +163,8 @@ describe("contentReceipts", { timeout: 30_000 }, () => {
       );
     // Sorted listing puts every dummy-a path before dummy-b, so a bounded
     // unscoped scan of a large tree could miss dummy-b entirely.
-    // A few earlier dummy-a paths sort ahead of the dummy-b receipt.
-    for (let n = 0; n < 5; n++) await write("dummy-a", "filler");
+    // Distinct earlier dummy-a paths sort ahead of the dummy-b receipt.
+    for (let n = 0; n < 5; n++) await write("dummy-a", `filler-${n}`);
     await write("dummy-b", "p1");
     const scoped = await contentReceipts(content, { destinations: ["dummy-b"] }).receiptsFor(
       { publicationId: "pub", postId: "p1" },
@@ -181,10 +184,37 @@ describe("contentReceipts", { timeout: 30_000 }, () => {
     }
     const result = await contentReceipts(content, { destinations, limit: 2 }).receiptsFor(
       { publicationId: "pub", postId: "p1" },
-      `sha256:${rev}`,
+      `sha256:${"c".repeat(64)}`,
     );
     expect(result.receipts).toHaveLength(2);
     expect(result.truncated).toBe(true);
+  });
+
+  it("omits receipts with missing or conflicting provenance", async () => {
+    const hash = "c".repeat(64);
+    let index = 0;
+    for (const patch of [
+      { draftHash: undefined },
+      { draftHash: `sha256:${"c".repeat(32)}${"d".repeat(32)}` },
+      { destination: "other" },
+      { action: "publish" },
+    ]) {
+      const postId = `p${index++}`;
+      const path = `publications/dummy-a/draft/pub/${postId}/${hash.slice(0, 32)}/receipt.json`;
+      await content.write(path, JSON.stringify(receipt(patch)));
+      expect(
+        await contentReceipts(content).receiptsFor(
+          { publicationId: "pub", postId },
+          `sha256:${hash}`,
+        ),
+      ).toEqual({ receipts: [], truncated: false });
+    }
+    expect(
+      await contentReceipts(content).receiptsFor(
+        { publicationId: "pub", postId: "p1" },
+        `sha256:${hash.slice(0, 32)}`,
+      ),
+    ).toEqual({ receipts: [], truncated: false });
   });
 
   it("omits unreadable receipts instead of guessing", async () => {
