@@ -200,7 +200,11 @@ export class OpenRouterTranscriptionProvider implements TranscriptionProvider {
     }
     const choice = parsed.choices[0]!;
     const text = (choice.message.content ?? "").trim();
-    if (!text || text === NO_SPEECH) return { segments: [], language: "en", complete: true };
+    // Only the explicit sentinel, or an empty reply that finished normally, means
+    // no speech; a cut-off, filtered or failed generation is a provider failure.
+    if (text === NO_SPEECH || (!text && choice.finish_reason === "stop"))
+      return { segments: [], language: "en", complete: true };
+    if (!text) throw new TranscriptionError("provider-failed", true);
     return {
       segments: [{ text }],
       language: "en",

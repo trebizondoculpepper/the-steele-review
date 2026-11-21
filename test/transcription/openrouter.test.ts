@@ -94,6 +94,16 @@ describe("English transcription through OpenRouter (#234)", () => {
     }
   });
 
+  it("retries an empty reply that did not finish normally instead of calling it silence", async () => {
+    for (const finish of ["length", "content_filter", "error"]) {
+      const { fetch } = endpoint({ content: null, finish });
+      const provider = new OpenRouterTranscriptionProvider({ apiKey: KEY, fetch });
+      await expect(
+        provider.transcribe({ path: audio, kind: "audio" }, signal()),
+      ).rejects.toMatchObject({ reason: "provider-failed", retryable: true });
+    }
+  });
+
   it("marks a reply cut off by the output cap as incomplete", async () => {
     const { fetch } = endpoint({ content: "Partial words", finish: "length" });
     const provider = new OpenRouterTranscriptionProvider({ apiKey: KEY, fetch });
