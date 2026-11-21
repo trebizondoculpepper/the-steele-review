@@ -193,7 +193,7 @@ export function renderPackageDraft(
     }
     return index.get(key)!;
   };
-  const lines = [`Original post: [${linkText}](<${sourceUrl}>)`, "", draft.summary, ""];
+  const lines = [draft.summary, ""];
   for (const r of draft.responses) {
     const claim = claims.get(r.claimRecordId)!;
     const refs = r.evidence.map((i) => {
@@ -246,10 +246,9 @@ export function renderPackageDraft(
     }
   }
   for (const limitation of draft.limitations) lines.push(limitation, "");
+  lines.push("## Sources", "", `Original post: [${linkText}](<${sourceUrl}>)`, "");
   if (sources.length > 0) {
     lines.push(
-      "## Sources",
-      "",
       ...sources.map(
         (s, i) =>
           `${i + 1}. ${s.url}${s.archived ? ` (archived ${s.archived})` : ""}: "${s.passage}"`,
