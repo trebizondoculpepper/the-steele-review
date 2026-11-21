@@ -21,6 +21,8 @@ export interface ArticleViewDeps {
   content?: ArticleContentPort;
   receipts?: ReceiptsPort;
   canTrigger?: boolean;
+  /** Validated canonical origin from entry-point configuration, never request headers. */
+  actionOrigin?: string;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -30,6 +32,10 @@ const badge = (state: string, text = state) =>
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
+  const runLink = (publicationId: string, postId: string, revision: string) =>
+    escapeHtml(
+      `${deps.actionOrigin ?? ""}/articles/run?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
+    );
   const list: DashboardView = {
     path: "/articles",
     title: "Articles",
@@ -62,11 +68,18 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
               summary = "unknown";
             }
           }
-          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td></tr>`;
+          const action = deps.canTrigger
+            ? `<td>${
+                /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
+                  ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
+                  : "Revision unavailable"
+              }</td>`
+            : "";
+          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
       return `${creditBlocked ? creditWarning(creditBlocked) : ""}<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
-<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>`;
     },
   };
@@ -92,7 +105,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       });
       const trigger =
         deps.canTrigger && t.sourceVersion
-          ? `<p><a href="/articles/run?publication=${encodeURIComponent(publicationId)}&amp;post=${encodeURIComponent(postId)}&amp;revision=${encodeURIComponent(t.sourceVersion)}">Run this revision</a></p>`
+          ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
       return trigger + renderTrace(t);
     },

@@ -128,6 +128,7 @@ const views = [
   ...(trigger ? [trigger.view] : []),
   ...articleViews({
     canTrigger: Boolean(trigger),
+    ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
     trace: (post) =>

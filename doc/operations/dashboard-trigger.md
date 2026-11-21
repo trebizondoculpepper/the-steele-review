@@ -1,6 +1,8 @@
 # Trigger one archived article
 
-The article trace offers **Run this revision** when the dashboard has its archive and Restate connection configured and `STEELE_DASHBOARD_ORIGIN` is set. Set that variable privately to the exact HTTP(S) browser origin, with no trailing slash or path. Without it, the dashboard exposes no submission action. Keep network exposure restricted as documented for the dashboard.
+The Articles list and article trace offer **Run this revision** when the dashboard has its archive and Restate connection configured and `STEELE_DASHBOARD_ORIGIN` is set. Set that variable privately to the exact HTTP(S) browser origin, with no trailing slash or path. Without it, the dashboard exposes no submission action. Keep network exposure restricted as documented for the dashboard.
+
+The configured origin is the single canonical address for form submissions. Other configured network routes can still serve read-only pages, but their form submissions are rejected if their Origin or Host differs. Action links lead to the configured canonical address, including when the list is viewed through an alias. Use the canonical address to confirm a run; do not relax the checks to accommodate aliases.
 
 The confirmation page shows the captured source version and warns of model/research charges. Confirming sends a same-origin form POST. The server validates the selection against the current complete capture, pins the artifact reference, and submits through the existing ArticleRun interface. A changed or unavailable revision returns a conflict; return to the trace and select again. The trace page shows the existing run status and eventual artifacts.
 
