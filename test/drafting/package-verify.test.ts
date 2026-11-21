@@ -569,13 +569,14 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     ).toEqual([]);
   });
 
-  it("redrafts a first draft whose prose contains a model-written citation", async () => {
+  it("redrafts a first draft whose prose contains a model-written citation", { timeout: 60_000 }, async () => {
     const writer = model(
       "fake/writer-citation",
       writerResponse("The treaty bans weapons [0]."),
       writerResponse("The treaty bans weapons."),
     );
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: (await drafted()).pkg.ref,
@@ -592,7 +593,7 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     expect(metadata.repairPromptVersion).toBeDefined();
   });
 
-  it("rejects a model-written citation in a revision too", async () => {
+  it("rejects a model-written citation in a revision too", { timeout: 60_000 }, async () => {
     const { pkg, draft } = await drafted();
     const writer = model(
       "fake/writer-citation-revision",
@@ -600,6 +601,7 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       writerResponse("Revised without a reference."),
     );
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: pkg.ref,
