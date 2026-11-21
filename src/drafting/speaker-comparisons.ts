@@ -128,7 +128,12 @@ export async function saveSpeakerComparisons(input: {
     const key = createHash("sha256")
       .update(
         JSON.stringify([
-          occurrence.occurrenceId,
+          // The whole occurrence, not just its ID: a re-extraction keeps the
+          // occurrence ID for the same span even if the statement or speaker
+          // changes, and must not reuse a comparison of the old claim.
+          occurrence,
+          input.claimResult.commit,
+          input.claimResult.path,
           input.deps.provider.modelVersion,
           DEFAULT_SAME_SPEAKER_PROMPT.version,
           DEFAULT_EVOLUTION_PROMPT.version,

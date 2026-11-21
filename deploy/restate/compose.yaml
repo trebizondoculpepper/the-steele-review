@@ -51,6 +51,10 @@ services:
       # Same-speaker history in the essay (#370). Off while ELASTICSEARCH_URL is
       # empty; the article then has no historical section.
       ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      # Optional API key for an authenticated index. Use the direct form, or set
+      # the _FILE form to a path inside a mounted secret; empty values are ignored.
+      ELASTICSEARCH_API_KEY: ${ELASTICSEARCH_API_KEY:-}
+      ELASTICSEARCH_API_KEY_FILE: ${ELASTICSEARCH_API_KEY_FILE:-}
       STEELE_MODEL_HISTORY: ${STEELE_MODEL_HISTORY:-}
     volumes:
       - ${STEELE_ARCHIVE_DIR}:/data/archive:ro

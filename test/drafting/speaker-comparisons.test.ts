@@ -232,6 +232,21 @@ describe("same-speaker comparisons in the unattended essay (#370)", { timeout: 6
       deps: { search: search([]), provider },
     });
     expect(again[0]!.path).toBe(refs[0]!.path);
+
+    // A re-extraction that keeps the occurrence ID but changes the claim
+    // must not reuse the comparison of the old claim.
+    const raw = JSON.parse(await content.read(claimResult));
+    raw.claims[0].occurrence.statement = "A treaty permits weather weapons";
+    const reextracted = await content.write(
+      "claim-extractions/pub/p1/reextracted.json",
+      JSON.stringify(raw),
+    );
+    const fresh = await saveSpeakerComparisons({
+      content,
+      claimResult: reextracted,
+      deps: { search: search([]), provider },
+    });
+    expect(fresh[0]!.path).not.toBe(refs[0]!.path);
   });
 
   it("records a no-match search for diagnostics and leaves history out of the article", async () => {
