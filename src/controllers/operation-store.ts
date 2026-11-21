@@ -1280,7 +1280,9 @@ export class OperationInspector {
         // Snapshot for the inspector's lifetime: readers see one committed
         // state and cannot affect writers. Closing rolls the transaction back.
         db.exec("BEGIN DEFERRED");
-        db.prepare(COUNTS_SQL).get();
+        // Start the snapshot with a bounded read: aggregation belongs to
+        // statusCounts(), not to opening a single-operation inspector.
+        db.prepare("SELECT key FROM operations LIMIT 1").get();
       }
       return {
         status: "available",
