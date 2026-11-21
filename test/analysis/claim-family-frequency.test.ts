@@ -79,6 +79,23 @@ describe("claim family frequency (#404)", () => {
     expect(a.limitations[0]).toMatch(/not prevalence/);
   });
 
+  it("treats a change exactly at the threshold as a change, in both directions", () => {
+    // 10/100 -> 15/100 is exactly 0.05, but 0.15 - 0.10 is 0.04999... in floating point.
+    const at = (from: number, to: number) => {
+      const a = assessClaimFamilyFrequency({
+        ...base,
+        periods: [
+          { period: "2025-H1", matchedPosts: from, distinctOccurrences: from, analysedPosts: 100 },
+          { period: "2025-H2", matchedPosts: to, distinctOccurrences: to, analysedPosts: 100 },
+        ],
+      });
+      return a.kind === "observed" ? a.direction : a.kind;
+    };
+    expect(at(10, 15)).toBe("increase");
+    expect(at(15, 10)).toBe("decrease");
+    expect(at(10, 14)).toBe("flat");
+  });
+
   it("returns a qualified no-assessment for unknown coverage", () => {
     const a = assessClaimFamilyFrequency({ ...base, coverage: "unknown" });
     expect(a.kind).toBe("no-assessment");

@@ -124,10 +124,13 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
   // rounding step cannot push a change across the declared threshold.
   const delta = last.matchedPosts / last.analysedPosts - first.matchedPosts / first.analysedPosts;
   // Strictly greater/less, so equal rates stay flat even with a zero threshold.
+  // A tolerance keeps a change exactly at the threshold from reading as flat
+  // through floating-point subtraction (0.15 - 0.10 is 0.04999...).
+  const EPSILON = 1e-9;
   const direction: "increase" | "decrease" | "flat" =
-    delta > 0 && delta >= f.minimumRateDelta
+    delta > 0 && delta + EPSILON >= f.minimumRateDelta
       ? "increase"
-      : delta < 0 && -delta >= f.minimumRateDelta
+      : delta < 0 && -delta + EPSILON >= f.minimumRateDelta
         ? "decrease"
         : "flat";
 
@@ -157,7 +160,8 @@ export function renderFrequencyReport(a: FrequencyAssessment): string {
     "",
     "period\tmatchedPosts\tanalysedPosts\trate\tdistinctOccurrences",
     ...a.observations.map(
-      (o) => `${o.period}\t${o.matchedPosts}\t${o.analysedPosts}\t${o.rate}\t${o.distinctOccurrences}`,
+      (o) =>
+        `${o.period}\t${o.matchedPosts}\t${o.analysedPosts}\t${o.rate}\t${o.distinctOccurrences}`,
     ),
     "",
     a.kind === "observed" ? a.statement : "No assessment: the input cannot support a claim.",
