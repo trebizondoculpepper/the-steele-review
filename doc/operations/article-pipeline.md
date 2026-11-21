@@ -4,9 +4,10 @@ One trigger runs a captured post through the whole pipeline without a person sel
 
 ## Running it
 
-`deploy/restate/compose.yaml` runs a pinned Restate server (1.8.1, persistent `restate-data` volume) and the article worker (`dist/cli/article-worker.js`, port 9080) on an internal network. Supply paths, the image and the OpenRouter key file through a local `.env` that is never committed. Then register the worker and the research concurrency limit once:
+`deploy/restate/compose.yaml` runs a pinned Restate server (1.8.1, persistent `restate-data` volume) and the article worker (`dist/cli/article-worker.js`, port 9080) on an internal network. Supply paths, the image and the OpenRouter key file through a local `.env` that is never committed. Use the commit-tagged ARM64 image from GitHub Container Registry as `STEELE_IMAGE`. GitHub Actions builds and publishes it from `main`; the deployment pulls it. Then register the worker and the research concurrency limit once:
 
 ```sh
+docker compose -f deploy/restate/compose.yaml pull
 docker compose -f deploy/restate/compose.yaml up -d
 RESTATE_ADMIN_URL=http://127.0.0.1:9070 ARTICLE_WORKER_URL=http://article-worker:9080 deploy/restate/register.sh
 ```
