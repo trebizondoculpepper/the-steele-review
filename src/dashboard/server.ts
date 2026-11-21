@@ -203,13 +203,20 @@ export function dashboardHandler(
       return;
     }
     let body: string;
+    let failed = false;
     try {
       body = await view.render(url);
     } catch {
       // Never echo internal errors: they may name hosts or paths.
       body = '<p class="empty">This view is unavailable right now.</p>';
+      failed = true;
     }
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS });
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      // A fixed, sanitised signal for deployment readiness checks (#476).
+      ...(failed ? { "x-view-status": "unavailable" } : {}),
+      ...SECURITY_HEADERS,
+    });
     response.end(method === "HEAD" ? undefined : page(views, view, body));
   };
 }
