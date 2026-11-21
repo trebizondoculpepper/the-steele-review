@@ -32,3 +32,5 @@ See [runtime diagnostic CLI](16-diagnostic-cli.md) for the incremental troublesh
 See [extraction-first checkpoint](17-extraction-first-contract.md) for the latest owner-refined theme/claim contracts and ten-post research-handoff target.
 
 See the [pipeline module outline](18-module-outline.md) for the librarian and researcher workflow and writer handoff.
+
+See [retained image annotations](19-image-annotations.md) for optional on-demand classification, pinned image inputs, renderer behaviour and separate OCR scope.
