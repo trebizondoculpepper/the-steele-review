@@ -8,8 +8,12 @@ import { OperationStore } from "../../src/controllers/operation-store.js";
 import { WebAdapterError } from "../../src/controllers/research-web.js";
 import { RESEARCH_COMPLETED_SUBJECT } from "../../src/events/research-completed-event.js";
 import type { PageFetcher } from "../../src/research/gap-research.js";
-import { ResearchManifestSchema } from "../../src/research/job.js";
-import { type SupportJudge, runResearchJob } from "../../src/research/runner.js";
+import { RESEARCH_JOB_SCHEMA_VERSION, ResearchManifestSchema } from "../../src/research/job.js";
+import {
+  RESEARCH_PROMPT_VERSION,
+  type SupportJudge,
+  runResearchJob,
+} from "../../src/research/runner.js";
 import { OpenRouterSonarClient, type SonarClient, citationUrls } from "../../src/research/sonar.js";
 
 const SECRET = "sk-or-SENTINEL-9f2a";
@@ -119,6 +123,86 @@ describe("research runner", () => {
     // The saved source snapshot is what gets judged, not a fresh fetch.
     expect(fetched).toBe(fetchedAfterFirst);
     expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
+  });
+
+  const jobDir = async () => {
+    // A credit stop records no terminal result, so this is a cheap way to learn
+    // the stable job ID without any paid or fetched work.
+    const probe = await run(sonar([], new ModelProviderError("credit-exhausted", 402)));
+    return `research-jobs/${probe.jobId}`;
+  };
+  const validReport = (jobId: string, citations: unknown) => ({
+    schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
+    jobId,
+    promptVersion: RESEARCH_PROMPT_VERSION,
+    model: "perplexity/sonar-deep-research",
+    report: "A saved report.",
+    citations,
+  });
+
+  it("fails on a retained report with the wrong shape instead of reusing or refetching (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify({ ...validReport(jobId, null) })}\n`,
+    );
+    const paid = sonar(["https://treaties.un.org/enmod"]);
+    const before = fetched;
+    const out = await run(paid);
+    expect(out).toMatchObject({ result: { outcome: "failed", failure: "invalid-report" } });
+    expect(paid.calls).toBe(0);
+    expect(fetched).toBe(before);
+  });
+
+  it("rejects a retained report for another job or prompt identity (#432)", async () => {
+    const dirName = await jobDir();
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify({ ...validReport("some-other-job", ["https://treaties.un.org/enmod"]), jobId: "some-other-job" })}\n`,
+    );
+    const paid = sonar(["https://treaties.un.org/enmod"]);
+    expect(await run(paid)).toMatchObject({
+      result: { outcome: "failed", failure: "invalid-report" },
+    });
+    expect(paid.calls).toBe(0);
+  });
+
+  it("rejects an over-bound citation list in a retained report (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    const citations = Array.from({ length: 201 }, (_, n) => `https://example.org/${n}`);
+    await artifacts.write(`${dirName}/report.json`, `${JSON.stringify(validReport(jobId, citations))}\n`);
+    const paid = sonar([]);
+    expect(await run(paid)).toMatchObject({
+      result: { outcome: "failed", failure: "invalid-report" },
+    });
+    expect(paid.calls).toBe(0);
+  });
+
+  it("rejects a retained source snapshot for a different URL (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, ["https://treaties.un.org/enmod"]))}\n`,
+    );
+    const { createHash } = await import("node:crypto");
+    const sourceKey = createHash("sha256").update("https://treaties.un.org/enmod").digest("hex").slice(0, 32);
+    await artifacts.write(
+      `${dirName}/sources/${sourceKey}.json`,
+      `${JSON.stringify({
+        url: "https://example.org/other",
+        title: "t",
+        truncated: false,
+        text: TREATY,
+      })}\n`,
+    );
+    const before = fetched;
+    expect(await run(sonar([]))).toMatchObject({
+      result: { outcome: "failed", failure: "invalid-report" },
+    });
+    expect(fetched).toBe(before);
   });
 
   it("saves nothing terminal on exhausted credit, so the same job runs after credit returns (#407)", async () => {
