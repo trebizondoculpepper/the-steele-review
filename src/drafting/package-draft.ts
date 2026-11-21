@@ -835,7 +835,7 @@ export async function draftFromPackage(input: {
           // (#549's field-only path), preserving body and citation data.
           kind = "schema-validation";
           lastProblems = modelCitationProblems(parsed);
-          issues = markers;
+          issues = markers.slice(0, 30);
         } else if (structural.length > 0 || markers.length > 0) {
           kind = "evidence-validation";
           lastProblems = [...structural, ...modelCitationProblems(parsed)];
@@ -846,7 +846,7 @@ export async function draftFromPackage(input: {
               ? [{ code: "custom" as const, path: ["responses" as const] }]
               : []),
             ...markers,
-          ];
+          ].slice(0, 30); // the diagnostic contract records at most 30 issues
         }
       }
       if (kind) {

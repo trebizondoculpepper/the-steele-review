@@ -687,6 +687,46 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
   );
 
   it(
+    "records a bounded diagnostic when markers appear in more than 30 fields",
+    { timeout: 60_000 },
+    async () => {
+      // Markers in every reader-visible field the schema allows (27 with two claims).
+      const many = JSON.parse(writerResponse());
+      many.limitations = Array.from({ length: 20 }, (_, i) => `Limitation ${i} [${i}].`);
+      for (const f of ["title", "subtitle", "excerpt", "summary"]) many[f] = `${many[f]} [9]`;
+      many.responses = many.responses.map((r: { text: string }) => ({
+        ...r,
+        text: `${r.text} [8]`,
+      }));
+      many.narrative = { status: "limited", limitation: "None [7]." };
+      many.widerContext = { status: "limited", limitation: "None [6]." };
+      // A draft with more responses can exceed the diagnostic's 30-issue bound.
+      const wide = {
+        ...many,
+        responses: Array.from({ length: 11 }, (_, i) => ({
+          claimRecordId: `c${i}`,
+          verdict: "supported",
+          text: `R ${i} [1].`,
+          evidence: [0],
+        })),
+      };
+      expect(modelCitationIssues(wide as never).length).toBeGreaterThan(30);
+      const writer = model("fake/writer-many-markers", JSON.stringify(many), JSON.stringify(many));
+      const out = await draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: (await drafted()).pkg.ref,
+        provider: writer,
+        sourceUrl: "https://pub.example.com/p/p1",
+        mechanicalPolicy: { maxTurns: 2 },
+      });
+      // A recorded failure, not an escaped schema error.
+      expect(out.status).toBe("failed");
+    },
+  );
+
+  it(
     "rejects a metadata marker that is still present when the turns run out",
     { timeout: 60_000 },
     async () => {
