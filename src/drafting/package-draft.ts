@@ -38,6 +38,8 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  */
 
 export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v5";
+/** Bound on the previous draft text sent to the revision writer. */
+export const MAX_PREVIOUS_DRAFT_CHARS = 40_000;
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
@@ -343,6 +345,12 @@ export async function draftFromPackage(input: {
    * Part of the draft's identity, so each revision is a new, separately saved draft.
    */
   revision?: { number: number; feedback: { passage: string; reason: string }[] };
+  /**
+   * The exact immediately preceding saved draft (#489). The writer revises
+   * that article; it is not asked to regenerate from feedback alone. Its
+   * reference is part of this draft's identity.
+   */
+  previousDraft?: { ref: ArtifactRef; markdown: string };
   /** Revision instructions; defaults to the editable package-revision.md. */
   revisionInstructions?: string;
   now?: () => Date;
@@ -367,7 +375,11 @@ export async function draftFromPackage(input: {
         promptId,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
         ...(input.revision
-          ? [input.revision, promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions)]
+          ? [
+              input.revision,
+              promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions),
+              ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
+            ]
           : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
         ...(pinnedUrl ? [] : [sourceUrl]),
@@ -459,6 +471,13 @@ export async function draftFromPackage(input: {
             number: input.revision.number,
             instruction: revisionInstructions,
             feedback: input.revision.feedback,
+            ...(input.previousDraft
+              ? {
+                  previousDraft: input.previousDraft.markdown.slice(0, MAX_PREVIOUS_DRAFT_CHARS),
+                  previousDraftTruncated:
+                    input.previousDraft.markdown.length > MAX_PREVIOUS_DRAFT_CHARS,
+                }
+              : {}),
           },
         }
       : {}),
