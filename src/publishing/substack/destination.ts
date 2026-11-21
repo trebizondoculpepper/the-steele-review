@@ -140,6 +140,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
 
   private matches(draft: SubstackDraft, preview: z.infer<typeof PreviewBodySchema>): boolean {
     if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body) return false;
+    // Title, subtitle and body must all match the approved payload: two
+    // approvals can differ only in subtitle while sharing title and body.
+    if ((draft.draft_subtitle ?? "") !== preview.subtitle) return false;
     // A requested byline must be evidenced by the read-back. A draft that
     // dropped it is never claimed as delivered with attribution.
     if (preview.bylineId !== undefined) {
@@ -216,7 +219,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
           offset: page * RECONCILE_PAGE_SIZE,
         });
         found.push(...drafts.filter((d) => this.matches(d, p)));
-        sameTitle += drafts.filter((d) => (d.draft_title ?? "") === p.title).length;
+        sameTitle += drafts.filter(
+          (d) => (d.draft_title ?? "") === p.title && (d.draft_subtitle ?? "") === p.subtitle,
+        ).length;
         if (drafts.length < RECONCILE_PAGE_SIZE) {
           covered = true; // the complete list
           break;

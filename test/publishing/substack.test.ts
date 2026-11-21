@@ -387,6 +387,39 @@ describe("Substack draft destination (#385)", () => {
     expect(s.drafts).toHaveLength(1);
   });
 
+  it("does not reconcile a draft whose subtitle differs from the approved payload (#458)", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s);
+    const ref = {
+      repository: "content",
+      commit: "a".repeat(40),
+      path: "publication/x/manifest.json",
+      hash: `sha256:${"b".repeat(64)}`,
+    };
+    const fields = { title: "T", subtitle: "Approved subtitle", excerpt: "E" };
+    const publication = {
+      mode: "structured" as const,
+      schemaVersion: 1 as const,
+      metadata: ref,
+      body: ref,
+      fields,
+      contentHash: publicationContentHash({
+        mode: "structured" as const,
+        fields,
+        body: { hash: `sha256:${"c".repeat(64)}` },
+      }),
+    };
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data, publication });
+    s.faults.create = ["lost"];
+    await expect(d.deliver(preview, "k")).rejects.toBeInstanceOf(UncertainDeliveryError);
+    // Same title and body, different subtitle: a different approval.
+    s.drafts[0]!.draft_subtitle = "Some other subtitle";
+    const intentAt = new Date(Date.now() - 1000).toISOString();
+    expect(await d.reconcile("k", { preview, intentAt })).not.toMatchObject({
+      delivered: { externalId: "100" },
+    });
+  });
+
   it("only reports not-delivered when the listing covers the attempt", async () => {
     const s = fakeSubstack();
     const d = new SubstackDraftDestination(s);
