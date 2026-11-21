@@ -1,0 +1,119 @@
+# Isolated article wiring smoke test. No host ports, model keys or live publishers.
+x-fixture-env: &fixture-env
+  STEELE_FIXTURE_DEPLOYMENT: "1"
+  NATS_URL: nats://fixture-nats:4222
+  RESTATE_INGRESS_URL: http://fixture-restate:8080
+  STEELE_ARCHIVE_PATH: /data/archive
+  STEELE_ARCHIVE_REPOSITORY: fixture-archive
+  STEELE_CONTENT_PATH: /data/content
+  STEELE_CONTENT_REPOSITORY: fixture-content
+  STEELE_CONTENT_STREAM: STEELE_CONTENT
+  STEELE_STATE_PATH: /data/state/article-worker.sqlite
+
+x-fixture-app: &fixture-app
+  image: ${STEELE_IMAGE:?Set a pinned application image}
+  user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+  healthcheck:
+    disable: true
+  volumes:
+    - ${STEELE_FIXTURE_DIR:?Set a dedicated fixture data directory}:/data
+  environment: *fixture-env
+
+services:
+  fixture-nats:
+    image: nats:2.10.22
+    command: ["-js", "-sd", "/data"]
+    volumes:
+      - fixture-broker:/data
+
+  fixture-restate:
+    image: docker.restate.dev/restatedev/restate:1.8.1
+    volumes:
+      - fixture-restate:/restate-data
+
+  provision:
+    <<: *fixture-app
+    command: ["node", "dist/cli/provision-article-fixture.js"]
+    depends_on: [fixture-nats]
+
+  article-worker:
+    <<: *fixture-app
+    command: ["node", "dist/cli/article-fixture-worker.js"]
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  register:
+    image: curlimages/curl:8.14.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          if sh /fixture/register.sh 2>/dev/null; then exit 0; fi
+          sleep 1
+        done
+        echo "fixture worker registration failed" >&2
+        exit 1
+    environment:
+      RESTATE_ADMIN_URL: http://fixture-restate:9070
+    volumes:
+      - ./register.sh:/fixture/register.sh:ro
+    depends_on: [fixture-restate, article-worker]
+
+  capture-bridge:
+    <<: *fixture-app
+    command: ["node", "dist/cli/captured-bridge.js"]
+    environment:
+      <<: *fixture-env
+      STEELE_ARTICLE_SOURCES: substack/steele-fixture
+      STEELE_CAPTURED_CONSUMER: fixture-bridge
+      STEELE_STATE_PATH: /data/state/fixture-bridge.sqlite
+    depends_on:
+      register:
+        condition: service_completed_successfully
+
+  approval-dispatcher:
+    <<: *fixture-app
+    command: ["node", "dist/cli/approval-dispatcher.js"]
+    environment:
+      <<: *fixture-env
+      STEELE_APPROVAL_DISPATCH_INTERVAL_MS: "1000"
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  dummy-publisher-a:
+    <<: *fixture-app
+    command: ["node", "dist/cli/dummy-publisher.js"]
+    environment:
+      <<: *fixture-env
+      STEELE_PUBLISHER_DESTINATION: dummy-a
+      STEELE_PUBLISHER_CONSUMER: fixture-publisher-a
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  dummy-publisher-b:
+    <<: *fixture-app
+    command: ["node", "dist/cli/dummy-publisher.js"]
+    environment:
+      <<: *fixture-env
+      STEELE_PUBLISHER_DESTINATION: dummy-b
+      STEELE_PUBLISHER_CONSUMER: fixture-publisher-b
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  smoke:
+    <<: *fixture-app
+    profiles: ["smoke"]
+    entrypoint: ["node", "dist/cli/article-fixture-smoke.js"]
+    depends_on: [capture-bridge, approval-dispatcher, dummy-publisher-a, dummy-publisher-b]
+
+networks:
+  default:
+    internal: true
+
+volumes:
+  fixture-broker:
+  fixture-restate:

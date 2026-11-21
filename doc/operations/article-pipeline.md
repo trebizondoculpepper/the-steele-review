@@ -145,3 +145,17 @@ verification report against the saved draft and waits for both simulated
 receipts with the same full draft hash. The default wait is two minutes.
 Set `STEELE_FIXTURE_TIMEOUT_MS` to adjust it. A failure prints only the stage
 and outcome. Keep the resulting fixture evidence with the deployment record.
+
+
+Use the isolated Compose file with a dedicated writable directory, a unique
+Compose project name and a pinned image that includes the dummy publishers.
+Set `STEELE_IMAGE`, `STEELE_FIXTURE_DIR`, and the owning UID and GID if they
+differ from the defaults. From the repository root, run:
+
+```sh
+docker compose -p steele-fixture -f deploy/restate/fixture.compose.yaml run --rm smoke fixture-one
+```
+
+The stack provisions its own broker and archives and registers the fixture
+worker. Keep the fixture data and the run's output for inspection. The
+Compose network is internal and exposes no host ports.
