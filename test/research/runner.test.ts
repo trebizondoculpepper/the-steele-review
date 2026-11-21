@@ -264,6 +264,20 @@ describe("research runner", () => {
     expect(fetched).toBe(before);
   });
 
+  it("resumes with a retained report holding a citation URL over 2,000 characters (#432)", async () => {
+    const long = `https://example.org/${"a".repeat(2_500)}`;
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, ["https://treaties.un.org/enmod", long]))}\n`,
+    );
+    const paid = sonar([]);
+    const out = await run(paid, { limits: { maxSources: 1 } });
+    expect(paid.calls).toBe(0);
+    expect((out as { result: { failure?: string } }).result.failure).not.toBe("invalid-report");
+  });
+
   it("accepts a retained source snapshot with empty text (#432)", async () => {
     const dirName = await jobDir();
     const jobId = dirName.replace("research-jobs/", "");

@@ -55,7 +55,8 @@ const SavedReportSchema = z
     promptVersion: z.string().min(1).max(200),
     model: z.string().min(1).max(200),
     report: z.string().min(1).max(MAX_SAVED_REPORT_CHARS),
-    citations: z.array(z.string().min(1).max(2000)).max(MAX_SAVED_CITATIONS),
+    // No per-URL cap: the Sonar client and manifest keep long citation URLs; the report size bound applies.
+    citations: z.array(z.string().min(1)).max(MAX_SAVED_CITATIONS),
     omittedCitations: z.number().int().min(0).optional(),
   })
   .strict();
