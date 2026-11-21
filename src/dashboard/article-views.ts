@@ -4,6 +4,7 @@ import {
   type ArticleContentPort,
   type ArticleTrace,
   type CapturedSource,
+  type SourcePort,
   type ReceiptsPort,
   type RecentArticlesPort,
   type RunStatusPort,
@@ -21,6 +22,8 @@ export interface ArticleViewDeps {
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
   content?: ArticleContentPort;
   receipts?: ReceiptsPort;
+  /** Retained captured source for the detail page (#446). */
+  source?: SourcePort;
   canTrigger?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
@@ -103,6 +106,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.trace ? { trace: () => deps.trace!(post) } : {}),
         ...(deps.content ? { content: deps.content } : {}),
         ...(deps.receipts ? { receipts: deps.receipts } : {}),
+        ...(deps.source ? { source: deps.source } : {}),
       });
       const trigger =
         deps.canTrigger && t.sourceVersion

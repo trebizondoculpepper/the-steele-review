@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { archivedSource } from "../../src/dashboard/adapters.js";
-import { renderTrace } from "../../src/dashboard/article-views.js";
+import { articleViews, renderTrace } from "../../src/dashboard/article-views.js";
 import type { ArticleTrace } from "../../src/dashboard/articles.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 
@@ -103,6 +103,36 @@ describe("archivedSource (#446)", () => {
     expect(await archivedSource(archive).read({ publicationId: "pub", postId: "p2" })).toEqual({
       state: "unreadable",
     });
+  });
+});
+
+describe("article detail wiring (#446)", () => {
+  it("forwards the source port to the detail renderer and escapes its text", async () => {
+    let asked = 0;
+    const [, detail] = articleViews({
+      source: {
+        read: async () => {
+          asked++;
+          return {
+            state: "recorded",
+            method: "supplied-transcript",
+            complete: true,
+            sourceVersion: `sha256:${"a".repeat(64)}`,
+            revision: "abcdef123456:substack/pub/p1/collected.json",
+            text: "<script>alert(1)</script> retained",
+            truncated: false,
+            matchesRevision: true,
+          };
+        },
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(asked).toBe(1);
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("retained");
   });
 });
 
