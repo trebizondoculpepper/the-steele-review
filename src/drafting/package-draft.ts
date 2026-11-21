@@ -111,6 +111,8 @@ export const PackageDraftMetadataSchema = z
     themes: Ref,
     templateVersion: z.string(),
     promptVersion: z.string(),
+    /** Revision instructions identity, for redrafts only (#430). */
+    revisionPromptVersion: z.string().optional(),
     modelVersion: z.string(),
     /** Model the caller asked for (#260); absent when the configured default was used. */
     requestedModel: z.string().optional(),
@@ -473,6 +475,14 @@ export async function draftFromPackage(input: {
     themes: pkg.themeResult,
     templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
     promptVersion: promptId,
+    ...(input.revision
+      ? {
+          revisionPromptVersion: promptIdentity(
+            PACKAGE_REVISION_PROMPT_VERSION,
+            revisionInstructions,
+          ),
+        }
+      : {}),
     modelVersion: input.provider.modelVersion,
     ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
     ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),

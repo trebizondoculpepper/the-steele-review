@@ -151,6 +151,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     }
     expect(r2.calls).toBe(1);
     expect(rewordedRedraft.draft.path).not.toBe(firstRedraft.draft.path);
+    const m1 = JSON.parse(await content.read(firstRedraft.metadata));
+    const m2 = JSON.parse(await content.read(rewordedRedraft.metadata));
+    expect(m1.revisionPromptVersion).toMatch(/^package-revision-v\d+\+sha256:[0-9a-f]{16}$/);
+    expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
     const v1 = model("fake/verifier", APPROVE);
