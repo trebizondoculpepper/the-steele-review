@@ -173,7 +173,7 @@ export async function recordEditorialDecision(input: {
   content: Pick<GitArtifactStore, "lookupAt" | "lookup" | "write" | "read">;
   operations: Pick<
     OperationStore,
-    "claim" | "complete" | "yieldClaim" | "recordEditorialDisposition" | "operationStatus"
+    "claim" | "yieldClaim" | "completeEditorialDecision" | "operationStatus"
   >;
   request: EditorialDecisionRequest;
   owner: string;
@@ -289,27 +289,35 @@ export async function recordEditorialDecision(input: {
       input.operations.yieldClaim(claimed.claim);
       return { status: "conflict" };
     }
-    input.operations
-      .recordEditorialDisposition({
+    // One controller transaction: a stale owner changes neither state.
+    input.operations.completeEditorialDecision(
+      claimed.claim,
+      {
         key: editorialDispositionKey(request),
         decision: asReference(decisionRef),
         decidedAt: existing.decidedAt,
         order: request.requestId,
-      });
-    input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
+      },
+      { decision: asReference(decisionRef) },
+    );
     return { status: "recorded", decision: existing, duplicate: true };
   }
 
   // Current disposition for this exact draft identity. The ordered register
   // keeps the newest decision, so an approve followed by a reject really does
   // change the disposition, while a late older arrival cannot regress it.
-  input.operations.recordEditorialDisposition({
-    key: editorialDispositionKey(request),
-    decision: asReference(decisionRef),
-    decidedAt: decision.decidedAt,
-    order: request.requestId,
-  });
-  input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
+  // One controller transaction: validates the claim, updates the exact-version
+  // disposition and completes the request; a stale owner changes neither.
+  input.operations.completeEditorialDecision(
+    claimed.claim,
+    {
+      key: editorialDispositionKey(request),
+      decision: asReference(decisionRef),
+      decidedAt: decision.decidedAt,
+      order: request.requestId,
+    },
+    { decision: asReference(decisionRef) },
+  );
   return { status: "recorded", decision, duplicate: false };
 }
 

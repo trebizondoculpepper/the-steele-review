@@ -787,6 +787,60 @@ export class OperationStore {
     });
   }
 
+  /**
+   * Complete an editorial decision request and update the exact-version
+   * disposition in one transaction (#447). The caller must still hold the
+   * request's claim: an expired or reclaimed owner changes neither the
+   * disposition nor the operation (throws `not-owner`), and any failure rolls
+   * both back. A request that is already completed returns its artifact
+   * without touching the disposition.
+   */
+  completeEditorialDecision(
+    claim: OperationClaim,
+    disposition: { key: string; decision: unknown; decidedAt: string; order: string },
+    artifact: unknown,
+  ): { applied: boolean; artifact: unknown } {
+    if (
+      !Key.safeParse(disposition.key).success ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(disposition.decidedAt) ||
+      !Key.safeParse(disposition.order).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction(() => {
+      const row = this.row(claim.key);
+      if (row?.status === "completed") {
+        return { applied: false, artifact: JSON.parse(row.artifact ?? "null") as unknown };
+      }
+      if (!this.holds(row, claim)) throw new OperationStoreError("not-owner");
+      const existing = this.db
+        .prepare("SELECT decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+        .get(disposition.key) as { decided_at: string; order_key: string } | undefined;
+      const newer =
+        !existing ||
+        existing.decided_at < disposition.decidedAt ||
+        (existing.decided_at === disposition.decidedAt && existing.order_key < disposition.order);
+      if (newer) {
+        this.db
+          .prepare(
+            "INSERT INTO editorial_dispositions (key, decision, decided_at, order_key) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, order_key = excluded.order_key",
+          )
+          .run(
+            disposition.key,
+            JSON.stringify(disposition.decision),
+            disposition.decidedAt,
+            disposition.order,
+          );
+      }
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), this.now(), claim.key);
+      return { applied: newer, artifact };
+    });
+  }
+
   /** Current editorial disposition for one exact draft identity, if any. */
   editorialDisposition(
     key: string,
