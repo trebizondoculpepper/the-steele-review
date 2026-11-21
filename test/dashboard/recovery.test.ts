@@ -6,7 +6,8 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { articleRecovery } from "../../src/dashboard/recovery-view.js";
 import { restateSubmitter } from "../../src/dashboard/adapters.js";
-import { articleViews } from "../../src/dashboard/article-views.js";
+import { articleViews, renderTrace } from "../../src/dashboard/article-views.js";
+import { traceArticle } from "../../src/dashboard/articles.js";
 import {
   RECOVERY_RUN_SUFFIX,
   recoveryIdentities,
@@ -228,5 +229,65 @@ describe("recovery link (#480)", () => {
     expect(html).toContain(
       `href="https://console.example/articles/recover?publication=pub&amp;post=p1&amp;revision=${encodeURIComponent(version)}"`,
     );
+  });
+});
+
+describe("recovery artifacts (#480)", () => {
+  it("shows the recovery's own draft, verification and receipts", async () => {
+    const ref = {
+      repository: "content",
+      commit: "a".repeat(40),
+      path: "articles/pub/p1/draft.md",
+      sha256: "c".repeat(64),
+    };
+    const trace = await traceArticle({
+      post,
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: version }),
+      },
+      runs: {
+        status: async () => ({
+          state: "finished",
+          result: creditBlocked.result,
+          recovery: {
+            state: "finished",
+            result: {
+              outcome: "verified",
+              themes: ref,
+              claims: ref,
+              draft: ref,
+              verification: ref,
+              research: [],
+              approvalEvent: "evt-recovered",
+            } as never,
+          },
+        }),
+      },
+      content: {
+        draft: async () => "# Recovered draft\n\nA claim.",
+        verification: async () => ({ outcome: "approved", draftHash: `sha256:${ref.sha256}` }),
+      },
+      receipts: {
+        receiptsFor: async () => ({
+          receipts: [
+            {
+              destination: "dummy-a",
+              action: "draft",
+              simulated: true,
+              deliveredAt: "2026-01-02T00:00:00Z",
+            },
+          ],
+          truncated: false,
+        }),
+      },
+    });
+    const html = renderTrace(trace);
+    // Original failure stays visible and the recovery is shown separately.
+    expect(html).toContain("Recovery");
+    expect(html).toContain("Recovered draft");
+    expect(html).toContain("binds to the recovery draft");
+    expect(html).toContain("Recovery delivery receipts");
+    expect(html).toContain("~recovered");
   });
 });

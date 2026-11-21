@@ -182,8 +182,34 @@ export function renderTrace(t: ArticleTrace): string {
         `<tr><td>${escapeHtml(s.stage)}</td><td>${badge(s.state)}</td><td>${s.detail ? escapeHtml(s.detail) : ""}</td></tr>`,
     )
     .join("");
+  const recoveryDraft = t.recovery?.draft
+    ? `<h3>Recovery draft</h3><p>Saved revision <code>sha256:${escapeHtml(t.recovery.draft.hash)}</code>.</p><pre>${escapeHtml(t.recovery.draft.text)}</pre>`
+    : "";
+  const recoveryVerification = t.recovery?.verification
+    ? `<h3>Recovery verification</h3><p>${badge(t.recovery.verification.outcome === "approved" ? "done" : "failed", t.recovery.verification.outcome)}${t.recovery.verification.matchesDraft ? " · binds to the recovery draft" : " · does not bind to the recovery draft"}</p>`
+    : "";
+  const recoveryReceipts = t.recovery?.receipts?.length
+    ? `<h3>Recovery delivery receipts</h3><div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${t.recovery.receipts
+        .map((r) => {
+          const confirmed =
+            !r.simulated && typeof r.url === "string" && r.url.startsWith("https://");
+          const link = confirmed
+            ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
+            : "";
+          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+        })
+        .join("")}</tbody></table></div>${t.recovery.receiptsTruncated ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>' : ""}`
+    : "";
   const recovery = t.recovery
-    ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>`
+    ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>${
+        t.recovery.workflowKey
+          ? `<p>Recovery run <code>${escapeHtml(t.recovery.workflowKey)}</code></p>`
+          : ""
+      }${
+        t.recovery.progress
+          ? `<p>${escapeHtml(t.recovery.progress.stage)} ${t.recovery.progress.status} at ${escapeHtml(t.recovery.progress.at.slice(0, 19).replace("T", " "))} UTC</p>`
+          : ""
+      }${recoveryDraft}${recoveryVerification}${recoveryReceipts}`
     : "";
   const researchRows = t.research
     .map(

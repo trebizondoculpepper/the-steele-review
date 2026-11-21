@@ -120,7 +120,16 @@ const trigger =
     : undefined;
 // A recoverable stopped run needs a durable recovery identity in the state
 // controller; without configured state the action stays unavailable.
-const operations = e.STEELE_STATE_PATH ? new OperationStore({ path: e.STEELE_STATE_PATH }) : undefined;
+// Opening the writable store can fail (missing/incompatible/read-only). That
+// must disable recovery, not prevent the read-only dashboard from starting.
+let operations: OperationStore | undefined;
+if (trigger && e.STEELE_STATE_PATH) {
+  try {
+    operations = new OperationStore({ path: e.STEELE_STATE_PATH });
+  } catch {
+    operations = undefined;
+  }
+}
 const recovery =
   trigger && archive && operations && env.data.RESTATE_INGRESS_URL
     ? articleRecovery({
