@@ -74,6 +74,8 @@ export async function catchUpIndex(input: {
   /** Restrict the pass to one publication; others are left for their own passes. */
   publicationId?: string;
   signal?: AbortSignal;
+  /** Called before each write; throws to abandon the pass (for example a lost lease). */
+  keepAlive?: () => void;
   now?: () => Date;
 }): Promise<CatchUpReport> {
   const indexName = input.indexName ?? "steele-source-text-v1";
@@ -142,6 +144,7 @@ export async function catchUpIndex(input: {
     if (!match) continue;
     const [, publicationId, postId] = match as unknown as [string, string, string];
     if (input.publicationId && publicationId !== input.publicationId) continue;
+    input.keepAlive?.();
     if (input.signal?.aborted) {
       report.interrupted = true;
       report.ok = false;

@@ -86,12 +86,19 @@ async function main(): Promise<number> {
   const stop = new AbortController();
 
   const pass = async (reason: string): Promise<boolean> => {
-    const claim = operations.claim(
-      `captured-index:${c.STEELE_FULLTEXT_INDEX}`,
-      owner,
-      LEASE_MS,
-      1_000_000,
-    );
+    let claim;
+    try {
+      claim = operations.claim(
+        `captured-index:${c.STEELE_FULLTEXT_INDEX}`,
+        owner,
+        LEASE_MS,
+        1_000_000,
+      );
+    } catch {
+      // A locked or unavailable state store: try again on the next wake-up.
+      log({ state: "retry-later", reason, category: "state-unavailable" });
+      return false;
+    }
     if (claim.kind !== "claimed") {
       log({
         state: "skipped",
@@ -110,6 +117,8 @@ async function main(): Promise<number> {
           ? { publicationId: c.STEELE_CAPTURED_INDEX_PUBLICATION }
           : {}),
         signal: stop.signal,
+        // Long passes keep the lease; a lost lease abandons the pass.
+        keepAlive: () => operations.renew(claim.claim, LEASE_MS),
       });
       const { failed, ...counts } = report;
       if (!report.unchanged || reason === "startup")
