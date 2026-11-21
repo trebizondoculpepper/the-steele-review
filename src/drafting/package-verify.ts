@@ -8,6 +8,7 @@ import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import { promptIdentity } from "./prompt-identity.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 /**
@@ -175,8 +176,10 @@ export async function verifyPackageDraft(input: {
   const pkgRef = toArtifactRef(meta.package);
   const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(pkgRef)));
 
+  // Bound to the exact verifier wording, not only its semantic version (#430).
+  const promptId = promptIdentity(prompt.version, prompt.instructions);
   const key = sha256(
-    JSON.stringify([toRef(draftRef), meta.package, input.verifier.modelVersion, prompt.version]),
+    JSON.stringify([toRef(draftRef), meta.package, input.verifier.modelVersion, promptId]),
   ).slice(0, 32);
   const path = `verifications/${pkg.post.publicationId}/${pkg.post.postId}/${key}.json`;
   const saved = await input.content.lookup(path);
@@ -262,7 +265,7 @@ export async function verifyPackageDraft(input: {
     issues,
     checks: ["source-citations", "claim-headings", "gap-claims"],
     verifierModel: input.verifier.modelVersion,
-    promptVersion: prompt.version,
+    promptVersion: promptId,
     verifiedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
   const ref = await writeOnce(input.content, path, report);

@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import { draftFromPackage } from "../../src/drafting/package-draft.js";
 import {
+  DEFAULT_PACKAGE_DRAFT_PROMPT,
+  draftFromPackage,
+} from "../../src/drafting/package-draft.js";
+import {
+  DEFAULT_PACKAGE_VERIFY_PROMPT,
   approvalValidFor,
   deterministicIssues,
   verifyPackageDraft,
@@ -110,6 +114,73 @@ async function drafted(writer = model("fake/writer", writerResponse())) {
 }
 
 describe("package draft verification (#150)", { timeout: 60_000 }, () => {
+  it("binds draft, redraft and verification reuse to the exact prompt wording (#430)", async () => {
+    const { pkg, metadata, draft } = await drafted();
+    const base = { content, archive, package: pkg.ref, sourceUrl: "https://pub.example.com/p/p1" };
+    const reworded = {
+      version: DEFAULT_PACKAGE_DRAFT_PROMPT.version, // same semantic version
+      instructions: `${DEFAULT_PACKAGE_DRAFT_PROMPT.instructions}\nOne more sentence of guidance.`,
+    };
+    // First draft: unchanged wording reuses; changed wording calls the provider again.
+    const same = model("fake/writer", writerResponse());
+    const again = await draftFromPackage({ ...base, provider: same });
+    if (again.status !== "drafted") throw new Error(again.status);
+    expect(same.calls).toBe(0);
+    expect(again.draft.path).toBe(draft.path);
+    const fresh = model("fake/writer", writerResponse());
+    const redone = await draftFromPackage({ ...base, provider: fresh, prompt: reworded });
+    if (redone.status !== "drafted") throw new Error(redone.status);
+    expect(fresh.calls).toBe(1);
+    expect(redone.draft.path).not.toBe(draft.path);
+    const meta = JSON.parse(await content.read(redone.metadata));
+    expect(meta.promptVersion).toMatch(/^package-draft-v\d+\+sha256:[0-9a-f]{16}$/);
+
+    // Redraft: the revision instructions' wording is part of its identity.
+    const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
+    const r1 = model("fake/writer", writerResponse());
+    const firstRedraft = await draftFromPackage({ ...base, provider: r1, revision });
+    const r2 = model("fake/writer", writerResponse());
+    const rewordedRedraft = await draftFromPackage({
+      ...base,
+      provider: r2,
+      revision,
+      revisionInstructions: "Revise carefully, quoting the evidence exactly.",
+    });
+    if (firstRedraft.status !== "drafted" || rewordedRedraft.status !== "drafted") {
+      throw new Error("redraft failed");
+    }
+    expect(r2.calls).toBe(1);
+    expect(rewordedRedraft.draft.path).not.toBe(firstRedraft.draft.path);
+    const m1 = JSON.parse(await content.read(firstRedraft.metadata));
+    const m2 = JSON.parse(await content.read(rewordedRedraft.metadata));
+    expect(m1.revisionPromptVersion).toMatch(/^package-revision-v\d+\+sha256:[0-9a-f]{16}$/);
+    expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
+
+    // Verification: unchanged wording reuses; changed wording calls the verifier again.
+    const v1 = model("fake/verifier", APPROVE);
+    const first = await verifyPackageDraft({ content, archive, metadata, verifier: v1 });
+    const v2 = model("fake/verifier", APPROVE);
+    const reused = await verifyPackageDraft({ content, archive, metadata, verifier: v2 });
+    if (first.status !== "verified" || reused.status !== "verified") throw new Error("verify");
+    expect(v2.calls).toBe(0);
+    expect(reused.ref.path).toBe(first.ref.path);
+    const v3 = model("fake/verifier", APPROVE);
+    const reverified = await verifyPackageDraft({
+      content,
+      archive,
+      metadata,
+      verifier: v3,
+      prompt: {
+        version: DEFAULT_PACKAGE_VERIFY_PROMPT.version,
+        instructions: `${DEFAULT_PACKAGE_VERIFY_PROMPT.instructions}\nCheck dates twice.`,
+      },
+    });
+    if (reverified.status !== "verified") throw new Error(reverified.status);
+    expect(v3.calls).toBe(1);
+    expect(reverified.ref.path).not.toBe(first.ref.path);
+    expect(reverified.report.promptVersion).toMatch(/\+sha256:[0-9a-f]{16}$/);
+  });
+
   it("approves an accurate, qualified draft, and the approval binds to the exact text", async () => {
     const { metadata, draft } = await drafted();
     const out = await verifyPackageDraft({

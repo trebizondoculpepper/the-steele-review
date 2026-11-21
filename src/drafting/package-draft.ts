@@ -6,6 +6,7 @@ import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-stor
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
+import { promptIdentity } from "./prompt-identity.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 
@@ -110,6 +111,8 @@ export const PackageDraftMetadataSchema = z
     themes: Ref,
     templateVersion: z.string(),
     promptVersion: z.string(),
+    /** Revision instructions identity, for redrafts only (#430). */
+    revisionPromptVersion: z.string().optional(),
     modelVersion: z.string(),
     /** Model the caller asked for (#260); absent when the configured default was used. */
     requestedModel: z.string().optional(),
@@ -316,6 +319,8 @@ export async function draftFromPackage(input: {
    * Part of the draft's identity, so each revision is a new, separately saved draft.
    */
   revision?: { number: number; feedback: { passage: string; reason: string }[] };
+  /** Revision instructions; defaults to the editable package-revision.md. */
+  revisionInstructions?: string;
   now?: () => Date;
 }): Promise<PackageDraftOutcome> {
   const prompt = input.prompt ?? DEFAULT_PACKAGE_DRAFT_PROMPT;
@@ -327,14 +332,19 @@ export async function draftFromPackage(input: {
   const sourceUrl = pinnedUrl ?? input.sourceUrl;
   if (!sourceUrl) return { status: "failed", reason: "no-source-url" };
 
+  // Bound to the exact wording, not only the semantic version (#430).
+  const promptId = promptIdentity(prompt.version, prompt.instructions);
+  const revisionInstructions = input.revisionInstructions ?? PACKAGE_REVISION_INSTRUCTIONS;
   const key = createHash("sha256")
     .update(
       JSON.stringify([
         toRef(input.package),
         input.provider.modelVersion,
-        prompt.version,
+        promptId,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
-        ...(input.revision ? [input.revision, PACKAGE_REVISION_PROMPT_VERSION] : []),
+        ...(input.revision
+          ? [input.revision, promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions)]
+          : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
         ...(pinnedUrl ? [] : [sourceUrl]),
       ]),
@@ -406,7 +416,7 @@ export async function draftFromPackage(input: {
       ? {
           revision: {
             number: input.revision.number,
-            instruction: PACKAGE_REVISION_INSTRUCTIONS,
+            instruction: revisionInstructions,
             feedback: input.revision.feedback,
           },
         }
@@ -464,7 +474,15 @@ export async function draftFromPackage(input: {
     source: pkg.source.artifact,
     themes: pkg.themeResult,
     templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
-    promptVersion: prompt.version,
+    promptVersion: promptId,
+    ...(input.revision
+      ? {
+          revisionPromptVersion: promptIdentity(
+            PACKAGE_REVISION_PROMPT_VERSION,
+            revisionInstructions,
+          ),
+        }
+      : {}),
     modelVersion: input.provider.modelVersion,
     ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
     ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
