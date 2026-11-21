@@ -198,8 +198,15 @@ export class ThemeMappingCatalogue {
       }
       if (parsed.success) found.push(parsed.data);
     }
-    // Stable chronological order; equal timestamps keep path order.
-    return found.sort((a, b) => a.decidedAt.localeCompare(b.decidedAt));
+    // Chronological order by parsed instant: timestamps may carry different
+    // UTC offsets, so text order is not time order. Equal instants keep a
+    // deterministic text tie-break.
+    return found.sort((a, b) => {
+      const ta = Date.parse(a.decidedAt);
+      const tb = Date.parse(b.decidedAt);
+      if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+      return a.decidedAt.localeCompare(b.decidedAt);
+    });
   }
 
   /**

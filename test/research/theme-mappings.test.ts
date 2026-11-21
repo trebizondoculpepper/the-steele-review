@@ -274,3 +274,37 @@ describe("supersession correctness (#518)", () => {
     );
   });
 });
+
+describe("supersession time ordering (#518)", () => {
+  it("orders by the instant even when UTC offsets differ", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    const by = { publicationId: "pub", postId: "p1" };
+    await catalogue.record({
+      proposal: "Geoengineering",
+      canonicalThemeId: "a",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: by,
+      rationale: "topic",
+    });
+    // 00:30+02:00 is 22:30Z the previous day: earlier than 23:00Z.
+    await catalogue.supersede({
+      proposal: "Geoengineering",
+      from: "a",
+      to: "b",
+      reason: "earlier correction",
+      decidedAt: "2026-01-02T00:30:00+02:00",
+      decidedBy: by,
+    });
+    await catalogue.supersede({
+      proposal: "Geoengineering",
+      from: "a",
+      to: "c",
+      reason: "later correction",
+      decidedAt: "2026-01-01T23:00:00Z",
+      decidedBy: by,
+    });
+    expect(await catalogue.lookup({ proposal: "Geoengineering" })).toMatchObject({
+      canonicalThemeId: "c",
+    });
+  });
+});
