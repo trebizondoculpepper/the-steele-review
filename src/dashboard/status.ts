@@ -30,6 +30,8 @@ export interface StatusSnapshot {
   /** When the snapshot was collected; each source was bounded around this time. */
   observedAt: string;
   services: Array<{ name: string; state: ServiceState }>;
+  /** Whether the pipeline counts were actually established. */
+  pipelineState: ServiceState;
   /** Pipeline counts from the state controller, when it was readable. */
   operations: Array<{ status: string; count: number }>;
   feedPoll: { state: FeedPollState; at?: string };
@@ -78,7 +80,9 @@ export function statusView(source: StatusSource): DashboardView {
         .map((s) => `<tr><td>${escapeHtml(s.name)}</td><td>${badge(s.state)}</td></tr>`)
         .join("");
       const operations =
-        snapshot.operations.length === 0
+        snapshot.pipelineState !== "healthy"
+          ? `<p>${badge(snapshot.pipelineState)}</p>`
+          : snapshot.operations.length === 0
           ? '<p class="empty">No operations recorded yet.</p>'
           : `<div class="wrap"><table><thead><tr><th>Operation status</th><th>Count</th></tr></thead><tbody>${snapshot.operations
               .map(

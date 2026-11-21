@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { z } from "zod";
 
 /**
@@ -70,7 +70,13 @@ async function writeAtomic(path: string, status: DiscoveryStatusInput): Promise<
   };
   const temporary = `${path}.${process.pid}.${++counter}.tmp`;
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o644 });
-  await rename(temporary, path);
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    // A failed publish must not accumulate unique temporary files.
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

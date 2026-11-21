@@ -8,6 +8,7 @@ const snapshot = (over: Partial<StatusSnapshot> = {}): StatusSnapshot => ({
     { name: "nats", state: "unavailable" },
     { name: "elasticsearch", state: "not-configured" },
   ],
+  pipelineState: "healthy",
   operations: [{ status: "completed", count: 3 }],
   feedPoll: { state: "current", at: "2026-01-01T09:59:00.000Z" },
   archive: { state: "ok", captured: 12, truncated: false },
@@ -53,6 +54,17 @@ describe("statusView", () => {
     expect(html).toContain(">pending<");
     expect(html).toContain(">not-configured<");
     expect(html).not.toContain("captured");
+  });
+
+  it("distinguishes unreadable pipeline counts from an empty pipeline", async () => {
+    const unavailable = await render(
+      snapshot({ pipelineState: "unavailable", operations: [] }),
+    );
+    expect(unavailable).toContain(">unavailable<");
+    expect(unavailable).not.toContain("No operations recorded yet.");
+
+    const empty = await render(snapshot({ pipelineState: "healthy", operations: [] }));
+    expect(empty).toContain("No operations recorded yet.");
   });
 
   it("labels incomplete index coverage", async () => {

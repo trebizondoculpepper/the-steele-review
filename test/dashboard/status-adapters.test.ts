@@ -77,6 +77,7 @@ describe("systemStatusSource", () => {
       { status: "completed", count: 4 },
       { status: "failed", count: 1 },
     ]);
+    expect(status.pipelineState).toBe("healthy");
     expect(status.archive).toEqual({ state: "ok", captured: 2, truncated: false });
     expect(status.indexCatchUp).toEqual({ state: "current" });
     expect(status.feedPoll).toEqual({ state: "not-configured" });
@@ -130,6 +131,7 @@ describe("systemStatusSource", () => {
       "not-configured",
       "not-configured",
     ]);
+    expect(status.pipelineState).toBe("not-configured");
   });
 
   it("reports an unavailable archive rather than failing the page", async () => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -94,6 +94,22 @@ describe("discovery status file", () => {
       }),
     ]);
     expect(await readDiscoveryStatus(path)).toMatchObject({ state: "waiting", runs: 1 });
+    expect(readdirSync(dir)).toEqual(["status.json"]);
+  });
+
+  it("removes the temporary file when the rename fails", async () => {
+    const dir = directory();
+    // A directory at the target path makes rename fail.
+    const path = join(dir, "status.json");
+    mkdirSync(path);
+    await expect(
+      writeDiscoveryStatus(path, {
+        at: "2026-01-01T00:00:00.000Z",
+        state: "waiting",
+        runs: 1,
+        consecutiveFailures: 0,
+      }),
+    ).rejects.toThrow();
     expect(readdirSync(dir)).toEqual(["status.json"]);
   });
 

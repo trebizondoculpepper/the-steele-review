@@ -87,6 +87,7 @@ export function systemStatusSource(deps: StatusAdapterDeps): StatusSource {
       return {
         observedAt: observed.toISOString(),
         services,
+        pipelineState: (stateCheck?.status ?? "not-configured") as StatusSnapshot["pipelineState"],
         operations,
         feedPoll,
         archive,
