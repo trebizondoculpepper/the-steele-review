@@ -401,10 +401,17 @@ export async function verifyWithRevisions(input: {
         issues: substantive,
       };
     }
-    // The exact draft the verifier just checked is the article to revise.
+    // The exact draft the verifier just checked is the article to revise,
+    // with the generated fields saved beside it (#489). An unreadable or
+    // malformed previous draft stops here, before any model call.
     let previousMarkdown: string;
+    let previousFields: { title: string; subtitle: string; excerpt: string } | undefined;
     try {
       previousMarkdown = await input.content.read(draftRef);
+      const saved = JSON.parse(await input.content.read(metadata)) as {
+        fields?: { title: string; subtitle: string; excerpt: string };
+      };
+      previousFields = saved.fields;
     } catch {
       return { outcome: "failed", reason: "draft-unavailable", revisions };
     }
@@ -417,7 +424,12 @@ export async function verifyWithRevisions(input: {
       package: input.package,
       provider: input.writer,
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
-      previousDraft: { ref: draftRef, markdown: previousMarkdown },
+      previousDraft: {
+        ref: draftRef,
+        markdown: previousMarkdown,
+        metadataRef: metadata,
+        ...(previousFields ? { fields: previousFields } : {}),
+      },
       revision: {
         number: revisions + 1,
         feedback: substantive.map((i) => ({ passage: i.passage, reason: i.reason })),

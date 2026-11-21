@@ -572,29 +572,33 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     ).toEqual([]);
   });
 
-  it("redrafts a first draft whose prose contains a model-written citation", { timeout: 60_000 }, async () => {
-    const writer = model(
-      "fake/writer-citation",
-      writerResponse("The treaty bans weapons [0]."),
-      writerResponse("The treaty bans weapons."),
-    );
-    const out = await draftFromPackage({
-      operations,
-      content,
-      archive,
-      package: (await drafted()).pkg.ref,
-      provider: writer,
-      sourceUrl: "https://pub.example.com/p/p1",
-    });
-    if (out.status !== "drafted") throw new Error(out.status);
-    expect(writer.calls).toBe(2);
-    const markdown = await content.read(out.draft);
-    // Only the application-rendered reference remains, and it is the global one.
-    expect(markdown).not.toContain("weapons [0]");
-    expect(markdown).toContain("bans weapons. [1]");
-    const metadata = JSON.parse(await content.read(out.metadata));
-    expect(metadata.repairPromptVersion).toBeDefined();
-  });
+  it(
+    "redrafts a first draft whose prose contains a model-written citation",
+    { timeout: 60_000 },
+    async () => {
+      const writer = model(
+        "fake/writer-citation",
+        writerResponse("The treaty bans weapons [0]."),
+        writerResponse("The treaty bans weapons."),
+      );
+      const out = await draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: (await drafted()).pkg.ref,
+        provider: writer,
+        sourceUrl: "https://pub.example.com/p/p1",
+      });
+      if (out.status !== "drafted") throw new Error(out.status);
+      expect(writer.calls).toBe(2);
+      const markdown = await content.read(out.draft);
+      // Only the application-rendered reference remains, and it is the global one.
+      expect(markdown).not.toContain("weapons [0]");
+      expect(markdown).toContain("bans weapons. [1]");
+      const metadata = JSON.parse(await content.read(out.metadata));
+      expect(metadata.repairPromptVersion).toBeDefined();
+    },
+  );
 
   it("rejects a model-written citation in a revision too", { timeout: 60_000 }, async () => {
     const { pkg, draft } = await drafted();
@@ -617,6 +621,84 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     expect(writer.calls).toBe(2);
     expect(await content.read(out.draft)).not.toContain("fake reference [1]");
   });
+  it("revises the exact previous article and fields, and a second revision builds on the first (#489)", async () => {
+    const { pkg, metadata, draft } = await drafted();
+    const initial = await content.read(draft);
+    const users: string[] = [];
+    let n = 0;
+    const writer = {
+      modelVersion: "fake/revising-writer",
+      async complete(request: { user: string }) {
+        users.push(request.user);
+        n++;
+        return writerResponse(
+          `The ENMOD Convention prohibits hostile environmental modification (revision ${n}).`,
+        );
+      },
+    };
+    const out = await verifyWithRevisions({
+      operations,
+      content,
+      archive,
+      package: pkg.ref,
+      metadata,
+      writer: writer as never,
+      // Two redraft verdicts, then approval: two revisions.
+      verifier: model("fake/independent-verifier", OVERSTATED, OVERSTATED, APPROVE),
+      sourceUrl: "https://pub.example.com/p/p1",
+      maxRevisions: 2,
+    });
+    if (out.outcome !== "approved") throw new Error(out.outcome);
+    expect(out.revisions).toBe(2);
+    const first = loadRevision(users[0]!).revision as {
+      number: number;
+      previousDraft: string;
+      previousFields: { title: string };
+      feedback: { passage: string; reason: string }[];
+    };
+    // Revision 1 sees the exact initial article, its generated fields and the verifier feedback.
+    expect(first.number).toBe(1);
+    expect(first.previousDraft).toBe(initial);
+    expect(first.previousFields.title).toBe("A treaty already bans weather weapons");
+    expect(first.feedback[0]).toMatchObject({ passage: "proves" });
+    // Revision 2 sees the first revised article, not the original.
+    const second = loadRevision(users[1]!).revision as { number: number; previousDraft: string };
+    expect(second.number).toBe(2);
+    expect(second.previousDraft).toContain("(revision 1)");
+    expect(second.previousDraft).not.toBe(initial);
+  });
+
+  it("stops before any model call when the previous draft cannot be read (#489)", async () => {
+    const { pkg, metadata } = await drafted();
+    const writer = model("fake/must-not-write", writerResponse());
+    let draftReads = 0;
+    const unreadable = new Proxy(content, {
+      get(target, prop, receiver) {
+        if (prop === "read") {
+          // The verifier reads the draft first; the revision loop's own read
+          // of the previous article is the one that fails.
+          return async (ref: { path: string }) => {
+            if (ref.path.endsWith(".md") && ++draftReads > 1) throw new Error("unreadable");
+            return target.read(ref as never);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const out = await verifyWithRevisions({
+      operations,
+      content: unreadable,
+      archive,
+      package: pkg.ref,
+      metadata,
+      writer,
+      verifier: model("fake/independent-verifier", OVERSTATED),
+      sourceUrl: "https://pub.example.com/p/p1",
+    });
+    expect(out).toMatchObject({ outcome: "failed", reason: "draft-unavailable" });
+    expect(writer.calls).toBe(0);
+  });
+
   it("retains the last valid draft and verifier report when mechanical redraft repair fails", async () => {
     const { pkg, metadata, draft } = await drafted();
     const out = await verifyWithRevisions({
