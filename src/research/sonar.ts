@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  DEFAULT_RESEARCH_MODEL,
+  ResearchModelSchema,
+  researchModel,
+} from "../config/research-model.js";
 import { readCredential, type CredentialSource } from "../config/credentials.js";
 import {
   DEFAULT_OPENROUTER_BASE_URL,
@@ -15,7 +20,7 @@ import {
  * `ModelProviderError` codes only — never the key, prompt or response body.
  */
 
-export const DEFAULT_SONAR_MODEL = "perplexity/sonar-deep-research";
+export const DEFAULT_SONAR_MODEL = DEFAULT_RESEARCH_MODEL;
 export const DEFAULT_SONAR_TIMEOUT_MS = 180_000;
 export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = 4_000;
 
@@ -103,10 +108,7 @@ export class OpenRouterSonarClient implements SonarClient {
       timeoutMs: config.timeoutMs,
       maxOutputTokens: config.maxOutputTokens,
     });
-    this.model = z
-      .string()
-      .regex(/^[A-Za-z0-9._:/-]{1,200}$/)
-      .parse(config.model ?? DEFAULT_SONAR_MODEL);
+    this.model = ResearchModelSchema.parse(config.model ?? DEFAULT_SONAR_MODEL);
     const base = new URL(config.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL);
     if (base.protocol !== "https:" || base.username || base.password) {
       throw new Error("model provider base URL must be https without user info");
@@ -230,7 +232,7 @@ export function sonarFromEnv(
   };
   return new OpenRouterSonarClient({
     apiKey: readCredential("OPENROUTER_API_KEY", { ...source, required: true }),
-    model: env.STEELE_RESEARCH_MODEL || DEFAULT_SONAR_MODEL,
+    model: researchModel(env),
     timeoutMs: num("STEELE_RESEARCH_TIMEOUT_MS", DEFAULT_SONAR_TIMEOUT_MS),
     maxOutputTokens: num("STEELE_RESEARCH_MAX_OUTPUT_TOKENS", DEFAULT_SONAR_MAX_OUTPUT_TOKENS),
     ...(env.OPENROUTER_BASE_URL ? { baseUrl: env.OPENROUTER_BASE_URL } : {}),

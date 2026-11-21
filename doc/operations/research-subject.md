@@ -13,7 +13,7 @@ Pass an optional `--question` or `--brief` for a more specific request. Pass `--
 
 The command saves `report.md`, `manifest.json`, and available source snapshots in the private Git directory `research-jobs/<job-id>/`. Open the manifest at the commit and path printed by the command. Each archived citation has a snapshot reference. Snapshot JSON retains the original response text and its readable extraction. PDFs and redirects that the current fetcher cannot handle are recorded individually. Citation relevance, source type, and factual support still need review.
 
-The defaults are Sonar Deep Research, a 180-second provider timeout, and 4,000 output tokens. Override with `STEELE_RESEARCH_MODEL`, `STEELE_RESEARCH_TIMEOUT_MS`, and `STEELE_RESEARCH_MAX_TOKENS`. For a one-off run, `--model <id>` and `--timeout-ms <milliseconds>` take precedence over the environment. The timeout must be an integer from 1 to 900,000 milliseconds.
+The defaults are Sonar Deep Research, a 180-second provider timeout, and 4,000 output tokens. Override with `STEELE_RESEARCH_MODEL`, `STEELE_RESEARCH_TIMEOUT_MS`, and `STEELE_RESEARCH_MAX_TOKENS`. For a one-off run, `--model <id>` and `--timeout-ms <milliseconds>` take precedence over the environment. An absent, empty, or whitespace-only optional `STEELE_RESEARCH_MODEL` uses the default; nonblank environment values are trimmed and validated. An explicit `--model` overrides the environment and must itself be valid, so an empty or malformed override is rejected before a provider call. The timeout must be an integer from 1 to 900,000 milliseconds.
 
 ```sh
 npm run research-subject -- --subject 'Example research subject' \

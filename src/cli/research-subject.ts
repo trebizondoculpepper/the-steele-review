@@ -1,3 +1,4 @@
+import { ResearchModelSelectionSchema } from "../config/research-model.js";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import { z } from "zod";
@@ -15,7 +16,7 @@ const Config = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_STATE_PATH: z.string().min(1),
-  STEELE_RESEARCH_MODEL: z.string().min(1).default("perplexity/sonar-deep-research"),
+  STEELE_RESEARCH_MODEL: ResearchModelSelectionSchema,
   STEELE_RESEARCH_TIMEOUT_MS: z.coerce.number().int().min(1).max(900_000).default(180_000),
   STEELE_RESEARCH_MAX_TOKENS: z.coerce.number().int().min(1).max(16_000).default(4000),
 });
@@ -49,7 +50,10 @@ async function main(): Promise<number> {
   });
   const configuration = Config.safeParse({
     ...process.env,
-    STEELE_RESEARCH_MODEL: values.model ?? process.env.STEELE_RESEARCH_MODEL,
+    STEELE_RESEARCH_MODEL: {
+      configured: process.env.STEELE_RESEARCH_MODEL,
+      requested: values.model,
+    },
     STEELE_RESEARCH_TIMEOUT_MS: values["timeout-ms"] ?? process.env.STEELE_RESEARCH_TIMEOUT_MS,
   });
   if (!parsed.success || !configuration.success) {
