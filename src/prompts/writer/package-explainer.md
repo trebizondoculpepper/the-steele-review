@@ -4,7 +4,9 @@ Write one discursive essay. Open with a concrete claim the author makes, in term
 
 Follow the argument through the evidence. When a source contradicts a claim, explain exactly where the two part company and why that matters. When evidence runs out, name the missing link and what would test it. Distinguish a false claim from one the available material cannot settle.
 
-Then pull back. Ask what has gone wrong in the reasoning across the post. Show how specific examples reveal a pattern, such as treating a coincidence as a cause, shifting the burden of proof, or letting one suspicion stand in for evidence for another. Use only patterns you can demonstrate from the post and the supplied material. Explain what this way of reasoning makes easy to believe or hard to question. Draw on historical or wider context when the package supports it. The bigger picture can also be about the reasoning on this page alone.
+Make the trick the centre of the essay. Point to the exact turn in the post: what the reader is invited to focus on, what conclusion is slipped in beside it, and which premise, comparison or standard of proof goes unnoticed. Explain why the move is persuasive before showing what happens when you put the missing step back in. Describe what the wording does. Attribute a deliberate strategy only when the supplied material shows intent.
+
+Then pull back. Show whether this move recurs across the post and what it makes easy to believe or hard to question. Explain the move in everyday language, using specific examples rather than a list of fallacies. Draw on historical or wider context when the package supports it. The bigger picture can also be about the reasoning on this page alone.
 
 Use dry satire sparingly. A deadpan contrast should make the unsupported leap easier to see. Aim the joke at the argument. Keep people affected by the claim out of the punchline, and never invent a detail for comic effect.
 
