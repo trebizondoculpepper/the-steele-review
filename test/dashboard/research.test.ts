@@ -248,6 +248,59 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
     ]);
   });
 
+  it("labels passages for a claimless manual request with its subject", async () => {
+    const request = {
+      schemaVersion: 1,
+      origin: "manual",
+      subject: "Mast safety",
+      pass: 1,
+      claims: [],
+      corpusRefs: [],
+    };
+    const job = researchJobId(request);
+    const report = await content.write(`research-jobs/${job}/report.md`, "# Mast report\n\nText.");
+    await content.write(`research-jobs/${job}/request.json`, JSON.stringify(request));
+    await content.write(
+      `research-jobs/${job}/manifest.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId: job,
+        report: {
+          repository: "content",
+          commit: report.commit,
+          path: report.path,
+          hash: `sha256:${report.sha256}`,
+        },
+        citations: [
+          {
+            url: "https://m.example/a",
+            retrieval: "archived",
+            archivedArtifact: {
+              repository: "content",
+              commit: "d".repeat(40),
+              path: `research-jobs/${job}/sources/x.json`,
+              hash: `sha256:${"e".repeat(64)}`,
+            },
+            support: "unverified",
+            passages: [{ claimRecordId: "request", passage: "masts are fine" }],
+          },
+        ],
+        gaps: [],
+        provider: { model: "fake/sonar" },
+      }),
+    );
+    const [, detail] = researchViews(savedResearch(content));
+    const page = await detail!.render(
+      new URL(
+        `http://x/research/view?${new URLSearchParams({ path: report.path, at: report.commit })}`,
+      ),
+    );
+    expect(page).toContain("checked against: Mast safety");
+    expect(page).toContain(
+      `archived snapshot <code>content:${"d".repeat(12)}:research-jobs/${job}/sources/x.json</code>`,
+    );
+  });
+
   it("lists Markdown research-subject reports once per job", async () => {
     const md = `research-${"b".repeat(32)}`;
     await content.write(`research-jobs/${md}/report.md`, "# Sonar subject report\n\nText.");

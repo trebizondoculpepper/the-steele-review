@@ -40,7 +40,7 @@ const citationHtml = (c: ResearchCitation, claims: Map<string, string>) => {
     status.unshift(`source type: ${c.sourceType}`);
   }
   if (c.confidenceRationale) status.push(`rationale: ${c.confidenceRationale}`);
-  return `<li${c.id ? ` id="cite-${escapeHtml(c.id)}"` : ""}>${c.id ? `<code>${escapeHtml(c.id)}</code> ` : ""}${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p.passage)}</blockquote>${p.claimRecordId ? `<span class="empty">checked against: ${escapeHtml(claims.get(p.claimRecordId) ?? "a claim not in the saved request")} <code>${escapeHtml(p.claimRecordId)}</code></span>` : ""}`).join("")}</li>`;
+  return `<li${c.id ? ` id="cite-${escapeHtml(c.id)}"` : ""}>${c.id ? `<code>${escapeHtml(c.id)}</code> ` : ""}${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.archived ? `<br><span class="empty">archived snapshot <code>${escapeHtml(`${c.archived.repository}:${c.archived.commit.slice(0, 12)}:${c.archived.path}`)}</code> <code>${escapeHtml(c.archived.hash)}</code></span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p.passage)}</blockquote>${p.claimRecordId ? `<span class="empty">checked against: ${escapeHtml(claims.get(p.claimRecordId) ?? "a claim not in the saved request")} <code>${escapeHtml(p.claimRecordId)}</code></span>` : ""}`).join("")}</li>`;
 };
 
 export function researchViews(research?: ResearchPort): DashboardView[] {
@@ -127,7 +127,7 @@ export function researchViews(research?: ResearchPort): DashboardView[] {
         facts.push(
           ["Research job", `<code>${escapeHtml(d.jobId ?? "")}</code>`],
           [
-            "Outcome",
+            "Outcome (from the current, write-once job records)",
             d.outcome
               ? escapeHtml(`${d.outcome}${d.failure ? ` (${d.failure})` : ""}`)
               : '<span class="empty">no saved result</span>',

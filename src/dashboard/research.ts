@@ -49,6 +49,8 @@ export interface ResearchCitation {
   support?: string;
   /** Supporting passages, each with the requested claim it was checked against. */
   passages: { passage: string; claimRecordId?: string }[];
+  /** Exact archived source snapshot behind the support assessment. */
+  archived?: { repository: string; commit: string; path: string; hash: string };
   /** Dossier citation id, referenced by claim coverage. */
   id?: string;
   /** Recorded source classification, e.g. `monitored-source` (the claimant's own material). */
@@ -227,6 +229,7 @@ export function savedResearch(content: Store): ResearchPort {
             url: c.url,
             retrieval: c.retrieval,
             ...(c.support ? { support: c.support } : {}),
+            ...(c.archivedArtifact ? { archived: c.archivedArtifact } : {}),
             ...(c.sourceType ? { sourceType: c.sourceType } : {}),
             ...(c.confidenceRationale ? { confidenceRationale: c.confidenceRationale } : {}),
             passages: c.passages.map((p) => ({
@@ -251,10 +254,14 @@ export function savedResearch(content: Store): ResearchPort {
           : {}),
         ...(req
           ? {
-              claims: req.claims.map((c) => ({
-                claimRecordId: c.claimRecordId,
-                statement: c.statement,
-              })),
+              // A request without claims is checked as one finding, id `request` (runner.ts).
+              claims:
+                req.claims.length > 0
+                  ? req.claims.map((c) => ({
+                      claimRecordId: c.claimRecordId,
+                      statement: c.statement,
+                    }))
+                  : [{ claimRecordId: "request", statement: req.question ?? req.subject ?? "" }],
             }
           : {}),
         ...(typeof report.model === "string"
@@ -311,7 +318,8 @@ export function savedResearch(content: Store): ResearchPort {
           let after = cursor && cursor.startsWith(`${prefix}/`) ? cursor : undefined;
           for (;;) {
             if (full()) break outer;
-            const paths = await content.list(prefix, LIST_PAGE, after);
+            const want = Math.min(LIST_PAGE, LIST_BOUND - listed);
+            const paths = await content.list(prefix, want, after);
             for (const path of paths) {
               cursor = after = path;
               listed++;
@@ -338,7 +346,7 @@ export function savedResearch(content: Store): ResearchPort {
               }
               if (full()) break outer;
             }
-            if (paths.length < LIST_PAGE) break;
+            if (paths.length < want) break;
           }
           if (i === PREFIXES.length - 1) exhausted = true;
         }
