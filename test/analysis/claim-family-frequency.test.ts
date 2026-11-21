@@ -31,6 +31,37 @@ describe("claim family frequency (#404)", () => {
     expect(a.observations.map((o) => o.distinctOccurrences)).toEqual([6, 12]);
   });
 
+  it("keeps identical rates flat even when the caller sets a zero threshold", () => {
+    const a = assessClaimFamilyFrequency({
+      ...base,
+      minimumRateDelta: 0,
+      periods: [
+        { period: "2025-H1", matchedPosts: 5, distinctOccurrences: 5, analysedPosts: 50 },
+        { period: "2025-H2", matchedPosts: 5, distinctOccurrences: 5, analysedPosts: 50 },
+      ],
+    });
+    expect(a.kind).toBe("observed");
+    if (a.kind !== "observed") throw new Error(a.kind);
+    expect(a.direction).toBe("flat");
+  });
+
+  it("compares exact fractions, so rounding cannot create a trend", () => {
+    // 1/10001 and 501/10001 differ by exactly the threshold; rounded rates would drift.
+    const a = assessClaimFamilyFrequency({
+      ...base,
+      minimumRateDelta: 0.05,
+      minimumAnalysedPosts: 1,
+      periods: [
+        { period: "p1", matchedPosts: 1, distinctOccurrences: 1, analysedPosts: 10_001 },
+        { period: "p2", matchedPosts: 501, distinctOccurrences: 501, analysedPosts: 10_001 },
+      ],
+    });
+    expect(a.kind).toBe("observed");
+    if (a.kind !== "observed") throw new Error(a.kind);
+    // 500/10001 is just under 0.05, so this is flat rather than an increase.
+    expect(a.direction).toBe("flat");
+  });
+
   it("reports a fully specified observed-rate increase with its scope", () => {
     const a = assessClaimFamilyFrequency({
       ...base,

@@ -120,9 +120,16 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
   // Compare the first and last period: the widest comparison the caller declared.
   const first = observations[0]!;
   const last = observations[observations.length - 1]!;
-  const delta = Math.round((last.rate - first.rate) * 10_000) / 10_000;
+  // Compare the exact fractions, not the rounded observation rates, so a
+  // rounding step cannot push a change across the declared threshold.
+  const delta = last.matchedPosts / last.analysedPosts - first.matchedPosts / first.analysedPosts;
+  // Strictly greater/less, so equal rates stay flat even with a zero threshold.
   const direction: "increase" | "decrease" | "flat" =
-    delta >= f.minimumRateDelta ? "increase" : delta <= -f.minimumRateDelta ? "decrease" : "flat";
+    delta > 0 && delta >= f.minimumRateDelta
+      ? "increase"
+      : delta < 0 && -delta >= f.minimumRateDelta
+        ? "decrease"
+        : "flat";
 
   const statement =
     direction === "flat"
