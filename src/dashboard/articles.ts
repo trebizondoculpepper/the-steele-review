@@ -2,6 +2,7 @@ import type { PostTrace } from "../diagnostics/post-trace.js";
 import { postCorrelationId } from "../observability/post-correlation.js";
 import { articleRunKey, type ArticleRunFinal, type Ref } from "../workflow/article-run.js";
 import { recoveryWorkflowKey } from "./recovery.js";
+import type { ArticleThemes, ThemesPort } from "./themes.js";
 
 /**
  * Archived articles and their runs, for the dashboard (#377).
@@ -192,6 +193,8 @@ export interface ArticleTrace {
   receiptsTruncated: boolean;
   /** Retained captured source for this post (#446). */
   source: CapturedSource;
+  /** Saved theme proposals for exactly this revision (#496). */
+  themes?: ArticleThemes;
   /** Latest recorded recovery run for this revision (#480), when started. */
   recovery?: {
     summary: RunSummary;
@@ -432,6 +435,8 @@ export async function traceArticle(input: {
   receipts?: ReceiptsPort;
   /** Retained captured source (#446). */
   source?: SourcePort;
+  /** Saved theme proposals for this exact revision (#496). */
+  themes?: ThemesPort;
 }): Promise<ArticleTrace> {
   const { post } = input;
   let article: ArchivedArticle | undefined;
@@ -469,6 +474,15 @@ export async function traceArticle(input: {
       source = await input.source.read(post, sourceVersion);
     } catch {
       source = { state: "unreadable" };
+    }
+  }
+  // Themes are listed whenever the revision is known, independent of the run.
+  let themes: ArticleThemes | undefined;
+  if (input.themes && sourceVersion) {
+    try {
+      themes = await input.themes.forPost(post, sourceVersion);
+    } catch {
+      themes = { state: "unavailable", themes: [] };
     }
   }
   const summary = summariseRun(run);
@@ -567,6 +581,7 @@ export async function traceArticle(input: {
     receipts: own.receipts,
     receiptsTruncated: own.receiptsTruncated,
     source,
+    ...(themes ? { themes } : {}),
     ...(recovery ? { recovery } : {}),
   };
 }

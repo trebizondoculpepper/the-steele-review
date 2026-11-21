@@ -35,6 +35,21 @@ export interface ThemeRow {
   rejectedInResult: number;
 }
 
+/** Saved theme proposals for one exact article revision (#496). */
+export interface ArticleThemeLink {
+  /** Saved extraction path; with `id`, the stable detail link identity. */
+  result: string;
+  id: string;
+  title: string;
+  description?: string;
+  sourceVersion: string;
+}
+
+export interface ArticleThemes {
+  state: "ok" | "not-analysed" | "partial" | "unavailable";
+  themes: ArticleThemeLink[];
+}
+
 export interface ThemeListing {
   state: "ok" | "unavailable";
   rows: ThemeRow[];
@@ -66,6 +81,11 @@ export interface ThemesPort {
   list(options: { query?: string; after?: string }): Promise<ThemeListing>;
   detail(result: string, id: string): Promise<ThemeDetail | undefined>;
   catalogue(): Promise<{ state: "ok" | "unavailable" | "none"; themes: CanonicalTheme[] }>;
+  /** Proposals saved for exactly this post revision; never a newer result. */
+  forPost(
+    post: { publicationId: string; postId: string },
+    sourceVersion: string,
+  ): Promise<ArticleThemes>;
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
@@ -144,6 +164,39 @@ export function savedThemes(
         partial: !exhausted && rows.length < THEME_PAGE,
         unreadable,
       };
+    },
+
+    async forPost(post, sourceVersion) {
+      const prefix = `theme-proposals/${post.publicationId}/${post.postId}`;
+      let paths: string[];
+      try {
+        paths = await content.list(prefix, THEME_LIST_PAGE);
+      } catch {
+        return { state: "unavailable", themes: [] };
+      }
+      // A bounded per-post scan: a post has few saved analyses, and hitting the
+      // bound is reported as partial rather than silently treated as complete.
+      const partial = paths.length >= THEME_LIST_PAGE;
+      const themes: ArticleThemeLink[] = [];
+      let matchedResult = false;
+      for (const path of paths) {
+        if (!RESULT_PATH.test(path)) continue;
+        const rows = await readResult(path);
+        if (!rows || rows.length === 0) continue;
+        if (rows[0]!.sourceVersion !== sourceVersion) continue; // exact revision only
+        matchedResult = true;
+        themes.push(
+          ...rows.map((r) => ({
+            result: r.result,
+            id: r.id,
+            title: r.title,
+            ...(r.description ? { description: r.description } : {}),
+            sourceVersion: r.sourceVersion,
+          })),
+        );
+      }
+      if (!matchedResult) return { state: partial ? "partial" : "not-analysed", themes: [] };
+      return { state: partial ? "partial" : "ok", themes };
     },
 
     async detail(result, id) {
