@@ -33,9 +33,14 @@ export const ENGLISH_TRANSCRIPTION_PROMPT = readFileSync(
   new URL("../prompts/transcription/english.md", import.meta.url),
   "utf8",
 );
-/** Identity of the instruction text, recorded with every transcript. */
+/** The fixed user message that accompanies the audio. */
+export const ENGLISH_TRANSCRIPTION_USER = readFileSync(
+  new URL("../prompts/transcription/english-user.md", import.meta.url),
+  "utf8",
+).trim();
+/** Identity of both prompt files, recorded with every transcript. */
 export const ENGLISH_TRANSCRIPTION_PROMPT_VERSION = `english-transcription-v1+${createHash("sha256")
-  .update(ENGLISH_TRANSCRIPTION_PROMPT)
+  .update(JSON.stringify([ENGLISH_TRANSCRIPTION_PROMPT, ENGLISH_TRANSCRIPTION_USER]))
   .digest("hex")
   .slice(0, 12)}`;
 export const NO_SPEECH = "[NO_SPEECH]";
@@ -90,6 +95,23 @@ export interface OpenRouterTranscriptionConfig {
   fetch?: typeof globalThis.fetch;
 }
 
+/** Identify an audio container from its leading bytes. */
+export function sniffAudioFormat(bytes: Uint8Array): string | undefined {
+  const ascii = (start: number, end: number) => String.fromCharCode(...bytes.subarray(start, end));
+  if (bytes.length < 4) return undefined;
+  if (ascii(0, 3) === "ID3") return "mp3";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "wav";
+  if (ascii(0, 4) === "OggS") return "ogg";
+  if (ascii(0, 4) === "fLaC") return "flac";
+  if (ascii(4, 8) === "ftyp") return "m4a";
+  if (bytes[0] === 0xff) {
+    // MPEG audio frame sync: layer bits 00 mean ADTS (AAC); otherwise MP3.
+    if ((bytes[1]! & 0xf6) === 0xf0) return "aac";
+    if ((bytes[1]! & 0xe0) === 0xe0) return "mp3";
+  }
+  return undefined;
+}
+
 export class OpenRouterTranscriptionProvider implements TranscriptionProvider {
   readonly name: string;
   readonly model: string;
@@ -122,11 +144,15 @@ export class OpenRouterTranscriptionProvider implements TranscriptionProvider {
     signal.throwIfAborted();
     if (!isAbsolute(input.path) || input.kind !== "audio")
       throw new TranscriptionError("provider-failed", false);
-    const format = FORMATS[extname(input.path).toLowerCase()];
-    if (!format) throw new TranscriptionError("provider-failed", false);
     const size = (await stat(input.path)).size;
     if (size > this.config.maxBytes) throw new TranscriptionError("too-large", false);
-    const audio = (await readFile(input.path)).toString("base64");
+    const bytes = await readFile(input.path);
+    // The adapter stores downloads without an extension (media.audio), so the
+    // container is identified from its leading bytes; a known extension is
+    // only a fallback.
+    const format = sniffAudioFormat(bytes) ?? FORMATS[extname(input.path).toLowerCase()];
+    if (!format) throw new TranscriptionError("provider-failed", false);
+    const audio = bytes.toString("base64");
 
     const timeout = AbortSignal.timeout(this.config.timeoutMs);
     let response: Response;
@@ -146,7 +172,7 @@ export class OpenRouterTranscriptionProvider implements TranscriptionProvider {
             {
               role: "user",
               content: [
-                { type: "text", text: "Transcribe this recording in English." },
+                { type: "text", text: ENGLISH_TRANSCRIPTION_USER },
                 { type: "input_audio", input_audio: { data: audio, format } },
               ],
             },

@@ -8,8 +8,10 @@ import {
   DEFAULT_TRANSCRIPTION_MODEL,
   ENGLISH_TRANSCRIPTION_PROMPT,
   ENGLISH_TRANSCRIPTION_PROMPT_VERSION,
+  ENGLISH_TRANSCRIPTION_USER,
   NO_SPEECH,
   OpenRouterTranscriptionProvider,
+  sniffAudioFormat,
 } from "../../src/transcription/openrouter.js";
 
 let dir: string;
@@ -64,6 +66,10 @@ describe("English transcription through OpenRouter (#234)", () => {
     expect(ENGLISH_TRANSCRIPTION_PROMPT).toMatch(/English/);
     expect(ENGLISH_TRANSCRIPTION_PROMPT).toMatch(/Never translate/);
     expect(ENGLISH_TRANSCRIPTION_PROMPT).toContain(NO_SPEECH);
+    expect(req.body.messages[1].content[0]).toEqual({
+      type: "text",
+      text: ENGLISH_TRANSCRIPTION_USER,
+    });
     expect(req.body.messages[1].content[1]).toEqual({
       type: "input_audio",
       input_audio: { data: Buffer.from("ID3 fake mp3 bytes").toString("base64"), format: "mp3" },
@@ -146,5 +152,23 @@ describe("English transcription through OpenRouter (#234)", () => {
         STEELE_TRANSCRIPTION_ALLOWED_HOSTS: "media.test",
       }),
     ).rejects.toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  it("identifies the container from its bytes, as the adapter saves media.audio", async () => {
+    const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt ")]);
+    expect(sniffAudioFormat(Buffer.from("ID3\x04rest"))).toBe("mp3");
+    expect(sniffAudioFormat(Buffer.from([0xff, 0xfb, 0x90, 0x00]))).toBe("mp3");
+    expect(sniffAudioFormat(Buffer.from([0xff, 0xf1, 0x50, 0x80]))).toBe("aac");
+    expect(sniffAudioFormat(wav)).toBe("wav");
+    expect(sniffAudioFormat(Buffer.from("OggS\0\0"))).toBe("ogg");
+    expect(sniffAudioFormat(Buffer.from("fLaC\0\0"))).toBe("flac");
+    expect(sniffAudioFormat(Buffer.concat([Buffer.alloc(4), Buffer.from("ftypM4A ")]))).toBe("m4a");
+    expect(sniffAudioFormat(Buffer.from("<html>"))).toBeUndefined();
+    const media = join(dir, "media.audio");
+    await writeFile(media, Buffer.from("ID3 fake mp3 bytes"));
+    const { fetch, requests } = endpoint({ content: "Words." });
+    const provider = new OpenRouterTranscriptionProvider({ apiKey: KEY, fetch });
+    await provider.transcribe({ path: media, kind: "audio" }, signal());
+    expect(requests[0]!.body.messages[1].content[1].input_audio.format).toBe("mp3");
   });
 });
