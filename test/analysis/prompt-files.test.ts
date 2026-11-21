@@ -5,24 +5,31 @@ import { loadAnalysisPrompt } from "../../src/analysis/analysis-prompt.js";
 import { DEFAULT_THEME_PROPOSAL_PROMPT } from "../../src/analysis/theme-proposals.js";
 import { DEFAULT_THEME_PROMPT } from "../../src/analysis/theme-extraction.js";
 import { DEFAULT_CATALOGUE_THEME_PROMPT } from "../../src/analysis/theme-catalogue.js";
+import { DEFAULT_EXTRACTION_PROMPT } from "../../src/analysis/extraction.js";
+import { DEFAULT_EQUIVALENCE_PROMPT } from "../../src/analysis/claim-equivalence.js";
 
 /**
- * Migration parity for #421: the exact rendered text of each theme prompt is
- * pinned here, so moving a prompt into Markdown cannot silently reword it.
+ * Migration parity for #421/#422: the exact rendered text of each analysis
+ * prompt is pinned here, so moving a prompt into Markdown cannot silently
+ * reword it.
  */
 const EXPECTED = {
   "theme-proposals-v2": "Propose the broad, recognised conspiracy-related topics this source text engages with.\nPrefer established, researchable topics: a practical test is whether the topic is notable enough to have its own encyclopedia (for example Wikipedia) article, such as \"chemtrail conspiracy theory\", \"5G health concerns\" or \"15-minute city\". This is a scope test only, not evidence that anything is true. Do not invent or cite article URLs.\nDo not propose vague umbrella categories such as \"government conspiracy\", \"elite manipulation\" or \"suppression of truth\" on their own; name the specific recognised topic instead.\nDo not create a theme for an unusual individual assertion. Specific assertions are extracted separately as claims and linked to the broader topic they belong to.\nThemes describe what the text is about, never whether it is true, and never the author's intent.\nEach theme has a short `title` (at most six words) and, optionally, a one-sentence `description` of its scope as this post engages with it. Do not add elements the post does not mention.\nYou may be given a list of known theme names for consistency of wording; reuse a known title only when it genuinely fits. You are not required to match the list.\nDo not quote the source. Returning no themes is acceptable.\nOptional properties are omitted when absent; never include question marks in property names.\nRespond with JSON only: {\"themes\":[{\"title\":\"...\",\"description\":\"...\"}]}. A valid empty result is {\"themes\":[]}.",
   "theme-extraction-v1": "Identify the recurring topics or framings the source text engages with.\nThemes describe what the text is about, never whether it is true.\nUse short labels (at most six words). New or unusual themes are allowed.\nFor each theme give `confidence` (low, medium or high) and quote one or more passages that show it, character for character.\nIf a passage occurs more than once, set `occurrence` to its 1-based position.\nRespond with JSON only: {\"themes\":[{\"wording\",\"confidence\",\"passages\":[{\"passage\",\"occurrence?\"}]}]}.",
   "theme-catalogue-v2": "Identify the recurring topics or narratives the source text engages with. Themes describe what the text is about, never whether it is true, and never the author's intent.\nYou are given a catalogue of known themes (id, name, definition, aliases). Report every known theme the text clearly engages with under `existing`, by its exact id.\nOnly reuse an id when the text fits that theme's definition. If a theme is related to a known one but you are not sure it is the same, propose it as new and give the related id as `possibleMatchOf`.\nReport themes not in the catalogue under `proposed` with a short name (at most six words) and a one-sentence definition of its scope.\nFor every theme quote one or more supporting passages exactly, character for character. If a passage occurs more than once, set `occurrence` to its 1-based position.\nReturning no themes is acceptable.\nconfidence must be one of the strings low, medium or high; never a numeric score. Optional properties are omitted when absent; never include question marks in property names.\nA valid empty result is {\"existing\":[],\"proposed\":[]}. A proposed entry has name, definition, confidence, and passages: [{\"passage\":\"exact source quotation\"}].\nRespond with JSON only: {\"existing\":[{\"id\",\"confidence\",\"passages\":[{\"passage\",\"occurrence?\"}]}],\"proposed\":[{\"name\",\"definition\",\"confidence\",\"possibleMatchOf?\",\"passages\":[...]}]}.",
+  "claim-extraction-v1": "Extract the claims asserted in the source text.\nFor each claim, copy the shortest passage that states it exactly as it appears in the source, character for character.\nWrite `statement` as the source asserts it, without judging whether it is true.\nClassify `claimType` as factual, opinion, prediction or ambiguous.\nList hedging or scope words (`qualifiers`) and date wordings (`dates`) exactly as written in the passage; give a date `value` (YYYY-MM-DD) only when the wording itself states a full calendar date.\nIf the same passage occurs more than once, set `occurrence` to its 1-based position.\nRespond with JSON only: {\"claims\":[{\"statement\",\"claimType\",\"passage\",\"occurrence?\",\"qualifiers\",\"entities\",\"dates\"}]}.",
+  "claim-equivalence-v1": "Decide whether a new claim asserts the same thing as one of the candidate earlier claims.\nThey are equivalent only if a correction of one would equally correct the other: the same subject, the same direction, matching quantities, dates, scope and qualifiers, and no difference in negation. Different wording alone does not matter.\nA shared topic, a related claim, a stronger or weaker version, or a negation is NOT equivalent.\nUse the source passages, posts and speakers: claims that depend on context (who \"we\" or \"our\" refers to, which place or period) are only equivalent if that context matches.\nDo not judge whether either claim is true.\nRespond with JSON only: {\"match\": \"<candidate id>\" | null, \"confidence\": \"high\"|\"medium\"|\"low\", \"reason\": \"<one or two sentences comparing them>\"}.",
 } as const;
 
 const prompts = {
   "theme-proposals-v2": DEFAULT_THEME_PROPOSAL_PROMPT,
   "theme-extraction-v1": DEFAULT_THEME_PROMPT,
   "theme-catalogue-v2": DEFAULT_CATALOGUE_THEME_PROMPT,
+  "claim-extraction-v1": DEFAULT_EXTRACTION_PROMPT,
+  "claim-equivalence-v1": DEFAULT_EQUIVALENCE_PROMPT,
 } as const;
 
-describe("analysis prompt files (#421)", () => {
+describe("analysis prompt files (#421, #422)", () => {
   it.each(Object.keys(EXPECTED) as Array<keyof typeof EXPECTED>)(
     "renders %s exactly as before the move",
     (name) => {
