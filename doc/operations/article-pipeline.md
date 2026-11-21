@@ -54,3 +54,23 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 - **Handoff to publishing:** when verification approves a draft, the workflow records one approved-article event through `recordApproval` and the outbox (#262), and returns its ID as `approvalEvent`. A rejected, unresolved or unverified draft emits nothing.
 
 Configuration: `NATS_URL`, `NATS_TOKEN?`, `STEELE_CONTENT_STREAM`, `STEELE_CAPTURED_CONSUMER` (provisioned separately, filtered to `steele.v1.content.captured`), `RESTATE_INGRESS_URL`, `STEELE_ARTICLE_SOURCES`, optional `STEELE_RESEARCH_DEADLINE_MS` (default 30 minutes) and `STEELE_BRIDGE_RETRY_DELAY_MS`.
+
+### Deploy the capture bridge
+
+Add `deploy/restate/bridge.compose.yaml` to the same Compose project as
+`deploy/restate/compose.yaml`. Supply a pinned image and the broker connection
+through private deployment configuration. Provision a dedicated durable pull
+consumer with explicit acknowledgement, the captured-content subject filter,
+and new-only delivery before starting the bridge. Check the consumer's filter
+and delivery policy before reusing it.
+
+Start only the bridge after Restate and the worker are registered.
+
+```sh
+docker compose -f deploy/restate/compose.yaml -f deploy/restate/bridge.compose.yaml up -d --no-deps captured-bridge
+```
+
+The source allowlist defaults to empty. Set it to the isolated test source for
+the fixture smoke test and enable the live source only after that test passes.
+The shared image's default web-server health check is disabled for the bridge
+until its role-specific probe is wired.

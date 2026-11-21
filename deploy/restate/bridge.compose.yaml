@@ -1,0 +1,17 @@
+# Opt in only after provisioning the intended durable consumer.
+services:
+  captured-bridge:
+    image: ${STEELE_IMAGE:?Set a pinned application image}
+    command: ["node", "--enable-source-maps", "dist/cli/captured-bridge.js"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    environment:
+      NATS_URL: ${NATS_URL:?Set the broker URL privately}
+      NATS_TOKEN: ${NATS_TOKEN:-}
+      STEELE_CONTENT_STREAM: ${STEELE_CONTENT_STREAM:-STEELE_CONTENT}
+      STEELE_CAPTURED_CONSUMER: ${STEELE_CAPTURED_CONSUMER:?Set a provisioned durable consumer}
+      RESTATE_INGRESS_URL: http://restate:8080
+      STEELE_ARTICLE_SOURCES: ${STEELE_ARTICLE_SOURCES:-}
+      STEELE_RESEARCH_DEADLINE_MS: ${STEELE_RESEARCH_DEADLINE_MS:-1800000}
+    networks: [steele]
