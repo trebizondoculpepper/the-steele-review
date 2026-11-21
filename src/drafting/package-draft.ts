@@ -29,7 +29,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v4";
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v5";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
@@ -49,8 +49,25 @@ export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
   ).trim(),
 };
 
+/**
+ * Bounds on the separately generated publication fields (#456). They are the
+ * writer's own short copy, never a source quotation or invented evidence.
+ */
+export const FIELD_LIMITS = { title: 140, subtitle: 280, excerpt: 500 } as const;
+const field = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    // One line of plain text: no Markdown heading markers or line breaks.
+    .refine((v) => !/[\r\n]/.test(v) && !/^#/.test(v), "must be a single plain line");
+
 const ModelDraftSchema = z
   .object({
+    title: field(FIELD_LIMITS.title),
+    subtitle: field(FIELD_LIMITS.subtitle),
+    excerpt: field(FIELD_LIMITS.excerpt),
     summary: z.string().trim().min(1).max(3000),
     themes: z.array(z.string().trim().min(1).max(200)).max(20),
     responses: z
@@ -119,6 +136,14 @@ export const PackageDraftMetadataSchema = z
     /** Model the provider reports it actually served. */
     resolvedModel: z.string().optional(),
     draft: z.string(),
+    /**
+     * Generated publication fields (#456). Absent on drafts made before the
+     * fields existed; the body is the draft Markdown itself.
+     */
+    fields: z
+      .object({ title: z.string(), subtitle: z.string(), excerpt: z.string() })
+      .strict()
+      .optional(),
     draftedAt: z.string(),
   })
   .strict();
@@ -487,6 +512,7 @@ export async function draftFromPackage(input: {
     ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
     ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
     draft: `${draftRef.commit}:${draftRef.path}`,
+    fields: { title: draft.title, subtitle: draft.subtitle, excerpt: draft.excerpt },
     draftedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
   const metaRef = await writeOnce(input.content, `${base}.json`, metadata);

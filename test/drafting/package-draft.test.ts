@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
-import { draftFromPackage, draftProblems } from "../../src/drafting/package-draft.js";
+import {
+  PackageDraftMetadataSchema,
+  draftFromPackage,
+  draftProblems,
+} from "../../src/drafting/package-draft.js";
 import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/writer-package.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
@@ -86,6 +90,10 @@ const model = (...responses: string[]) => {
 };
 
 const GOOD = JSON.stringify({
+  title: "A treaty already bans weather weapons",
+  subtitle: "What the post claims, and what the evidence shows",
+  excerpt:
+    "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
   summary:
     "The post says a treaty bans weather weapons and that a 56 million payment funded an attack.",
   themes: ["Weather warfare"],
@@ -109,6 +117,102 @@ const GOOD = JSON.stringify({
 });
 
 describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
+  describe("structured publication fields (#456)", () => {
+    const run = (provider: ReturnType<typeof model>, extra: Record<string, unknown> = {}) =>
+      packageRef().then((ref) =>
+        draftFromPackage({
+          content,
+          archive,
+          package: ref,
+          provider,
+          sourceUrl: "https://x/p",
+          ...extra,
+        }),
+      );
+
+    it("stores title, subtitle and excerpt with the draft, apart from the body", async () => {
+      const out = await run(model(GOOD));
+      if (out.status !== "drafted") throw new Error(out.status);
+      const meta = PackageDraftMetadataSchema.parse(JSON.parse(await content.read(out.metadata)));
+      expect(meta.fields).toEqual({
+        title: JSON.parse(GOOD).title,
+        subtitle: JSON.parse(GOOD).subtitle,
+        excerpt: JSON.parse(GOOD).excerpt,
+      });
+      const md = await content.read(out.draft);
+      expect(md).not.toMatch(/^# /m);
+      expect(md).not.toContain(JSON.parse(GOOD).title);
+    });
+
+    it("rejects missing, overlong or multi-line fields", async () => {
+      for (const bad of [
+        { title: undefined },
+        { title: "x".repeat(141) },
+        { subtitle: "line one\nline two" },
+        { excerpt: "# A heading" },
+      ]) {
+        const out = await run(model(JSON.stringify({ ...JSON.parse(GOOD), ...bad })));
+        expect(out.status, JSON.stringify(bad)).toBe("failed");
+      }
+    });
+
+    it("keeps drafts saved before the fields existed readable", () => {
+      const legacy = {
+        schemaVersion: 1,
+        package: {
+          repository: "c",
+          commit: "a".repeat(40),
+          path: "p.json",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+        source: {
+          repository: "c",
+          commit: "a".repeat(40),
+          path: "s.json",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+        themes: {
+          repository: "c",
+          commit: "a".repeat(40),
+          path: "t.json",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+        templateVersion: "package-explainer-v4",
+        promptVersion: "package-draft-v9",
+        modelVersion: "m",
+        draft: "abc:articles/x.md",
+        draftedAt: "2026-11-20T00:00:00Z",
+      };
+      expect(PackageDraftMetadataSchema.parse(legacy).fields).toBeUndefined();
+    });
+
+    it("reuses unchanged input and stores a revision's own fields", async () => {
+      const ref = await packageRef();
+      const draft = (provider: ReturnType<typeof model>, extra: Record<string, unknown> = {}) =>
+        draftFromPackage({
+          content,
+          archive,
+          package: ref,
+          provider,
+          sourceUrl: "https://x/p",
+          ...extra,
+        });
+      const first = await draft(model(GOOD));
+      const again = model(GOOD);
+      const reused = await draft(again);
+      if (first.status !== "drafted" || reused.status !== "drafted") throw new Error("draft");
+      expect(again.calls).toBe(0);
+      expect(reused.draft.path).toBe(first.draft.path);
+      const revised = JSON.stringify({ ...JSON.parse(GOOD), title: "A sharper title" });
+      const r = await draft(model(revised), {
+        revision: { number: 1, feedback: [{ passage: "x", reason: "y" }] },
+      });
+      if (r.status !== "drafted") throw new Error(r.status);
+      expect(r.draft.path).not.toBe(first.draft.path);
+      expect(JSON.parse(await content.read(r.metadata)).fields.title).toBe("A sharper title");
+    });
+  });
+
   it("writes a cited draft traceable to the package, keeping gaps as unresolved", async () => {
     const ref = await packageRef();
     const provider = model(GOOD);
@@ -133,7 +237,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const meta = JSON.parse(await content.read(out.metadata));
     expect(meta).toMatchObject({
       package: { path: ref.path },
-      templateVersion: "package-explainer-v4",
+      templateVersion: "package-explainer-v5",
       modelVersion: "fake/writer",
     });
   });
@@ -165,6 +269,10 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
   it("never turns a gap into a correction or confirmation", async () => {
     const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(await packageRef())));
     const bad = {
+      title: "A treaty already bans weather weapons",
+      subtitle: "What the post claims, and what the evidence shows",
+      excerpt:
+        "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
       summary: "s",
       themes: [],
       responses: [
