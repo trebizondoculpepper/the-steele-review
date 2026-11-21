@@ -43,7 +43,7 @@
     "verify-package-draft": "node --enable-source-maps dist/cli/verify-package-draft.js"
   },
   "dependencies": {
-    "@elastic/elasticsearch": "^8.19.2",
+    "@elastic/elasticsearch": "^9.5.1",
     "@nats-io/jetstream": "^3.5.0",
     "@nats-io/transport-node": "^3.5.0",
     "@restatedev/restate-sdk": "1.18.4",
