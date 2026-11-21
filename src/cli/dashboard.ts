@@ -20,6 +20,7 @@ import { z } from "zod";
 import { elasticsearchConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
+import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { indexArticles, restateRuns } from "../dashboard/adapters.js";
 import { articleViews } from "../dashboard/article-views.js";
@@ -60,6 +61,23 @@ const views = [
     trace: (post) =>
       tracePost({
         post,
+        // The same index probe as post-trace, so indexing lag shows as stale.
+        ...(es
+          ? {
+              search: {
+                fulltextSourceVersion: async (publicationId: string, postId: string) => {
+                  const hits = await es!.search(
+                    e.STEELE_FULLTEXT_INDEX || FULLTEXT_INDEX_V1,
+                    { bool: { filter: [{ term: { publicationId } }, { term: { postId } }] } },
+                    { size: 1 },
+                  );
+                  const v = (hits[0]?.source as { sourceVersion?: unknown } | undefined)
+                    ?.sourceVersion;
+                  return typeof v === "string" ? v : null;
+                },
+              },
+            }
+          : {}),
         ...(archive ? { archive } : {}),
         ...(content ? { content } : {}),
       }),

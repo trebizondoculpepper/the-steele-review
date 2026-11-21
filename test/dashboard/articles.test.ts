@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { articleViews, renderTrace } from "../../src/dashboard/article-views.js";
 import {
   sanitizeReason,
+  UNRECOGNISED_REASON,
   summariseRun,
   traceArticle,
   type RecentArticlesPort,
@@ -79,11 +80,19 @@ describe("article run summaries (#377)", () => {
     expect(s.stages.at(-1)).toMatchObject({ stage: "delivery", state: "not-reached" });
   });
 
-  it("reduces failure reasons to a safe token", () => {
-    expect(
-      sanitizeReason("draft: fetch https://secret.example/x failed at /data/content <b>"),
-    ).toBe("draft: fetch failed at data content b");
-    expect(sanitizeReason("<<>>")).toBe("unspecified");
+  it("reduces failure reasons to allowlisted categories", () => {
+    expect(sanitizeReason("claims: provider-failed")).toBe("claims: provider-failed");
+    expect(sanitizeReason("unresolved after 2 redrafts")).toBe("unresolved after 2 redrafts");
+    expect(sanitizeReason("no verifier model configured")).toBe("no verifier model configured");
+    for (const leaky of [
+      "draft: fetch https://secret.example/x failed",
+      "connect ECONNREFUSED 192.168.1.5:9200",
+      "verify: ENOENT /home/alice/private/state.db",
+      "token=abc123 rejected",
+      "nas.local unreachable",
+    ]) {
+      expect(sanitizeReason(leaky)).toBe(UNRECOGNISED_REASON);
+    }
   });
 });
 

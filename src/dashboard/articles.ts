@@ -76,16 +76,30 @@ export interface ArticleTrace {
   trace?: PostTrace;
 }
 
-/** A short, safe token: lowercase words, digits and separators only. */
+/** Fixed reasons the workflow itself produces, shown as they are. */
+const KNOWN_REASONS = new Set([
+  "invalid-input",
+  "draft-failed",
+  "evidence-gap",
+  "no verifier model configured",
+]);
+const CODE = /^[a-z0-9]+(?:-[a-z0-9]+){0,8}$/;
+export const UNRECOGNISED_REASON = "unrecognised failure (see local logs by correlation ID)";
+
+/**
+ * Map a workflow failure reason to an allowlisted category. Only known fixed
+ * reasons, `<stage>: <kebab-case code>` for a known stage, and the bounded
+ * redraft count pass; anything else (which could carry a host, address, path
+ * or credential) becomes a fixed fallback. Dots and slashes never pass.
+ */
 export function sanitizeReason(reason: string): string {
-  const token = reason
-    .toLowerCase()
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[^a-z0-9 :._-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-  return token || "unspecified";
+  const r = reason.trim().toLowerCase();
+  if (KNOWN_REASONS.has(r)) return r;
+  if (/^unresolved after [0-9]{1,2} redrafts$/.test(r)) return r;
+  const m = /^([a-z-]+): ([a-z0-9-]+)$/.exec(r);
+  if (m && m[1]! in STAGE_ALIASES && CODE.test(m[2]!)) return r;
+  if (CODE.test(r) && r.length <= 60) return r;
+  return UNRECOGNISED_REASON;
 }
 
 const STAGE_ALIASES: Record<string, StageName> = {
