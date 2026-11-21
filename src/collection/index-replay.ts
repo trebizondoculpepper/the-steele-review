@@ -76,6 +76,8 @@ export interface ReplayCheckpointState {
   indexed: number;
   unchanged: number;
   completedAt: string;
+  /** False when the load was filtered by post or date, so it never covered the whole publication. */
+  wholePublication: boolean;
 }
 
 export interface ReplayCheckpoint {
@@ -232,6 +234,7 @@ export async function replayArchiveToIndex(input: {
       indexed: report.indexed,
       unchanged: report.unchanged,
       completedAt: new Date().toISOString(),
+      wholePublication: !sel.postIds && !sel.from && !sel.to,
     });
     report.checkpointSaved = true;
   }
