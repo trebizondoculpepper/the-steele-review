@@ -28,7 +28,11 @@ it("saves source snapshots and gaps and never calls the provider again for a ter
       .mockResolvedValueOnce({
         model: "fixture",
         report: "# Treaty",
-        citations: ["https://example.org/treaty", "https://example.org/treaty.pdf"],
+        citations: [
+          "https://example.org/treaty",
+          "https://example.org/treaty.pdf",
+          "https://example.org/bad-status",
+        ],
       })
       .mockRejectedValueOnce(new SonarError("timeout"));
     const fetcher = {
@@ -40,7 +44,8 @@ it("saves source snapshots and gaps and never calls the provider again for a ter
           text: "Article I",
           original: { contentType: "text/html", body: "<p>Article I</p>" },
         })
-        .mockRejectedValueOnce(new WebAdapterError("unsupported-content")),
+        .mockRejectedValueOnce(new WebAdapterError("unsupported-content"))
+        .mockRejectedValueOnce(new WebAdapterError("bad-response")),
     };
     const config = { artifacts, operations, owner: "owner", request, discover, fetcher };
     const run = await runSonarResearch(config);
@@ -50,6 +55,13 @@ it("saves source snapshots and gaps and never calls the provider again for a ter
     const snapshot = await artifacts.lookup(`${path}/sources/1.json`);
     if (!snapshot) throw new Error("no snapshot");
     expect(JSON.parse(await artifacts.read(snapshot)).original.body).toBe("<p>Article I</p>");
+    const manifestRef = await artifacts.lookup(`${path}/manifest.json`);
+    const reportRef = await artifacts.lookup(`${path}/report.md`);
+    expect(reportRef).toBeDefined();
+    expect(JSON.parse(await artifacts.read(manifestRef!)).citations[2]).toMatchObject({
+      retrieval: "inaccessible",
+      confidenceRationale: "bad-response",
+    });
     expect(operations.pendingEventStatus(run.result.jobId)).toBe("pending");
     await expect(runSonarResearch(config)).resolves.toMatchObject({ reused: true });
     const other = { ...config, request: { ...request, subject: "Different subject" } };
@@ -58,7 +70,7 @@ it("saves source snapshots and gaps and never calls the provider again for a ter
     });
     await expect(runSonarResearch(other)).resolves.toMatchObject({ reused: true });
     expect(discover).toHaveBeenCalledTimes(2);
-    expect(fetcher.fetch).toHaveBeenCalledTimes(2);
+    expect(fetcher.fetch).toHaveBeenCalledTimes(3);
   } finally {
     operations.close();
     await rm(dir, { recursive: true, force: true });
