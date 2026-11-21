@@ -145,6 +145,8 @@ export class SubstackClient {
       {
         draft_title: draft.title,
         draft_subtitle: draft.subtitle ?? "",
+        // Required by the editor API even when no explicit bylines are chosen.
+        draft_bylines: [],
         draft_body: JSON.stringify(draft.body),
         audience: "everyone",
         type: "newsletter",
