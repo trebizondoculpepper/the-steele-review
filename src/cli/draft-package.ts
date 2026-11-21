@@ -137,6 +137,16 @@ async function main(): Promise<number> {
               : out.status,
           ...(requested?.success ? { model: requested.data } : {}),
           ...("reason" in out ? { reason: out.reason } : {}),
+          ...("validationFailure" in out ? { validationFailure: out.validationFailure } : {}),
+          ...("diagnostics" in out && out.diagnostics
+            ? {
+                diagnostics: out.diagnostics.map((ref) => ({
+                  commit: ref.commit,
+                  path: ref.path,
+                  sha256: ref.sha256,
+                })),
+              }
+            : {}),
           ...("problems" in out && out.problems ? { problems: out.problems } : {}),
         };
   console.log(

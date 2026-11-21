@@ -120,7 +120,15 @@ const stages: ArticleStages = {
     return ref(`librarian/coverage/${themes.path}`);
   },
   package: async (coverage) => ({ ref: ref(`writer-packages/${coverage.path}`), status: "ready" }),
-  draft: async (pkg) => (calls.draft++, { ref: ref(`articles/${pkg.path}.md`) }),
+  draft: async (pkg) => {
+    calls.draft++;
+    return pkg.path.includes("invalid-writer-json")
+      ? {
+          failure: "draft: json-syntax",
+          diagnostics: [ref("draft-diagnostics/fixture/syntax.json")],
+        }
+      : { ref: ref(`articles/${pkg.path}.md`) };
+  },
   verify: async (draft) => (
     calls.verify++,
     { ref: ref(`verifications/${draft.path}.json`), approved: !draft.path.includes("rejected") }
@@ -434,3 +442,16 @@ describe("research call identity (#480)", () => {
     expect(researchCallKey("job-1", 2)).not.toBe(researchCallKey("job-1", 1));
   });
 });
+it("retains safe writer failure diagnostics without verifying or approving a failed output (#524)", async () => {
+  const beforeVerify = calls.verify;
+  const beforeApprove = calls.approve;
+  const wf = ingress.workflowClient(Workflow, articleRunKey(input("invalid-writer-json")));
+  await wf.workflowSubmit(input("invalid-writer-json"));
+  expect(await wf.workflowAttach()).toMatchObject({
+    outcome: "failed",
+    reason: "draft: json-syntax",
+    draftDiagnostics: [ref("draft-diagnostics/fixture/syntax.json")],
+  });
+  expect(calls.verify).toBe(beforeVerify);
+  expect(calls.approve).toBe(beforeApprove);
+}, 60_000);

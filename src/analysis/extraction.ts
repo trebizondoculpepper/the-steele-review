@@ -31,9 +31,19 @@ export interface ExtractionModelProvider {
   /** Provider and model identifier recorded with each claim, e.g. "vendor/model-2026-01". */
   readonly modelVersion: string;
   complete(
-    request: { system: string; user: string; maxOutputChars: number },
+    request: {
+      system: string;
+      user: string;
+      maxOutputChars: number;
+      /** Per-call, allowlisted adapter evidence; never raw provider response data. */
+      onCompletion?: (metadata: ModelCompletionMetadata) => void;
+    },
     signal: AbortSignal,
   ): Promise<string>;
+}
+
+export interface ModelCompletionMetadata {
+  stopReason: "completed" | "length-limit" | "unknown";
 }
 
 /** Versioned extraction instructions. Change `version` whenever the text changes. */

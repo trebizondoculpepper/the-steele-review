@@ -73,6 +73,8 @@ export interface ArticleRunResult {
   coverage?: Ref;
   package?: Ref;
   draft?: Ref;
+  /** Safe validation diagnostics bound to the exact writer package. */
+  draftDiagnostics?: Ref[];
   verification?: Ref;
   research: { jobId: string; outcome: PinnedResearch["outcome"] }[];
   /** The approved-article event recorded for a verified draft (#262). */
@@ -95,7 +97,7 @@ export interface ArticleStages {
   /** Librarian coverage from exactly the pinned research results. */
   coverage(themes: Ref, claims: Ref, pinned: PinnedResearch[]): Promise<Ref>;
   package(coverage: Ref): Promise<{ ref: Ref; status: "ready" | "evidence-gap" }>;
-  draft(pkg: Ref, sourceUrl: string): Promise<{ ref?: Ref; failure?: string }>;
+  draft(pkg: Ref, sourceUrl: string): Promise<{ ref?: Ref; failure?: string; diagnostics?: Ref[] }>;
   /** Verify the exact draft against its package; `unavailable` when no verifier is configured. */
   verify(
     draft: Ref,
@@ -352,6 +354,9 @@ export function articleRunWorkflow(stages: ArticleStages) {
       return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };
     }
     const drafted = await step("draft", () => stages.draft(pkg.ref, input.sourceUrl));
+    const draftDiagnostics = drafted.diagnostics?.length
+      ? { draftDiagnostics: drafted.diagnostics }
+      : {};
     if (!drafted.ref) {
       return {
         outcome: "failed",
@@ -360,6 +365,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         claims,
         coverage,
         package: pkg.ref,
+        ...draftDiagnostics,
         research,
       };
     }
@@ -377,6 +383,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         coverage,
         package: pkg.ref,
         draft: finalDraft,
+        ...draftDiagnostics,
         research,
       };
     }
@@ -394,6 +401,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
       coverage,
       package: pkg.ref,
       draft: finalDraft,
+      ...draftDiagnostics,
       ...(verified.ref ? { verification: verified.ref } : {}),
       research,
     };

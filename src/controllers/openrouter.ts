@@ -138,7 +138,7 @@ export class OpenRouterProvider implements ExtractionModelProvider {
   }
 
   async complete(
-    request: { system: string; user: string; maxOutputChars: number },
+    request: Parameters<ExtractionModelProvider["complete"]>[0],
     signal: AbortSignal,
   ): Promise<string> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
@@ -191,7 +191,16 @@ export class OpenRouterProvider implements ExtractionModelProvider {
     } catch {
       throw new ModelProviderError("bad-response");
     }
-    const content = parsed.choices[0].message.content;
+    const choice = parsed.choices[0];
+    request.onCompletion?.({
+      stopReason:
+        choice.finish_reason === "length"
+          ? "length-limit"
+          : choice.finish_reason === "stop"
+            ? "completed"
+            : "unknown",
+    });
+    const content = choice.message.content;
     if (typeof content !== "string" || content.length === 0) {
       throw new ModelProviderError("bad-response");
     }

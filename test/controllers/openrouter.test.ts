@@ -187,3 +187,27 @@ describe("OpenRouterProvider", () => {
     expect(result.status).not.toBe("failed");
   });
 });
+
+describe("per-call completion evidence (#524)", () => {
+  it.each([
+    ["length", "length-limit"],
+    ["stop", "completed"],
+    ["PRIVATE_PROVIDER_SENTINEL", "unknown"],
+  ])("maps %s to an allowlisted stop reason", async (reason, expected) => {
+    const { p } = provider(() =>
+      ok("{}", { choices: [{ message: { content: "{}" }, finish_reason: reason }] }),
+    );
+    let metadata: unknown;
+    await p.complete(
+      {
+        ...req,
+        onCompletion: (m) => {
+          metadata = m;
+        },
+      },
+      new AbortController().signal,
+    );
+    expect(metadata).toEqual({ stopReason: expected });
+    expect(JSON.stringify(metadata)).not.toContain("PRIVATE_PROVIDER_SENTINEL");
+  });
+});
