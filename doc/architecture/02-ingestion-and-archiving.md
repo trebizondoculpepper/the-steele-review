@@ -8,6 +8,16 @@ Substack documents publication feeds at `/feed`: [official RSS documentation](ht
 
 Initial discovery collects each post once using stable content identity; explicit edit detection is deferred. Preserve available update dates and content fingerprints for future version handling. Polling defaults to five minutes after each completed run, configurable at runtime; request limits are bounded configuration.
 
+## Source metadata and authorship
+
+Agreed target, tracked in #462: keep a validated source catalogue supplied as a read-only mounted configuration file. Each source has a stable ID, platform/type, display name and optional configured default author identity. The initial adapter can read `sources.json`; existing discovery and collection environment variables remain the implemented configuration until the catalogue integration ships. Actual source configuration stays outside this public repository. Public examples use synthetic values.
+
+Explicit post attribution takes precedence over a source default. When a default is used, record the basis as source-configured, with the source identity and configuration version or fingerprint. This is operator-provided knowledge, not an inference from a publication name. Missing or ambiguous attribution remains unknown; an explicit multiple-author byline must not silently collapse to one default author.
+
+Post authorship and claim speaker attribution are separate. Author-voice claims can use resolved post authorship under the speaker policy, but a source default must not replace somebody else's explicitly quoted speech. The configured source author also does not determine the byline of this application's response article.
+
+Legacy raw captures remain immutable. An attributed derived record or new analysis revision can reference the original capture and the exact source configuration used; fetching the original page again is not an authorship prerequisite. Attribution inputs belong in derived-result/cache identities. A configuration change requires an explicit new projection or reprocessing operation before it changes historical attribution. #461 consumes this capability for a bounded history pilot; it does not authorise an archive-wide claims backfill.
+
 ## Archive before transformation
 
 Preserve retrieved article HTML or feed payload where useful, together with source URL, publication and post identifiers, retrieval time, published and updated times, content hash, and extraction status. For audio and video, retain the transcript and provenance only; do not archive the media. Preserve enough metadata to trace extracted passages back to their source.
