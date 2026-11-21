@@ -13,6 +13,8 @@ const traceLink = (r: ClaimRow) =>
   `/articles/trace?${new URLSearchParams({ publication: r.publicationId, post: r.postId })}`;
 const detailLink = (r: ClaimRow) =>
   `/claims/view?${new URLSearchParams({ result: r.result, category: r.category, index: String(r.index) })}`;
+const sourceLink = (r: ClaimRow) =>
+  `/claims/source?${new URLSearchParams({ result: r.result, category: r.category, index: String(r.index) })}`;
 const themeLink = (r: ClaimRow, id: string) =>
   r.themeResultPath
     ? `/themes/view?${new URLSearchParams({ result: r.themeResultPath, id })}`
@@ -146,8 +148,8 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
           ? ([["Occurrence", `<code>${escapeHtml(r.occurrenceId)}</code>`]] as [string, string][])
           : []),
         [
-          "Source post",
-          `<a href="${escapeHtml(traceLink(r))}">${escapeHtml(`${r.publicationId}/${r.postId}`)}</a> · <code>${escapeHtml(r.sourceVersion)}</code>`,
+          "Source",
+          `${r.sourceArtifact ? `<a href="${escapeHtml(sourceLink(r))}">Quoted revision</a> <code>${escapeHtml(r.sourceVersion)}</code>` : `<code>${escapeHtml(r.sourceVersion)}</code> <span class="empty">(exact revision not recorded)</span>`} · <a href="${escapeHtml(traceLink(r))}">current article trace for ${escapeHtml(`${r.publicationId}/${r.postId}`)}</a>`,
         ],
         ...(r.modelVersion
           ? ([
@@ -162,5 +164,34 @@ export function claimViews(claims?: ClaimsPort): DashboardView[] {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
     },
   };
-  return [list, detail];
+  const source: DashboardView = {
+    path: "/claims/source",
+    title: "Quoted source revision",
+    hidden: true,
+    async render(url) {
+      if (!claims)
+        return '<p class="empty">The content repository is not configured for the dashboard.</p>';
+      const category = (["accepted", "candidate", "rejected"] as const).find(
+        (c) => c === url.searchParams.get("category"),
+      );
+      const index = Number.parseInt(url.searchParams.get("index") ?? "", 10);
+      if (!category || !Number.isInteger(index) || index < 0) {
+        return '<p class="empty">Choose a claim from the list.</p>';
+      }
+      const r = await claims.detail(url.searchParams.get("result") ?? "", category, index);
+      if (!r) return '<p class="empty">Choose a claim from the list.</p>';
+      const text = await claims.sourceText(r);
+      if (text === undefined) {
+        return '<p class="empty">The exact source revision for this quotation could not be read or verified.</p>';
+      }
+      const span = r.span && r.span.end <= text.length ? r.span : undefined;
+      const body = span
+        ? `${escapeHtml(text.slice(0, span.start))}<mark>${escapeHtml(text.slice(span.start, span.end))}</mark>${escapeHtml(text.slice(span.end))}`
+        : escapeHtml(text);
+      return `<p><a href="${escapeHtml(detailLink(r))}">Back to the claim</a></p>
+<p>The archived source at revision <code>${escapeHtml(r.sourceVersion)}</code>, verified against its recorded hash${span ? ", with the quotation highlighted" : ""}.</p>
+<pre>${body}</pre>`;
+    },
+  };
+  return [list, detail, source];
 }

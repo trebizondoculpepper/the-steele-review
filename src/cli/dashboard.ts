@@ -191,7 +191,7 @@ const views = [
   // Saved theme proposals and the canonical catalogue, read-only (#493).
   ...themeViews(content ? savedThemes(content) : undefined),
   // Saved claim proposals with their quotations, read-only (#494).
-  ...claimViews(content ? savedClaims(content) : undefined),
+  ...claimViews(content ? savedClaims(content, archive) : undefined),
   // Preserve old bookmarks without a second navigation entry or placeholder.
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];

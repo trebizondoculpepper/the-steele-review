@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { claimViews } from "../../src/dashboard/claim-views.js";
 import { savedClaims } from "../../src/dashboard/claims.js";
-import { librarianFixtures } from "../research/librarian-fixtures.js";
+import { TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
+import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -34,7 +35,7 @@ async function extraction(postId: string) {
   const record = {
     schemaVersion: 3,
     post: { publicationId: "pub", postId },
-    sourceVersion: `sha256:${"1".repeat(64)}`,
+    sourceVersion: sourceVersionFor(TEXT),
     themeIds: [themeId],
     themeResult: `${themeResult.commit}:${themeResult.path}`,
     claims: [
@@ -66,7 +67,17 @@ async function extraction(postId: string) {
         reasons: ["unclear-referent"],
       },
     ],
-    rejected: [{ index: 3, reason: "passage-not-found" }],
+    rejected: [
+      { index: 3, reason: "passage-not-found" },
+      {
+        index: 4,
+        reason: "passage-not-found",
+        candidate: {
+          fields: { statement: "Masts cause illness.", passage: "masts cause illness" },
+          truncated: false,
+        },
+      },
+    ],
     extraction: { modelVersion: "fake/m", promptVersion: "p", extractedAt: "2026-01-03T00:00:00Z" },
   };
   await content.write(`claim-extractions/pub/${postId}/full.json`, JSON.stringify(record));
@@ -103,6 +114,70 @@ describe("claims browser (#494)", { timeout: 60_000 }, () => {
     const byTheme = await claims.list({ theme: themeId });
     expect(byTheme.rows.length).toBeGreaterThan(0);
     expect(byTheme.rows.every((r) => r.themes.some((t) => t.id === themeId))).toBe(true);
+  });
+
+  it("reads rejected text from the snapshot fields", async () => {
+    await extraction("p4");
+    const rows = (
+      await savedClaims(content).list({ post: "p4", category: "rejected" })
+    ).rows.filter((r) => r.result.endsWith("full.json"));
+    expect(rows.find((r) => r.index === 1)).toMatchObject({
+      statement: "Masts cause illness.",
+      passage: "masts cause illness",
+    });
+  });
+
+  it("shows the quotation in its exact, verified source revision", async () => {
+    await extraction("p5");
+    const archive = (hash: string) => ({
+      lookupAt: async () => ({
+        ref: { repository: "archive", commit: "a".repeat(40), path: "x", sha256: hash },
+        content: JSON.stringify({ text: TEXT }),
+      }),
+    });
+    const params = new URLSearchParams({
+      result: "claim-extractions/pub/p5/full.json",
+      category: "accepted",
+      index: "0",
+    });
+    const loose = { ...archive("b".repeat(64)) };
+    // A stand-in collection record: only `text` is read after schema parsing.
+    const claims = savedClaims(content, {
+      lookupAt: async (c: string, p: string) => {
+        const r = await loose.lookupAt();
+        return { ...r, content: JSON.stringify({ ...JSON.parse(r.content), _c: c, _p: p }) };
+      },
+    } as never);
+    const row = await claims.detail("claim-extractions/pub/p5/full.json", "accepted", 0);
+    expect(row?.sourceArtifact?.path).toBe("substack/pub/p5/collected.json");
+    // A schema-valid archived capture at the pinned hash: the quote is highlighted.
+    const record = JSON.stringify({
+      item: { publicationId: "pub", postId: "p5", url: "https://pub.example.com/p/p5", title: "T" },
+      ingestionReason: "backfill",
+      text: TEXT,
+      complete: true,
+      supplied: {},
+      provenance: {
+        sourceUrl: "https://pub.example.com/p/p5",
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+        method: "article-html",
+      },
+    });
+    const verified = {
+      lookupAt: async () => ({
+        ref: { repository: "archive", commit: "a".repeat(40), path: "x", sha256: "b".repeat(64) },
+        content: record,
+      }),
+    };
+    const [, , okSource] = claimViews(savedClaims(content, verified as never));
+    const html = await okSource!.render(new URL(`http://x/claims/source?${params}`));
+    expect(html).toContain(`<mark>${TEXT.slice(0, 30)}</mark>`);
+    expect(html).toContain("verified against its recorded hash");
+    // Unverifiable records (wrong hash, or not a collection record) are refused, never shown.
+    const [, , source] = claimViews(savedClaims(content, archive("0".repeat(64)) as never));
+    expect(await source!.render(new URL(`http://x/claims/source?${params}`))).toContain(
+      "could not be read or verified",
+    );
   });
 
   it("renders safely and distinguishes no matches from unavailable", async () => {

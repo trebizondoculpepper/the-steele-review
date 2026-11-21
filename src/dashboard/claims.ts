@@ -1,6 +1,8 @@
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
+import { CollectionRecordSchema } from "../collection/collection-store.js";
+import { sourceVersionFor } from "../content/fulltext-document.js";
 
 /**
  * Saved claim proposals for the dashboard (#494). Read-only, through the
@@ -20,6 +22,12 @@ const LIST_PAGE = 50;
 const RESULT_PATH = /^claim-extractions\/([^/]+)\/([^/]+)\/[^/]+\.json$/;
 
 export type ClaimCategory = "accepted" | "candidate" | "rejected";
+export interface SourceArtifact {
+  repository: string;
+  commit: string;
+  path: string;
+  hash: string;
+}
 
 export interface ClaimRow {
   result: string;
@@ -45,6 +53,8 @@ export interface ClaimRow {
   /** commit:path of the theme result the theme ids belong to. */
   themeResult?: string;
   themeResultPath?: string;
+  /** Exact archived source revision the extraction used (from its pinned theme result). */
+  sourceArtifact?: SourceArtifact;
   modelVersion?: string;
   promptVersion?: string;
   extractedAt?: string;
@@ -68,35 +78,44 @@ export interface ClaimListing {
 export interface ClaimsPort {
   list(filter: ClaimFilter & { after?: string }): Promise<ClaimListing>;
   detail(result: string, category: ClaimCategory, index: number): Promise<ClaimRow | undefined>;
+  /**
+   * The archived source text at the claim's exact revision, verified against
+   * its recorded hash and source version; undefined when it cannot be proved.
+   */
+  sourceText(row: ClaimRow): Promise<string | undefined>;
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read" | "lookupAt">;
+type Archive = Pick<GitArtifactStore, "lookupAt">;
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 
-export function savedClaims(content: Store): ClaimsPort {
-  const themeTitles = new Map<string, Map<string, string>>();
+export function savedClaims(content: Store, archive?: Archive): ClaimsPort {
+  type Pinned = { titles: Map<string, string>; source?: SourceArtifact };
+  const pinnedThemes = new Map<string, Pinned>();
   const titlesFor = async (
     pinned?: string,
-  ): Promise<{ path?: string; titles: Map<string, string> }> => {
+  ): Promise<{ path?: string; titles: Map<string, string>; source?: SourceArtifact }> => {
     if (!pinned) return { titles: new Map() };
     const at = pinned.indexOf(":");
     const path = pinned.slice(at + 1);
-    if (!themeTitles.has(pinned)) {
-      const titles = new Map<string, string>();
+    if (!pinnedThemes.has(pinned)) {
+      const entry: Pinned = { titles: new Map() };
       try {
         const found = await content.lookupAt(pinned.slice(0, at), path);
         if (found) {
-          for (const p of parseThemeProposalResult(JSON.parse(found.content)).proposals) {
-            titles.set(p.id, p.title);
-          }
+          const result = parseThemeProposalResult(JSON.parse(found.content));
+          for (const p of result.proposals) entry.titles.set(p.id, p.title);
+          // The exact archived source revision this analysis was made from.
+          entry.source = result.artifact;
         }
       } catch {
         // titles stay unknown; ids are still shown
       }
-      themeTitles.set(pinned, titles);
+      pinnedThemes.set(pinned, entry);
     }
-    return { path, titles: themeTitles.get(pinned)! };
+    const entry = pinnedThemes.get(pinned)!;
+    return { path, titles: entry.titles, ...(entry.source ? { source: entry.source } : {}) };
   };
 
   const readResult = async (path: string): Promise<ClaimRow[] | undefined> => {
@@ -105,7 +124,7 @@ export function savedClaims(content: Store): ClaimsPort {
       const ref = await content.lookup(path);
       if (!ref) return undefined;
       const rec = ClaimExtractionRecordSchema.parse(JSON.parse(await content.read(ref)));
-      const { path: themePath, titles } = await titlesFor(rec.themeResult);
+      const { path: themePath, titles, source } = await titlesFor(rec.themeResult);
       const base = {
         result: path,
         publicationId: rec.post.publicationId,
@@ -113,6 +132,7 @@ export function savedClaims(content: Store): ClaimsPort {
         sourceVersion: rec.sourceVersion,
         ...(rec.themeResult ? { themeResult: rec.themeResult } : {}),
         ...(themePath ? { themeResultPath: themePath } : {}),
+        ...(source ? { sourceArtifact: source } : {}),
         ...(rec.extraction
           ? {
               modelVersion: str((rec.extraction as Record<string, unknown>).modelVersion),
@@ -176,7 +196,10 @@ export function savedClaims(content: Store): ClaimsPort {
         }),
       );
       rec.rejected.forEach((r, index) => {
-        const snap = (r.candidate ?? {}) as Record<string, unknown>;
+        // Diagnostic text lives under the snapshot's allowlisted `fields`;
+        // older records may carry it flat.
+        const raw = (r.candidate ?? {}) as Record<string, unknown>;
+        const snap = { ...raw, ...((raw.fields as Record<string, unknown> | undefined) ?? {}) };
         rows.push({
           ...base,
           category: "rejected",
@@ -249,6 +272,19 @@ export function savedClaims(content: Store): ClaimsPort {
     async detail(result, category, index) {
       const rows = await readResult(result);
       return rows?.find((r) => r.category === category && r.index === index);
+    },
+    async sourceText(row) {
+      const a = row.sourceArtifact;
+      if (!archive || !a) return undefined;
+      try {
+        const found = await archive.lookupAt(a.commit, a.path);
+        if (!found || `sha256:${found.ref.sha256}` !== a.hash) return undefined;
+        const text = CollectionRecordSchema.parse(JSON.parse(found.content)).text;
+        // The revision the quotation came from, not merely the same post.
+        return sourceVersionFor(text) === row.sourceVersion ? text : undefined;
+      } catch {
+        return undefined;
+      }
     },
   };
 }
