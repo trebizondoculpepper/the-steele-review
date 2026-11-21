@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
+import { createArticleApprovedEvent } from "../../src/events/article-approved-event.js";
+import { createDiscoveryEvent } from "../../src/events/discovery-event.js";
 import {
   capturedContentDataJsonSchema,
   createCapturedContentEvent,
@@ -57,7 +59,16 @@ describe("captured-content contract (#269)", () => {
     const machine = substackCapturedContent({
       artifact,
       sourceVersion,
-      record: { item: { publicationId: "saveusnow", postId: "r", url: "https://saveusnow.substack.com/p/r" }, ingestionReason: "live", complete: true, provenance: { method: "machine-transcript" } },
+      record: {
+        item: {
+          publicationId: "saveusnow",
+          postId: "r",
+          url: "https://saveusnow.substack.com/p/r",
+        },
+        ingestionReason: "live",
+        complete: true,
+        provenance: { method: "machine-transcript" },
+      },
     });
     expect(machine.transcript).toEqual({ kind: "generated", engine: "machine-transcript" });
   });
@@ -81,6 +92,47 @@ describe("captured-content contract (#269)", () => {
       eventId: event.id,
     });
     expect(event.subject).toBe("blog/example-site/2026-11-20-a-post");
+  });
+
+  it("correlates discovery, revisions, and approval for the same original post", () => {
+    const item = {
+      publicationId: "synthetic-feed",
+      postId: "fixture-post",
+      title: "Fixture post",
+      url: "https://example.test/p/fixture-post",
+    };
+    const discovery = createDiscoveryEvent(item, { reason: "live", correlationId: "poll-1" });
+    const base = substackCapturedContent({
+      artifact,
+      sourceVersion,
+      record: {
+        item,
+        ingestionReason: "live",
+        complete: true,
+        provenance: { method: "article-html" },
+      },
+    });
+    const capture = createCapturedContentEvent(base);
+    const next = createCapturedContentEvent({ ...base, sourceVersion: `sha256:${"d".repeat(64)}` });
+    const approval = createArticleApprovedEvent(
+      {
+        publicationId: item.publicationId,
+        postId: item.postId,
+        draft: artifact,
+        approval: artifact,
+        package: artifact,
+        approvedAt: "2026-01-05T08:27:15.103Z",
+      },
+      "approved-1",
+    );
+    expect(discovery.correlationid).toBe("poll-1");
+    expect(discovery.postcorrelationid).toMatch(/^post-[0-9a-f]{64}$/);
+    expect(capture.correlationid).toBe(discovery.postcorrelationid);
+    expect(next.correlationid).toBe(discovery.postcorrelationid);
+    expect(approval.correlationid).toBe(discovery.postcorrelationid);
+    expect(
+      createDiscoveryEvent({ ...item, postId: "other" }, { reason: "live" }).postcorrelationid,
+    ).not.toBe(discovery.postcorrelationid);
   });
 
   it("gives one item revision a stable event ID, and a new revision a new one", () => {

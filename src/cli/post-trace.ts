@@ -1,7 +1,7 @@
 /**
  * Per-post diagnostic trace (#174; contract in doc/architecture/16-diagnostic-cli.md).
  *
- *   post-trace <publication-id> <post-id> [--json]
+ *   post-trace <publication-id> <post-id> [--json | --correlation-id]
  *
  * Configuration (environment), each optional; an unconfigured source is
  * reported as `not-configured` rather than guessed:
@@ -26,7 +26,9 @@ import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 
-const USAGE = "Usage: post-trace <publication-id> <post-id> [--json]";
+import { postCorrelationId } from "../observability/post-correlation.js";
+
+const USAGE = "Usage: post-trace <publication-id> <post-id> [--json | --correlation-id]";
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
 async function main(argv: string[]): Promise<number> {
@@ -35,12 +37,17 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const json = argv.includes("--json");
-  const ids = argv.filter((a) => a !== "--json");
-  if (ids.length !== 2 || !ids.every((i) => ID.test(i))) {
+  const correlationOnly = argv.includes("--correlation-id");
+  const ids = argv.filter((a) => a !== "--json" && a !== "--correlation-id");
+  if ((json && correlationOnly) || ids.length !== 2 || !ids.every((i) => ID.test(i))) {
     console.error(USAGE);
     return 2;
   }
   const post = { publicationId: ids[0], postId: ids[1] };
+  if (correlationOnly) {
+    console.log(postCorrelationId(post));
+    return 0;
+  }
   const env = process.env;
   const store = (path?: string, repository?: string) =>
     path && repository ? new GitArtifactStore({ repoPath: path, repository }) : undefined;

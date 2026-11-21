@@ -1,3 +1,4 @@
+import { postCorrelationId } from "../observability/post-correlation.js";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
@@ -45,6 +46,7 @@ export function createArticleApprovedEvent(
       type: ARTICLE_APPROVED_EVENT_TYPE_V1,
       time: valid.approvedAt,
       subject: `article/${valid.publicationId}/${valid.postId}`,
+      correlationid: postCorrelationId(valid),
       datacontenttype: "application/json",
       dataschema: ARTICLE_APPROVED_DATASCHEMA_V1,
       data: valid,

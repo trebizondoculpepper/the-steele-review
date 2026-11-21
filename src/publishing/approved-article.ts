@@ -1,3 +1,4 @@
+import { logPipeline } from "../observability/pipeline-log.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -183,6 +184,22 @@ export async function handleApprovedArticle(input: {
   } catch {
     return { action: "term", reason: "invalid-event" };
   }
+  const decision = await deliverApprovedArticle(input, event, now);
+  logPipeline(
+    event,
+    "publisher",
+    decision.action === "ack" ? decision.outcome : decision.reason,
+    undefined,
+    input.destination.name,
+  );
+  return decision;
+}
+
+async function deliverApprovedArticle(
+  input: Parameters<typeof handleApprovedArticle>[0],
+  event: ReturnType<typeof parseArticleApprovedEvent>,
+  now: Date,
+): Promise<DeliveryDecision> {
   // Independent schedule per destination.
   const due = Date.parse(event.approvedAt) + input.schedule.delayMs;
   if (now.getTime() < due)
