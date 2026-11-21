@@ -175,7 +175,10 @@ describe("research runner", () => {
       "https://treaties.un.org/enmod",
       ...Array.from({ length: 399 }, (_, n) => `https://example.org/missing-${n}`),
     ];
-    await artifacts.write(`${dirName}/report.json`, `${JSON.stringify(validReport(jobId, citations))}\n`);
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, citations))}\n`,
+    );
     // A paused judge keeps the run recoverable; it must not be rejected as an
     // invalid snapshot just because the report has many citations.
     const paused: SupportJudge = {
@@ -192,7 +195,10 @@ describe("research runner", () => {
     const dirName = await jobDir();
     const jobId = dirName.replace("research-jobs/", "");
     const citations = Array.from({ length: 501 }, (_, n) => `https://example.org/${n}`);
-    await artifacts.write(`${dirName}/report.json`, `${JSON.stringify(validReport(jobId, citations))}\n`);
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, citations))}\n`,
+    );
     const paid = sonar([]);
     expect(await run(paid)).toMatchObject({
       result: { outcome: "failed", failure: "invalid-report" },
@@ -208,7 +214,10 @@ describe("research runner", () => {
       `${JSON.stringify(validReport(jobId, ["https://treaties.un.org/enmod"]))}\n`,
     );
     const { createHash } = await import("node:crypto");
-    const sourceKey = createHash("sha256").update("https://treaties.un.org/enmod").digest("hex").slice(0, 32);
+    const sourceKey = createHash("sha256")
+      .update("https://treaties.un.org/enmod")
+      .digest("hex")
+      .slice(0, 32);
     await artifacts.write(
       `${dirName}/sources/${sourceKey}.json`,
       `${JSON.stringify({
@@ -223,6 +232,56 @@ describe("research runner", () => {
       result: { outcome: "failed", failure: "invalid-report" },
     });
     expect(fetched).toBe(before);
+  });
+
+  it("fails cleanly on malformed JSON in a retained report or source, without paid calls or refetches (#432)", async () => {
+    const dirName = await jobDir();
+    await artifacts.write(`${dirName}/report.json`, "{not-json\n");
+    const paid = sonar([]);
+    const out = await run(paid);
+    expect(out).toMatchObject({ result: { outcome: "failed", failure: "invalid-report" } });
+    expect(paid.calls).toBe(0);
+    expect(JSON.stringify(out)).not.toContain("not-json");
+  });
+
+  it("fails cleanly on a malformed retained source snapshot (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, ["https://treaties.un.org/enmod"]))}\n`,
+    );
+    const { createHash } = await import("node:crypto");
+    const key = createHash("sha256")
+      .update("https://treaties.un.org/enmod")
+      .digest("hex")
+      .slice(0, 32);
+    await artifacts.write(`${dirName}/sources/${key}.json`, "{not-json\n");
+    const before = fetched;
+    expect(await run(sonar([]))).toMatchObject({
+      result: { outcome: "failed", failure: "invalid-report" },
+    });
+    expect(fetched).toBe(before);
+  });
+
+  it("accepts a retained source snapshot with empty text (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    await artifacts.write(
+      `${dirName}/report.json`,
+      `${JSON.stringify(validReport(jobId, ["https://treaties.un.org/enmod"]))}\n`,
+    );
+    const { createHash } = await import("node:crypto");
+    const key = createHash("sha256")
+      .update("https://treaties.un.org/enmod")
+      .digest("hex")
+      .slice(0, 32);
+    await artifacts.write(
+      `${dirName}/sources/${key}.json`,
+      `${JSON.stringify({ url: "https://treaties.un.org/enmod", title: "t", truncated: false, text: "" })}\n`,
+    );
+    const out = await run(sonar([]));
+    expect((out as { result: { failure?: string } }).result.failure).not.toBe("invalid-report");
   });
 
   it("saves nothing terminal on exhausted credit, so the same job runs after credit returns (#407)", async () => {

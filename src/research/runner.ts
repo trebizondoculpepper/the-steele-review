@@ -60,6 +60,15 @@ const SavedReportSchema = z
   })
   .strict();
 
+/** Parse retained bytes; malformed JSON becomes a schema failure, never a throw. */
+const parseJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+};
+
 const savedSourceSchema = (maxChars: number) =>
   z
     .object({
@@ -68,7 +77,8 @@ const savedSourceSchema = (maxChars: number) =>
       publisher: z.string().max(500).optional(),
       publishedAt: z.string().max(100).optional(),
       truncated: z.boolean(),
-      text: z.string().min(1).max(maxChars),
+      // Empty text is legitimate (a script-only page); it stays an unverified source.
+      text: z.string().max(maxChars),
     })
     .strict();
 
@@ -248,9 +258,7 @@ export async function runResearchJob(input: {
   let report: Awaited<ReturnType<SonarClient["research"]>>;
   const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
   if (savedReport) {
-    const saved = SavedReportSchema.safeParse(
-      JSON.parse(await input.artifacts.read(savedReport)),
-    );
+    const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
     // A retained snapshot that is not this job's validated report is a
     // terminal operational failure: never reuse it, never refetch over it.
     if (
@@ -324,7 +332,7 @@ export async function runResearchJob(input: {
     let archived;
     if (savedSource) {
       const saved = savedSourceSchema(limits.maxSourceChars).safeParse(
-        JSON.parse(await input.artifacts.read(savedSource)),
+        parseJson(await input.artifacts.read(savedSource)),
       );
       // The snapshot must be the source for this exact URL with bounded text;
       // anything else is invalid retained state, not a reason to refetch.
