@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { MechanicalPolicy } from "./mechanical-policy.js";
@@ -41,13 +41,12 @@ import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
 export const VERIFICATION_REPORT_SCHEMA_VERSION = 2;
 
-export const DEFAULT_PACKAGE_VERIFY_PROMPT: ExtractionPrompt = {
-  version: "package-verifier-v3",
-  instructions: readFileSync(
-    new URL("../prompts/verifier/package-verifier.md", import.meta.url),
-    "utf8",
-  ).trim(),
-};
+/**
+ * The verifier prompt is content-hashed, so a wording change changes the
+ * recorded `promptVersion` of new reports (and their cache identity) without
+ * making old reports unreadable.
+ */
+export const DEFAULT_PACKAGE_VERIFY_PROMPT = loadPromptFile("verifier", "package-verifier");
 
 const Ref = z
   .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
