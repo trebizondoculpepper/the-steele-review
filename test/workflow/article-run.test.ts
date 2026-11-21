@@ -357,4 +357,21 @@ describe("unattended article run on Restate (#243)", () => {
       reason: "invalid-input",
     });
   }, 60_000);
+
+  it("caps the ordered research plan and preserves the cap on duplicate submission", async () => {
+    plans.set("capped", ["cap-first", "cap-second", "cap-third"]);
+    const post = { ...input("capped"), researchRequestLimit: 2 };
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    const before = calls.research;
+    await client.workflowSubmit(post);
+    await client.workflowSubmit({ ...post, researchRequestLimit: 3 }).catch(() => undefined);
+    const result = await client.workflowAttach();
+    expect(result.outcome).toBe("verified");
+    expect(result.research.map((item) => item.outcome)).toEqual([
+      "finished",
+      "finished",
+      "not-commissioned",
+    ]);
+    expect(calls.research - before).toBe(2);
+  }, 120_000);
 });

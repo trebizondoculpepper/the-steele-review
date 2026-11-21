@@ -23,7 +23,7 @@ import { z } from "zod";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { NatsController } from "../controllers/nats.js";
 import { OperationStore } from "../controllers/operation-store.js";
-import type { ArticleRunApi } from "../workflow/article-run.js";
+import { ResearchRequestLimitSchema, type ArticleRunApi } from "../workflow/article-run.js";
 import { handleCapturedContent, settleCapturedDelivery } from "../workflow/captured-bridge.js";
 
 const EnvSchema = z.object({
@@ -32,6 +32,10 @@ const EnvSchema = z.object({
   STEELE_CAPTURED_CONSUMER: z.string().min(1),
   RESTATE_INGRESS_URL: z.url(),
   STEELE_ARTICLE_SOURCES: z.string().default(""),
+  STEELE_RESEARCH_REQUEST_LIMIT: z.preprocess(
+    (raw) => (raw === "" ? undefined : raw),
+    z.coerce.number().pipe(ResearchRequestLimitSchema).optional(),
+  ),
   STEELE_RESEARCH_DEADLINE_MS: z.coerce.number().int().min(1_000).max(86_400_000).optional(),
   STEELE_BRIDGE_RETRY_DELAY_MS: z.coerce.number().int().positive().optional(),
 });
@@ -78,6 +82,7 @@ async function main(): Promise<number> {
       async (message) => {
         const decision = await handleCapturedContent(new TextDecoder().decode(message.data), {
           enabledSources,
+          researchRequestLimit: c.STEELE_RESEARCH_REQUEST_LIMIT,
           researchDeadlineMs: c.STEELE_RESEARCH_DEADLINE_MS ?? 30 * 60_000,
           ...(c.STEELE_BRIDGE_RETRY_DELAY_MS
             ? { retryDelayMs: c.STEELE_BRIDGE_RETRY_DELAY_MS }

@@ -53,6 +53,7 @@ export interface ArticleRunInput {
   sourceUrl: string;
   /** Batch deadline for research, from submission, in milliseconds. */
   researchDeadlineMs: number;
+  researchRequestLimit?: number;
 }
 
 export interface ArticleRunResult {
@@ -102,7 +103,11 @@ export interface ArticleStages {
 /** A research job as pinned at the batch deadline. */
 export type PinnedResearch =
   | { jobId: string; request: ResearchRequest; outcome: "finished"; job: CommissionedJob }
-  | { jobId: string; request: ResearchRequest; outcome: "timed-out" | "failed" };
+  | {
+      jobId: string;
+      request: ResearchRequest;
+      outcome: "timed-out" | "failed" | "not-commissioned";
+    };
 
 export const RESEARCH_SCOPE = "research";
 /** Admin API body (`PUT /limits/rules`) capping active research jobs across all runs. */
@@ -191,12 +196,15 @@ export class StageError extends Error {
 }
 
 /** Validated at the workflow boundary: requests can reach Restate without the CLI. */
+export const ResearchRequestLimitSchema = z.number().int().nonnegative().max(100);
+
 export const ArticleRunInputSchema = z
   .object({
     publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
     postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
     sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     sourceUrl: z.url({ protocol: /^https$/ }),
+    researchRequestLimit: ResearchRequestLimitSchema.optional(),
     researchDeadlineMs: z.number().int().min(1_000).max(86_400_000),
     source: z
       .object({
@@ -255,9 +263,9 @@ export function articleRunWorkflow(stages: ArticleStages) {
     const claims = await step("claims", () => stages.claims(input, themes));
     const requests = await step("plan-research", () => stages.planResearch(themes, claims));
 
-    // Fan out every request at once; the scope's concurrency rule queues extras.
+    // Commission the configured prefix in librarian order. Restate limits concurrency separately.
     const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
-    requests.forEach((request, i) => {
+    requests.slice(0, input.researchRequestLimit).forEach((request, i) => {
       const jobId = researchJobId(request);
       pending.set(
         i,
@@ -285,6 +293,9 @@ export function articleRunWorkflow(stages: ArticleStages) {
     }
     const pinned: PinnedResearch[] = requests.map((request, i) => {
       const jobId = researchJobId(request);
+      if (input.researchRequestLimit !== undefined && i >= input.researchRequestLimit) {
+        return { jobId, request, outcome: "not-commissioned" };
+      }
       const job = harvested.get(i);
       if (job) return { jobId, request, outcome: "finished", job };
       return { jobId, request, outcome: job === null ? "failed" : "timed-out" };

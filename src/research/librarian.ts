@@ -287,7 +287,7 @@ export type CoverageRecord = z.infer<typeof CoverageRecordSchema>;
 /** One research job as the librarian sees it: saved outcome plus exact references. */
 export interface CommissionedJob {
   jobId: string;
-  status: "finished" | "busy";
+  status: "finished" | "busy" | "not-commissioned";
   result?: ResearchResult;
   resultRef?: ArtifactRef;
 }
@@ -352,6 +352,14 @@ function assess(
     { status: CoverageStatus; citations: { url: string; passage: string }[]; reason?: string }
   >();
   for (const claim of claims) {
+    if (job.status === "not-commissioned") {
+      out.set(claim.key, {
+        status: "not-commissioned",
+        citations: [],
+        reason: "article research request limit reached",
+      });
+      continue;
+    }
     if (job.status === "busy") {
       out.set(claim.key, {
         status: "pending",
@@ -796,7 +804,12 @@ export async function assessPostCoverage(input: {
       jobId: job.jobId,
       dossierId,
       pass,
-      outcome: job.status === "busy" ? "pending" : (job.result?.outcome ?? "unknown"),
+      outcome:
+        job.status === "finished"
+          ? (job.result?.outcome ?? "unknown")
+          : job.status === "busy"
+            ? "pending"
+            : job.status,
       ...(job.resultRef ? { result: toRef(job.resultRef) } : {}),
       ...(manifestRef ? { manifest: toRef(manifestRef) } : {}),
     });
