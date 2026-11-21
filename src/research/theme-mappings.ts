@@ -19,12 +19,24 @@ export const THEME_MAPPING_SCHEMA_VERSION = 1;
 
 /** Normalise a proposal label or scope for stable, reusable keys. */
 export function normaliseMappingKey(text: string): string {
+  return fold(text);
+}
+
+function fold(text: string): string {
   return text
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+/**
+ * Key for a proposal. The description is part of the key: "Mercury" the planet
+ * and "Mercury" the toxic metal must not share a canonical mapping.
+ */
+export function proposalMappingKey(proposal: string, description?: string): string {
+  return fold(`${proposal} ${fold(description ?? "")}`.trim());
 }
 
 export const ThemeMappingSchema = z
@@ -34,6 +46,8 @@ export const ThemeMappingSchema = z
     key: z.string().min(1).max(300),
     /** The proposal wording exactly as assessed, for review. */
     proposal: z.string().min(1).max(300),
+    /** The proposal description, which separates same-titled different topics. */
+    description: z.string().max(1000).optional(),
     /** Optional scope, e.g. a publication or programme, when the decision was scoped. */
     scope: z.string().min(1).max(120).optional(),
     /** Stable canonical research topic / dossier the proposal maps to. */
@@ -70,6 +84,7 @@ export function themeMappingPath(m: Pick<ThemeMapping, "key" | "scope">): string
 
 export interface ThemeMappingQuery {
   proposal: string;
+  description?: string;
   scope?: string;
 }
 
@@ -81,7 +96,7 @@ export class ThemeMappingCatalogue {
   constructor(private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write">) {}
 
   async lookup(query: ThemeMappingQuery): Promise<ThemeMapping | undefined> {
-    const key = normaliseMappingKey(query.proposal);
+    const key = proposalMappingKey(query.proposal, query.description);
     const candidates: Array<Pick<ThemeMapping, "key" | "scope">> = [];
     if (query.scope !== undefined) candidates.push({ key, scope: query.scope });
     candidates.push({ key });
@@ -99,7 +114,7 @@ export class ThemeMappingCatalogue {
    * the first decision, so history is never silently rewritten.
    */
   async record(mapping: Omit<ThemeMapping, "schemaVersion" | "key">): Promise<ThemeMapping> {
-    const key = normaliseMappingKey(mapping.proposal);
+    const key = proposalMappingKey(mapping.proposal, mapping.description);
     if (key.length === 0) throw new Error("theme mapping: empty proposal");
     const payload = ThemeMappingSchema.parse({
       schemaVersion: THEME_MAPPING_SCHEMA_VERSION,

@@ -654,7 +654,10 @@ export async function assessPostCoverage(input: {
     }
     // A decision made for the same proposal on another post is reused instead
     // of recalculated, as long as its canonical dossier still exists (#518).
-    const catalogued = await catalogue.lookup({ proposal: p.title });
+    const catalogued = await catalogue.lookup({
+      proposal: p.title,
+      ...(p.description ? { description: p.description } : {}),
+    });
     if (catalogued && existing.has(catalogued.canonicalThemeId)) {
       const dossierId = catalogued.canonicalThemeId;
       if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
@@ -692,13 +695,24 @@ export async function assessPostCoverage(input: {
     // Only an accepted equivalence teaches the catalogue: a new dossier is
     // this post's own invention and must not become a global default.
     if (decision.themeId !== null) {
-      await catalogue.record({
+      const winner = await catalogue.record({
         proposal: p.title,
+        ...(p.description ? { description: p.description } : {}),
         canonicalThemeId: dossierId,
         decidedAt: now,
         decidedBy: { publicationId: post.publicationId, postId: post.postId },
         rationale: decision.rationale,
       });
+      // A concurrent assessment may have stored a different winner. It is
+      // authoritative: this mapping must not diverge from it.
+      if (winner.canonicalThemeId !== dossierId && existing.has(winner.canonicalThemeId)) {
+        const saved = mappings[mappings.length - 1]!;
+        saved.dossierId = winner.canonicalThemeId;
+        saved.method = "catalogue";
+        saved.created = false;
+        saved.rationale = "reconciled to the saved catalogue winner";
+        dossierFor.set(p.id, winner.canonicalThemeId);
+      }
     }
   }
 

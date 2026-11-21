@@ -70,6 +70,16 @@ describe("theme mapping catalogue (#518)", () => {
     );
   });
 
+  it("separates same-titled proposals that mean different things", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    await catalogue.record({ ...decided, proposal: "Mercury", description: "the planet" });
+    expect(
+      (await catalogue.lookup({ proposal: "Mercury", description: "the planet" }))?.canonicalThemeId,
+    ).toBe("geoengineering");
+    // A different meaning must not inherit the planet's mapping.
+    expect(await catalogue.lookup({ proposal: "Mercury", description: "the toxic metal" })).toBeUndefined();
+  });
+
   it("handles a non-ASCII proposal without an invalid artifact path", async () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
     const saved = await catalogue.record({ ...decided, proposal: "El Niño anomalies" });
