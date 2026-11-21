@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
@@ -26,16 +27,7 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js"
  * generated text, labelled as such, never evidence. No new research.
  */
 
-export const DEFAULT_COMPARISON_PROMPT: ExtractionPrompt = {
-  version: "historical-comparison-v1",
-  instructions: [
-    "Compare the current claim with the earlier passages from the same publication.",
-    "Use kind: repetition (same assertion), reframing (same topic, different framing), possible-contradiction (cannot both be true as stated) or insufficient-context.",
-    "Similar wording is not contradiction. Only report possible-contradiction with a quote from the current passage, a quote from an earlier passage, and a rationale for why they conflict.",
-    "Quote exactly. Each side carries its publication date; use it to read relative dates. Note changed circumstances (time passed, new events) when relevant. Give uncertainty low, medium or high.",
-    'Respond with JSON only: {"findings":[{"kind","explanation","uncertainty","changedCircumstances?","currentQuote?","earlier":[{"passageId","quote"}],"conflictRationale?"}]}.',
-  ].join("\n"),
-};
+export const DEFAULT_COMPARISON_PROMPT = loadPromptFile("analysis", "historical-comparison-v1");
 
 const KindSchema = z.enum([
   "repetition",

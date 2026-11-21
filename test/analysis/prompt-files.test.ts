@@ -10,9 +10,14 @@ import { DEFAULT_EQUIVALENCE_PROMPT } from "../../src/analysis/claim-equivalence
 import { DEFAULT_APPLICABILITY_PROMPT } from "../../src/research/applicability.js";
 import { DEFAULT_GAP_RESEARCH_PROMPT } from "../../src/research/gap-research.js";
 import { DEFAULT_QUERY_PLAN_PROMPT } from "../../src/research/query-plan.js";
+import {
+  DEFAULT_VERIFY_PROMPT,
+  DEFAULT_VERIFY_CONTEXT_PROMPT,
+} from "../../src/drafting/verify.js";
+import { DEFAULT_COMPARISON_PROMPT } from "../../src/analysis/historical-comparison.js";
 
 /**
- * Migration parity for #421-#423: the exact rendered text of every migrated
+ * Migration parity for #421-#424: the exact rendered text of every migrated
  * prompt is pinned here, so moving a prompt into Markdown cannot silently
  * reword it. Each key is "<service>/<prompt name>".
  */
@@ -25,6 +30,9 @@ const EXPECTED: Record<string, string> = {
   "research/applicability-v1": "Decide whether each existing research entry applies to the new claim.\napplicability: applicable (answers this claim), partial (stable background applies, specifics do not) or not-applicable (different subject, even if similar wording).\nList the evidence items (url and exact passage) from that entry that support reuse, and the incident-specific details of the new claim that the entry does not cover as gaps.\nRespond with JSON only: {\"assessments\":[{\"entryId\",\"applicability\",\"rationale\",\"reuseEvidence\":[{\"url\",\"passage\"}],\"gaps\":[]}],\"gaps\":[]}.",
   "research/gap-research-v1": "Using only the supplied pages, decide whether they support, contradict or fail to settle the claim, for the listed gaps only.\nQuote passages exactly from the pages. Never cite a page that is not supplied.\nfinding: supported, contradicted, unsupported (nothing either way) or unresolved (cannot be settled; give unresolvedReason).\nRespond with JSON only: {\"finding\",\"explanation\",\"evidence\":[{\"url\",\"quote\"}],\"unresolvedReason?\",\"limitations\":[],\"remainingGaps\":[]}.",
   "research/query-plan-v1": "Plan distinct web search queries for the listed evidence gaps.\nEvery query must include the gapId of an input gap; never invent a gap.\nReformulate neutrally: alternative terms, recognised topic aliases, or the kind of source that would settle the question.\nQueries may seek evidence that supports, contradicts or qualifies the claim; do not assume the desired answer.\nDo not repeat a prior query, and never return more queries than the remaining allowance.\nRespond with JSON only: {\"queries\":[{\"gapId\",\"query\"}]}.",
+  "verifier/draft-verifier-v1": "You are the verifier, not the writer. Check whether every statement in the draft is supported by the supplied brief and its evidence passages.\nDo not use outside knowledge and do not research. Overstated certainty, dropped qualifications, misattributed evidence or claims the evidence does not support are issues.\nFor each issue, quote the exact draft passage, explain the problem and state the required change. Respond with JSON only: {\"verdict\":\"approve\"|\"redraft\",\"issues\":[{\"passage\",\"problem\",\"requiredChange\"}]}.",
+  "verifier/draft-verifier-context-v1": "You are the verifier, not the writer. Check whether every statement in the draft is supported by the supplied brief, its evidence passages and, for the summary only, the supplied original post. The related-themes section may use the supplied themes.\nThe summary must fairly represent originalPost. Factual corrections must be supported by the cited research; the original post is the monitored source and never confirms its own statements.\nDo not use outside knowledge and do not research. Overstated certainty, dropped qualifications, misattributed evidence, an unfair summary, or claims the evidence does not support are issues.\nFor each issue, quote the exact draft passage, explain the problem and state the required change. Respond with JSON only: {\"verdict\":\"approve\"|\"redraft\",\"issues\":[{\"passage\",\"problem\",\"requiredChange\"}]}.",
+  "analysis/historical-comparison-v1": "Compare the current claim with the earlier passages from the same publication.\nUse kind: repetition (same assertion), reframing (same topic, different framing), possible-contradiction (cannot both be true as stated) or insufficient-context.\nSimilar wording is not contradiction. Only report possible-contradiction with a quote from the current passage, a quote from an earlier passage, and a rationale for why they conflict.\nQuote exactly. Each side carries its publication date; use it to read relative dates. Note changed circumstances (time passed, new events) when relevant. Give uncertainty low, medium or high.\nRespond with JSON only: {\"findings\":[{\"kind\",\"explanation\",\"uncertainty\",\"changedCircumstances?\",\"currentQuote?\",\"earlier\":[{\"passageId\",\"quote\"}],\"conflictRationale?\"}]}.",
 };
 
 const prompts: Record<string, { version: string; instructions: string }> = {
@@ -36,6 +44,9 @@ const prompts: Record<string, { version: string; instructions: string }> = {
   "research/applicability-v1": DEFAULT_APPLICABILITY_PROMPT,
   "research/gap-research-v1": DEFAULT_GAP_RESEARCH_PROMPT,
   "research/query-plan-v1": DEFAULT_QUERY_PLAN_PROMPT,
+  "verifier/draft-verifier-v1": DEFAULT_VERIFY_PROMPT,
+  "verifier/draft-verifier-context-v1": DEFAULT_VERIFY_CONTEXT_PROMPT,
+  "analysis/historical-comparison-v1": DEFAULT_COMPARISON_PROMPT,
 };
 
 const keys = Object.keys(EXPECTED);
@@ -44,7 +55,7 @@ const split = (key: string): [string, string] => {
   return [key.slice(0, index), key.slice(index + 1)];
 };
 
-describe("prompt files (#421-#423)", () => {
+describe("prompt files (#421-#424)", () => {
   it.each(keys)("renders %s exactly as before the move", (key) => {
     const [service, name] = split(key);
     expect(prompts[key]!.instructions).toBe(EXPECTED[key]);

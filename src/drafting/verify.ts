@@ -2,6 +2,7 @@ import { contextForModel, contextMatchesBrief, type PinnedContext } from "./pinn
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudEvent } from "cloudevents";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
 import {
@@ -36,25 +37,13 @@ export const VERIFICATION_SCHEMA_VERSION = 1;
 export const DRAFT_VERIFIED_SUBJECT = "steele.v1.draft.verified";
 export const DRAFT_VERIFIED_EVENT_TYPE_V1 = "org.steele.draft.verified.v1";
 
-export const DEFAULT_VERIFY_PROMPT: ExtractionPrompt = {
-  version: "draft-verifier-v1",
-  instructions: [
-    "You are the verifier, not the writer. Check whether every statement in the draft is supported by the supplied brief and its evidence passages.",
-    "Do not use outside knowledge and do not research. Overstated certainty, dropped qualifications, misattributed evidence or claims the evidence does not support are issues.",
-    'For each issue, quote the exact draft passage, explain the problem and state the required change. Respond with JSON only: {"verdict":"approve"|"redraft","issues":[{"passage","problem","requiredChange"}]}.',
-  ].join("\n"),
-};
+export const DEFAULT_VERIFY_PROMPT = loadPromptFile("verifier", "draft-verifier-v1");
 
 /** Verifier prompt when pinned whole-post context is supplied (#164). */
-export const DEFAULT_VERIFY_CONTEXT_PROMPT: ExtractionPrompt = {
-  version: "draft-verifier-context-v1",
-  instructions: [
-    "You are the verifier, not the writer. Check whether every statement in the draft is supported by the supplied brief, its evidence passages and, for the summary only, the supplied original post. The related-themes section may use the supplied themes.",
-    "The summary must fairly represent originalPost. Factual corrections must be supported by the cited research; the original post is the monitored source and never confirms its own statements.",
-    "Do not use outside knowledge and do not research. Overstated certainty, dropped qualifications, misattributed evidence, an unfair summary, or claims the evidence does not support are issues.",
-    'For each issue, quote the exact draft passage, explain the problem and state the required change. Respond with JSON only: {"verdict":"approve"|"redraft","issues":[{"passage","problem","requiredChange"}]}.',
-  ].join("\n"),
-};
+export const DEFAULT_VERIFY_CONTEXT_PROMPT = loadPromptFile(
+  "verifier",
+  "draft-verifier-context-v1",
+);
 
 const ModelVerdictSchema = z
   .object({
