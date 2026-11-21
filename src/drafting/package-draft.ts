@@ -695,6 +695,7 @@ export async function draftFromPackage(input: {
           ...(isCorrection ? { repairPromptVersion: repairPromptId } : {}),
           ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
           signal,
+          leaseMs: Math.max(10 * 60_000, policy.deadlineMs + 60_000),
           ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
         });
       } catch (error) {

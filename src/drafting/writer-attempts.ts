@@ -133,6 +133,8 @@ export async function captureWriterAttempt(input: {
   signal: AbortSignal;
   /** Explicit operator recovery of a confirmed rejection before any response. */
   recoveryId?: string;
+  /** Must cover the configured request deadline plus durable capture. */
+  leaseMs?: number;
 }): Promise<CapturedWriterAttempt> {
   const descriptor = {
     schemaVersion: 1,
@@ -240,7 +242,13 @@ export async function captureWriterAttempt(input: {
       ...(manifest.raw ? { text: await input.content.read(fromRef(manifest.raw)) } : {}),
     };
   }
-  const held = input.operations.claim(stateKey, "writer-attempt", 10 * 60_000, 1);
+  const leaseMs = z
+    .number()
+    .int()
+    .min(1000)
+    .max(20 * 60_000)
+    .parse(input.leaseMs ?? 10 * 60_000);
+  const held = input.operations.claim(stateKey, "writer-attempt", leaseMs, 1);
   if (held.kind === "busy") throw new WriterAttemptError("busy");
   if (held.kind !== "claimed") {
     const manifest = WriterAttemptManifestSchema.parse({
