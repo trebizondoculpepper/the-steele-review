@@ -1,5 +1,6 @@
 import { convert } from "html-to-text";
 import { z } from "zod";
+import { postByline } from "./byline.js";
 import type { SubstackItem } from "../../content/substack-item.js";
 import { PreviewImageSchema, type PreviewImage } from "../../collection/collection-store.js";
 import {
@@ -244,6 +245,11 @@ export class SubstackContentCollector {
         return { kind: "unavailable", item, reason: "malformed-response" };
       }
       post = parsed.data;
+      // Fetched explicit bylines take precedence over older feed metadata.
+      // Multiple/invalid bylines must not become a guessed single speaker.
+      if (post.publishedBylines !== undefined && post.publishedBylines !== null) {
+        item = { ...item, author: postByline(post.publishedBylines) };
+      }
     } catch (error) {
       return this.failure(item, error);
     }

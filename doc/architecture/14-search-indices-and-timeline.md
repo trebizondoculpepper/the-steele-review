@@ -17,6 +17,21 @@ An occurrence identifies who asserted a statement in an exact source passage. A 
 
 Store post author/publisher separately from attributed speaker. A quoted person may be the speaker, and uncertainty must remain explicit. Use source publication time for the observed publication timeline, an evidenced assertion time only when actually supplied, and extraction time separately. Missing dates remain missing. Counts report their unit (occurrences or distinct posts) and the collected corpus coverage; do not claim frequency across material that was never collected.
 
+Explicit source bylines are optional bounded metadata: RSS `dc:creator` or a
+single Substack `publishedBylines` name. Preserve them in discovery/capture,
+project them as `author` in source search, and pass them to claim occurrences
+as `publisher.author`. A fetched byline supersedes feed metadata; multiple or
+invalid fetched bylines do not identify one speaker. Never infer a name from
+the publication. Author-voice occurrences may use that explicit byline for
+same-speaker history; missing bylines remain unverified. Original records
+without authors remain readable and are not retroactively attributed.
+
+Deploy consumers that understand the optional field before emitting it, and
+run provisioning to add the compatible `author` keyword mapping to existing
+full-text indices before indexing attributed captures. This does not recapture
+or backfill the archive. Claim-extraction cache identity includes a supplied
+author so an old unattributed result cannot silently answer an attributed run.
+
 ## Embedding compatibility and evidence
 
 Generate embeddings outside Elasticsearch through the embedding controller. Store model identifier, dimensions, splitter version and input/source hash alongside passages. Use the same compatible model for query vectors; matching dimensions alone does not make models interchangeable. Model or splitter changes require a deliberate derived-index rebuild, not silent mixing.

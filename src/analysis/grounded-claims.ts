@@ -313,17 +313,15 @@ export function claimExtractionPath(
   promptVersion: string,
   /** The exact theme result the claims link to; part of the cache identity. */
   themeResult?: string,
+  /** Explicit byline is grounding metadata; never reuse an unattributed cache for it. */
+  sourceAuthor?: string,
 ): string {
-  const key = createHash("sha256")
-    .update(
-      JSON.stringify(
-        themeResult === undefined
-          ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
-          : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult],
-      ),
-    )
-    .digest("hex")
-    .slice(0, 16);
+  const identity =
+    themeResult === undefined
+      ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
+      : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult];
+  if (sourceAuthor !== undefined) identity.push(`author:${sourceAuthor}`);
+  const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
   return `claim-extractions/${post.publicationId}/${post.postId}/${sourceVersion.slice(7, 39)}-${key}.json`;
 }
 
@@ -384,6 +382,7 @@ export async function extractGroundedClaims(input: {
     input.provider.modelVersion,
     prompt.version,
     input.themeResult,
+    source.author,
   );
 
   let record: ClaimExtractionRecord;
