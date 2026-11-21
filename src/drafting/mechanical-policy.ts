@@ -10,7 +10,11 @@ export const MechanicalPolicySchema = z
 export type MechanicalPolicy = z.infer<typeof MechanicalPolicySchema>;
 export function writerMechanicalPolicy(env: NodeJS.ProcessEnv): MechanicalPolicy {
   return MechanicalPolicySchema.parse({
-    ...(env.STEELE_WRITER_TURN_LIMIT ? { maxTurns: Number(env.STEELE_WRITER_TURN_LIMIT) } : {}),
-    ...(env.STEELE_WRITER_DEADLINE_MS ? { deadlineMs: Number(env.STEELE_WRITER_DEADLINE_MS) } : {}),
+    ...(env.STEELE_WRITER_TURN_LIMIT?.trim()
+      ? { maxTurns: Number(env.STEELE_WRITER_TURN_LIMIT) }
+      : {}),
+    ...(env.STEELE_WRITER_DEADLINE_MS?.trim()
+      ? { deadlineMs: Number(env.STEELE_WRITER_DEADLINE_MS) }
+      : {}),
   });
 }

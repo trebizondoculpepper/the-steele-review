@@ -124,3 +124,10 @@ references, distinct from returned model output and accepted articles. Exhaustio
 retains everything without approval. A restarted loop reuses identical saved
 responses; it does not buy them again. All successful payloads still require
 independent verification of their exact body and publication fields.
+
+Workflow results expose mechanical-run references, not raw output. If mechanical
+repair of an editorial redraft fails, the result remains `failed` and retains the
+last valid draft and its negative verifier report for inspection. Neither record
+is an approval. Deploy updated artifact readers/consumers before the writer that
+produces the new optional metadata fields; retain the active workflow endpoint
+until existing invocations finish.

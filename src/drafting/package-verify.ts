@@ -341,7 +341,14 @@ export type RevisionLoopOutcome =
       revisions: number;
       issues: VerificationIssue[];
     }
-  | { outcome: "failed"; reason: string; revisions: number };
+  | {
+      outcome: "failed";
+      reason: string;
+      revisions: number;
+      draft?: ArtifactRef;
+      report?: ArtifactRef;
+      mechanicalRun?: ArtifactRef;
+    };
 
 /**
  * Verify, then redraft with the verifier's substantive feedback, up to the
@@ -423,6 +430,11 @@ export async function verifyWithRevisions(input: {
         outcome: "failed",
         reason: redraft.status === "failed" ? redraft.reason : redraft.status,
         revisions,
+        draft: draftRef,
+        report: verified.ref,
+        ...("mechanicalRun" in redraft && redraft.mechanicalRun
+          ? { mechanicalRun: redraft.mechanicalRun }
+          : {}),
       };
     }
     metadata = redraft.metadata;

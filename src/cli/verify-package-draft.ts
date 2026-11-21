@@ -129,7 +129,14 @@ async function main(): Promise<number> {
       ok = out.outcome === "approved";
       report =
         out.outcome === "failed"
-          ? { outcome: "failed", reason: out.reason, revisions: out.revisions }
+          ? {
+              outcome: "failed",
+              reason: out.reason,
+              revisions: out.revisions,
+              ...(out.mechanicalRun ? { mechanicalRun: out.mechanicalRun } : {}),
+              ...(out.draft ? { lastValidDraft: out.draft } : {}),
+              ...(out.report ? { report: out.report } : {}),
+            }
           : {
               outcome: out.outcome,
               revisions: out.revisions,

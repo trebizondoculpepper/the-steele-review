@@ -617,4 +617,28 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     expect(writer.calls).toBe(2);
     expect(await content.read(out.draft)).not.toContain("fake reference [1]");
   });
+  it("retains the last valid draft and verifier report when mechanical redraft repair fails", async () => {
+    const { pkg, metadata, draft } = await drafted();
+    const out = await verifyWithRevisions({
+      operations,
+      content,
+      archive,
+      package: pkg.ref,
+      metadata,
+      writer: model("fake/bad-redraft", "{broken"),
+      verifier: model("fake/independent-verifier", OVERSTATED),
+      sourceUrl: "https://pub.example.com/p/p1",
+      mechanicalPolicy: { maxTurns: 1 },
+    });
+    expect(out).toMatchObject({
+      outcome: "failed",
+      reason: "malformed-output",
+      revisions: 0,
+      draft,
+    });
+    if (out.outcome !== "failed" || !out.report || !out.mechanicalRun)
+      throw new Error("missing retained refs");
+    expect(JSON.parse(await content.read(out.report)).outcome).toBe("redraft");
+    expect(JSON.parse(await content.read(out.mechanicalRun)).outcome).toBe("turns-exhausted");
+  });
 });

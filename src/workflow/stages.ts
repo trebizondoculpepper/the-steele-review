@@ -289,7 +289,9 @@ export function articleStages(deps: {
         sourceUrl,
       });
       const diagnostics = "diagnostics" in out ? out.diagnostics?.map(plain) : undefined;
-      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics };
+      const mechanicalRun =
+        "mechanicalRun" in out && out.mechanicalRun ? plain(out.mechanicalRun) : undefined;
+      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics, mechanicalRun };
       return {
         failure:
           out.status === "failed"
@@ -298,6 +300,7 @@ export function articleStages(deps: {
               : out.reason
             : out.status,
         ...(diagnostics?.length ? { diagnostics } : {}),
+        ...(mechanicalRun ? { mechanicalRun } : {}),
       };
     },
 
@@ -327,6 +330,14 @@ export function articleStages(deps: {
           reason: `unresolved after ${out.revisions} redrafts`,
         };
       }
+      if (out.mechanicalRun)
+        return {
+          approved: false,
+          failure: `verify: ${out.reason}`,
+          ...(out.draft ? { draft: plain(out.draft) } : {}),
+          ...(out.report ? { ref: plain(out.report) } : {}),
+          mechanicalRun: plain(out.mechanicalRun),
+        };
       throw new Error(`verify: ${out.reason}`);
     },
 
