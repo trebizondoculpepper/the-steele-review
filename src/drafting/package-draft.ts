@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -33,21 +33,13 @@ export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v5";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
-export const PACKAGE_REVISION_INSTRUCTIONS = readFileSync(
-  new URL("../prompts/writer/package-revision.md", import.meta.url),
-  "utf8",
-).trim();
+const PACKAGE_REVISION_PROMPT = loadPromptFile("writer", "package-revision");
+export const PACKAGE_REVISION_INSTRUCTIONS = PACKAGE_REVISION_PROMPT.instructions;
 /** Identity of the revision instructions; part of a redraft's identity. */
-export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
+export const PACKAGE_REVISION_PROMPT_VERSION = PACKAGE_REVISION_PROMPT.version;
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
-export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "package-draft-v10",
-  instructions: readFileSync(
-    new URL("../prompts/writer/package-explainer.md", import.meta.url),
-    "utf8",
-  ).trim(),
-};
+export const DEFAULT_PACKAGE_DRAFT_PROMPT = loadPromptFile("writer", "package-explainer");
 
 /**
  * Bounds on the separately generated publication fields (#456). They are the

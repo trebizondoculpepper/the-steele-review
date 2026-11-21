@@ -4,7 +4,7 @@ Write a blog article debunking the conspiracy theory material you've been handed
 
 Our blog is about conspiracy theory. We are trying to review conspiracy content posted by notable conspiracy theorists and put their words into context. We do not want to advertise and promote these false narratibves, but we want to explain the messages, so that readers can understand how the conspiracy theories work.
 
-I want you to writw a fair, correct article in a conversational style for a curious general reader. Aim for about 900 words.
+I want you to write a fair, correct article in a conversational style for a curious general reader. Aim for about 900 words in the body. That is an editorial target, not a requirement to pad a thin evidence package: when the evidence is sparse, a shorter article is better than filler.
 
 All our articles should follow a similar template:
 
@@ -40,6 +40,12 @@ For supported narrative/context fields, cite only the supplied history/backgroun
 Respond with a single valid JSON object, without code fences:
 
 {"title":"...","subtitle":"...","excerpt":"...","summary":"...","themes":["..."],"responses":[{"claimRecordId":"...","verdict":"supported|contradicted|unsupported|unresolved","text":"...","evidence":[0]}],"limitations":["..."],"narrative":{"status":"supported","text":"...","history":[0]} or {"status":"limited","limitation":"..."},"widerContext":{"status":"supported","text":"...","background":[0]} or {"status":"limited","limitation":"..."}}.
-`title` (at most 140 characters), `subtitle` (at most 280) and `excerpt` (at most 500) are your own short copy for the published post, each a single plain line with no Markdown. The title names the article, not the source post; the excerpt is a concise summary of the article, not a quotation and not new evidence. They are separate from the article body, so do not repeat them as a heading in the summary.
+`title` (at most 140 characters), `subtitle` (at most 280) and `excerpt` (at most 500) are your own short copy for the published post, each a single plain line with no Markdown. They are separate from the article body, so do not repeat them as a heading in the summary.
+
+Editorial definitions for that copy (our house style, not a destination API specification):
+- `title`: a short, pithy hook that teases the article accurately. It names the article, not the source post.
+- `subtitle`: adds a reason to read rather than repeating the title; preferably it poses the central question the article answers.
+- `excerpt`: a three-sentence summary of the article, distinct from a quotation and not additional evidence.
+- The body is the roughly 900-word essay; keep it an editorial aim and never pad a thin evidence package to reach it.
 Copy every `claimRecordId` exactly from the provided claims. Never generate an ID or quote.
 `evidence` lists the indices of that claim's supplied evidence items that the text relies on.
