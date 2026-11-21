@@ -28,6 +28,7 @@ export interface CapturedBridgeOptions {
   enabledSources: ReadonlySet<string>;
   /** Research batch deadline for submitted runs. */
   researchDeadlineMs: number;
+  researchRequestLimit?: number;
   /** Submit (or attach to) the workflow with this key. Throws when Restate is unreachable. */
   submit(key: string, input: ArticleRunInput): Promise<SubmitResult>;
   retryDelayMs?: number;
@@ -47,6 +48,7 @@ export type BridgeDecision =
 export function articleRunInputFor(
   event: ReturnType<typeof parseCapturedContentEvent>,
   researchDeadlineMs: number,
+  researchRequestLimit?: number,
 ): ArticleRunInput {
   const target = articleRunTarget(event.source.namespace, event.itemId);
   return {
@@ -54,6 +56,7 @@ export function articleRunInputFor(
     sourceVersion: event.sourceVersion,
     sourceUrl: event.originalUrl,
     researchDeadlineMs,
+    ...(researchRequestLimit === undefined ? {} : { researchRequestLimit }),
     source: {
       namespace: event.source.namespace,
       itemId: event.itemId,
@@ -83,7 +86,7 @@ export async function handleCapturedContent(
     return { action: "ack", outcome: "skipped", reason: "source-disabled" };
   if (!event.complete) return { action: "ack", outcome: "skipped", reason: "incomplete" };
 
-  const input = articleRunInputFor(event, options.researchDeadlineMs);
+  const input = articleRunInputFor(event, options.researchDeadlineMs, options.researchRequestLimit);
   const key = articleRunKey(input);
   try {
     const outcome = await options.submit(key, input);

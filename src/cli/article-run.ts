@@ -1,7 +1,7 @@
 /**
  * Start one unattended article run for a captured post (#243).
  *
- *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--wait] [--json]
+ *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--wait] [--json]
  *
  * Reads the captured post to find its exact source version, then submits the
  * `ArticleRun` workflow keyed by publication, post and source version. A
@@ -19,10 +19,14 @@ import { z } from "zod";
 import { collectionArtifactPath, CollectionRecordSchema } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
-import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
+import {
+  articleRunKey,
+  ResearchRequestLimitSchema,
+  type ArticleRunApi,
+} from "../workflow/article-run.js";
 
 const USAGE =
-  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--wait] [--json]";
+  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--wait] [--json]";
 const Env = z.object({
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
@@ -38,6 +42,7 @@ async function main(): Promise<number> {
         "publication-id": { type: "string" },
         "post-id": { type: "string" },
         "deadline-ms": { type: "string" },
+        "research-request-limit": { type: "string" },
         wait: { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean" },
@@ -61,7 +66,12 @@ async function main(): Promise<number> {
     .max(86_400_000)
     .default(30 * 60_000)
     .safeParse(values["deadline-ms"]);
-  if (!pub.success || !postId.success || !deadline.success) {
+  const requestLimit = z.coerce
+    .number()
+    .pipe(ResearchRequestLimitSchema)
+    .optional()
+    .safeParse(values["research-request-limit"]);
+  if (!pub.success || !postId.success || !deadline.success || !requestLimit.success) {
     console.error(USAGE);
     return 2;
   }
@@ -88,6 +98,7 @@ async function main(): Promise<number> {
     sourceVersion: sourceVersionFor(record.text),
     sourceUrl: record.item.url,
     researchDeadlineMs: deadline.data,
+    ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
   };
   const key = articleRunKey(input);
   const ingress = clients.connect({ url: env.data.RESTATE_INGRESS_URL });

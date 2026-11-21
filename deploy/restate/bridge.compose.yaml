@@ -15,6 +15,7 @@ services:
       STEELE_STATE_PATH: /data/state/captured-bridge.sqlite
       RESTATE_INGRESS_URL: http://restate:8080
       STEELE_ARTICLE_SOURCES: ${STEELE_ARTICLE_SOURCES:-}
+      STEELE_RESEARCH_REQUEST_LIMIT: ${STEELE_RESEARCH_REQUEST_LIMIT:-}
       STEELE_RESEARCH_DEADLINE_MS: ${STEELE_RESEARCH_DEADLINE_MS:-1800000}
     volumes:
       - ${STEELE_STATE_DIR:?Set the state directory privately}:/data/state
