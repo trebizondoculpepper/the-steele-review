@@ -22,6 +22,7 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *   STEELE_MODEL_HISTORY?                            model for history matching and comparison
  *   STEELE_ARTICLE_WORKER_PORT?                      default 9080
  */
+import { SourceMetadataError, sourceMetadataFromEnv } from "../content/source-metadata.js";
 import { hostname } from "node:os";
 import * as restate from "@restatedev/restate-sdk";
 import { z } from "zod";
@@ -94,7 +95,9 @@ function main(): number {
   try {
     sonar = sonarFromEnv();
     writer = openRouterFromEnv({ env: { ...process.env, STEELE_MODEL: writerModel(process.env) } });
+    const sourceMetadata = sourceMetadataFromEnv(process.env);
     stages = articleStages({
+      ...(sourceMetadata ? { sourceMetadata } : {}),
       mechanicalPolicy: writerMechanicalPolicy(process.env),
       archive: new GitArtifactStore({
         repoPath: c.STEELE_ARCHIVE_PATH,
@@ -127,7 +130,11 @@ function main(): number {
       ...(history ? { history } : {}),
       owner: `article-worker@${hostname()}:${process.pid}`,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof SourceMetadataError) {
+      console.error(`article-worker: source metadata ${error.code}`);
+      return 2;
+    }
     console.error("article-worker: model or research provider is not configured");
     return 2;
   }

@@ -1,3 +1,4 @@
+import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
 import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
@@ -77,6 +78,8 @@ export function articleStages(deps: {
    * nothing is found, the article simply has no historical section.
    */
   history?: SpeakerComparisonDeps;
+  /** Configured source attribution (#482); absent keeps legacy behaviour. */
+  sourceMetadata?: ParsedSourceMetadata;
   owner: string;
 }): ArticleStages {
   const loadSource = async (post: ArticleRunInput) => {
@@ -156,8 +159,13 @@ export function articleStages(deps: {
     async claims(post, themes) {
       const { ref, record, sourceVersion } = await loadSource(post);
       const themeResult = parseThemeProposalResult(JSON.parse(await deps.content.read(themes)));
+      const attribution = postAttribution(deps.sourceMetadata, {
+        publicationId: post.publicationId,
+        ...(record.item.author ? { author: record.item.author } : {}),
+      });
       const out = await extractGroundedClaims({
         provider: deps.models.claims,
+        ...(attribution ? { attribution } : {}),
         artifacts: deps.content,
         themes: themeResult.proposals.map((p) => ({
           id: p.id,

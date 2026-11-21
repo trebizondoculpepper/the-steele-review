@@ -68,6 +68,20 @@ export interface InspectionReport {
     /** Set when the linked theme result describes a different source version. */
     sourceVersionMismatch?: boolean;
     versions?: { model: string; prompt: string };
+    /** Post-author attribution the extraction used (#462/#482); never raw configuration. */
+    attribution?:
+      | {
+          author: string;
+          authorId?: string;
+          basis: "post-byline" | "source-configured";
+          sourceMetadataVersion: string;
+        }
+      | {
+          status: "unknown";
+          reason: "no-byline-no-default" | "ambiguous-byline";
+          sourceMetadataVersion: string;
+        }
+      | { status: "legacy-unknown" };
     accepted?: InspectedClaim[];
     /** Schema-v1 claims: never certified as accepted under the current contract. */
     legacy?: InspectedClaim[];
@@ -309,15 +323,10 @@ export async function inspectPost(
         : {}),
       versions: { model: record.extraction.modelVersion, prompt: record.extraction.promptVersion },
       // Why this extraction attributed the post author (#462); never the raw configuration.
-      ...(record.extraction.attribution
-        ? {
-            attribution: {
-              author: record.extraction.attribution.author,
-              basis: record.extraction.attribution.basis,
-              sourceMetadataVersion: record.extraction.attribution.sourceMetadataVersion,
-            },
-          }
-        : {}),
+      // Legacy records extracted without source configuration say so explicitly.
+      attribution: record.extraction.attribution
+        ? { ...record.extraction.attribution }
+        : { status: "legacy-unknown" as const },
       accepted: accepted.slice(0, limit),
       ...(isLegacy ? { legacy: legacy.slice(0, limit) } : {}),
       candidates: candidates.slice(0, limit),
