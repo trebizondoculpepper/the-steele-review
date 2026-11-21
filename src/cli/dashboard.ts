@@ -47,6 +47,8 @@ import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { draftViews } from "../dashboard/draft-views.js";
 import { draftInventory } from "../dashboard/drafts.js";
+import { themeViews } from "../dashboard/theme-views.js";
+import { savedThemes } from "../dashboard/themes.js";
 import { claimViews } from "../dashboard/claim-views.js";
 import { savedClaims } from "../dashboard/claims.js";
 import { createDashboardServer } from "../dashboard/server.js";
@@ -186,6 +188,8 @@ const views = [
         )
       : undefined,
   ),
+  // Saved theme proposals and the canonical catalogue, read-only (#493).
+  ...themeViews(content ? savedThemes(content) : undefined),
   // Saved claim proposals with their quotations, read-only (#494).
   ...claimViews(content ? savedClaims(content) : undefined),
   // Preserve old bookmarks without a second navigation entry or placeholder.

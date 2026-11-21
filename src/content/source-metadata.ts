@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 /**
@@ -142,4 +143,37 @@ export function attributionIdentity(r: PostAuthorResolution): string {
   return r.status === "resolved"
     ? `${r.basis}:${r.author}:${r.sourceMetadataVersion}`
     : `unknown:${r.reason}:${r.sourceMetadataVersion}`;
+}
+
+/**
+ * Load the source registry from a private configuration file.
+ *
+ * The path and contents are runtime configuration: validation errors name only
+ * the failing field, never the configured values, so nothing private reaches a
+ * log or an error response.
+ */
+export async function loadSourceMetadataFile(path: string): Promise<ParsedSourceMetadata> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    throw new SourceMetadataError("unreadable-configuration");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SourceMetadataError("invalid-configuration");
+  }
+  try {
+    return parseSourceMetadata(parsed);
+  } catch {
+    throw new SourceMetadataError("invalid-configuration");
+  }
+}
+
+export class SourceMetadataError extends Error {
+  constructor(readonly code: "unreadable-configuration" | "invalid-configuration") {
+    super(`source metadata: ${code}`);
+  }
 }
