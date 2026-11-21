@@ -97,7 +97,24 @@ research commissioning for the run. The limit is part of the original workflow
 input and changing it on duplicate submission does not rerun that revision.
 The shared concurrency cap and the batch deadline still apply independently.
 
-### Find activity for one original post
+## Approval dispatch and dummy publishers (#314, #315)
+
+The Restate stack also runs these services:
+
+- **`approval-dispatcher`** drains the approval outbox in the article worker's state file to `steele.v1.article.approved` on `STEELE_PUBLICATION`. It uses the event ID as the message ID, so the broker deduplicates repeats. `approval-dispatcher --once` drains once and prints the counts.
+- **`dummy-publisher-a` and `dummy-publisher-b`** are placeholder destinations. Each has its own durable consumer (`steele-dummy-publisher-a` or `-b`) and destination name (`dummy-a` or `dummy-b`).
+  - Each one re-checks the approval against the stored bytes and writes a receipt marked `simulated` under `publications/<destination>/draft/<publication>/<post>/<revision>/` in the content repository.
+  - They make no external calls.
+  - A redelivered approval reuses the existing receipt.
+
+Provision the destination consumers explicitly, once:
+
+```sh
+STEELE_PUBLISHER_CONSUMERS=steele-dummy-publisher-a,steele-dummy-publisher-b node dist/cli/provision.js
+```
+
+
+## Find activity for one original post
 
 To look up a known post, run
 `npm run -s post-trace -- <publication-id> <post-id> --correlation-id`.

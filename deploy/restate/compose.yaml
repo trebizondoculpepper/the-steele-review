@@ -73,6 +73,52 @@ services:
       - ${STEELE_STATE_DIR}:/data/state
     networks: [steele]
 
+  # Placeholder destination A (#315): its own durable consumer and destination
+  # name; writes receipts marked simulated, never calls anything external.
+  dummy-publisher-a:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/dummy-publisher.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      disable: true
+    environment:
+      NATS_URL: ${NATS_URL}
+      NATS_TOKEN: ${NATS_TOKEN:-}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
+      STEELE_PUBLISHER_DESTINATION: dummy-a
+      STEELE_PUBLISHER_CONSUMER: steele-dummy-publisher-a
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    volumes:
+      - ${STEELE_CONTENT_DIR}:/data/content
+      - ${STEELE_STATE_DIR}:/data/state
+    networks: [steele]
+
+  # Placeholder destination B (#315): its own durable consumer and destination
+  # name; writes receipts marked simulated, never calls anything external.
+  dummy-publisher-b:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/dummy-publisher.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      disable: true
+    environment:
+      NATS_URL: ${NATS_URL}
+      NATS_TOKEN: ${NATS_TOKEN:-}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
+      STEELE_PUBLISHER_DESTINATION: dummy-b
+      STEELE_PUBLISHER_CONSUMER: steele-dummy-publisher-b
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    volumes:
+      - ${STEELE_CONTENT_DIR}:/data/content
+      - ${STEELE_STATE_DIR}:/data/state
+    networks: [steele]
+
 volumes:
   restate-data:
 

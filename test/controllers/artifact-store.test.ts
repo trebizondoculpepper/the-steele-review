@@ -189,3 +189,26 @@ describe("GitArtifactStore", () => {
     expect(String(error)).not.toContain(dir);
   });
 });
+
+describe("GitArtifactStore with several writer processes (#315)", () => {
+  it("commits every write when independent stores race on one repository", async () => {
+    // Separate instances share no in-process queue, like separate processes.
+    const writers = Array.from(
+      { length: 3 },
+      () => new GitArtifactStore({ repoPath: dir, repository: "steele-test" }),
+    );
+    const paths = writers.flatMap((_, w) =>
+      Array.from({ length: 6 }, (_, i) => `publications/w${w}/r${i}.json`),
+    );
+    await Promise.all(
+      writers.map((store, w) =>
+        (async () => {
+          for (let i = 0; i < 6; i++)
+            await store.write(`publications/w${w}/r${i}.json`, `{"i":${i}}`);
+        })(),
+      ),
+    );
+    const listed = await writers[0]!.list("publications", 100);
+    expect([...listed].sort()).toEqual([...paths].sort());
+  });
+});

@@ -35,7 +35,7 @@ jobs:
             --tag "$image" .
           test "$(docker image inspect --format '{{.Architecture}}' "$image")" = arm64
           docker run --rm --network none --entrypoint node "$image" \
-            -e 'for (const name of ["article-worker", "approval-dispatcher", "captured-bridge", "draft-package", "select-saved-evidence", "writer-package"]) require("node:fs").accessSync("dist/cli/" + name + ".js")'
+            -e 'for (const name of ["article-worker", "approval-dispatcher", "captured-bridge", "draft-package", "dummy-publisher", "select-saved-evidence", "writer-package"]) require("node:fs").accessSync("dist/cli/" + name + ".js")'
 
       # Fails closed: a detected secret or a scan that cannot complete stops
       # the job here, so the push below never runs. Results go to a file and

@@ -228,9 +228,38 @@ export class GitArtifactStore {
    * Returns the existing reference when identical content is already stored.
    */
   write(path: string, content: string, expectedSha256?: string): Promise<ArtifactRef> {
-    const task = this.queue.then(() => this.writeNow(path, content, expectedSha256));
+    const task = this.queue.then(() => this.writeRetrying(path, content, expectedSha256));
     this.queue = task.catch(() => undefined);
     return task;
+  }
+
+  /**
+   * Several processes may write to one repository (the article worker and the
+   * destination publishers, #315). The compare-and-swap ref update makes a lost
+   * race fail with `concurrent-update` and never lose a commit; the write is
+   * then retried on the new head. Write-once semantics make this safe: a
+   * retry finds an identical artifact already stored, or commits on top.
+   */
+  private async writeRetrying(
+    path: string,
+    content: string,
+    expectedSha256?: string,
+  ): Promise<ArtifactRef> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.writeNow(path, content, expectedSha256);
+      } catch (error) {
+        if (
+          !(error instanceof ArtifactStoreError) ||
+          // A held ref lock may be another live writer, not a stale lock:
+          // retry it too, and report it only once the budget is spent.
+          (error.code !== "concurrent-update" && error.code !== "interrupted-commit") ||
+          attempt >= 8
+        )
+          throw error;
+        await new Promise((r) => setTimeout(r, 20 * attempt + Math.random() * 50));
+      }
+    }
   }
 
   private async writeNow(

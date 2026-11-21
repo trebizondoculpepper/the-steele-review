@@ -17,6 +17,9 @@
  *   STEELE_COLLECT_CONSUMER?   default steele-collector
  *   STEELE_INDEX_CONSUMER?     default steele-indexer
  *   STEELE_RESEARCH_REINDEX_CONSUMER? default steele-research-indexer (#232)
+ *   STEELE_PUBLISHER_CONSUMERS? comma-separated durable consumers on the
+ *                              publication stream, one per destination (#315);
+ *                              default none
  *   STEELE_FULLTEXT_INDEX?     default steele-source-text-v1
  *   STEELE_RESEARCH_COLLECTION_INDEX?     default steele-research-collection-v1 (#225)
  *
@@ -43,13 +46,26 @@ import {
   provisionDurableConsumer,
 } from "../controllers/nats-provision.js";
 import { NatsController } from "../controllers/nats.js";
+import { ARTICLE_APPROVED_SUBJECT, PUBLICATION_STREAM } from "../events/article-approved-event.js";
 import { STREAMS, streamName } from "../events/registry.js";
 import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
+
+/** Broker redelivery budget for destination consumers (#315). */
+const PUBLISHER_MAX_DELIVER = 300;
 
 const EnvSchema = z.object({
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
   STEELE_RESEARCH_REINDEX_CONSUMER: z.string().min(1).default("steele-research-indexer"),
+  STEELE_PUBLISHER_CONSUMERS: z
+    .string()
+    .default("")
+    .transform((v) =>
+      v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
   STEELE_FULLTEXT_INDEX: z.string().min(1).default(FULLTEXT_INDEX_V1),
   STEELE_RESEARCH_COLLECTION_INDEX: z.string().min(1).default(RESEARCH_COLLECTION_INDEX_V1),
 });
@@ -115,6 +131,20 @@ async function main(): Promise<number> {
       name: c.STEELE_RESEARCH_REINDEX_CONSUMER,
       filterSubject: RESEARCH_REINDEX_SUBJECT,
     });
+    // One durable consumer per destination, each with its own position (#315).
+    for (const name of c.STEELE_PUBLISHER_CONSUMERS) {
+      report[`publisherConsumer:${name}`] = await provisionDurableConsumer(nats, {
+        stream: names.get(PUBLICATION_STREAM)!,
+        name,
+        filterSubject: ARTICLE_APPROVED_SUBJECT,
+        // A finite budget sized above the handler's own: a restart can leave a
+        // claim "busy" for its 10-minute lease (about 120 redeliveries at 5 s),
+        // and the handler terms after five claimed attempts. Failures before a
+        // claim (an unreadable artifact) still stop, after about 2.5 hours of
+        // 30-second retries, instead of looping forever.
+        maxDeliver: PUBLISHER_MAX_DELIVER,
+      });
+    }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
     report.researchIndex = await es.provisionIndex(
       c.STEELE_RESEARCH_COLLECTION_INDEX,
