@@ -127,9 +127,9 @@ export function verifiedSpeaker(o: ClaimOccurrence): VerifiedSpeaker | undefined
   return undefined;
 }
 
-const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
+export const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
 
-function speakerFilter(s: VerifiedSpeaker): unknown {
+export function speakerFilter(s: VerifiedSpeaker): unknown {
   // The same person may be quoted in one post and write in their own voice in
   // another, so both attributions of the name are searched.
   return {
