@@ -144,6 +144,22 @@ describe("systemStatusSource", () => {
     expect(status.indexCatchUp).toEqual({ state: "unavailable" });
   });
 
+  it("bounds a stalled optional source and keeps the service results", async () => {
+    const source = systemStatusSource({
+      runtime: { nats: healthy },
+      archive: {
+        list: () => new Promise<string[]>(() => undefined),
+        changesSince: () => new Promise(() => undefined),
+      } as never,
+      checkpoint: checkpoint({ commit: "aaa" }),
+      timeoutMs: 10,
+      now: () => NOW,
+    });
+    const status = await source.read();
+    expect(status.services[1]).toEqual({ name: "nats", state: "healthy" });
+    expect(status.archive).toEqual({ state: "unavailable" });
+  });
+
   it("reports a stale feed poll from the runner status file", async () => {
     const dir = directory();
     const path = join(dir, "discovery.json");

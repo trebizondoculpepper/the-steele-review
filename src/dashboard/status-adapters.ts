@@ -3,7 +3,11 @@ import type {
   CatchUpCheckpointStore,
 } from "../collection/index-catchup.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { collectRuntimeStatus, type RuntimeStatusDependencies } from "../diagnostics/runtime-status.js";
+import {
+  DEFAULT_CHECK_TIMEOUT_MS,
+  collectRuntimeStatus,
+  type RuntimeStatusDependencies,
+} from "../diagnostics/runtime-status.js";
 import { readDiscoveryStatus } from "../discovery/status.js";
 import { DEFAULT_STALE_AFTER_MS, type StatusSource, type StatusSnapshot } from "./status.js";
 
@@ -30,8 +34,29 @@ export interface StatusAdapterDeps {
   timeoutMs?: number;
 }
 
+/**
+ * Bound one optional observation. A stalled file read or Git subprocess
+ * reports unavailable instead of holding the whole page open; the caller never
+ * kills or repairs anything itself.
+ */
+async function bounded<T>(work: () => Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function systemStatusSource(deps: StatusAdapterDeps): StatusSource {
   const now = deps.now ?? (() => new Date());
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
   return {
     async read(): Promise<StatusSnapshot> {
       const observed = now();
@@ -47,9 +72,17 @@ export function systemStatusSource(deps: StatusAdapterDeps): StatusSource {
       const operations =
         stateCheck?.name === "state" && stateCheck.status === "healthy" ? stateCheck.counts : [];
 
-      const feedPoll = await feedPollFor(deps, observed);
-      const archive = await archiveProgress(deps);
-      const indexCatchUp = await indexCatchUpFor(deps);
+      // Each optional source has its own deadline: a stalled archive or file
+      // read cannot hide the service checks that already answered.
+      const feedPoll = (await bounded(() => feedPollFor(deps, observed), timeoutMs)) ?? {
+        state: "unavailable" as const,
+      };
+      const archive = (await bounded(() => archiveProgress(deps), timeoutMs)) ?? {
+        state: "unavailable" as const,
+      };
+      const indexCatchUp = (await bounded(() => indexCatchUpFor(deps), timeoutMs)) ?? {
+        state: "unavailable" as const,
+      };
 
       return {
         observedAt: observed.toISOString(),
