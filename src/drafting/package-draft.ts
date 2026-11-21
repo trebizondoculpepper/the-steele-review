@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
+import {
+  safeDraftIssues,
+  saveDraftDiagnostic,
+  type DraftValidationKind,
+  type SafeDraftIssue,
+} from "./draft-diagnostics.js";
 import { PublicationFieldsSchema } from "../content/publication-fields.js";
 export { FIELD_LIMITS } from "../content/publication-fields.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
@@ -36,6 +42,11 @@ export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
 const PACKAGE_REVISION_PROMPT = loadPromptFile("writer", "package-revision");
+const OUTPUT_REPAIR_PROMPT = loadPromptFile("writer", "package-output-repair");
+export const PACKAGE_OUTPUT_REPAIR_ID = promptIdentity(
+  OUTPUT_REPAIR_PROMPT.version,
+  OUTPUT_REPAIR_PROMPT.instructions,
+);
 export const PACKAGE_REVISION_INSTRUCTIONS = PACKAGE_REVISION_PROMPT.instructions;
 /** Identity of the revision instructions; part of a redraft's identity. */
 export const PACKAGE_REVISION_PROMPT_VERSION = PACKAGE_REVISION_PROMPT.version;
@@ -110,6 +121,8 @@ export const PackageDraftMetadataSchema = z
     promptVersion: z.string(),
     /** Revision instructions identity, for redrafts only (#430). */
     revisionPromptVersion: z.string().optional(),
+    repairPromptVersion: z.string().optional(),
+    diagnostics: z.array(Ref).max(2).optional(),
     modelVersion: z.string(),
     /** Model the caller asked for (#260); absent when the configured default was used. */
     requestedModel: z.string().optional(),
@@ -282,7 +295,13 @@ const toArtifactRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
 });
 
 export type PackageDraftOutcome =
-  | { status: "drafted"; draft: ArtifactRef; metadata: ArtifactRef; reused: boolean }
+  | {
+      status: "drafted";
+      draft: ArtifactRef;
+      metadata: ArtifactRef;
+      reused: boolean;
+      diagnostics?: ArtifactRef[];
+    }
   | { status: "evidence-gap" }
   | { status: "context-unavailable"; reason: string }
   | {
@@ -298,6 +317,8 @@ export type PackageDraftOutcome =
       problems?: string[];
       /** Sanitised provider error code, e.g. "bad-request" for an unknown model. */
       providerError?: string;
+      validationFailure?: DraftValidationKind;
+      diagnostics?: ArtifactRef[];
     };
 
 export async function draftFromPackage(input: {
@@ -315,6 +336,7 @@ export async function draftFromPackage(input: {
   /** Reports the model the provider actually served, once a call has succeeded. */
   resolvedModel?: () => string | undefined;
   prompt?: ExtractionPrompt;
+  /** May lower, but never increase, the existing two-call attempt budget. */
   maxAttempts?: number;
   /**
    * Verifier feedback for a redraft (#150): the passages and reasons to fix.
@@ -354,11 +376,28 @@ export async function draftFromPackage(input: {
     .digest("hex")
     .slice(0, 32);
   const base = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${key}`;
+  const repairedKey = createHash("sha256")
+    .update(JSON.stringify([key, PACKAGE_OUTPUT_REPAIR_ID]))
+    .digest("hex")
+    .slice(0, 32);
+  const repairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${repairedKey}`;
   // Stable input identity: a saved draft for exactly these inputs is reused.
   const savedDraft = await input.content.lookup(`${base}.md`);
   const savedMeta = await input.content.lookup(`${base}.json`);
   if (savedDraft && savedMeta)
     return { status: "drafted", draft: savedDraft, metadata: savedMeta, reused: true };
+  const repairedDraft = await input.content.lookup(`${repairedBase}.md`);
+  const repairedMeta = await input.content.lookup(`${repairedBase}.json`);
+  if (repairedDraft && repairedMeta)
+    return {
+      status: "drafted",
+      draft: repairedDraft,
+      metadata: repairedMeta,
+      reused: true,
+      diagnostics: PackageDraftMetadataSchema.parse(
+        JSON.parse(await input.content.read(repairedMeta)),
+      ).diagnostics?.map(toArtifactRef),
+    };
 
   const loaded = await loadPinnedContext({
     archive: input.archive,
@@ -428,48 +467,122 @@ export async function draftFromPackage(input: {
   let lastProblems: string[] = [];
   let lastFailure: "provider-failed" | "malformed-output" | "invalid-draft" = "malformed-output";
   let providerError: string | undefined;
-  for (let attempt = 0; attempt < (input.maxAttempts ?? 2) && !draft; attempt++) {
+  const diagnostics: ArtifactRef[] = [];
+  let correction:
+    | { previousOutput: string; kind: DraftValidationKind; issues: SafeDraftIssue[] }
+    | undefined;
+  let repaired = false;
+  let validationFailure: DraftValidationKind | undefined;
+  const attempts = Math.min(2, Math.max(0, input.maxAttempts ?? 2));
+  for (let attempt = 0; attempt < attempts && !draft; attempt++) {
     let raw: string;
+    let completion: "completed" | "length-limit" | "unknown" = "unknown";
+    const isCorrection = correction !== undefined;
+    const requestUser = correction
+      ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
+      : user;
     try {
       raw = await input.provider.complete(
-        { system: prompt.instructions, user, maxOutputChars: 40_000 },
+        {
+          system: isCorrection
+            ? `${prompt.instructions}\n\n${OUTPUT_REPAIR_PROMPT.instructions}`
+            : prompt.instructions,
+          user: requestUser,
+          maxOutputChars: 40_000,
+          onCompletion: (metadata) => {
+            completion =
+              metadata?.stopReason === "completed" || metadata?.stopReason === "length-limit"
+                ? metadata.stopReason
+                : "unknown";
+          },
+        },
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
       rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
-      lastFailure = "provider-failed";
-      providerError = error instanceof ModelProviderError ? error.code : "unavailable";
-      // An unknown or rejected model is not retried with the same request.
-      if (providerError === "bad-request" || providerError === "unauthorised") break;
-      continue;
+      if (
+        (completion as string) === "length-limit" &&
+        error instanceof ModelProviderError &&
+        error.code === "bad-response"
+      ) {
+        raw = ""; // The adapter supplied truncation evidence, even with no usable text.
+      } else {
+        lastFailure = "provider-failed";
+        providerError = error instanceof ModelProviderError ? error.code : "unavailable";
+        // An unknown or rejected model is not retried with the same request.
+        if (providerError === "bad-request" || providerError === "unauthorised") break;
+        continue;
+      }
     }
-    let parsed;
+    let parsed: PackageModelDraft | undefined;
+    let kind: DraftValidationKind | undefined;
+    let issues: SafeDraftIssue[] = [];
     try {
-      parsed = ModelDraftSchema.parse(
-        JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)),
-      );
+      let json: unknown;
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        // Retain the existing tolerance for a JSON object wrapped in prose or
+        // a code fence, without misclassifying valid JSON scalars as syntax errors.
+        json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+      }
+      const checked = ModelDraftSchema.safeParse(json);
+      if (checked.success) parsed = checked.data;
+      else {
+        kind = "schema-validation";
+        issues = safeDraftIssues(checked.error);
+      }
     } catch {
-      lastFailure = "malformed-output";
-      continue;
+      kind = "json-syntax";
     }
-    const problems = draftProblems(pkg, parsed);
-    if (problems.length > 0) {
-      lastFailure = "invalid-draft";
-      lastProblems = problems;
+    if ((completion as string) === "length-limit") kind = "truncated-output";
+    if (!kind && parsed) {
+      const problems = draftProblems(pkg, parsed);
+      if (problems.length > 0) {
+        kind = "evidence-validation";
+        lastProblems = problems;
+        issues = [{ code: "custom", path: ["responses"] }];
+      }
+    }
+    if (kind) {
+      validationFailure = kind;
+      lastFailure = kind === "evidence-validation" ? "invalid-draft" : "malformed-output";
+      diagnostics.push(
+        await saveDraftDiagnostic({
+          content: input.content,
+          package: input.package,
+          baseKey: key,
+          attempt: attempt + 1,
+          promptVersion: promptId,
+          ...(isCorrection ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
+          modelVersion: input.provider.modelVersion,
+          kind,
+          issues,
+          raw,
+          completion,
+        }),
+      );
+      correction = { previousOutput: raw, kind, issues };
       continue;
     }
     draft = parsed;
+    repaired = isCorrection;
   }
   if (!draft) {
     return {
       status: "failed",
       reason: lastFailure,
-      ...(lastProblems.length > 0 ? { problems: lastProblems } : {}),
+      // The detailed validator may mention untrusted model IDs. Never return
+      // those strings through CLI/status output.
+      ...(lastProblems.length > 0 ? { problems: ["evidence-validation-failed"] } : {}),
       ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
+      ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
+      ...(diagnostics.length ? { diagnostics } : {}),
     };
   }
   const markdown = renderPackageDraft(pkg, draft, sourceUrl);
-  const draftRef = await writeOnce(input.content, `${base}.md`, markdown);
+  const outputBase = repaired ? repairedBase : base;
+  const draftRef = await writeOnce(input.content, `${outputBase}.md`, markdown);
   const metadata = PackageDraftMetadataSchema.parse({
     schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
     package: toRef(input.package),
@@ -477,6 +590,8 @@ export async function draftFromPackage(input: {
     themes: pkg.themeResult,
     templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
     promptVersion: promptId,
+    ...(repaired ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
+    ...(diagnostics.length ? { diagnostics: diagnostics.map(toRef) } : {}),
     ...(input.revision
       ? {
           revisionPromptVersion: promptIdentity(
@@ -492,6 +607,12 @@ export async function draftFromPackage(input: {
     fields: { title: draft.title, subtitle: draft.subtitle, excerpt: draft.excerpt },
     draftedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
-  const metaRef = await writeOnce(input.content, `${base}.json`, metadata);
-  return { status: "drafted", draft: draftRef, metadata: metaRef, reused: false };
+  const metaRef = await writeOnce(input.content, `${outputBase}.json`, metadata);
+  return {
+    status: "drafted",
+    draft: draftRef,
+    metadata: metaRef,
+    reused: false,
+    ...(diagnostics.length ? { diagnostics } : {}),
+  };
 }

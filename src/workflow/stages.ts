@@ -284,8 +284,17 @@ export function articleStages(deps: {
         provider: deps.models.writer,
         sourceUrl,
       });
-      if (out.status === "drafted") return { ref: plain(out.draft) };
-      return { failure: out.status === "failed" ? out.reason : out.status };
+      const diagnostics = "diagnostics" in out ? out.diagnostics?.map(plain) : undefined;
+      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics };
+      return {
+        failure:
+          out.status === "failed"
+            ? out.validationFailure
+              ? `draft: ${out.validationFailure}`
+              : out.reason
+            : out.status,
+        ...(diagnostics?.length ? { diagnostics } : {}),
+      };
     },
 
     async verify(draft, pkg, sourceUrl) {

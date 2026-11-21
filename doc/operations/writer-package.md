@@ -52,3 +52,12 @@ When the package is built with the archive (as the Restate pipeline and `writer-
 ## Publication metadata verification (#457)
 
 New verification reads the saved `metadata.fields` and body as one immutable manifest. Schema-v2 reports pin that payload, and the verifier checks every reader-visible factual field against the same pinned source and evidence. Any changed title, subtitle, excerpt, body or pinned metadata version needs a different verification identity. Identical inputs reuse the saved report. Schema-v1 reports remain readable as body-only verification and cannot approve unseen metadata. The Markdown body remains the existing evidence-validated rendering; no second body or title is regenerated during handoff.
+
+
+## Writer output failures and bounded correction (#524)
+
+A rejected writer response produces a versioned diagnostic tied to the exact writer package, model and prompt. Diagnostics distinguish JSON syntax, structured-schema validation, adapter-confirmed truncation and deterministic evidence validation. They retain attempt number, allowlisted schema issue codes/known field paths, output hash and character count. They never retain rejected model text, arbitrary property names, exception messages or provider response bodies. A missing truncation signal is recorded as unknown, not inferred from invalid JSON.
+
+The existing two-call budget is unchanged (the single-attempt CLI option still disables correction). When the first response fails validation, the remaining call receives the original source/evidence plus the rejected response as untrusted data and safe validation feedback. Correction instructions live in `src/prompts/writer/package-output-repair.md`; they cannot weaken grounding checks or independent verification. Exhaustion returns an operational failure with safe diagnostic references; no draft or approval is fabricated.
+
+Valid initial drafts keep their existing cache identity. Repaired drafts have a separate identity including the exact repair prompt content, and metadata records the repair prompt and diagnostic references. Both remain immutable and pass normal exact-payload verification before delivery. Deploy readers/consumers that accept these optional metadata fields before the producing worker. Old failures remain readable, but their discarded response details cannot be reconstructed. An explicit post-fix recovery can reuse its pinned research/package; it must not invent a source version or repeat full research merely to retry writing.
