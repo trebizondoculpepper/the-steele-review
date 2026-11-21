@@ -93,3 +93,36 @@ describe("draft trash (#478)", () => {
     expect(await artifacts.lookup(trashMarkerPath("req-1"))).toBeDefined();
   });
 });
+
+describe("draft trash console action (#478)", () => {
+  const form = (over: Record<string, string> = {}) =>
+    new URLSearchParams({
+      confirm: "yes",
+      draft,
+      action: "delete",
+      request: "req-action",
+      ...over,
+    });
+  const submit = () =>
+    trash.action(() => new Date("2026-02-01T00:00:00.000Z")).submit;
+
+  it("records a confirmed delete and redirects to the drafts listing", async () => {
+    const result = await submit()(form());
+    expect(result).toEqual({ status: 303, location: "/drafts" });
+    expect(await trash.state(draft)).toBe("trashed");
+  });
+
+  it("refuses an unconfirmed or malformed action", async () => {
+    expect((await submit()(new URLSearchParams({ draft, action: "delete", request: "r" }))).status).toBe(400);
+    expect((await submit()(form({ action: "purge" }))).status).toBe(400);
+    expect((await submit()(form({ request: "Bad Request Id" }))).status).toBe(400);
+    expect((await submit()(form({ draft: "../escape.json" }))).status).toBe(400);
+    expect(await trash.state(draft)).toBe("active");
+  });
+
+  it("returns 409 when the request id already means something else", async () => {
+    await trash.mark({ ...deleteMarker, requestId: "req-action" });
+    const result = await submit()(form({ action: "restore" }));
+    expect(result.status).toBe(409);
+  });
+});

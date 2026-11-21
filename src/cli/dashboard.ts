@@ -56,6 +56,7 @@ import { researchViews } from "../dashboard/research-views.js";
 import { savedResearch } from "../dashboard/research.js";
 import { claimViews } from "../dashboard/claim-views.js";
 import { savedClaims } from "../dashboard/claims.js";
+import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -66,6 +67,8 @@ const env = z
       .url({ protocol: /^https?$/ })
       .refine((value) => value === new URL(value).origin)
       .optional(),
+    /** "1" enables the draft trash action; the content mount must be writable. */
+    STEELE_DASHBOARD_TRASH: z.enum(["0", "1"]).optional(),
     STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: z.coerce.number().int().min(0).max(100).default(5),
     STEELE_DASHBOARD_RESEARCH_DEADLINE_MS: z.coerce
       .number()
@@ -230,18 +233,28 @@ const views = [
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
 
-const server = createDashboardServer(
-  views,
-  trigger
+// Recoverable trash for saved drafts (#478); markers live in the content repo.
+// Writing markers mutates the content repository, so the console only offers
+// this when the deployment explicitly enables it (#478).
+const trashStore = content && env.data.STEELE_DASHBOARD_TRASH === "1"
+  ? new DraftTrashStore(content)
+  : undefined;
+const trashAction = trashStore?.action();
+// Actions need their exact origin for the same-origin check: without it, no
+// action route is registered at all.
+const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
+const actions =
+  (trigger || trashAction) && actionOrigin
     ? {
-        origin: env.data.STEELE_DASHBOARD_ORIGIN!,
+        origin: actionOrigin,
         routes: {
-          "/articles/run": trigger.submit,
+          ...(trigger ? { "/articles/run": trigger.submit } : {}),
           ...(recovery ? { "/articles/recover": recovery.submit } : {}),
+          ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
         },
       }
-    : undefined,
-);
+    : undefined;
+const server = createDashboardServer(views, actions);
 server.listen(env.data.STEELE_DASHBOARD_PORT, "0.0.0.0", () => {
   console.log(
     JSON.stringify({

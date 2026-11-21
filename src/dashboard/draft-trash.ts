@@ -44,6 +44,20 @@ export class TrashConflictError extends Error {
   }
 }
 
+/**
+ * Validated console action input. `confirm` is required so an accidental GET
+ * or a bare form submission cannot delete a draft.
+ */
+export const TrashActionSchema = z
+  .object({
+    confirm: z.literal("yes"),
+    draft: DraftPath,
+    action: z.enum(["delete", "restore"]),
+    request: RequestId,
+    publicationHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  })
+  .strict();
+
 export type TrashState = "active" | "trashed";
 
 /** Later instant wins; a tie is broken by request id. */
@@ -151,6 +165,38 @@ export class DraftTrashStore {
       const bt = Date.parse(b.at);
       return at === bt ? a.requestId.localeCompare(b.requestId) : at - bt;
     });
+  }
+
+  /**
+   * Same-origin form action for the console (#478).
+   *
+   * The form carries the exact draft identity the operator was shown plus an
+   * opaque request id, so a browser double-submit records one action and an
+   * invalid or conflicting request is refused rather than guessed.
+   */
+  action(now: () => Date = () => new Date()) {
+    const store = this;
+    return {
+      async submit(form: URLSearchParams): Promise<{ status: number; location?: string }> {
+        const parsed = TrashActionSchema.safeParse(Object.fromEntries(form));
+        if (!parsed.success) return { status: 400 };
+        const { draft, action, request, publicationHash } = parsed.data;
+        try {
+          await store.mark({
+            schemaVersion: TRASH_MARKER_SCHEMA_VERSION,
+            draftPath: draft,
+            action,
+            requestId: request,
+            ...(publicationHash ? { publicationHash } : {}),
+            at: now().toISOString(),
+          });
+        } catch (error) {
+          if (error instanceof TrashConflictError) return { status: 409 };
+          throw error;
+        }
+        return { status: 303, location: "/drafts" };
+      },
+    };
   }
 
   private async stored(path: string): Promise<TrashMarker | undefined> {
