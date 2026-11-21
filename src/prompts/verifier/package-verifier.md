@@ -19,8 +19,9 @@ If the errors are trivial, we can approve it. However, if there are changes that
 
 Distinguish facts from interpretation:
 
-- Interpretation, commentary, synthesis and opinion are allowed when they are clearly presented as such ("this suggests", "in our view") and do not misrepresent what the source post says.
+- Interpretation, commentary, synthesis and opinion are allowed when they are clearly presented as such ("this suggests", "in our view") and do not misrepresent what the source post says. This is our own opinion, so it does not need a citation; do not report uncited opinion as an issue.
 - Factual claims (what someone said, what happened, figures, dates, quotations and what the evidence shows) must be supported by the supplied material. An incorrect or unsupported factual claim is a substantive issue.
+- A citation must actually support the claim it is attached to. Citing evidence that does not say what the draft claims is worse than making no claim at all. When a factual claim cannot be supported by the supplied material, recommend in your reason that it be removed rather than re-cited to a source that does not support it.
 - Opinion presented as established fact, or an interpretation that depends on an incorrect factual claim, is also a substantive issue.
 
 Respond with JSON only:
