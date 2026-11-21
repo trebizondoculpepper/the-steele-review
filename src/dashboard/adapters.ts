@@ -81,12 +81,24 @@ export function contentArticleView(
   };
 }
 
-/** Bound on receipts read for one article view. */
+/** Page size and scan bound for receipt enumeration. */
+export const RECEIPT_PAGE = 500;
+export const RECEIPT_MAX_PAGES = 20;
+/** Bound on receipts returned for one article view. */
 export const RECEIPT_LIMIT = 20;
-/** Bound on the publication listing a receipt scan starts from. */
-export const RECEIPT_SCAN_LIMIT = 2_000;
 
-const RECEIPT_PATH = /^publications\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\/receipt\.json$/;
+const RECEIPT_PATH =
+  /^publications\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\/receipt\.json$/;
+
+export interface ReceiptScanOptions {
+  /**
+   * Known destination names. When present the scan is scoped to those
+   * destinations, so an unrelated backlog cannot crowd out an article's
+   * receipts; otherwise the whole publications tree is paginated and the
+   * result is marked truncated if the scan bound is reached.
+   */
+  destinations?: string[];
+}
 
 /**
  * Publisher receipts recorded for one article (#378). A simulated receipt is
@@ -94,37 +106,66 @@ const RECEIPT_PATH = /^publications\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-
  */
 export function contentReceipts(
   content: Pick<GitArtifactStore, "list" | "lookup" | "read">,
+  options: ReceiptScanOptions = {},
 ): ReceiptsPort {
+  const prefixes = (options.destinations ?? [])
+    .filter((name) => /^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
+    .map((name) => `publications/${name}`);
   return {
-    async receiptsFor(post, draftHash): Promise<ReceiptView[]> {
+    async receiptsFor(post, draftHash) {
       const revision = draftHash?.replace(/^sha256:/, "").slice(0, 32);
-      const paths = await content.list("publications", RECEIPT_SCAN_LIMIT);
       const receipts: ReceiptView[] = [];
-      for (const path of paths) {
-        const match = RECEIPT_PATH.exec(path);
-        if (!match) continue;
-        const [, , , publicationId, postId, rev] = match;
-        if (publicationId !== post.publicationId || postId !== post.postId) continue;
-        if (revision && rev !== revision) continue;
-        if (receipts.length >= RECEIPT_LIMIT) break;
-        try {
-          const ref = await content.lookup(path);
-          if (!ref) continue;
-          const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
-          const confirmed =
-            !receipt.simulated && typeof receipt.url === "string" && receipt.url.startsWith("https://");
-          receipts.push({
-            destination: receipt.destination,
-            action: receipt.action,
-            simulated: receipt.simulated,
-            deliveredAt: receipt.deliveredAt,
-            ...(confirmed ? { url: receipt.url } : {}),
-          });
-        } catch {
-          // An unreadable receipt is omitted, never guessed.
+      let truncated = false;
+
+      const scanPrefix = async (prefix: string): Promise<void> => {
+        let after: string | undefined;
+        for (let page = 0; page < RECEIPT_MAX_PAGES; page++) {
+          const paths = await content.list(prefix, RECEIPT_PAGE, after);
+          for (const path of paths) {
+            const match = RECEIPT_PATH.exec(path);
+            if (!match) continue;
+            const [, , , publicationId, postId, rev] = match;
+            if (publicationId !== post.publicationId || postId !== post.postId) continue;
+            if (revision && rev !== revision) continue;
+            if (receipts.length >= RECEIPT_LIMIT) {
+              truncated = true;
+              return;
+            }
+            try {
+              const ref = await content.lookup(path);
+              if (!ref) continue;
+              const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+              const confirmed =
+                !receipt.simulated &&
+                typeof receipt.url === "string" &&
+                receipt.url.startsWith("https://");
+              receipts.push({
+                destination: receipt.destination,
+                action: receipt.action,
+                simulated: receipt.simulated,
+                deliveredAt: receipt.deliveredAt,
+                ...(confirmed ? { url: receipt.url } : {}),
+              });
+            } catch {
+              // An unreadable receipt is omitted, never guessed.
+            }
+          }
+          if (paths.length < RECEIPT_PAGE) return;
+          after = paths[paths.length - 1];
         }
+        // The bound was reached before the prefix was exhausted.
+        truncated = true;
+      };
+
+      if (prefixes.length > 0) {
+        for (const prefix of prefixes) {
+          await scanPrefix(prefix);
+          if (receipts.length >= RECEIPT_LIMIT) break;
+        }
+      } else {
+        await scanPrefix("publications");
       }
-      return receipts;
+      return { receipts, truncated };
     },
   };
 }

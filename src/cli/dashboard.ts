@@ -19,6 +19,7 @@
  *   NATS_URL, NATS_TOKEN[_FILE]?                     broker health
  *   STEELE_CATCHUP_CHECKPOINT_PATH?                  index catch-up checkpoint
  *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
+ *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
@@ -110,7 +111,15 @@ const views = [
         ...(content ? { content } : {}),
       }),
     ...(content
-      ? { content: contentArticleView(content), receipts: contentReceipts(content) }
+      ? {
+          content: contentArticleView(content),
+          receipts: contentReceipts(content, {
+            destinations: (e.STEELE_DASHBOARD_DESTINATIONS ?? "")
+              .split(",")
+              .map((d) => d.trim())
+              .filter(Boolean),
+          }),
+        }
       : {}),
   }),
   statusView(

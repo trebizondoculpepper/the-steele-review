@@ -68,12 +68,18 @@ export interface ArticleContentPort {
   verification(ref: Ref): Promise<{ outcome: string; draftHash?: string } | undefined>;
 }
 
-/** Delivery receipts recorded for one article. */
+/** Delivery receipts recorded for one article and revision. */
+export interface ReceiptsResult {
+  receipts: ReceiptView[];
+  /** True when the scan bound was reached before the store was exhausted. */
+  truncated: boolean;
+}
+
 export interface ReceiptsPort {
   receiptsFor(
     post: { publicationId: string; postId: string },
     draftHash?: string,
-  ): Promise<ReceiptView[]>;
+  ): Promise<ReceiptsResult>;
 }
 
 export interface RunStatusPort {
@@ -115,6 +121,8 @@ export interface ArticleTrace {
   draft?: DraftView;
   verification?: VerificationView;
   receipts: ReceiptView[];
+  /** True when the receipt scan could not be completed within its bound. */
+  receiptsTruncated: boolean;
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -325,9 +333,12 @@ export async function traceArticle(input: {
   const runDraftHash =
     finished && "draft" in finished && finished.draft ? finished.draft.sha256 : undefined;
   let receipts: ReceiptView[] = [];
+  let receiptsTruncated = false;
   if (input.receipts && runDraftHash) {
     try {
-      receipts = await input.receipts.receiptsFor(post, `sha256:${runDraftHash}`);
+      const result = await input.receipts.receiptsFor(post, `sha256:${runDraftHash}`);
+      receipts = result.receipts;
+      receiptsTruncated = result.truncated;
     } catch {
       receipts = [];
     }
@@ -341,5 +352,6 @@ export async function traceArticle(input: {
     ...(draft ? { draft } : {}),
     ...(verification ? { verification } : {}),
     receipts,
+    receiptsTruncated,
   };
 }

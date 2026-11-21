@@ -106,10 +106,11 @@ describe("contentReceipts", () => {
       `${JSON.stringify(receipt({}))}\n`,
     );
 
-    const receipts = await contentReceipts(content).receiptsFor(
+    const { receipts, truncated } = await contentReceipts(content).receiptsFor(
       { publicationId: "pub", postId: "p1" },
       `sha256:${draftHash}`,
     );
+    expect(truncated).toBe(false);
     expect(receipts).toEqual([
       {
         destination: "dummy-a",
@@ -128,10 +129,28 @@ describe("contentReceipts", () => {
     expect(receipts[0]).not.toHaveProperty("url");
   });
 
+  it("scopes the scan to configured destinations", async () => {
+    const rev = "c".repeat(32);
+    const write = (destination: string, postId: string) =>
+      content.write(
+        `publications/${destination}/draft/pub/${postId}/${rev}/receipt.json`,
+        `${JSON.stringify(receipt({ destination }))}\n`,
+      );
+    // Sorted listing puts every dummy-a path before dummy-b, so a bounded
+    // unscoped scan of a large tree could miss dummy-b entirely.
+    for (let n = 0; n < 30; n++) await write("dummy-a", "filler");
+    await write("dummy-b", "p1");
+    const scoped = await contentReceipts(content, { destinations: ["dummy-b"] }).receiptsFor(
+      { publicationId: "pub", postId: "p1" },
+      `sha256:${"c".repeat(64)}`,
+    );
+    expect(scoped.receipts.map((r) => r.destination)).toEqual(["dummy-b"]);
+  });
+
   it("omits unreadable receipts instead of guessing", async () => {
     await content.write("publications/x/draft/pub/p1/" + "e".repeat(32) + "/receipt.json", "{bad");
-    expect(await contentReceipts(content).receiptsFor({ publicationId: "pub", postId: "p1" })).toEqual(
-      [],
-    );
+    expect(
+      await contentReceipts(content).receiptsFor({ publicationId: "pub", postId: "p1" }),
+    ).toEqual({ receipts: [], truncated: false });
   });
 });

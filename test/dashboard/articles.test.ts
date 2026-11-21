@@ -144,6 +144,7 @@ describe("article pages (#377)", () => {
         matchesDraft: false,
         draftHash: `sha256:${"d".repeat(64)}`,
       },
+      receiptsTruncated: false,
       receipts: [
         {
           destination: "dummy-a",
@@ -184,6 +185,7 @@ describe("article pages (#377)", () => {
       draft: { hash: "c".repeat(64), text: "body" },
       verification: { outcome: "approved", matchesDraft: true },
       receipts: [],
+      receiptsTruncated: false,
     });
     expect(html).toContain("binds to the exact saved draft");
     expect(html).toContain("approved");
@@ -202,7 +204,7 @@ describe("article pages (#377)", () => {
       receipts: {
         receiptsFor: async (_post, hash) => {
           asked.push(hash);
-          return [];
+          return { receipts: [], truncated: false };
         },
       },
     });
@@ -219,7 +221,7 @@ describe("article pages (#377)", () => {
       receipts: {
         receiptsFor: async () => {
           asked++;
-          return [];
+          return { receipts: [], truncated: false };
         },
       },
     });

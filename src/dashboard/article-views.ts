@@ -106,13 +106,14 @@ export function renderTrace(t: ArticleTrace): string {
         `<tr><td>${escapeHtml(s.stage)}</td><td>${badge(s.state)}</td><td>${s.detail ? escapeHtml(s.detail) : ""}</td></tr>`,
     )
     .join("");
-  const research = t.research.length
-    ? `<h2>Research</h2><div class="wrap"><table><thead><tr><th>Job</th><th>Outcome</th></tr></thead><tbody>${t.research
-        .map(
-          (r) =>
-            `<tr><td><code>${escapeHtml(r.jobId)}</code></td><td>${escapeHtml(r.outcome)}</td></tr>`,
-        )
-        .join("")}</tbody></table></div>`
+  const researchRows = t.research
+    .map(
+      (r) =>
+        `<tr><td><code>${escapeHtml(r.jobId)}</code></td><td>${escapeHtml(r.outcome)}</td></tr>`,
+    )
+    .join("");
+  const research = researchRows
+    ? `<h2>Research</h2><div class="wrap"><table><thead><tr><th>Job</th><th>Outcome</th></tr></thead><tbody>${researchRows}</tbody></table></div>`
     : "";
   // The existing post trace output is allowlisted text; it is shown escaped.
   const diagnostics = t.trace
@@ -128,17 +129,27 @@ export function renderTrace(t: ArticleTrace): string {
           : "does not bind to the saved draft (a different revision was checked)."
       }</p>${t.verification.draftHash ? `<p>Report draft <code>${escapeHtml(t.verification.draftHash)}</code></p>` : ""}`
     : "";
-  const receipts = t.receipts.length
-    ? `<h2>Delivery receipts</h2><div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${t.receipts
-        .map((r) => {
-          const confirmed = !r.simulated && typeof r.url === "string" && r.url.startsWith("https://");
-          const link = confirmed
-            ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
-            : "";
-          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
-        })
-        .join("")}</tbody></table></div>`
-    : "";
+  const receiptRows = t.receipts
+    .map((r) => {
+      const confirmed = !r.simulated && typeof r.url === "string" && r.url.startsWith("https://");
+      const link = confirmed
+        ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
+        : "";
+      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+    })
+    .join("");
+  const receipts =
+    receiptRows.length === 0 && !t.receiptsTruncated
+      ? ""
+      : `<h2>Delivery receipts</h2>${
+          t.receiptsTruncated
+            ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>'
+            : ""
+        }${
+          receiptRows.length === 0
+            ? ""
+            : `<div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${receiptRows}</tbody></table></div>`
+        }`;
   return `<p><a href="/articles">All articles</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
