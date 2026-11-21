@@ -339,7 +339,10 @@ async function deliverApprovedArticle(
       ? (JSON.parse(await input.content.read(intentRef)) as { at?: string }).at
       : (await writeOnce(input.content, `${dir}/intent.json`, { key, at: now.toISOString() }),
         now.toISOString());
-    if (await input.content.lookup(`${dir}/uncertain.json`)) {
+    // An intent left by an earlier attempt that produced no receipt is
+    // unresolved too: the process may have stopped after the destination acted
+    // but before the receipt was committed. Reconcile before any new attempt.
+    if (intentRef || (await input.content.lookup(`${dir}/uncertain.json`))) {
       const r = await destination.reconcile(key, { preview, ...(intentAt ? { intentAt } : {}) });
       if (r === "unknown") {
         input.operations.fail(claim.claim, "uncertain-delivery", true);

@@ -184,7 +184,11 @@ export class SubstackDraftDestination implements DestinationAdapter {
           break;
         }
       }
-    } catch {
+    } catch (error) {
+      // An expired session or outage is not ambiguity: wait and try again.
+      if (error instanceof SubstackError && error.code !== "invalid-response") {
+        throw this.unavailable(error);
+      }
       return "unknown";
     }
     // A same-title draft whose body differs (for example one that read back

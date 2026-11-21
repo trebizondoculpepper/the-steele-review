@@ -62,6 +62,16 @@ describe("Markdown to Substack ProseMirror (#385)", () => {
     expect(json).toContain('"href":"https://treaties.un.org/enmod"');
   });
 
+  it("keeps balanced parentheses in bare evidence URLs", () => {
+    const json = JSON.stringify(
+      markdownToProseMirror(
+        '1. https://example.org/report_(2026): "Passage" (see https://a.example/x).',
+      ),
+    );
+    expect(json).toContain('"href":"https://example.org/report_(2026)"');
+    expect(json).toContain('"href":"https://a.example/x"');
+  });
+
   it("fails on HTML and non-https links rather than creating a malformed draft", () => {
     for (const bad of [
       "<div>x</div>",
@@ -326,6 +336,38 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
     expect(await handle(payload, d)).toMatchObject({ action: "ack", outcome: "delivered" });
     expect(s.drafts).toHaveLength(1);
     expect(await handle(payload, d)).toMatchObject({ action: "ack", outcome: "reused" });
+  });
+
+  it("reconciles an attempt that stopped before its receipt instead of creating again", async () => {
+    const payload = await approvedPayload();
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s);
+    // The draft is created, then the receipt write fails (as a crash would).
+    const failingContent = new Proxy(content, {
+      get(target, prop) {
+        if (prop === "write") {
+          return async (path: string, body: string) => {
+            if (path.endsWith("/receipt.json")) throw new Error("disk full");
+            return target.write(path, body);
+          };
+        }
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const first = await handleApprovedArticle({
+      payload,
+      destination: d,
+      schedule: { delayMs: 0 },
+      content: failingContent,
+      operations,
+      owner: "t",
+      retryDelayMs: 1,
+    });
+    expect(first).toMatchObject({ action: "nak" });
+    expect(s.drafts).toHaveLength(1);
+    expect(await handle(payload, d)).toMatchObject({ action: "ack", outcome: "delivered" });
+    expect(s.drafts).toHaveLength(1);
   });
 
   it("reconciles a lost create before any retry, so exactly one draft exists", async () => {

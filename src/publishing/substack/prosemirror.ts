@@ -43,6 +43,24 @@ const httpsUrl = (raw: string): string => {
   return url.toString();
 };
 
+/**
+ * A bare https URL at the start of `text`. Balanced parentheses stay part of
+ * the URL (`report_(2026)`); trailing sentence punctuation and an unbalanced
+ * closing parenthesis do not.
+ */
+function bareUrl(text: string): [string, string] | null {
+  const m = /^https:\/\/[^\s<>"]+/.exec(text);
+  if (!m) return null;
+  let url = m[0];
+  for (;;) {
+    const last = url.at(-1)!;
+    if (".,;:!?]'".includes(last)) url = url.slice(0, -1);
+    else if (last === ")" && url.split("(").length < url.split(")").length) url = url.slice(0, -1);
+    else break;
+  }
+  return url.length > "https://".length ? [url, url] : null;
+}
+
 /** Inline Markdown to text nodes with marks. */
 export function inline(source: string): PmText[] {
   if (/<(?!https:\/\/)[a-z!/]/i.test(source)) throw new UnsupportedMarkdownError("inline html");
@@ -78,8 +96,7 @@ export function inline(source: string): PmText[] {
         i += link[0].length;
         continue;
       }
-      const auto =
-        /^<(https:\/\/[^>\s]+)>/.exec(rest) ?? /^(https:\/\/[^\s<>"]*[^\s<>".,;:!?)\]])/.exec(rest);
+      const auto = /^<(https:\/\/[^>\s]+)>/.exec(rest) ?? bareUrl(rest);
       if (auto) {
         flush();
         push(auto[1]!, [...marks, { type: "link", attrs: { href: httpsUrl(auto[1]!) } }]);
