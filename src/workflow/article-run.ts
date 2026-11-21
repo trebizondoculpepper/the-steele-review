@@ -61,6 +61,8 @@ export interface ArticleRunInput {
   /** Batch deadline for research, from submission, in milliseconds. */
   researchDeadlineMs: number;
   researchRequestLimit?: number;
+  /** Set by an explicit recovery of a stopped run (#480). */
+  recoveryGeneration?: number;
 }
 
 export interface ArticleRunResult {
@@ -127,6 +129,15 @@ export const RESEARCH_CONCURRENCY_RULE = [
 ];
 
 /** Stable workflow key for one captured post revision. */
+/**
+ * Restate idempotency key for one research call. A recovery generation makes a
+ * previously blocked response unusable without changing the durable job ID or
+ * its saved artifacts.
+ */
+export function researchCallKey(jobId: string, recoveryGeneration = 0): string {
+  return recoveryGeneration > 0 ? `${jobId}:recovery-${recoveryGeneration}` : jobId;
+}
+
 export function articleRunKey(post: {
   publicationId: string;
   postId: string;
@@ -168,6 +179,12 @@ export const ArticleRunInputSchema = z
     sourceUrl: z.url({ protocol: /^https$/ }),
     researchRequestLimit: ResearchRequestLimitSchema.optional(),
     researchDeadlineMs: z.number().int().min(1_000).max(86_400_000),
+    /**
+     * Present on an explicit recovery of a stopped run (#480). It changes the
+     * research call identity so a previously credit-blocked response cannot be
+     * reused, while successful saved research artifacts are still reused.
+     */
+    recoveryGeneration: z.number().int().min(0).max(100).optional(),
     source: z
       .object({
         namespace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}\/[a-z0-9][a-z0-9-]{0,99}$/),
@@ -291,7 +308,13 @@ export function articleRunWorkflow(stages: ArticleStages) {
         ctx
           .scope(RESEARCH_SCOPE)
           .serviceClient(Research)
-          .run(request, restate.rpc.opts({ idempotencyKey: jobId, limitKey: "sonar" }))
+          .run(
+            request,
+            restate.rpc.opts({
+              idempotencyKey: researchCallKey(jobId, input.recoveryGeneration ?? 0),
+              limitKey: "sonar",
+            }),
+          )
           // A research call that fails terminally is pinned as a failed job,
           // never allowed to fail the article run.
           .map((job, failure) => (failure ? { i } : { i, job: job! })),

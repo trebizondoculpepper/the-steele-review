@@ -338,12 +338,20 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
 }
 
 /** Submit through the same Restate identity as automatic capture and the CLI. */
-export function restateSubmitter(ingressUrl: string) {
-  const ingress = clients.connect({ url: ingressUrl });
+export function restateSubmitter(
+  ingressUrl: string,
+  connect: typeof clients.connect = clients.connect,
+) {
+  const ingress = connect({ url: ingressUrl });
   return {
-    async submit(input: import("../workflow/article-run.js").ArticleRunInput): Promise<void> {
+    async submit(
+      input: import("../workflow/article-run.js").ArticleRunInput,
+      workflowKey?: string,
+    ): Promise<void> {
+      // An explicit recovery supplies its own durable key (#480); ordinary
+      // submissions keep the stable identity shared with the CLI and ingress.
       await ingress
-        .workflowClient<ArticleRunApi>({ name: "ArticleRun" }, articleRunKey(input))
+        .workflowClient<ArticleRunApi>({ name: "ArticleRun" }, workflowKey ?? articleRunKey(input))
         .workflowSubmit(input, clients.rpc.sendOpts({ signal: AbortSignal.timeout(10_000) }));
     },
   };

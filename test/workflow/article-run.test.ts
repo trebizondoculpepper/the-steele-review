@@ -1,3 +1,4 @@
+import { researchCallKey } from "../../src/workflow/article-run.js";
 import { createHash } from "node:crypto";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
@@ -423,4 +424,13 @@ describe("unattended article run on Restate (#243)", () => {
       "cap-second",
     ]);
   }, 120_000);
+});
+
+describe("research call identity (#480)", () => {
+  it("keeps the durable job ID but changes the call key for a recovery generation", () => {
+    expect(researchCallKey("job-1")).toBe("job-1");
+    expect(researchCallKey("job-1", 0)).toBe("job-1");
+    expect(researchCallKey("job-1", 1)).toBe("job-1:recovery-1");
+    expect(researchCallKey("job-1", 2)).not.toBe(researchCallKey("job-1", 1));
+  });
 });

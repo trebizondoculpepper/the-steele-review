@@ -89,7 +89,7 @@ export function articleRecovery(deps: ArticleRecoveryDeps) {
         // A concurrent submission owns the identity: never start a second run.
         return { status: 409 };
       }
-      await deps.submitter.submit(input, identity.workflowKey);
+      await deps.submitter.submit({ ...input, recoveryGeneration: 1 }, identity.workflowKey);
       return {
         status: 303,
         location: `/articles/trace?publication=${encodeURIComponent(input.publicationId)}&post=${encodeURIComponent(input.postId)}`,

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { articleRecovery } from "../../src/dashboard/recovery-view.js";
+import { restateSubmitter } from "../../src/dashboard/adapters.js";
 import {
   RECOVERY_RUN_SUFFIX,
   recoveryIdentities,
@@ -72,14 +73,24 @@ const creditBlocked: RunState = {
 };
 
 function wiring(state: RunState) {
-  const submitted: Array<{ workflowKey?: string; publicationId: string }> = [];
+  const submitted: Array<{
+    workflowKey?: string;
+    publicationId: string;
+    recoveryGeneration?: number;
+  }> = [];
   const recovery = articleRecovery({
     archive,
     researchDeadlineMs: 60_000,
     researchRequestLimit: 3,
     submitter: {
       async submit(input, workflowKey) {
-        submitted.push({ ...(workflowKey ? { workflowKey } : {}), publicationId: input.publicationId });
+        submitted.push({
+          ...(workflowKey ? { workflowKey } : {}),
+          publicationId: input.publicationId,
+          ...(input.recoveryGeneration === undefined
+            ? {}
+            : { recoveryGeneration: input.recoveryGeneration }),
+        });
       },
     },
     runs: { status: async () => state },
@@ -126,6 +137,8 @@ describe("recover stopped run action (#480)", () => {
     const result = await recovery.submit(selection());
     expect(result).toMatchObject({ status: 303 });
     expect(submitted).toHaveLength(1);
+    // The recovery marks the generation so a blocked research response is not reused.
+    expect(submitted[0]!.recoveryGeneration).toBe(1);
     expect(submitted[0]!.workflowKey).toBe(
       recoveryWorkflowKey(`${post.publicationId}/${post.postId}@${version.slice(7, 39)}`),
     );
@@ -133,6 +146,30 @@ describe("recover stopped run action (#480)", () => {
     const again = await recovery.submit(selection());
     expect(again).toMatchObject({ status: 303 });
     expect(submitted[1]!.workflowKey).toBe(submitted[0]!.workflowKey);
+  });
+
+  it("submits through the production adapter under the recovery key", async () => {
+    const seen: string[] = [];
+    const fakeConnect = ((_config: { url: string }) => ({
+      workflowClient: (_service: unknown, key: string) => ({
+        async workflowSubmit() {
+          seen.push(key);
+        },
+      }),
+    })) as never;
+    const submitter = restateSubmitter("http://ingress.invalid", fakeConnect);
+    const input = {
+      publicationId: "pub",
+      postId: "p1",
+      sourceVersion: version,
+      sourceUrl: "https://example.test/p/p1",
+      researchDeadlineMs: 60_000,
+      recoveryGeneration: 1,
+    };
+    await submitter.submit(input);
+    await submitter.submit(input, "pub/p1@abc~recovered");
+    expect(seen[0]).toBe(`pub/p1@${version.slice(7, 39)}`);
+    expect(seen[1]).toBe("pub/p1@abc~recovered");
   });
 
   it("refuses recovery of a run that is not stopped on credit", async () => {
