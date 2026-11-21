@@ -39,6 +39,8 @@ export interface DraftEntry {
   limitation?: string;
   hash?: string;
   title?: string;
+  subtitle?: string;
+  excerpt?: string;
   draftedAt?: string;
   promptVersion?: string;
   modelVersion?: string;
@@ -125,7 +127,13 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
       };
     }
     const info = {
-      ...(meta.fields ? { title: meta.fields.title } : {}),
+      ...(meta.fields
+        ? {
+            title: meta.fields.title,
+            subtitle: meta.fields.subtitle,
+            excerpt: meta.fields.excerpt,
+          }
+        : {}),
       draftedAt: meta.draftedAt,
       promptVersion: meta.promptVersion,
       modelVersion: meta.modelVersion,

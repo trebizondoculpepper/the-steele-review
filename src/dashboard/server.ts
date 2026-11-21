@@ -74,6 +74,10 @@ code { font-size: 0.85em; word-break: break-all; }
 .s-pending { color: #b7791f; } .s-not-reached, .s-not-started, .s-unknown { color: var(--muted); }
 .warning { border: 1px solid #c0392b; border-left-width: 4px; padding: 0.5rem 0.75rem; }
 .s-credit-exhausted { color: #c0392b; font-weight: 600; }
+/* Saved draft text: wrap within the viewport without changing the stored text (#469). */
+.draft-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+pre.draft-text { font: inherit; margin: 0; }
+dd { min-width: 0; overflow-wrap: anywhere; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
 dt { color: var(--muted); }
 .empty { color: var(--muted); }
