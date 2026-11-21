@@ -19,10 +19,10 @@
  * Exit status: 0 when the index caught up (or nothing changed); 1 when any
  * change failed or the pass was interrupted; 2 for usage or configuration errors.
  */
-import { readFile, rename, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { catchUpIndex, type CatchUpCheckpointState } from "../collection/index-catchup.js";
+import { fileCheckpoint } from "../collection/catchup-checkpoint.js";
+import { catchUpIndex } from "../collection/index-catchup.js";
 import { CredentialError, elasticsearchConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
@@ -74,21 +74,7 @@ export async function main(argv: string[]): Promise<number> {
     console.error("catch-up-index: ELASTICSEARCH_URL is not a valid URL");
     return 2;
   }
-  const checkpoint = {
-    async load(): Promise<CatchUpCheckpointState | undefined> {
-      try {
-        return JSON.parse(await readFile(checkpointPath, "utf8")) as CatchUpCheckpointState;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-        throw error;
-      }
-    },
-    async save(state: CatchUpCheckpointState) {
-      const temporary = `${checkpointPath}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
-      await rename(temporary, checkpointPath);
-    },
-  };
+  const checkpoint = fileCheckpoint(checkpointPath);
   try {
     const report = await catchUpIndex({
       artifacts: new GitArtifactStore({

@@ -37,3 +37,21 @@ After a pinned bulk load (`replay-index --commit SHA --checkpoint PATH`), `catch
 - **Safe to repeat:** an unchanged archive is a no-op; reruns of the same changes are idempotent.
 
 Tests: `test/collection/index-catchup.test.ts` covers catch-up over several commits (add, revise, delete) from a #249 bulk-load checkpoint, a failed change not advancing, recovery after an interrupted pass, and a publication filter.
+
+## Git-triggered indexing worker (#252)
+
+`captured-index-worker` (`src/cli/captured-index-worker.ts`) runs the catch-up continuously. A change to the archive's branch refs wakes it, and so does the reference-transaction hook from #251 if it's installed. A periodic pass (`STEELE_CAPTURED_INDEX_INTERVAL_MS`, default 5 minutes) runs regardless. One pass at a time per index, guarded by a lease in the state controller. `--once` runs a single pass and exits 1 if anything failed.
+
+Configuration:
+- `STEELE_ARCHIVE_PATH` and `STEELE_ARCHIVE_REPOSITORY`;
+- `STEELE_STATE_PATH`;
+- `STEELE_CAPTURED_INDEX_CHECKPOINT`: the #249 bulk-load marker file;
+- optional `STEELE_CAPTURED_INDEX_PUBLICATION`, which must match the checkpoint's scope;
+- `ELASTICSEARCH_URL`, `ELASTICSEARCH_API_KEY?` and `STEELE_FULLTEXT_INDEX?`.
+
+**Cut-over:**
+1. Bulk-load with `replay-index --commit <archive head> --checkpoint <file>`.
+2. Start this worker with that checkpoint.
+3. Stop the NATS-triggered `index-worker`. The collector keeps publishing `steele.v1.content.extracted` and `steele.v1.content.captured` for other subscribers.
+
+**Rollback:** start `index-worker` again; both paths are idempotent against the same externally versioned index.
