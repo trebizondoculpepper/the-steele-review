@@ -48,6 +48,13 @@ export class ThemeStore {
     return parsed.success ? parsed.data : undefined;
   }
 
+  /** A theme that must exist and be valid; read or parse failures propagate. */
+  async require(id: string): Promise<CanonicalTheme> {
+    const ref = await this.artifacts.lookup(themePath(id));
+    if (!ref) throw new Error("canonical theme listed but not found");
+    return CanonicalThemeSchema.parse(JSON.parse(await this.artifacts.read(ref)));
+  }
+
   /**
    * Record a canonical theme. Write-once: the first title wins, so an
    * established topic is not silently renamed by a later post's wording.
@@ -82,8 +89,10 @@ export class ThemeStore {
 }
 
 /**
- * Every readable canonical theme, paged to the end. Unreadable records are
- * skipped here; `ThemeStore.get` keeps reporting them as absent.
+ * Every canonical theme, paged to the end. A listed theme that cannot be read
+ * or parsed is a failure, never an absence: treating it as missing could mint
+ * a duplicate identity and commission redundant research, so the caller's
+ * assessment fails and stays safely retryable.
  */
 export async function listCanonicalThemes(store: ThemeStore): Promise<CanonicalTheme[]> {
   const ids: string[] = [];
@@ -97,8 +106,7 @@ export async function listCanonicalThemes(store: ThemeStore): Promise<CanonicalT
   for (const path of ids) {
     const id = /^canonical-themes\/([^/]+)\.json$/.exec(path)?.[1];
     if (!id) continue;
-    const theme = await store.get(id).catch(() => undefined);
-    if (theme) themes.push(theme);
+    themes.push(await store.require(id));
   }
   return themes;
 }
