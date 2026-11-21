@@ -46,7 +46,7 @@ async function corpus() {
       promptVersion: "p",
       model: "fake/sonar",
       report: "# Generated 5G report\n\nFindings.",
-      citations: ["https://a.example/x", "https://b.example/y"],
+      citations: ["https://a.example/x", "https://b.example/y", "https://pub.example.com/p/own"],
     }),
   );
   const ref = {
@@ -64,6 +64,14 @@ async function corpus() {
       citations: [
         { url: "https://a.example/x", retrieval: "archived", support: "unverified", passages: [] },
         { url: "https://b.example/y", retrieval: "inaccessible", passages: [] },
+        {
+          url: "https://pub.example.com/p/own",
+          retrieval: "archived",
+          support: "supported",
+          sourceType: "monitored-source",
+          confidenceRationale: "The claimant's own post.",
+          passages: [],
+        },
       ],
       gaps: ["No primary source for the tower claim."],
       provider: { model: "fake/sonar" },
@@ -136,7 +144,7 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
     expect(job).toMatchObject({
       subject: "5G towers",
       outcome: "complete-with-gaps",
-      citationCount: 2,
+      citationCount: 3,
     });
     // Imports have no structured citations: shown as not recorded, never guessed.
     expect(rows.find((r) => r.title === "5G primer")!.citationCount).toBeUndefined();
@@ -173,6 +181,8 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
       new URL(`http://x/research/view?${new URLSearchParams({ path: job.path, at: job.commit })}`),
     );
     expect(jobPage).toContain("not verified evidence");
+    // A monitored source is labelled as the claimant's own material, never as support.
+    expect(jobPage).toContain("not independent support");
     expect(jobPage).not.toContain("an archived passage supports");
     expect(jobPage).toContain("No primary source for the tower claim.");
     expect(await list!.render(new URL("http://x/research?q=zzz"))).toContain(
@@ -187,6 +197,17 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
       savedResearch({ list: async () => Promise.reject(new Error("x")) } as never),
     );
     expect(await down!.render(new URL("http://x/research"))).toContain("unavailable right now");
+  });
+
+  it("lists Markdown research-subject reports once per job", async () => {
+    const md = `research-${"b".repeat(32)}`;
+    await content.write(`research-jobs/${md}/report.md`, "# Sonar subject report\n\nText.");
+    await content.write(
+      `research-jobs/${md}/report.json`,
+      JSON.stringify({ report: "# Snapshot\n\nText." }),
+    );
+    const rows = (await savedResearch(content).list({ kind: "generated-report" })).rows;
+    expect(rows.map((r) => r.title)).toEqual(["Sonar subject report"]);
   });
 
   it("reaches a match beyond the first bounded scan window", async () => {

@@ -30,7 +30,7 @@ export type ResearchKind = "dossier" | "imported-report" | "generated-report";
 
 const DOSSIER = /^dossier\/[^/]+\.md$/;
 const IMPORTED = /^research-reports\/.+\.md$/;
-const JOB_REPORT = /^research-jobs\/(research-[0-9a-f]{32})\/report\.json$/;
+const JOB_REPORT = /^research-jobs\/(research-[0-9a-f]{32})\/report\.(json|md)$/;
 
 export function researchKind(path: string): ResearchKind | undefined {
   if (DOSSIER.test(path)) return "dossier";
@@ -47,6 +47,9 @@ export interface ResearchCitation {
   /** `supported` only when the saved record says an archived passage supports it. */
   support?: string;
   passages: string[];
+  /** Recorded source classification, e.g. `monitored-source` (the claimant's own material). */
+  sourceType?: string;
+  confidenceRationale?: string;
 }
 
 export interface ResearchDocument {
@@ -150,7 +153,8 @@ export function savedResearch(content: Store): ResearchPort {
       }
       // Generated job: the report snapshot plus its request, manifest and result.
       const jobId = JOB_REPORT.exec(path)![1]!;
-      const report = json(found.content) as
+      // research-subject (Sonar) saves report.md; the job runner saves a report.json snapshot.
+      const report = (path.endsWith(".md") ? { report: found.content } : json(found.content)) as
         | { report?: unknown; model?: unknown; omittedCitations?: unknown; citations?: unknown }
         | undefined;
       if (!report || typeof report.report !== "string") return undefined;
@@ -174,6 +178,8 @@ export function savedResearch(content: Store): ResearchPort {
             url: c.url,
             retrieval: c.retrieval,
             ...(c.support ? { support: c.support } : {}),
+            ...(c.sourceType ? { sourceType: c.sourceType } : {}),
+            ...(c.confidenceRationale ? { confidenceRationale: c.confidenceRationale } : {}),
             passages: c.passages.map((p) => p.passage),
           }))
         : Array.isArray(report.citations)
@@ -199,7 +205,11 @@ export function savedResearch(content: Store): ResearchPort {
               })),
             }
           : {}),
-        ...(typeof report.model === "string" ? { model: report.model } : {}),
+        ...(typeof report.model === "string"
+          ? { model: report.model }
+          : manifest.success
+            ? { model: manifest.data.provider.model }
+            : {}),
         ...(result.success
           ? {
               outcome: result.data.outcome,
@@ -254,6 +264,13 @@ export function savedResearch(content: Store): ResearchPort {
               listed++;
               if (!researchKind(path)) {
                 if (full()) break outer;
+                continue;
+              }
+              // One row per job: a snapshot beside a Markdown report is the same job.
+              if (
+                path.endsWith("/report.json") &&
+                (await content.lookup(path.replace(/json$/, "md")))
+              ) {
                 continue;
               }
               scanned++;

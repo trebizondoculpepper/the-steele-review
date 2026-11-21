@@ -30,6 +30,16 @@ const citationHtml = (c: ResearchCitation) => {
       ? (SUPPORT_LABEL[c.support] ?? `${c.support} (not verified evidence)`)
       : "no support check recorded (not verified evidence)",
   ].filter(Boolean);
+  if (c.sourceType === "monitored-source") {
+    // Not independent support, whatever its passage check said.
+    status.splice(1);
+    status.unshift(
+      "monitored source: the claimant's own material, quoted for attribution, not independent support",
+    );
+  } else if (c.sourceType) {
+    status.unshift(`source type: ${c.sourceType}`);
+  }
+  if (c.confidenceRationale) status.push(`rationale: ${c.confidenceRationale}`);
   return `<li>${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("")}</li>`;
 };
 
