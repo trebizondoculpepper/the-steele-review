@@ -95,31 +95,40 @@ export function savedThemes(
   options: { scanLimit?: number } = {},
 ): ThemesPort {
   const scanLimit = options.scanLimit ?? THEME_RESULT_SCAN;
-  const readResult = async (path: string): Promise<ThemeRow[] | undefined> => {
+  const readResultState = async (
+    path: string,
+  ): Promise<{ sourceVersion: string; rows: ThemeRow[] } | "unreadable" | undefined> => {
     const m = RESULT_PATH.exec(path);
     if (!m) return undefined;
     try {
       const ref = await content.lookup(path);
       if (!ref) return undefined;
       const r = parseThemeProposalResult(JSON.parse(await content.read(ref)));
-      return r.proposals.map((p) => ({
-        result: path,
-        id: p.id,
-        title: p.title,
-        ...(p.description ? { description: p.description } : {}),
-        publicationId: r.post.publicationId,
-        postId: r.post.postId,
+      return {
         sourceVersion: r.sourceVersion,
-        modelVersion: r.extraction.modelVersion,
-        promptVersion: r.extraction.promptVersion,
-        proposedAt: r.extraction.proposedAt,
-        rejectedInResult: r.rejected.length,
-      }));
+        rows: r.proposals.map((p) => ({
+          result: path,
+          id: p.id,
+          title: p.title,
+          ...(p.description ? { description: p.description } : {}),
+          publicationId: r.post.publicationId,
+          postId: r.post.postId,
+          sourceVersion: r.sourceVersion,
+          modelVersion: r.extraction.modelVersion,
+          promptVersion: r.extraction.promptVersion,
+          proposedAt: r.extraction.proposedAt,
+          rejectedInResult: r.rejected.length,
+        })),
+      };
     } catch {
-      return undefined;
+      return "unreadable";
     }
   };
-
+  const readResult = async (path: string): Promise<ThemeRow[] | undefined> => {
+    const state = await readResultState(path);
+    if (state === undefined || state === "unreadable") return undefined;
+    return state.rows;
+  };
   return {
     async list({ query, after }) {
       // Bounded per request, resumable by cursor: every saved extraction is
@@ -179,14 +188,21 @@ export function savedThemes(
       const partial = paths.length >= THEME_LIST_PAGE;
       const themes: ArticleThemeLink[] = [];
       let matchedResult = false;
+      let unreadable = 0;
       for (const path of paths) {
         if (!RESULT_PATH.test(path)) continue;
-        const rows = await readResult(path);
-        if (!rows || rows.length === 0) continue;
-        if (rows[0]!.sourceVersion !== sourceVersion) continue; // exact revision only
+        const state = await readResultState(path);
+        if (state === undefined) continue;
+        if (state === "unreadable") {
+          unreadable++;
+          continue;
+        }
+        // The source version is checked on the saved result itself, so a valid
+        // extraction with no proposals is still "analysed".
+        if (state.sourceVersion !== sourceVersion) continue;
         matchedResult = true;
         themes.push(
-          ...rows.map((r) => ({
+          ...state.rows.map((r) => ({
             result: r.result,
             id: r.id,
             title: r.title,
@@ -195,6 +211,8 @@ export function savedThemes(
           })),
         );
       }
+      // An unreadable saved result is not evidence that nothing was analysed.
+      if (unreadable > 0) return { state: "partial", themes };
       if (!matchedResult) return { state: partial ? "partial" : "not-analysed", themes: [] };
       return { state: partial ? "partial" : "ok", themes };
     },

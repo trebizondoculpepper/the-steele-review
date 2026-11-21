@@ -101,3 +101,49 @@ describe("article theme links (#496)", { timeout: 60_000 }, () => {
     expect(html).not.toContain("<script>");
   });
 });
+
+describe("article themes edge cases (#496)", () => {
+  const sourceVersion = `sha256:${"b".repeat(64)}`;
+  const emptyResult = (postId: string, version: string) => ({
+    schemaVersion: 1,
+    post: { sourceType: "substack", publicationId: "pub", postId },
+    sourceVersion: version,
+    artifact: {
+      repository: "archive",
+      commit: "a".repeat(40),
+      path: `substack/pub/${postId}/collected.json`,
+      hash: `sha256:${"c".repeat(64)}`,
+    },
+    proposals: [],
+    rejected: [],
+    catalogueContext: null,
+    extraction: {
+      schemaVersion: 1,
+      modelVersion: "m",
+      promptVersion: "theme-proposals-v2",
+      proposedAt: "2026-01-01T00:00:00Z",
+    },
+  });
+
+  it("treats a saved extraction with no proposals as analysed", async () => {
+    await content.write(
+      "theme-proposals/pub/p1/empty.json",
+      `${JSON.stringify(emptyResult("p1", sourceVersion))}\n`,
+    );
+    expect(await savedThemes(content).forPost(post, sourceVersion)).toEqual({
+      state: "ok",
+      themes: [],
+    });
+  });
+
+  it("reports a partial state when a saved result cannot be read", async () => {
+    await content.write(
+      "theme-proposals/pub/p1/empty.json",
+      `${JSON.stringify(emptyResult("p1", sourceVersion))}\n`,
+    );
+    await content.write("theme-proposals/pub/p1/broken.json", "{not json");
+    const found = await savedThemes(content).forPost(post, sourceVersion);
+    expect(found.state).toBe("partial");
+    expect(found.themes).toEqual([]);
+  });
+});
