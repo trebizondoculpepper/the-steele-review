@@ -13,6 +13,10 @@ import {
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
 import {
+  renderPackageDraft,
+  modelCitationProblems,
+} from "../../src/drafting/package-draft.js";
+import {
   DEFAULT_PACKAGE_VERIFY_PROMPT,
   PackageVerificationReportSchema,
   approvalValidFor,
@@ -453,5 +457,140 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
         issues: [{ severity: "substantive" }],
       });
     }
+  });
+});
+
+describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
+  it("resolves local index-zero evidence to deduplicated global references", async () => {
+    const { pkg } = await drafted();
+    const raw = JSON.parse(await content.read(pkg.ref));
+    // Both claims get their own local index-zero evidence.
+    raw.claims[0] = {
+      ...raw.claims[0],
+      status: "covered",
+      coverage: "covered",
+      reason: undefined,
+      evidence: [{ url: "https://example.org/treaty", passage: "The treaty bans weapons." }],
+    };
+    raw.claims[1] = {
+      ...raw.claims[1],
+      status: "covered",
+      coverage: "covered",
+      reason: undefined,
+      evidence: [{ url: "https://example.org/payment", passage: "The payment was recorded." }],
+    };
+    const parsedPkg = WriterPackageSchema.parse(raw);
+    const markdown = renderPackageDraft(
+      parsedPkg,
+      {
+        title: "T",
+        subtitle: "S",
+        excerpt: "E",
+        summary: "Summary without references.",
+        themes: ["Weather warfare"],
+        responses: [
+          {
+            claimRecordId: raw.claims[0].claimRecordId,
+            verdict: "supported",
+            // The same supplied item cited twice: one source, repeated reference.
+            text: "A supported statement.",
+            evidence: [0, 0],
+          },
+          {
+            claimRecordId: raw.claims[1].claimRecordId,
+            verdict: "supported",
+            text: "Its own index zero is a different source.",
+            evidence: [0],
+          },
+        ],
+        limitations: [],
+        narrative: { status: "limited", limitation: "No earlier posts were compared." },
+        widerContext: { status: "limited", limitation: "No background used." },
+      } as never,
+      "https://pub.example.com/p/p1",
+    );
+    expect(markdown).toContain("A supported statement. [1][1]");
+    expect(markdown).toContain("Its own index zero is a different source. [2]");
+    const sources = markdown.split("## Sources")[1]!.trim().split("\n").filter((l) => /^\d+\./.test(l));
+    expect(sources).toHaveLength(2);
+    // References are one-based, deduplicated and in first-use order.
+    expect(sources[0]).toContain(raw.claims[0].evidence[0].url);
+    expect(sources[1]).toContain(raw.claims[1].evidence[0].url);
+  });
+
+  it("rejects model-written numeric citation markers as bounded feedback", () => {
+    const base = {
+      title: "T",
+      subtitle: "S",
+      excerpt: "E",
+      summary: "Summary.",
+      themes: ["t"],
+      responses: [{ claimRecordId: "c", verdict: "supported" as const, text: "Fine.", evidence: [0] }],
+      limitations: [],
+      narrative: { status: "limited" as const, limitation: "none" },
+      widerContext: { status: "limited" as const, limitation: "none" },
+    };
+    expect(modelCitationProblems(base as never)).toEqual([]);
+    for (const marker of ["[0]", "[1]", "[0, 1]", "[2; 3]"]) {
+      const problems = modelCitationProblems({
+        ...base,
+        responses: [{ ...base.responses[0]!, text: `Claim ${marker}.` }],
+      } as never);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain("model-written citation marker");
+    }
+    // A Markdown link is not a citation marker.
+    expect(
+      modelCitationProblems({
+        ...base,
+        responses: [
+          { ...base.responses[0]!, text: "See [the treaty](https://example.org/treaty)." },
+        ],
+      } as never),
+    ).toEqual([]);
+  });
+
+  it("redrafts a first draft whose prose contains a model-written citation", async () => {
+    const writer = model(
+      "fake/writer-citation",
+      writerResponse("The treaty bans weapons [0]."),
+      writerResponse("The treaty bans weapons."),
+    );
+    const out = await draftFromPackage({
+      content,
+      archive,
+      package: (await drafted()).pkg.ref,
+      provider: writer,
+      sourceUrl: "https://pub.example.com/p/p1",
+    });
+    if (out.status !== "drafted") throw new Error(out.status);
+    expect(writer.calls).toBe(2);
+    const markdown = await content.read(out.draft);
+    // Only the application-rendered reference remains, and it is the global one.
+    expect(markdown).not.toContain("weapons [0]");
+    expect(markdown).toContain("bans weapons. [1]");
+    const metadata = JSON.parse(await content.read(out.metadata));
+    expect(metadata.repairPromptVersion).toBeDefined();
+  });
+
+  it("rejects a model-written citation in a revision too", async () => {
+    const { pkg, draft } = await drafted();
+    const writer = model(
+      "fake/writer-citation-revision",
+      writerResponse("Revised with a fake reference [1]."),
+      writerResponse("Revised without a reference."),
+    );
+    const out = await draftFromPackage({
+      content,
+      archive,
+      package: pkg.ref,
+      provider: writer,
+      sourceUrl: "https://pub.example.com/p/p1",
+      revision: { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] },
+      previousDraft: { ref: draft, markdown: "# Previous article\n\nBody." },
+    });
+    if (out.status !== "drafted") throw new Error(out.status);
+    expect(writer.calls).toBe(2);
+    expect(await content.read(out.draft)).not.toContain("fake reference [1]");
   });
 });
