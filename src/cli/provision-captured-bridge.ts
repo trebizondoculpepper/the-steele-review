@@ -4,6 +4,8 @@ import { NatsController } from "../controllers/nats.js";
 import { provisionDurableConsumer } from "../controllers/nats-provision.js";
 import { CAPTURED_CONTENT_SUBJECT } from "../events/captured-content-event.js";
 
+import { CAPTURE_BRIDGE_MAX_DELIVER } from "../workflow/captured-bridge.js";
+
 const Env = z.object({
   STEELE_CONTENT_STREAM: z.string().min(1).default("STEELE_CONTENT"),
   STEELE_CAPTURED_CONSUMER: z.string().min(1),
@@ -26,6 +28,7 @@ async function main(): Promise<number> {
       name: config.data.STEELE_CAPTURED_CONSUMER,
       filterSubject: CAPTURED_CONTENT_SUBJECT,
       newOnly: true,
+      maxDeliver: CAPTURE_BRIDGE_MAX_DELIVER,
     });
     console.log(JSON.stringify({ event: "capture-bridge-provisioned", result }));
     return 0;

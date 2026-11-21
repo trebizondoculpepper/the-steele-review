@@ -116,7 +116,9 @@ export async function provisionDurableConsumer(
       existing.config.filter_subject !== config.filterSubject ||
       existing.config.ack_policy !== AckPolicy.Explicit ||
       (config.newOnly &&
-        (existing.config.deliver_policy !== DeliverPolicy.New || existing.config.deliver_subject))
+        (existing.config.deliver_policy !== DeliverPolicy.New ||
+          existing.config.deliver_subject ||
+          existing.config.max_deliver !== (config.maxDeliver ?? 10)))
     ) {
       throw new ConsumerConflictError();
     }

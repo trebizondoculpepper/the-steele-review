@@ -78,3 +78,11 @@ The source allowlist defaults to empty. Set it to the isolated test source for
 the fixture smoke test and enable the live source only after that test passes.
 The shared image's default web-server health check is disabled for the bridge
 until its role-specific probe is wired.
+
+The bridge keeps its own durable state file. After the final failed submission
+attempt it records `capture-bridge:<workflow-key>` with
+`retries-exhausted:submission-failed` before acknowledging. Inspect the
+record using the operation diagnostic. After restoring Restate, recover by
+submitting the original captured event for that exact revision through the
+configured bridge. Reusing the workflow key also covers a submission whose
+response was lost.

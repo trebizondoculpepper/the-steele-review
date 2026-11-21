@@ -6,6 +6,7 @@
  *
  * Configuration (environment):
  *   NATS_URL, NATS_TOKEN?                 broker
+ *   STEELE_STATE_PATH                    dedicated bridge failure state
  *   STEELE_CONTENT_STREAM                 stream holding captured-content events (STEELE_CONTENT)
  *   STEELE_CAPTURED_CONSUMER              durable consumer name (provisioned separately)
  *   RESTATE_INGRESS_URL                   Restate ingress, e.g. http://restate:8080
@@ -21,10 +22,12 @@ import * as clients from "@restatedev/restate-sdk-clients";
 import { z } from "zod";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
 import { NatsController } from "../controllers/nats.js";
+import { OperationStore } from "../controllers/operation-store.js";
 import type { ArticleRunApi } from "../workflow/article-run.js";
-import { handleCapturedContent } from "../workflow/captured-bridge.js";
+import { handleCapturedContent, settleCapturedDelivery } from "../workflow/captured-bridge.js";
 
 const EnvSchema = z.object({
+  STEELE_STATE_PATH: z.string().min(1),
   STEELE_CONTENT_STREAM: z.string().min(1),
   STEELE_CAPTURED_CONSUMER: z.string().min(1),
   RESTATE_INGRESS_URL: z.url(),
@@ -58,7 +61,9 @@ async function main(): Promise<number> {
   const abort = new AbortController();
   process.once("SIGTERM", () => abort.abort());
   process.once("SIGINT", () => abort.abort());
+  let operations: OperationStore | undefined;
   try {
+    const state = (operations = new OperationStore({ path: c.STEELE_STATE_PATH }));
     await nats.connect("steele-captured-bridge");
     console.log(
       JSON.stringify({
@@ -85,9 +90,7 @@ async function main(): Promise<number> {
           },
         });
         console.log(JSON.stringify({ event: "captured-bridge", ...decision }));
-        if (decision.action === "ack") await message.ack();
-        else if (decision.action === "nak") message.nak(decision.delayMs);
-        else message.term();
+        await settleCapturedDelivery(message, decision, state);
       },
       abort.signal,
     );
@@ -96,6 +99,7 @@ async function main(): Promise<number> {
     console.error(JSON.stringify({ event: "captured-bridge", state: "failed" }));
     return 1;
   } finally {
+    operations?.close();
     await nats.close();
     console.log(JSON.stringify({ event: "captured-bridge", state: "stopped" }));
   }

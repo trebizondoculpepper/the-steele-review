@@ -4,6 +4,7 @@ services:
     image: ${STEELE_IMAGE:?Set a pinned application image}
     command: ["node", "--enable-source-maps", "dist/cli/captured-bridge.js"]
     restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
     healthcheck:
       disable: true
     environment:
@@ -11,7 +12,10 @@ services:
       NATS_TOKEN: ${NATS_TOKEN:-}
       STEELE_CONTENT_STREAM: ${STEELE_CONTENT_STREAM:-STEELE_CONTENT}
       STEELE_CAPTURED_CONSUMER: ${STEELE_CAPTURED_CONSUMER:?Set a provisioned durable consumer}
+      STEELE_STATE_PATH: /data/state/captured-bridge.sqlite
       RESTATE_INGRESS_URL: http://restate:8080
       STEELE_ARTICLE_SOURCES: ${STEELE_ARTICLE_SOURCES:-}
       STEELE_RESEARCH_DEADLINE_MS: ${STEELE_RESEARCH_DEADLINE_MS:-1800000}
+    volumes:
+      - ${STEELE_STATE_DIR:?Set the state directory privately}:/data/state
     networks: [steele]
