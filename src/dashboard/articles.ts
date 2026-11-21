@@ -38,7 +38,12 @@ export type RunState =
       /** The run's own durable progress (#439); null before its first stage, absent if unreadable. */
       progress?: { stage: string; status: "running" | "completed"; at: string } | null;
     }
-  | { state: "finished"; result: ArticleRunFinal }
+  | {
+      state: "finished";
+      result: ArticleRunFinal;
+      /** The recorded recovery run for this revision, when one was started (#480). */
+      recovery?: RunState;
+    }
   | { state: "unavailable" }
   | { state: "not-configured" };
 
@@ -164,6 +169,8 @@ export interface ArticleTrace {
   receiptsTruncated: boolean;
   /** Retained captured source for this post (#446). */
   source: CapturedSource;
+  /** Latest recorded recovery run for this revision (#480), when started. */
+  recovery?: { summary: RunSummary; outcome?: string; reason?: string };
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -398,6 +405,18 @@ export async function traceArticle(input: {
     }
   }
   const summary = summariseRun(run);
+  // A recovery is shown alongside the original failure, never instead of it.
+  const recoverySummary =
+    run.state === "finished" && run.recovery
+      ? (() => {
+          const r = summariseRun(run.recovery);
+          return {
+            summary: r.summary,
+            ...(r.outcome ? { outcome: r.outcome } : {}),
+            ...(r.reason ? { reason: r.reason } : {}),
+          };
+        })()
+      : undefined;
   const finished = run.state === "finished" ? run.result : undefined;
   let draft: DraftView | undefined;
   if (finished && "draft" in finished && finished.draft && input.content) {
@@ -459,5 +478,6 @@ export async function traceArticle(input: {
     receipts,
     receiptsTruncated,
     source,
+    ...(recoverySummary ? { recovery: recoverySummary } : {}),
   };
 }

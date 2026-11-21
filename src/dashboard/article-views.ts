@@ -25,6 +25,8 @@ export interface ArticleViewDeps {
   /** Retained captured source for the detail page (#446). */
   source?: SourcePort;
   canTrigger?: boolean;
+  /** Recovery of a stopped run is configured (#480). */
+  canRecover?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
 }
@@ -112,7 +114,12 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         deps.canTrigger && t.sourceVersion
           ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
-      return trigger + renderTrace(t);
+      // A run stopped on provider credit can be recovered explicitly (#480).
+      const recovery =
+        deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
+          ? `<p><a href="/articles/recover?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(t.sourceVersion)}">Recover stopped run</a></p>`
+          : "";
+      return trigger + recovery + renderTrace(t);
     },
   };
   return [list, detail];
@@ -171,6 +178,9 @@ export function renderTrace(t: ArticleTrace): string {
         `<tr><td>${escapeHtml(s.stage)}</td><td>${badge(s.state)}</td><td>${s.detail ? escapeHtml(s.detail) : ""}</td></tr>`,
     )
     .join("");
+  const recovery = t.recovery
+    ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>`
+    : "";
   const researchRows = t.research
     .map(
       (r) =>
@@ -220,5 +230,5 @@ export function renderTrace(t: ArticleTrace): string {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${source}${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
 }

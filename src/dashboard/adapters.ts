@@ -4,6 +4,8 @@ import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
+import { isCreditBlocked } from "./article-views.js";
+import { recoveryWorkflowKey } from "./recovery.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
 import { z } from "zod";
@@ -297,33 +299,40 @@ export function contentReceipts(
 /** ArticleRun status for an exact revision, read through Restate ingress. */
 export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPort {
   const ingress = clients.connect({ url: ingressUrl });
-  return {
-    async status(post): Promise<RunState> {
-      const workflow = ingress.workflowClient<ArticleRunApi>(
-        { name: "ArticleRun" },
-        articleRunKey(post),
+  const read = async (key: string): Promise<RunState> => {
+    const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
+    try {
+      const out = await workflow.workflowOutput(
+        clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
       );
+      if (out.ready) return { state: "finished", result: out.result };
+      // Running: read the run's own progress (#439). A failed read is shown as
+      // unavailable progress, never as success.
       try {
-        const out = await workflow.workflowOutput(
+        const progress = await workflow.progress(
           clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
         );
-        if (out.ready) return { state: "finished", result: out.result };
-        // Running: read the run's own progress (#439). A failed read is shown as
-        // unavailable progress, never as success.
-        try {
-          const progress = await workflow.progress(
-            clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
-          );
-          return { state: "running", progress };
-        } catch {
-          return { state: "running" };
-        }
-      } catch (error) {
-        if (error instanceof clients.HttpCallError && error.status === 404) {
-          return { state: "not-started" };
-        }
-        return { state: "unavailable" };
+        return { state: "running", progress };
+      } catch {
+        return { state: "running" };
       }
+    } catch (error) {
+      if (error instanceof clients.HttpCallError && error.status === 404) {
+        return { state: "not-started" };
+      }
+      return { state: "unavailable" };
+    }
+  };
+  return {
+    async status(post): Promise<RunState> {
+      const normal = await read(articleRunKey(post));
+      // A credit-stopped run may have an explicit recovery (#480): show the
+      // original failure and the recovery state together, never one as the other.
+      if (normal.state === "finished" && isCreditBlocked(normal.result.reason)) {
+        const recovery = await read(recoveryWorkflowKey(articleRunKey(post)));
+        if (recovery.state !== "not-started") return { ...normal, recovery };
+      }
+      return normal;
     },
   };
 }

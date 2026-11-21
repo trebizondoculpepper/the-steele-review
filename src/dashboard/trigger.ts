@@ -14,17 +14,23 @@ const Selection = z
   .strict();
 
 export interface ArticleSubmissionPort {
-  submit(input: ArticleRunInput): Promise<void>;
+  /**
+   * Submit a run. `workflowKey` is only supplied for an explicit recovery;
+   * ordinary submissions use the stable key derived from the input.
+   */
+  submit(input: ArticleRunInput, workflowKey?: string): Promise<void>;
 }
 
 /** Resolve the exact confirmed revision using the archive controller only. */
-export function articleTrigger(deps: {
-  archive: Pick<GitArtifactStore, "lookup" | "read">;
-  submitter: ArticleSubmissionPort;
-  researchDeadlineMs: number;
-  researchRequestLimit: number;
-}) {
-  const prepare = async (selection: unknown): Promise<ArticleRunInput | undefined> => {
+export async function prepareArticleInput(
+  deps: {
+    archive: Pick<GitArtifactStore, "lookup" | "read">;
+    researchDeadlineMs: number;
+    researchRequestLimit: number;
+  },
+  selection: unknown,
+): Promise<ArticleRunInput | undefined> {
+  {
     const parsed = Selection.safeParse(selection);
     if (!parsed.success) return undefined;
     const { publication, post, revision } = parsed.data;
@@ -47,7 +53,17 @@ export function articleTrigger(deps: {
       researchRequestLimit: deps.researchRequestLimit,
       source: { namespace: `substack/${publication}`, itemId: post, artifact: ref },
     });
-  };
+  }
+}
+
+/** Resolve the exact confirmed revision using the archive controller only. */
+export function articleTrigger(deps: {
+  archive: Pick<GitArtifactStore, "lookup" | "read">;
+  submitter: ArticleSubmissionPort;
+  researchDeadlineMs: number;
+  researchRequestLimit: number;
+}) {
+  const prepare = (selection: unknown) => prepareArticleInput(deps, selection);
   const view: DashboardView = {
     path: "/articles/run",
     title: "Run article",

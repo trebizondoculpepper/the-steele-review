@@ -44,6 +44,9 @@ import {
   restateSubmitter,
 } from "../dashboard/adapters.js";
 import { articleTrigger } from "../dashboard/trigger.js";
+import { articleRecovery } from "../dashboard/recovery-view.js";
+import { recoveryIdentities } from "../dashboard/recovery.js";
+import { OperationStore } from "../controllers/operation-store.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { draftViews } from "../dashboard/draft-views.js";
 import { draftInventory } from "../dashboard/drafts.js";
@@ -115,6 +118,21 @@ const trigger =
         researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
       })
     : undefined;
+// A recoverable stopped run needs a durable recovery identity in the state
+// controller; without configured state the action stays unavailable.
+const operations = e.STEELE_STATE_PATH ? new OperationStore({ path: e.STEELE_STATE_PATH }) : undefined;
+const recovery =
+  trigger && archive && operations && env.data.RESTATE_INGRESS_URL
+    ? articleRecovery({
+        archive,
+        researchRequestLimit: env.data.STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT,
+        researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
+        submitter: restateSubmitter(env.data.RESTATE_INGRESS_URL),
+        runs: restateRuns(env.data.RESTATE_INGRESS_URL),
+        identities: recoveryIdentities(operations),
+      })
+    : undefined;
+
 const overview = statusView(
   systemStatusSource({
     runtime: {
@@ -133,8 +151,10 @@ const overview = statusView(
 const views = [
   overview,
   ...(trigger ? [trigger.view] : []),
+  ...(recovery ? [recovery.view] : []),
   ...articleViews({
     canTrigger: Boolean(trigger),
+    canRecover: Boolean(recovery),
     ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
@@ -201,7 +221,10 @@ const server = createDashboardServer(
   trigger
     ? {
         origin: env.data.STEELE_DASHBOARD_ORIGIN!,
-        routes: { "/articles/run": trigger.submit },
+        routes: {
+          "/articles/run": trigger.submit,
+          ...(recovery ? { "/articles/recover": recovery.submit } : {}),
+        },
       }
     : undefined,
 );
@@ -220,6 +243,12 @@ server.listen(env.data.STEELE_DASHBOARD_PORT, "0.0.0.0", () => {
   );
 });
 const stop = () =>
-  server.close(() => void Promise.resolve(es?.close()).finally(() => process.exit(0)));
+  server.close(() =>
+    void Promise.resolve(es?.close())
+      .finally(() => {
+        operations?.close();
+      })
+      .finally(() => process.exit(0)),
+  );
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
