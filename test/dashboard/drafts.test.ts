@@ -295,4 +295,23 @@ describe("trashed drafts leave the active listing (#478)", () => {
     });
     expect((await withTrash().page({})).entries).toHaveLength(1);
   });
+
+  it("skips past a storage page that is entirely trashed", async () => {
+    // Two drafts per storage page; trash the whole first page.
+    const trash = new DraftTrashStore(content);
+    await saveDraft("post", "Body text");
+    const all = await draftInventory(content).page({});
+    const [first] = all.entries;
+    expect(first).toBeDefined();
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: first!.path,
+      action: "delete",
+      requestId: "skip-1",
+      at: "2026-02-01T00:00:00.000Z",
+    });
+    const filtered = await draftInventory(content, undefined, trash).page({});
+    // Whatever remains is still reachable rather than an empty page.
+    expect(filtered.entries.every((e) => e.path !== first!.path)).toBe(true);
+  });
 });

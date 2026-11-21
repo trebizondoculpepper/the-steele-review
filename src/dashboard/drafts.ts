@@ -32,6 +32,8 @@ const METADATA_PATH = /^articles\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\.json$/;
 export const REPORT_SCAN = 200;
 /** Bound on report pages per post (REPORT_SCAN each). */
 export const REPORT_MAX_PAGES = 10;
+/** Bound on empty pages skipped while filtering trashed drafts (#478). */
+export const MAX_FILTER_PAGES = 10;
 
 export type DraftStatus = "approved" | "redraft" | "unverified" | "incomplete" | "unreadable";
 
@@ -234,41 +236,61 @@ export function draftInventory(
     };
   };
 
-  return {
-    async page({ after, publicationId, postId }) {
-      const prefix =
-        publicationId && ID.test(publicationId)
-          ? postId && ID.test(postId)
-            ? `articles/${publicationId}/${postId}`
-            : `articles/${publicationId}`
-          : "articles";
-      // Over-read: metadata and Markdown share the prefix.
-      const paths = await content.list(prefix, DRAFT_PAGE * 2, after);
-      const metadata = paths.filter((p) => METADATA_PATH.test(p)).slice(0, DRAFT_PAGE);
-      const reportCache = new Map<string, Awaited<ReturnType<typeof reportsFor>>>();
-      const entries: DraftEntry[] = [];
-      for (const path of metadata) {
-        const m = METADATA_PATH.exec(path)!;
-        const key = `${m[1]}/${m[2]}`;
-        if (!reportCache.has(key)) reportCache.set(key, await reportsFor(m[1]!, m[2]!));
-        entries.push((await entryFor(path, reportCache.get(key)!)).entry);
+  const buildPage = async (
+    after: string | undefined,
+    publicationId: string | undefined,
+    postId: string | undefined,
+  ): Promise<DraftPage> => {
+    const prefix =
+      publicationId && ID.test(publicationId)
+        ? postId && ID.test(postId)
+          ? `articles/${publicationId}/${postId}`
+          : `articles/${publicationId}`
+        : "articles";
+    // Over-read: metadata and Markdown share the prefix.
+    const paths = await content.list(prefix, DRAFT_PAGE * 2, after);
+    const metadata = paths.filter((p) => METADATA_PATH.test(p)).slice(0, DRAFT_PAGE);
+    const reportCache = new Map<string, Awaited<ReturnType<typeof reportsFor>>>();
+    const entries: DraftEntry[] = [];
+    for (const path of metadata) {
+      const m = METADATA_PATH.exec(path)!;
+      const key = `${m[1]}/${m[2]}`;
+      if (!reportCache.has(key)) reportCache.set(key, await reportsFor(m[1]!, m[2]!));
+      entries.push((await entryFor(path, reportCache.get(key)!)).entry);
+    }
+    const last = metadata.length === DRAFT_PAGE ? metadata.at(-1) : undefined;
+    const more = paths.length === DRAFT_PAGE * 2 ? paths.at(-1) : undefined;
+    const next = last ?? more;
+    // Trashed drafts leave the active listing; their artifacts stay intact
+    // and a restore marker brings them back (#478).
+    // One history read for the whole page, not one per entry.
+    const hidden = trash
+      ? await trash.states(entries.map((e) => e.path))
+      : new Map<string, "active" | "trashed">();
+    return {
+      entries: entries.filter((e) => hidden.get(e.path) !== "trashed"),
+      ...(next ? { next } : {}),
+    };
+  };
+
+  const port: DraftInventoryPort = {
+    async page({ after, publicationId, postId }): Promise<DraftPage> {
+      let cursor = after;
+      // A storage page can be entirely trashed while later pages still hold
+      // active drafts. Keep reading until something is visible or the listing
+      // ends, bounded so a fully trashed archive cannot scan forever.
+      for (let skipped = 0; skipped < MAX_FILTER_PAGES; skipped++) {
+        const page = await buildPage(cursor, publicationId, postId);
+        if (page.entries.length > 0 || !page.next) return page;
+        cursor = page.next;
       }
-      const last = metadata.length === DRAFT_PAGE ? metadata.at(-1) : undefined;
-      const more = paths.length === DRAFT_PAGE * 2 ? paths.at(-1) : undefined;
-      const next = last ?? more;
-      // Trashed drafts leave the active listing; their artifacts stay intact
-      // and a restore marker brings them back (#478).
-      // One history read for the whole page, not one per entry.
-      const hidden = trash
-        ? await trash.states(entries.map((e) => e.path))
-        : new Map<string, "active" | "trashed">();
-      const visible = entries.filter((e) => hidden.get(e.path) !== "trashed");
-      return { entries: visible, ...(next ? { next } : {}) };
+      return { entries: [] };
     },
-    async text(path) {
+    async text(path: string) {
       const m = METADATA_PATH.exec(path);
       if (!m) return undefined;
       return entryFor(path, await reportsFor(m[1]!, m[2]!));
     },
   };
+  return port;
 }
