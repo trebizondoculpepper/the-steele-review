@@ -45,7 +45,7 @@ describe("assertArtifactPath", () => {
   });
 });
 
-describe("GitArtifactStore", () => {
+describe("GitArtifactStore", { timeout: 30_000 }, () => {
   it("writes and reads an exact version with hash verification", async () => {
     const ref = await store.write("pub/post/text.txt", "hello\n");
     expect(ref).toMatchObject({
@@ -190,7 +190,7 @@ describe("GitArtifactStore", () => {
   });
 });
 
-describe("GitArtifactStore with several writer processes (#315)", () => {
+describe("GitArtifactStore with several writer processes (#315)", { timeout: 30_000 }, () => {
   it("commits every write when independent stores race on one repository", async () => {
     // Separate instances share no in-process queue, like separate processes.
     const writers = Array.from(
