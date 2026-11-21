@@ -6,11 +6,16 @@ import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
 import { z } from "zod";
+import { CollectionRecordSchema } from "../collection/collection-store.js";
+import { collectionArtifactPath } from "../collection/collection-store.js";
+import { sourceVersionFor } from "../content/fulltext-document.js";
 import type {
   ArchivedArticle,
   ArticleContentPort,
+  CapturedSource,
   ReceiptView,
   ReceiptsPort,
+  SourcePort,
   RecentArticlesPort,
   RunState,
   RunStatusPort,
@@ -77,6 +82,47 @@ const persistedRef = (r: {
   path: r.path,
   sha256: r.hash.replace(/^sha256:/, ""),
 });
+
+/** Bound on retained capture text shown on one page. */
+export const SOURCE_DISPLAY_CHARS = 20_000;
+
+/**
+ * Retained captured source through the artifact controller (#446). The record
+ * is read once at the archive's pinned blob; nothing is fetched again and no
+ * deployment path leaves this function.
+ */
+export function archivedSource(
+  archive: Pick<GitArtifactStore, "lookup" | "read">,
+  options: { maxChars?: number } = {},
+): SourcePort {
+  const maxChars = options.maxChars ?? SOURCE_DISPLAY_CHARS;
+  return {
+    async read(post, expectedSourceVersion): Promise<CapturedSource> {
+      try {
+        const ref = await archive.lookup(collectionArtifactPath(post));
+        if (!ref) return { state: "missing" };
+        const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
+        const sourceVersion = sourceVersionFor(record.text);
+        const text = record.text.slice(0, maxChars);
+        return {
+          state: "recorded",
+          ...(record.item.title ? { title: record.item.title } : {}),
+          ...(record.item.url.startsWith("https://") ? { url: record.item.url } : {}),
+          method: record.provenance.method,
+          complete: record.complete,
+          sourceVersion,
+          revision: `${ref.commit.slice(0, 12)}:${ref.path}`,
+          text,
+          truncated: record.text.length > text.length,
+          matchesRevision:
+            expectedSourceVersion === undefined ? null : expectedSourceVersion === sourceVersion,
+        };
+      } catch {
+        return { state: "unreadable" };
+      }
+    },
+  };
+}
 
 /** Saved drafts and verification reports, read at their exact pinned revision. */
 export function contentArticleView(content: Pick<GitArtifactStore, "read">): ArticleContentPort {

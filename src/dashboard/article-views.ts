@@ -3,6 +3,7 @@ import {
   traceArticle,
   type ArticleContentPort,
   type ArticleTrace,
+  type CapturedSource,
   type ReceiptsPort,
   type RecentArticlesPort,
   type RunStatusPort,
@@ -122,6 +123,26 @@ export function creditWarning(runs: number): string {
   return `<p class="warning" role="alert"><strong>Provider credit exhausted.</strong> ${runs} recent run${runs === 1 ? "" : "s"} stopped because the model provider's credit budget ran out. This is not a finding about any article. Add credit or raise the key's limit with the provider, then recover the affected revisions as described in the article pipeline operations guide (provider credit exhaustion); completed stage results are reused.</p>`;
 }
 
+function renderSource(source: CapturedSource | undefined): string {
+  if (!source) return "";
+  if (source.state !== "recorded") {
+    return `<h2>Retained source</h2><p class="empty">Captured source: ${escapeHtml(source.state)}.</p>`;
+  }
+  const link =
+    source.url === undefined
+      ? ""
+      : ` <a href="${escapeHtml(source.url)}" rel="noopener noreferrer">source</a>`;
+  const mismatch =
+    source.matchesRevision === false
+      ? '<p class="s-failed">This capture does not match the revision selected for the run; the recorded text is shown as archived.</p>'
+      : "";
+  return `<h2>Retained source</h2>
+<p>${source.title ? escapeHtml(source.title) : "untitled"}${link} · ${escapeHtml(source.method)} · ${source.complete ? "complete" : "INCOMPLETE"} · <code>${escapeHtml(source.revision)}</code></p>
+${mismatch}
+<p>Shown as text; markup is never executed.${source.truncated ? " Display truncated." : ""}</p>
+<pre>${escapeHtml(source.text)}</pre>`;
+}
+
 export function renderTrace(t: ArticleTrace): string {
   const facts = [
     ["Publication", escapeHtml(t.post.publicationId)],
@@ -159,6 +180,7 @@ export function renderTrace(t: ArticleTrace): string {
   const diagnostics = t.trace
     ? `<h2>Capture and analysis</h2><pre>${escapeHtml(renderPostTrace(t.trace))}</pre>`
     : "";
+  const source = renderSource(t.source);
   const draft = t.draft
     ? `<h2>Draft</h2><p>Saved revision <code>sha256:${escapeHtml(t.draft.hash)}</code>. Shown as text; its markup is never executed.</p><pre>${escapeHtml(t.draft.text)}</pre>`
     : "";
@@ -194,5 +216,5 @@ export function renderTrace(t: ArticleTrace): string {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${research}${draft}${verification}${receipts}${diagnostics}`;
 }

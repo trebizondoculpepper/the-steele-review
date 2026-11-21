@@ -36,6 +36,7 @@ import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
+  archivedSource,
   contentArticleView,
   contentReceipts,
   indexArticles,
@@ -165,6 +166,7 @@ const views = [
           }),
         }
       : {}),
+    ...(archive ? { source: archivedSource(archive) } : {}),
   }),
   // Preserve old bookmarks without a second navigation entry or placeholder.
   { ...overview, path: "/status", title: "Status", hidden: true },

@@ -73,6 +73,34 @@ export interface ArticleContentPort {
   verification(ref: Ref): Promise<{ outcome: string; draftHash?: string } | undefined>;
 }
 
+/**
+ * Retained captured source for the article page (#446): the exact archived
+ * record, never a fresh fetch. Text is untrusted and is escaped at render.
+ */
+export type CapturedSource =
+  | {
+      state: "recorded";
+      title?: string;
+      url?: string;
+      method: string;
+      complete: boolean;
+      sourceVersion: string;
+      /** Logical revision the record was read from (`shortcommit:path`). */
+      revision: string;
+      text: string;
+      truncated: boolean;
+      /** False when the selected run/archive version differs from this text. */
+      matchesRevision: boolean | null;
+    }
+  | { state: "missing" | "unreadable" | "not-configured" | "unsupported" };
+
+export interface SourcePort {
+  read(
+    post: { publicationId: string; postId: string },
+    expectedSourceVersion?: string,
+  ): Promise<CapturedSource>;
+}
+
 /** Delivery receipts recorded for one article and revision. */
 export interface ReceiptsResult {
   receipts: ReceiptView[];
@@ -130,6 +158,8 @@ export interface ArticleTrace {
   receipts: ReceiptView[];
   /** True when the receipt scan could not be completed within its bound. */
   receiptsTruncated: boolean;
+  /** Retained captured source for this post (#446). */
+  source?: CapturedSource;
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -322,6 +352,8 @@ export async function traceArticle(input: {
   content?: ArticleContentPort;
   /** Delivery receipts (#378). */
   receipts?: ReceiptsPort;
+  /** Retained captured source (#446). */
+  source?: SourcePort;
 }): Promise<ArticleTrace> {
   const { post } = input;
   let article: ArchivedArticle | undefined;
@@ -350,6 +382,14 @@ export async function traceArticle(input: {
     }
   } else if (input.runs) {
     run = { state: "unavailable" };
+  }
+  let source: CapturedSource | undefined;
+  if (input.source) {
+    try {
+      source = await input.source.read(post, sourceVersion);
+    } catch {
+      source = { state: "unreadable" };
+    }
   }
   const summary = summariseRun(run);
   const finished = run.state === "finished" ? run.result : undefined;
@@ -407,5 +447,6 @@ export async function traceArticle(input: {
     ...(verification ? { verification } : {}),
     receipts,
     receiptsTruncated,
+    ...(source ? { source } : {}),
   };
 }
