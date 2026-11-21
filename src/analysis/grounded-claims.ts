@@ -462,7 +462,11 @@ export async function extractGroundedClaims(input: {
       modelVersion: input.provider.modelVersion,
       promptVersion: prompt.version,
       extractedAt: (input.now ?? (() => new Date()))().toISOString(),
-      ...(input.attribution?.status === "resolved"
+    };
+    // Attribution belongs to the saved extraction record, not to the strict
+    // claim metadata that every claim shares (#482).
+    const extractionAttribution =
+      input.attribution?.status === "resolved"
         ? {
             attribution: {
               author: input.attribution.author,
@@ -470,8 +474,7 @@ export async function extractGroundedClaims(input: {
               sourceMetadataVersion: input.attribution.sourceMetadataVersion,
             },
           }
-        : {}),
-    };
+        : {};
     const claims: ClaimExtractionRecord["claims"] = [];
     const candidates: NonNullable<ClaimExtractionRecord["candidates"]> = [];
     const rejected: ClaimExtractionRecord["rejected"] = [];
@@ -583,7 +586,11 @@ export async function extractGroundedClaims(input: {
       candidates,
       rejected: detailed,
       ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
-      extraction: { ...extraction, matchingVersion: PASSAGE_MATCHING_VERSION },
+      extraction: {
+        ...extraction,
+        matchingVersion: PASSAGE_MATCHING_VERSION,
+        ...extractionAttribution,
+      },
     });
     const content = `${JSON.stringify(record, null, 2)}\n`;
     for (let attempt = 0; ; attempt++) {
