@@ -210,7 +210,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
     const p = PreviewBodySchema.parse(JSON.parse(context.preview.body));
     const intentAt = context.intentAt ? Date.parse(context.intentAt) : NaN;
     const found: SubstackDraft[] = [];
-    let sameTitle = 0;
+    // Same headline (title only) makes a listing inconclusive: a draft that
+    // shares the title but carries a different subtitle may be an ambiguous
+    // earlier attempt. Same submission (title and subtitle) is the stricter
+    // count used to claim this approval was delivered.
+    let sameHeadline = 0;
+    let sameSubmission = 0;
     let covered = false;
     try {
       for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
@@ -219,9 +224,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
           offset: page * RECONCILE_PAGE_SIZE,
         });
         found.push(...drafts.filter((d) => this.matches(d, p)));
-        sameTitle += drafts.filter(
-          (d) => (d.draft_title ?? "") === p.title && (d.draft_subtitle ?? "") === p.subtitle,
-        ).length;
+        const headline = drafts.filter((d) => (d.draft_title ?? "") === p.title);
+        sameHeadline += headline.length;
+        sameSubmission += headline.filter((d) => (d.draft_subtitle ?? "") === p.subtitle).length;
         if (drafts.length < RECONCILE_PAGE_SIZE) {
           covered = true; // the complete list
           break;
@@ -244,8 +249,8 @@ export class SubstackDraftDestination implements DestinationAdapter {
     }
     // A same-title draft whose body differs (for example one that read back
     // differently) is ambiguous: an operator decides, nothing is re-created.
-    if (found.length === 1 && sameTitle === 1) return { delivered: receiptFor(found[0]!) };
-    if (sameTitle === 0 && covered) return { delivered: false };
+    if (found.length === 1 && sameSubmission === 1) return { delivered: receiptFor(found[0]!) };
+    if (sameHeadline === 0 && covered) return { delivered: false };
     return "unknown";
   }
 }

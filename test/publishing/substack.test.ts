@@ -415,9 +415,9 @@ describe("Substack draft destination (#385)", () => {
     // Same title and body, different subtitle: a different approval.
     s.drafts[0]!.draft_subtitle = "Some other subtitle";
     const intentAt = new Date(Date.now() - 1000).toISOString();
-    expect(await d.reconcile("k", { preview, intentAt })).not.toMatchObject({
-      delivered: { externalId: "100" },
-    });
+    // Ambiguous, not "not delivered": a same-headline draft exists, so nothing
+    // is re-created and an operator decides.
+    expect(await d.reconcile("k", { preview, intentAt })).toBe("unknown");
   });
 
   it("only reports not-delivered when the listing covers the attempt", async () => {
