@@ -128,6 +128,21 @@ const code = (p: Promise<unknown>) =>
   );
 
 describe("Substack client (#385)", () => {
+  it("includes the required byline array without inventing an author", async () => {
+    const { f, calls } = fakeFetch(({ init }) => {
+      const draft = JSON.parse(String(init.body));
+      return Array.isArray(draft.draft_bylines)
+        ? json({ id: 123 })
+        : json({ errors: [{ path: "draft_bylines", msg: "Invalid value" }] }, 400);
+    });
+    await expect(
+      client(f).createDraft({ title: "Connection test", body: { type: "doc", content: [] } }),
+    ).resolves.toEqual({ id: "123" });
+    const sent = JSON.parse(String(calls[0]!.init.body));
+    expect(sent.draft_bylines).toEqual([]);
+    expect(sent).not.toHaveProperty("send_email");
+  });
+
   it("uses the draft filter for access checks and every reconciliation page", async () => {
     const { f, calls } = fakeFetch(({ url }) => {
       const query = new URL(url).searchParams;
