@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ResearchModelSchema } from "../config/research-model.js";
 import { readCredential } from "../config/credentials.js";
 import { loadPromptFile } from "../prompt-files.js";
 import type { ResearchRequest } from "../research/job.js";
@@ -41,6 +42,7 @@ export function sonarFromEnv(config: {
   timeoutMs: number;
   maxTokens: number;
 }): (request: ResearchRequest) => Promise<SonarReport> {
+  const model = ResearchModelSchema.parse(config.model);
   const key = readCredential("OPENROUTER_API_KEY", { required: true });
   return async (request) => {
     const signal = AbortSignal.timeout(config.timeoutMs);
@@ -52,7 +54,7 @@ export function sonarFromEnv(config: {
         headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
         signal,
         body: JSON.stringify({
-          model: config.model,
+          model,
           max_tokens: config.maxTokens,
           messages: [
             {
@@ -96,7 +98,7 @@ export function sonarFromEnv(config: {
     ];
     const urls = cited.length ? cited : (reply.data.search_results ?? []).map(({ url }) => url);
     return {
-      model: config.model,
+      model,
       report: message.content,
       citations: urls,
       ...(reply.data.usage?.cost === undefined ? {} : { costUsd: reply.data.usage.cost }),

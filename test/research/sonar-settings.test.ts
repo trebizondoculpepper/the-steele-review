@@ -8,6 +8,24 @@ import {
 
 // Deployment checks read the effective research settings, never the key (#317).
 describe("Sonar effective settings", () => {
+  it.each([undefined, "", " ", "\t\n"])(
+    "uses the shared optional-model fallback for %j",
+    (model) => {
+      expect(
+        sonarFromEnv({ env: { OPENROUTER_API_KEY: "synthetic-key", STEELE_RESEARCH_MODEL: model } })
+          .settings.model,
+      ).toBe(DEFAULT_SONAR_MODEL);
+    },
+  );
+
+  it("rejects invalid nonblank model configuration before any request", () => {
+    expect(() =>
+      sonarFromEnv({
+        env: { OPENROUTER_API_KEY: "synthetic-key", STEELE_RESEARCH_MODEL: "bad model" },
+      }),
+    ).toThrow();
+  });
+
   it("reports configured values and treats empty values as defaults", () => {
     const configured = sonarFromEnv({
       env: {
