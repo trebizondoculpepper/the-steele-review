@@ -8,6 +8,7 @@ import {
 } from "../drafting/publication-payload.js";
 import { PackageVerificationReportSchema } from "../drafting/package-verify.js";
 import type { ReceiptView, ReceiptsPort } from "./articles.js";
+import type { DraftTrashStore } from "./draft-trash.js";
 
 /**
  * Inventory of every saved package draft (#440), manual or from a workflow.
@@ -79,7 +80,11 @@ const metadataKey = (
 ) => JSON.stringify([ref.repository, ref.commit, ref.path, ref.hash, bodyHash]);
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
-export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftInventoryPort {
+export function draftInventory(
+  content: Store,
+  receipts?: ReceiptsPort,
+  trash?: Pick<DraftTrashStore, "state">,
+): DraftInventoryPort {
   /**
    * Verification reports for one post, keyed by the exact draft they bind.
    * `incomplete` is set when the scan bound was reached or a listing or report
@@ -251,7 +256,16 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
       const last = metadata.length === DRAFT_PAGE ? metadata.at(-1) : undefined;
       const more = paths.length === DRAFT_PAGE * 2 ? paths.at(-1) : undefined;
       const next = last ?? more;
-      return { entries, ...(next ? { next } : {}) };
+      // Trashed drafts leave the active listing; their artifacts stay intact
+      // and a restore marker brings them back (#478).
+      const visible = trash
+        ? (
+            await Promise.all(
+              entries.map(async (e) => ((await trash.state(e.path)) === "active" ? e : undefined)),
+            )
+          ).filter((e): e is DraftEntry => e !== undefined)
+        : entries;
+      return { entries: visible, ...(next ? { next } : {}) };
     },
     async text(path) {
       const m = METADATA_PATH.exec(path);
