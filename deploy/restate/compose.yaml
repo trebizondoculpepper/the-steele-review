@@ -67,7 +67,9 @@ services:
   # is set by STEELE_DASHBOARD_BIND, configured privately (for example the
   # Pi's LAN address and a port). The default binds to loopback only.
   dashboard:
-    image: ${STEELE_IMAGE:-steele-review:latest}
+    # Its own image variable, so the dashboard can be updated alone (#476);
+    # it falls back to the shared application image.
+    image: ${STEELE_DASHBOARD_IMAGE:-${STEELE_IMAGE:-steele-review:latest}}
     command: ["node", "--enable-source-maps", "dist/cli/dashboard.js"]
     restart: unless-stopped
     user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"

@@ -59,13 +59,19 @@ export interface UpdateState {
   deployed?: DeployedRevision;
   /** The last commit whose image failed readiness; skipped until a newer build. */
   failed?: DeployedRevision;
+  /**
+   * An update that was started but not confirmed. Saved before the stack is
+   * touched, so an uncertain write or an interrupted pass is reconciled first.
+   */
+  pending?: DeployedRevision;
 }
 
 export type UpdateOutcome =
   | { outcome: "skipped"; reason: SkipReason; commit?: string }
   | { outcome: "deployed"; commit: string; image: string }
   | { outcome: "rolled-back"; commit: string; image: string; restored: string }
-  | { outcome: "rollback-failed"; commit: string; image: string; restored: string };
+  | { outcome: "rollback-failed"; commit: string; image: string; restored: string }
+  | { outcome: "not-applied"; commit: string; image: string };
 
 export type SkipReason =
   | "no-trusted-build"
@@ -88,14 +94,60 @@ export async function updateDashboard(input: {
   registry: RegistryPort;
   stack: DashboardStackPort;
   readiness: ReadinessPort;
+  /** Durably record state mid-pass (the pending marker). */
+  save?: (state: UpdateState) => Promise<void>;
   now?: () => Date;
 }): Promise<{ result: UpdateOutcome; state: UpdateState }> {
   const { state, builds, registry, stack, readiness } = input;
+  const save = input.save ?? (async () => {});
   const now = () => (input.now ?? (() => new Date()))().toISOString();
   const skip = (reason: SkipReason, commit?: string) => ({
     result: { outcome: "skipped" as const, reason, ...(commit ? { commit } : {}) },
     state,
   });
+
+  /** Readiness, then one rollback; shared by a fresh update and recovery. */
+  const confirm = async (deployed: DeployedRevision, commit: string, image: string) => {
+    if (await readiness.ready()) {
+      return {
+        result: { outcome: "deployed" as const, commit, image },
+        state: { deployed: { commit, image, at: now() } },
+      };
+    }
+    const restored = deployed.image;
+    let back = false;
+    try {
+      await stack.setImage(restored);
+      back = await readiness.ready();
+    } catch {
+      back =
+        (await stack.currentImage().catch(() => undefined)) === restored &&
+        (await readiness.ready());
+    }
+    return {
+      result: {
+        outcome: back ? ("rolled-back" as const) : ("rollback-failed" as const),
+        commit,
+        image,
+        restored,
+      },
+      state: { deployed, failed: { commit, image, at: now() } },
+    };
+  };
+
+  // Reconcile an update a previous pass started but never confirmed.
+  if (state.pending && state.deployed) {
+    const { pending, deployed } = state;
+    const live = await stack.currentImage();
+    if (live === pending.image) return confirm(deployed, pending.commit, pending.image);
+    if (live === deployed.image) {
+      return {
+        result: { outcome: "not-applied", commit: pending.commit, image: pending.image },
+        state: { deployed, ...(state.failed ? { failed: state.failed } : {}) },
+      };
+    }
+    return skip("drift", pending.commit);
+  }
 
   const build = await builds.latestMainBuild();
   if (
@@ -124,26 +176,24 @@ export async function updateDashboard(input: {
   const image = pinnedImage(input.imageRepository, digest);
 
   await stack.pull(image);
-  await stack.setImage(image);
-  if (await readiness.ready()) {
-    return {
-      result: { outcome: "deployed", commit, image },
-      state: { deployed: { commit, image, at: now() } },
-    };
-  }
-
-  // Bounded recovery: one rollback to the image that was serving before.
-  const restored = state.deployed.image;
-  const failed = { commit, image, at: now() };
-  let back = false;
+  const deployed = state.deployed;
+  await save({ ...state, pending: { commit, image, at: now() } });
   try {
-    await stack.setImage(restored);
-    back = await readiness.ready();
+    await stack.setImage(image);
   } catch {
-    back = false;
+    // The write may have applied even though its response was lost: look.
+    const live = await stack.currentImage();
+    if (live === deployed.image) {
+      return {
+        result: { outcome: "not-applied", commit, image },
+        state: { deployed, ...(state.failed ? { failed: state.failed } : {}) },
+      };
+    }
+    if (live !== image)
+      return {
+        ...skip("drift", commit),
+        state: { ...state, pending: { commit, image, at: now() } },
+      };
   }
-  return {
-    result: { outcome: back ? "rolled-back" : "rollback-failed", commit, image, restored },
-    state: { deployed: state.deployed, failed },
-  };
+  return confirm(deployed, commit, image);
 }

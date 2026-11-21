@@ -43,27 +43,48 @@ function alive(pid: number): boolean {
   }
 }
 
-/** An exclusive lock; a dead owner's lock on this host is reclaimed once. */
+/**
+ * An exclusive lock. A dead owner's lock on this host is reclaimed only by
+ * the run holding the exclusive `.reclaim` marker, and only if the lock file
+ * still names that same dead owner, so a replacement owner's live lock is
+ * never removed.
+ */
 async function lock(path: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const take = async () => {
     try {
       const h = await open(path, "wx");
       await h.writeFile(JSON.stringify({ host: hostname(), pid: process.pid }));
       await h.close();
       return true;
     } catch {
-      try {
-        const owner = JSON.parse(await readFile(path, "utf8")) as { host?: string; pid?: number };
-        if (owner.host !== hostname() || typeof owner.pid !== "number" || alive(owner.pid)) {
-          return false;
-        }
-        await rm(path, { force: true });
-      } catch {
-        return false;
-      }
+      return false;
     }
+  };
+  if (await take()) return true;
+  let seen: string;
+  try {
+    seen = await readFile(path, "utf8");
+    const owner = JSON.parse(seen) as { host?: string; pid?: number };
+    if (owner.host !== hostname() || typeof owner.pid !== "number" || alive(owner.pid)) {
+      return false;
+    }
+  } catch {
+    return false;
   }
-  return false;
+  const marker = `${path}.reclaim`;
+  try {
+    await (await open(marker, "wx")).close();
+  } catch {
+    return false; // another run is reclaiming
+  }
+  try {
+    // Re-read under the marker: remove only the dead owner we inspected.
+    if ((await readFile(path, "utf8").catch(() => "")) !== seen) return false;
+    await rm(path, { force: true });
+    return await take();
+  } finally {
+    await rm(marker, { force: true });
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -120,10 +141,9 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const previous = await readState();
-      await writeState({
-        ...previous,
-        deployed: { commit, image, at: new Date().toISOString() },
-      });
+      // Adopting is an operator decision: it clears any pending update.
+      const { pending: _pending, ...rest } = previous;
+      await writeState({ ...rest, deployed: { commit, image, at: new Date().toISOString() } });
       log({ outcome: "adopted", commit, image });
       return 0;
     }
@@ -146,6 +166,7 @@ async function main(argv: string[]): Promise<number> {
       registry: ghcrRegistry({ repository: repository.toLowerCase() }),
       stack,
       readiness: httpReadiness({ baseUrl: env.STEELE_DEPLOY_DASHBOARD_URL.replace(/\/$/, "") }),
+      save: writeState,
     });
     if (next !== state) await writeState(next);
     log({ ...result });

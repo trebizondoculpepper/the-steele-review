@@ -116,6 +116,69 @@ describe("dashboard auto-update (#476)", () => {
     expect(out.result.outcome).toBe("rollback-failed");
   });
 
+  it("reconciles an update whose write applied but whose response was lost", async () => {
+    const saved: UpdateState[] = [];
+    let live = img(A);
+    const base = {
+      imageRepository: REPO,
+      builds: {
+        latestMainBuild: async () => ({
+          runId: 1,
+          commit: B,
+          conclusion: "success",
+          branch: "main",
+          event: "push",
+        }),
+        isStrictlyNewer: async () => true,
+      },
+      registry: { digestFor: async (c: string) => `sha256:${c[0]!.repeat(64)}` },
+      readiness: { ready: async () => true },
+      save: async (s: UpdateState) => void saved.push(s),
+    };
+    const flaky = {
+      currentImage: async () => live,
+      pull: async () => {},
+      setImage: async (i: string) => {
+        live = i;
+        throw new Error("response lost");
+      },
+    };
+    const first = await updateDashboard({
+      ...base,
+      state: { deployed: { commit: A, image: img(A), at: "t" } },
+      stack: flaky,
+    });
+    // The pending marker was saved before touching the stack, and the
+    // applied image was confirmed rather than abandoned as drift.
+    expect(saved[0]?.pending).toMatchObject({ commit: B, image: img(B) });
+    expect(first.result).toEqual({ outcome: "deployed", commit: B, image: img(B) });
+
+    // An interrupted pass (pending saved, process gone) is reconciled next time.
+    live = img(B);
+    const resumed = await updateDashboard({
+      ...base,
+      state: {
+        deployed: { commit: A, image: img(A), at: "t" },
+        pending: { commit: B, image: img(B), at: "t" },
+      },
+      stack: { currentImage: async () => live, pull: async () => {}, setImage: async () => {} },
+    });
+    expect(resumed.result).toMatchObject({ outcome: "deployed", commit: B });
+    expect(resumed.state.pending).toBeUndefined();
+    // If it never applied, the pending marker is cleared without a deploy.
+    live = img(A);
+    const notApplied = await updateDashboard({
+      ...base,
+      state: {
+        deployed: { commit: A, image: img(A), at: "t" },
+        pending: { commit: B, image: img(B), at: "t" },
+      },
+      stack: { currentImage: async () => live, pull: async () => {}, setImage: async () => {} },
+    });
+    expect(notApplied.result.outcome).toBe("not-applied");
+    expect(notApplied.state.pending).toBeUndefined();
+  });
+
   it("Portainer adapter changes only the image variable and never re-pulls the stack", async () => {
     const requests: { url: string; body?: unknown }[] = [];
     const env = [

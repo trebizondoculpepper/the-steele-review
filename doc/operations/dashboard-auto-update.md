@@ -20,3 +20,14 @@ Each pass prints one JSON line: `deployed`, `skipped` with a reason, `rolled-bac
 - **Retry a failed commit:** fix forward with a newer build, or adopt a known-good state.
 - **Stop it:** remove the scheduler entry. Nothing else depends on it.
 - **Configuration:** the environment variables are listed at the top of `src/cli/update-dashboard.ts`. The real addresses, stack identity, key files and schedule belong to the private operations project only.
+
+## Migrating a stack to the dedicated image variable
+
+The checked-in stack gives the dashboard its own `STEELE_DASHBOARD_IMAGE`, falling back to the shared `STEELE_IMAGE`, so changing it touches nothing else. An existing stack needs that variable added once, set to the image the dashboard already runs, pinned by digest. Then run `--adopt <commit>` for that image's commit. Until then, `--adopt` refuses, because the variable is missing.
+
+## Uncertain writes
+
+Before the stack is touched, the pass saves a `pending` marker. If Portainer's response is lost, or the pass is interrupted, the next pass reads the live image first.
+- If the new image is live, readiness and rollback run as normal.
+- If the old image is still live, the marker is cleared (`not-applied`).
+- Anything else is reported as drift for an operator.
