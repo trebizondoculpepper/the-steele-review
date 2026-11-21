@@ -1202,7 +1202,9 @@ export class OperationInspector {
     private readonly db: DatabaseSync,
     private readonly now: () => number,
     private readonly resolvedPath: string,
-    private readonly identity: StoreIdentity,
+    /** Quiescent reads re-check the file; a WAL snapshot keeps its transaction. */
+    private readonly mode: "quiescent" | "snapshot",
+    private readonly identity: StoreIdentity | undefined,
     private readonly counts: StatementSync,
     private readonly operation: StatementSync,
   ) {}
@@ -1225,20 +1227,18 @@ export class OperationInspector {
       // path must be followed before looking for the sidecar or opening it.
       const resolved = realpathSync(path);
       // A WAL sidecar means a writer is live or frames are uncheckpointed. The
-      // quiescent-immutable strategy below cannot read that state safely, so
-      // report unavailable rather than lock, modify or guess.
-      if (existsSync(`${resolved}-wal`)) return { status: "unavailable" };
-      // Record the file identity before opening. The immutable connection's
-      // page cache is only trustworthy if the file does not change between
-      // this snapshot and the schema read below, so the two are compared.
-      const identity = storeIdentity(resolved);
-      if (!identity) return { status: "unavailable" };
-      // `immutable=1` reads without locking or creating `-wal`/`-shm`
-      // sidecars, which a plain read-only connection would create.
-      // A file URL encodes `?` and `#` in a path, which encodeURI would leave
-      // ambiguous; the query parameter then selects immutable mode.
+      // immutable strategy below cannot see committed WAL content, so a WAL
+      // store is read through a read-only connection inside one deferred read
+      // transaction instead (#454). That yields a consistent snapshot without
+      // checkpointing, deleting WAL or mutating anything; an unreadable or
+      // locked WAL state is reported unavailable.
+      const hasWal = existsSync(`${resolved}-wal`);
+      const identity = hasWal ? undefined : storeIdentity(resolved);
+      if (!hasWal && !identity) return { status: "unavailable" };
       const fileUrl = pathToFileURL(resolved);
-      fileUrl.searchParams.set("immutable", "1");
+      // `immutable=1` reads without locking or creating `-wal`/`-shm`
+      // sidecars; never use it when WAL content must be honoured.
+      if (!hasWal) fileUrl.searchParams.set("immutable", "1");
       db = new DatabaseSync(fileUrl.href, { readOnly: true, timeout: busy });
       const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
         user_version: number;
@@ -1267,9 +1267,16 @@ export class OperationInspector {
       // read: a writer that committed in between leaves this connection with
       // stale pages, while the identity would describe the newer file and
       // every later check would pass. Reject the connection in that case.
-      if (existsSync(`${resolved}-wal`) || !unchanged(identity, storeIdentity(resolved))) {
-        db.close();
-        return { status: "unavailable" };
+      if (!hasWal) {
+        if (existsSync(`${resolved}-wal`) || !unchanged(identity!, storeIdentity(resolved))) {
+          db.close();
+          return { status: "unavailable" };
+        }
+      } else {
+        // Snapshot for the inspector's lifetime: readers see one committed
+        // state and cannot affect writers. Closing rolls the transaction back.
+        db.exec("BEGIN DEFERRED");
+        db.prepare(COUNTS_SQL).get();
       }
       return {
         status: "available",
@@ -1277,6 +1284,7 @@ export class OperationInspector {
           db,
           options.now ?? Date.now,
           resolved,
+          hasWal ? "snapshot" : "quiescent",
           identity,
           counts,
           operation,
@@ -1296,13 +1304,19 @@ export class OperationInspector {
    * immutable connection may have mixed pages from two versions of the file.
    */
   private read<T>(query: () => T): T {
-    if (this.changed()) throw new OperationStoreChangedError();
-    const value = query();
-    if (this.changed()) throw new OperationStoreChangedError();
-    return value;
+    if (this.mode === "quiescent") {
+      if (this.changed()) throw new OperationStoreChangedError();
+      const value = query();
+      if (this.changed()) throw new OperationStoreChangedError();
+      return value;
+    }
+    // Snapshot mode: the open read transaction defines the view; a live writer
+    // may change the file at any time without affecting this result.
+    return query();
   }
 
   private changed(): boolean {
+    if (!this.identity) return true;
     if (existsSync(`${this.resolvedPath}-wal`)) return true;
     return !unchanged(this.identity, storeIdentity(this.resolvedPath));
   }
@@ -1357,6 +1371,14 @@ export class OperationInspector {
   }
 
   close(): void {
-    if (this.db.isOpen) this.db.close();
+    if (!this.db.isOpen) return;
+    if (this.mode === "snapshot") {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Already settled; closing still releases the connection.
+      }
+    }
+    this.db.close();
   }
 }
