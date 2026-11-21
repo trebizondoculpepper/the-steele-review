@@ -1,3 +1,10 @@
+import type { PostAuthorResolution } from "../content/source-metadata.js";
+import {
+  sourceContextFor,
+  saveSourceContext,
+  recordedSourceAttribution,
+} from "../content/source-context.js";
+import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -46,6 +53,7 @@ export const WriterPackageSchema = z
          */
         originalUrl: z.url({ protocol: /^https$/ }).optional(),
         title: z.string().max(500).optional(),
+        context: ArtifactReferenceSchema.optional(),
       })
       .strict(),
     coverage: Ref,
@@ -213,6 +221,9 @@ export async function buildWriterPackage(input: {
   content: GitArtifactStore;
   /** Archive holding the source post; when given, the pinned source is verified too. */
   archive?: GitArtifactStore;
+  resolveAuthor?: (
+    post: z.infer<typeof CollectionRecordSchema>["item"],
+  ) => PostAuthorResolution | undefined;
   coverage: ArtifactRef;
   /** Saved historical comparison results for this post (#36), by exact reference. */
   comparisons?: ArtifactRef[];
@@ -248,13 +259,27 @@ export async function buildWriterPackage(input: {
     throw new PackageInputError("coverage record cites a different source version");
   }
   // The original post's link and title come from the pinned capture itself.
-  let original: { originalUrl?: string; title?: string } = {};
+  let original: {
+    originalUrl?: string;
+    title?: string;
+    context?: z.infer<typeof ArtifactReferenceSchema>;
+  } = {};
   if (input.archive) {
     const captured = CollectionRecordSchema.safeParse(
       JSON.parse(await readPinned(input.archive, record.source, "source post")),
     );
+    if (!captured.success) throw new PackageInputError("source context is invalid");
     if (captured.success) {
+      const sourceRef: ArtifactRef = { ...record.source, sha256: record.source.hash.slice(7) };
+      const attribution =
+        input.resolveAuthor?.(captured.data.item) ??
+        recordedSourceAttribution(claims.extraction.attribution);
+      const context = await saveSourceContext(
+        input.content,
+        sourceContextFor(captured.data, sourceRef, attribution),
+      );
       original = {
+        context: toRefRecord(context),
         originalUrl: captured.data.item.url,
         ...(captured.data.item.title ? { title: captured.data.item.title.slice(0, 500) } : {}),
       };
@@ -428,6 +453,9 @@ const toRefRecord = (r: ArtifactRef) => ({
 export async function saveWriterPackage(input: {
   content: GitArtifactStore;
   archive?: GitArtifactStore;
+  resolveAuthor?: (
+    post: z.infer<typeof CollectionRecordSchema>["item"],
+  ) => PostAuthorResolution | undefined;
   coverage: ArtifactRef;
   comparisons?: ArtifactRef[];
   historyGap?: "state" | "omit";

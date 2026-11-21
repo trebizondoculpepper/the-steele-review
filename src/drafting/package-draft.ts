@@ -62,7 +62,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v5";
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v6";
 /** Bound on the previous draft text sent to the revision writer. */
 export const MAX_PREVIOUS_DRAFT_CHARS = 40_000;
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
@@ -149,6 +149,8 @@ export const PackageDraftMetadataSchema = z
     package: Ref,
     source: Ref,
     themes: Ref,
+    sourceContext: Ref.optional(),
+    contextVersion: z.string().optional(),
     templateVersion: z.string(),
     promptVersion: z.string(),
     /** Revision instructions identity, for redrafts only (#430). */
@@ -487,6 +489,24 @@ export async function draftFromPackage(input: {
   const sourceUrl = pinnedUrl ?? input.sourceUrl;
   if (!sourceUrl) return { status: "failed", reason: "no-source-url" };
 
+  const loaded = await loadPinnedContext({
+    archive: input.archive,
+    content: input.content,
+    brief: {
+      source: {
+        publicationId: pkg.post.publicationId,
+        postId: pkg.post.postId,
+        url: sourceUrl,
+        sourceVersion: pkg.source.sourceVersion,
+        artifact: pkg.source.artifact,
+        ingestionReason: "backfill",
+      },
+    },
+    themes: toArtifactRef(pkg.themeResult),
+    ...(pkg.source.context ? { sourceContext: toArtifactRef(pkg.source.context) } : {}),
+  });
+  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
+
   // Bound to the exact wording, not only the semantic version (#430).
   const promptId = promptIdentity(prompt.version, prompt.instructions);
   const revisionInstructions = input.revisionInstructions ?? PACKAGE_REVISION_INSTRUCTIONS;
@@ -497,6 +517,7 @@ export async function draftFromPackage(input: {
         input.provider.modelVersion,
         promptId,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
+        loaded.context.contextRef,
         ...(input.revision
           ? [
               input.revision,
@@ -553,25 +574,15 @@ export async function draftFromPackage(input: {
   const legacyMeta = await input.content.lookup(`${legacyRepairedBase}.json`);
   if (legacyDraft && legacyMeta) return cached(legacyDraft, legacyMeta);
 
-  const loaded = await loadPinnedContext({
-    archive: input.archive,
-    content: input.content,
-    brief: {
-      source: {
-        publicationId: pkg.post.publicationId,
-        postId: pkg.post.postId,
-        url: sourceUrl,
-        sourceVersion: pkg.source.sourceVersion,
-        artifact: pkg.source.artifact,
-        ingestionReason: "backfill",
-      },
-    },
-    themes: toArtifactRef(pkg.themeResult),
-  });
-  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
-
   const user = JSON.stringify({
-    post: { url: sourceUrl, text: loaded.context.source.text },
+    post: {
+      url: sourceUrl,
+      text: loaded.context.source.text,
+      sourceContext: loaded.context.source.provenance,
+      ...(loaded.context.source.provenanceRef
+        ? { sourceContextRef: toRef(loaded.context.source.provenanceRef) }
+        : {}),
+    },
     themes: loaded.context.themes.proposals.map((t) => ({
       title: t.title,
       description: t.description,
@@ -725,6 +736,7 @@ export async function draftFromPackage(input: {
           package: input.package,
           source: pkg.source.artifact,
           context: [
+            ...(pkg.source.context ? [pkg.source.context] : []),
             pkg.coverage,
             pkg.themeResult,
             pkg.claimResult,
@@ -947,6 +959,8 @@ export async function draftFromPackage(input: {
       package: toRef(input.package),
       source: pkg.source.artifact,
       themes: pkg.themeResult,
+      ...(pkg.source.context ? { sourceContext: pkg.source.context } : {}),
+      contextVersion: loaded.context.contextRef,
       templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
       promptVersion: promptId,
       ...(repaired

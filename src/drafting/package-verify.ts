@@ -73,6 +73,8 @@ const LegacyPackageVerificationReportSchema = z
     package: Ref,
     source: Ref,
     themes: Ref,
+    sourceContext: Ref.optional(),
+    contextVersion: z.string().optional(),
     issues: z.array(Issue),
     checks: z.array(z.string()),
     verifierModel: z.string(),
@@ -212,6 +214,26 @@ export async function verifyPackageDraft(input: {
     post: pkg.post,
   });
 
+  const loaded = await loadPinnedContext({
+    archive: input.archive,
+    content: input.content,
+    brief: {
+      source: {
+        publicationId: pkg.post.publicationId,
+        postId: pkg.post.postId,
+        url: "https://invalid.example/",
+        sourceVersion: pkg.source.sourceVersion,
+        artifact: pkg.source.artifact,
+        ingestionReason: "backfill",
+      },
+    },
+    themes: toArtifactRef(pkg.themeResult),
+    ...(pkg.source.context ? { sourceContext: toArtifactRef(pkg.source.context) } : {}),
+  });
+  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
+  if (meta.contextVersion && meta.contextVersion !== loaded.context.contextRef)
+    return { status: "context-unavailable", reason: "source-context-version-mismatch" };
+
   // Bound to the exact verifier wording, not only its semantic version (#430).
   const promptId = promptIdentity(prompt.version, prompt.instructions);
   const key = sha256(
@@ -221,6 +243,7 @@ export async function verifyPackageDraft(input: {
       meta.package,
       input.verifier.modelVersion,
       promptId,
+      loaded.context.contextRef,
     ]),
   ).slice(0, 32);
   const path = `verifications/${pkg.post.publicationId}/${pkg.post.postId}/${key}.json`;
@@ -239,23 +262,6 @@ export async function verifyPackageDraft(input: {
     return { status: "verified", report, ref: saved };
   }
 
-  const loaded = await loadPinnedContext({
-    archive: input.archive,
-    content: input.content,
-    brief: {
-      source: {
-        publicationId: pkg.post.publicationId,
-        postId: pkg.post.postId,
-        url: "https://invalid.example/",
-        sourceVersion: pkg.source.sourceVersion,
-        artifact: pkg.source.artifact,
-        ingestionReason: "backfill",
-      },
-    },
-    themes: toArtifactRef(pkg.themeResult),
-  });
-  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
-
   const checks = deterministicIssues(pkg, markdown);
   const user = JSON.stringify({
     draft: markdown,
@@ -264,6 +270,10 @@ export async function verifyPackageDraft(input: {
         ? { mode: "structured", ...publication.payload.fields }
         : { mode: "legacy-body-only" },
     post: loaded.context.source.text,
+    sourceContext: loaded.context.source.provenance,
+    ...(loaded.context.source.provenanceRef
+      ? { sourceContextRef: toRef(loaded.context.source.provenanceRef) }
+      : {}),
     themes: loaded.context.themes.proposals.map((t) => t.title),
     claims: pkg.claims.map((c) => ({
       statement: c.statement,
@@ -315,6 +325,8 @@ export async function verifyPackageDraft(input: {
     package: meta.package,
     source: pkg.source.artifact,
     themes: pkg.themeResult,
+    ...(pkg.source.context ? { sourceContext: pkg.source.context } : {}),
+    contextVersion: loaded.context.contextRef,
     issues,
     checks: ["source-citations", "claim-headings", "gap-claims"],
     verifierModel: input.verifier.modelVersion,

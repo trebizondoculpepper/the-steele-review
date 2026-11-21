@@ -1,3 +1,4 @@
+import { ObservedDateSchema, OriginalMediumSchema } from "../content/source-context.js";
 import { z } from "zod";
 import { SubstackItemSchema, type SubstackItem } from "../content/substack-item.js";
 import {
@@ -71,6 +72,14 @@ export const CollectionRecordSchema = z
       sourceUrl: z.url(),
       acquiredAt: z.iso.datetime({ offset: true }),
       method: z.string().min(1),
+      originalMedium: OriginalMediumSchema.optional(),
+      originalMediaUploadId: z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{1,200}$/)
+        .optional(),
+      mediaUploadKind: z.enum(["audio", "video"]).optional(),
+      observedPublishedAt: ObservedDateSchema.optional(),
+      observedUpdatedAt: ObservedDateSchema.optional(),
     }),
   })
   .strict();

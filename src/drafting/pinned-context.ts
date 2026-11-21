@@ -1,3 +1,10 @@
+import {
+  SourceContextSchema,
+  sourceContextFor,
+  sourceContextMatches,
+  sourceContextVersion,
+  type SourceContext,
+} from "../content/source-context.js";
 import { createHash } from "node:crypto";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
@@ -31,7 +38,13 @@ export interface PinnedTheme {
 }
 
 export interface PinnedContext {
-  source: { ref: ArtifactRef; sourceVersion: string; text: string };
+  source: {
+    ref: ArtifactRef;
+    sourceVersion: string;
+    text: string;
+    provenance: SourceContext;
+    provenanceRef?: ArtifactRef;
+  };
   themes: { ref: ArtifactRef; proposals: PinnedTheme[] };
   /**
    * Stable identity of exactly this context (source and theme result
@@ -45,6 +58,7 @@ export type PinnedContextOutcome =
   | { kind: "loaded"; context: PinnedContext }
   | { kind: "source-mismatch" }
   | { kind: "theme-mismatch" }
+  | { kind: "source-context-mismatch" }
   | { kind: "source-too-large"; chars: number; maxChars: number }
   /** The capture is marked incomplete (for example, transcription pending). */
   | { kind: "incomplete-source" }
@@ -60,10 +74,20 @@ export function contextRefFor(
   source: ArtifactRef,
   themes: ArtifactRef,
   mapping: ReadonlyMap<string, string> = new Map(),
+  provenanceVersion?: string,
+  provenanceRef?: ArtifactRef,
 ): string {
   const pairs = [...mapping.entries()].sort(([a], [b]) => a.localeCompare(b));
   return `sha256:${createHash("sha256")
-    .update(JSON.stringify({ source: refKey(source), themes: refKey(themes), mapping: pairs }))
+    .update(
+      JSON.stringify({
+        source: refKey(source),
+        themes: refKey(themes),
+        mapping: pairs,
+        ...(provenanceVersion ? { provenanceVersion } : {}),
+        ...(provenanceRef ? { provenanceRef: refKey(provenanceRef) } : {}),
+      }),
+    )
     .digest("hex")}`;
 }
 
@@ -75,6 +99,7 @@ export async function loadPinnedContext(input: {
   brief: Pick<DraftingBrief, "source">;
   /** Exact saved theme proposal result for this post. */
   themes: ArtifactRef;
+  sourceContext?: ArtifactRef;
   /** Optional librarian mapping from proposal ID to canonical theme ID. */
   canonicalMapping?: ReadonlyMap<string, string>;
   maxSourceChars?: number;
@@ -87,12 +112,23 @@ export async function loadPinnedContext(input: {
     sha256: a.hash.replace(/^sha256:/, ""),
   };
   let text: string;
+  let provenance: SourceContext;
   try {
     // read() verifies the commit, path and content hash.
     const record = CollectionRecordSchema.parse(JSON.parse(await input.archive.read(sourceRef)));
     // An incomplete capture is not the whole post; never present it as one.
     if (!record.complete) return { kind: "incomplete-source" };
     text = record.text;
+    provenance = input.sourceContext
+      ? SourceContextSchema.parse(JSON.parse(await input.content.read(input.sourceContext)))
+      : sourceContextFor(record, sourceRef);
+    if (
+      !sourceContextMatches(provenance, sourceRef, input.brief.source.sourceVersion) ||
+      provenance.source.id !== input.brief.source.publicationId ||
+      provenance.source.postId !== input.brief.source.postId ||
+      provenance.source.url !== record.item.url
+    )
+      return { kind: "source-context-mismatch" };
   } catch {
     return { kind: "unreadable", what: "source" };
   }
@@ -128,7 +164,13 @@ export async function loadPinnedContext(input: {
   return {
     kind: "loaded",
     context: {
-      source: { ref: sourceRef, sourceVersion: input.brief.source.sourceVersion, text },
+      source: {
+        ref: sourceRef,
+        sourceVersion: input.brief.source.sourceVersion,
+        text,
+        provenance,
+        ...(input.sourceContext ? { provenanceRef: input.sourceContext } : {}),
+      },
       themes: { ref: input.themes, proposals },
       contextRef: contextRefFor(
         sourceRef,
@@ -138,6 +180,8 @@ export async function loadPinnedContext(input: {
             .filter((p) => p.canonicalId)
             .map((p) => [p.id, p.canonicalId!] as [string, string]),
         ),
+        sourceContextVersion(provenance),
+        input.sourceContext,
       ),
     },
   };
@@ -169,6 +213,7 @@ export function contextForModel(context: PinnedContext) {
     originalPost: {
       note: "The original post's full text. It is the monitored source, not evidence: never use it to confirm its own statements.",
       text: context.source.text,
+      sourceContext: context.source.provenance,
     },
     themes: context.themes.proposals.map((t) => ({
       title: t.title,
