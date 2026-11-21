@@ -246,7 +246,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       package: ref,
       provider: model(GOOD),
       sourceUrl: "https://x/p",
-      prompt: { version: "package-draft-v3", instructions: "x" },
+      prompt: { version: "comparison-test-alternate-prompt", instructions: "x" },
     });
     if (one.status !== "drafted" || two.status !== "drafted") throw new Error("expected drafts");
     expect(two.draft.path).not.toBe(one.draft.path);
