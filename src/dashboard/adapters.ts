@@ -144,14 +144,16 @@ export function contentArticleView(content: Pick<GitArtifactStore, "read">): Art
     if (text === undefined) return undefined;
     try {
       const report = PackageVerificationReportSchema.parse(JSON.parse(text));
+      let publicationHash: string | undefined;
       if (report.schemaVersion === 2) {
         const { payload } = await readPublicationPayload(content, report.publication);
         if (!sameArtifact(payload.body, report.draft)) return undefined;
+        if (payload.mode === "structured") publicationHash = payload.contentHash;
       }
       return {
         outcome: report.outcome,
         draftHash: report.draft.hash,
-        ...(report.schemaVersion === 2 ? { publicationHash: report.publication.hash } : {}),
+        ...(publicationHash ? { publicationHash } : {}),
       };
     } catch {
       return undefined;

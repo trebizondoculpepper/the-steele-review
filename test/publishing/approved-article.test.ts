@@ -275,7 +275,7 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     const expected = await readPublicationPayload(content, approval.data.publication);
     expect(seen).toEqual(expected.payload);
     expect(JSON.parse(await content.read(delivered.receipt))).toMatchObject({
-      publicationHash: approval.data.publication.hash,
+      publicationHash: expected.payload.contentHash,
       draftHash: approval.data.draft.hash,
     });
     expect(await handle()).toMatchObject({ action: "ack", outcome: "reused" });
@@ -338,6 +338,32 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
       action: "ack",
       outcome: "delivered",
     });
+    // A new provenance lineage with identical reader-visible bytes needs its
+    // own verification, but must not cause a second external delivery.
+    const identical = JSON.parse(await content.read(artifactRef(original.metadata)));
+    identical.draftedAt = "2026-01-02T00:00:00Z";
+    const identicalMeta = await content.write(
+      original.metadata.path.replace(/\.json$/, "-identical.json"),
+      JSON.stringify(identical),
+    );
+    const identicalPayload = await savePublicationPayload({
+      content,
+      metadata: identicalMeta,
+      body: artifactRef(original.body),
+      post: { publicationId: "pub", postId: "p1" },
+    });
+    expect(identicalPayload.ref.sha256).not.toBe(first.data.publication.hash.slice(7));
+    expect(identicalPayload.payload.contentHash).toBe(original.contentHash);
+    const identicalReport = await content.write(
+      "verifications/pub/p1/identical.json",
+      JSON.stringify({ ...report, publication: artifactReference(identicalPayload.ref) }),
+    );
+    const same = await recordApproval({ content, operations, report: identicalReport });
+    const sameEvent = operations
+      .duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)
+      .find((e) => e.eventId === same.eventId);
+    if (!sameEvent) throw new Error("missing identical event");
+    expect(await handle(sameEvent.payload)).toMatchObject({ action: "ack", outcome: "reused" });
     expect(destination.deliveries).toHaveLength(2);
     expect(new Set(destination.deliveries).size).toBe(2);
     expect(await handle(secondEvent.payload)).toMatchObject({ action: "ack", outcome: "reused" });

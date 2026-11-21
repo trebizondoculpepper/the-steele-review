@@ -333,6 +333,17 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     };
     expect(approvalValidFor(out.report, md, publication)).toBe(true);
     expect(approvalValidFor(out.report, md)).toBe(false);
+    if (publication.payload.mode === "structured") {
+      expect(
+        approvalValidFor(out.report, md, {
+          ...publication,
+          payload: {
+            ...publication.payload,
+            fields: { ...publication.payload.fields, title: "A substituted title" },
+          },
+        }),
+      ).toBe(false);
+    }
     expect(approvalValidFor(out.report, `${md}\nEdited.`, publication)).toBe(false);
     expect(out.ref.path).toMatch(/^verifications\/pub\/p1\//);
   });

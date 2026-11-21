@@ -12,6 +12,7 @@ import {
   savePublicationPayload,
   sameArtifact,
   artifactReference,
+  publicationManifestHash,
   type PublicationPayload,
 } from "./publication-payload.js";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
@@ -169,7 +170,8 @@ export function approvalValidFor(
   return (
     publication !== undefined &&
     sameArtifact(report.publication, publication.ref) &&
-    sameArtifact(report.draft, publication.payload.body)
+    sameArtifact(report.draft, publication.payload.body) &&
+    publicationManifestHash(publication.payload) === publication.ref.hash
   );
 }
 

@@ -228,7 +228,7 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
       '<pre class="draft-text">First paragraph &lt;b&gt;bold&lt;/b&gt;.\n\nSecond paragraph',
     );
     expect(html).toContain(long); // exact stored text, wrapped by CSS only
-    expect(html).toContain("not yet verified");
+    expect(html).toContain("No payload-aware verification is bound to these fields");
     const old = await view!.render(
       new URL(`http://x/drafts/view?path=${encodeURIComponent(legacy.metadata)}`),
     );

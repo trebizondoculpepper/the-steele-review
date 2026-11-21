@@ -1,3 +1,4 @@
+import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -140,6 +141,8 @@ export const DeliveryReceiptSchema = z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
       .optional(),
+    /** Manifest actually used for this delivery; retained unchanged on identical-content reuse. */
+    publication: ArtifactReferenceSchema.optional(),
     draftHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
@@ -235,10 +238,9 @@ export type DeliveryDecision =
 function deliveryDirectory(
   article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
   destination: Pick<DestinationAdapter, "name" | "action">,
+  contentHash = article.draft.hash,
 ): string {
-  const revision = (article.publication?.hash ?? article.draft.hash)
-    .replace(/^sha256:/, "")
-    .slice(0, 32);
+  const revision = contentHash.replace(/^sha256:/, "").slice(0, 32);
   return `publications/${destination.name}/${destination.action}/${article.publicationId}/${article.postId}/${revision}`;
 }
 
@@ -248,8 +250,18 @@ export async function readDummyDeliveryProof(
   article: ArticleApprovedData,
 ): Promise<{ a: ArtifactRef; b: ArtifactRef } | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
+  const payload = approved.publication
+    ? (await readPublicationPayload(content, approved.publication)).payload
+    : undefined;
+  if (payload && !sameArtifact(payload.body, approved.draft))
+    throw new ApprovalError("dummy receipt does not prove the approved draft");
+  const publicationHash = payload?.mode === "structured" ? payload.contentHash : undefined;
   const read = async (name: string) => {
-    const dir = deliveryDirectory(approved, { name, action: "draft" });
+    const dir = deliveryDirectory(
+      approved,
+      { name, action: "draft" },
+      publicationHash ?? approved.draft.hash,
+    );
     const ref = await content.lookup(`${dir}/receipt.json`);
     if (!ref) return undefined;
     const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
@@ -258,7 +270,7 @@ export async function readDummyDeliveryProof(
       receipt.destination !== name ||
       receipt.action !== "draft" ||
       receipt.draftHash !== approved.draft.hash ||
-      receipt.publicationHash !== approved.publication?.hash
+      receipt.publicationHash !== publicationHash
     ) {
       throw new ApprovalError("dummy receipt does not prove the approved draft");
     }
@@ -348,19 +360,19 @@ async function deliverApprovedArticle(
   }
 
   const { destination } = input;
-  const revision = (event.publication?.hash ?? event.draft.hash)
-    .replace(/^sha256:/, "")
-    .slice(0, 32);
+  const publicationHash = publication?.mode === "structured" ? publication.contentHash : undefined;
+  const revision = (publicationHash ?? event.draft.hash).replace(/^sha256:/, "").slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
-  const dir = deliveryDirectory(event, destination);
+  const dir = deliveryDirectory(event, destination, publicationHash ?? event.draft.hash);
   // A receipt committed before a crash is the durable result: record completion
   // from it rather than delivering again or giving up on attempt limits.
   const committed = await input.content.lookup(`${dir}/receipt.json`);
   if (committed) {
     const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(committed)));
     if (
-      event.publication &&
-      (receipt.publicationHash !== event.publication.hash || receipt.draftHash !== event.draft.hash)
+      receipt.publicationHash !== publicationHash ||
+      receipt.draftHash !== event.draft.hash ||
+      (publicationHash !== undefined && receipt.publication === undefined)
     )
       return { action: "term", reason: "approval-mismatch" };
     input.operations.reconcileCompleted(
@@ -397,7 +409,12 @@ async function deliverApprovedArticle(
     const intentRef = await input.content.lookup(`${dir}/intent.json`);
     const intentAt = intentRef
       ? (JSON.parse(await input.content.read(intentRef)) as { at?: string }).at
-      : (await writeOnce(input.content, `${dir}/intent.json`, { key, at: now.toISOString() }),
+      : (await writeOnce(input.content, `${dir}/intent.json`, {
+          key,
+          at: now.toISOString(),
+          draft: event.draft,
+          ...(event.publication ? { publication: event.publication } : {}),
+        }),
         now.toISOString());
     // An intent left by an earlier attempt that produced no receipt is
     // unresolved too: the process may have stopped after the destination acted
@@ -416,7 +433,8 @@ async function deliverApprovedArticle(
       action: destination.action,
       ...delivered,
       draftHash: event.draft.hash,
-      ...(event.publication ? { publicationHash: event.publication.hash } : {}),
+      ...(publicationHash ? { publicationHash } : {}),
+      ...(event.publication ? { publication: event.publication } : {}),
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);

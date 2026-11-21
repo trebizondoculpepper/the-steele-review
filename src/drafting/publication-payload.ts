@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
-import { PublicationFieldsSchema } from "../content/publication-fields.js";
+import { PublicationFieldsSchema, type PublicationFields } from "../content/publication-fields.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { writeOnce } from "../research/job.js";
 import { PackageDraftMetadataSchema } from "./package-draft.js";
@@ -13,17 +13,46 @@ export class PublicationPayloadError extends Error {
   }
 }
 
+type PayloadContent = { body: { hash: string } } & (
+  | { mode: "structured"; fields: PublicationFields }
+  | { mode: "legacy-body-only" }
+);
+/** Reader-visible identity excludes provenance; identical content must not publish twice. */
+export function publicationContentHash(payload: PayloadContent): string {
+  if (payload.mode === "legacy-body-only") return payload.body.hash;
+  return `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        payload.fields.title,
+        payload.fields.subtitle,
+        payload.fields.excerpt,
+        payload.body.hash,
+      ]),
+    )
+    .digest("hex")}`;
+}
+
 const Base = z.object({
   schemaVersion: z.literal(1),
   metadata: ArtifactReferenceSchema,
   body: ArtifactReferenceSchema,
+  contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 });
 /** An immutable manifest, never a second body or a regenerated title. */
-export const PublicationPayloadSchema = z.discriminatedUnion("mode", [
-  Base.extend({ mode: z.literal("structured"), fields: PublicationFieldsSchema }).strict(),
-  Base.extend({ mode: z.literal("legacy-body-only") }).strict(),
-]);
+export const PublicationPayloadSchema = z
+  .discriminatedUnion("mode", [
+    Base.extend({ mode: z.literal("structured"), fields: PublicationFieldsSchema }).strict(),
+    Base.extend({ mode: z.literal("legacy-body-only") }).strict(),
+  ])
+  .refine((payload) => payload.contentHash === publicationContentHash(payload), {
+    message: "publication content hash mismatch",
+  });
 export type PublicationPayload = z.infer<typeof PublicationPayloadSchema>;
+/** Canonical manifest bytes are part of the exact verification identity. */
+export const publicationManifestHash = (payload: PublicationPayload) =>
+  `sha256:${createHash("sha256")
+    .update(`${JSON.stringify(payload, null, 2)}\n`)
+    .digest("hex")}`;
 export const artifactReference = (ref: ArtifactRef): ArtifactReference => ({
   repository: ref.repository,
   commit: ref.commit,
@@ -51,15 +80,19 @@ export async function savePublicationPayload(input: {
   );
   if (metadata.draft !== `${input.body.commit}:${input.body.path}`)
     throw new PublicationPayloadError();
-  const payload = PublicationPayloadSchema.parse({
+  const candidate = {
     schemaVersion: 1,
     metadata: artifactReference(input.metadata),
     body: artifactReference(input.body),
     ...(metadata.fields
-      ? { mode: "structured", fields: metadata.fields }
-      : { mode: "legacy-body-only" }),
+      ? { mode: "structured" as const, fields: metadata.fields }
+      : { mode: "legacy-body-only" as const }),
+  };
+  const payload = PublicationPayloadSchema.parse({
+    ...candidate,
+    contentHash: publicationContentHash(candidate),
   });
-  const key = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  const key = publicationManifestHash(payload).slice(7);
   const ref = await writeOnce(
     input.content,
     `publication-payloads/${input.post.publicationId}/${input.post.postId}/${key}.json`,
@@ -74,6 +107,7 @@ export async function readPublicationPayload(
   ref: ArtifactReference,
 ): Promise<{ payload: PublicationPayload; markdown: string }> {
   const payload = PublicationPayloadSchema.parse(JSON.parse(await content.read(artifactRef(ref))));
+  if (publicationManifestHash(payload) !== ref.hash) throw new PublicationPayloadError();
   const metadata = PackageDraftMetadataSchema.parse(
     JSON.parse(await content.read(artifactRef(payload.metadata))),
   );

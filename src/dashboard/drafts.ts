@@ -118,7 +118,7 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
             key = metadataKey(payload.metadata, report.draft.hash);
             binding = {
               outcome: report.outcome,
-              publicationHash: report.publication.hash,
+              ...(payload.mode === "structured" ? { publicationHash: payload.contentHash } : {}),
               scope: payload.mode === "structured" ? "publication" : "body-only",
             };
           } else {
