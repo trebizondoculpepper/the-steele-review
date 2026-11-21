@@ -98,6 +98,24 @@ const run = (s: SonarClient, extra: Record<string, unknown> = {}) =>
   });
 
 describe("research runner", () => {
+  it("stops recoverably when the support judge runs out of credit, reusing the saved report (#407)", async () => {
+    const s1 = sonar(["https://treaties.un.org/enmod"]);
+    const brokeJudge: SupportJudge = {
+      judge: async () => {
+        throw new ModelProviderError("credit-exhausted", 402);
+      },
+    };
+    const first = await run(s1, { judge: brokeJudge });
+    expect(first).toMatchObject({ result: { outcome: "failed", failure: "budget-exceeded" } });
+    expect(await artifacts.lookup(`research-jobs/${first.jobId}/result.json`)).toBeUndefined();
+    // Credit restored: the saved report is reused (no second paid call).
+    const s2 = sonar(["https://treaties.un.org/enmod"]);
+    const second = await run(s2);
+    expect(s2.calls).toBe(0);
+    expect(second.jobId).toBe(first.jobId);
+    expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
+  });
+
   it("saves nothing terminal on exhausted credit, so the same job runs after credit returns (#407)", async () => {
     const broke = sonar([], new ModelProviderError("credit-exhausted", 402));
     const first = await run(broke);

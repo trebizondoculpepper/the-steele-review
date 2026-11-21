@@ -180,34 +180,56 @@ export async function runResearchJob(input: {
     return { status: "finished" as const, jobId, result: done.result, reused: false };
   };
 
-  // 1. One bounded provider call. No retry on any provider error.
-  let report;
-  try {
-    report = await input.sonar.research(researchPrompt(request), signal);
-  } catch (error) {
-    if (error instanceof ModelProviderError && error.code === "timeout") return fail("timeout");
-    if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
-      // Exhausted credit is an operational block, not a research result (#407):
-      // save nothing terminal and hand the claim back without spending it, so
-      // the same job (same ID, same request) runs again after credit is
-      // restored. The run that saw it stops at coverage with this outcome.
-      input.operations.yieldClaim(opened.claim);
-      return {
-        status: "finished" as const,
+  // Exhausted credit is an operational block, not a research result (#407):
+  // save nothing terminal and hand the claim back without spending it, so the
+  // same job (same ID, same request) runs again after credit is restored. The
+  // run that saw it stops at coverage with this outcome.
+  const creditBlocked = (): RunOutcome => {
+    input.operations.yieldClaim(opened.claim);
+    return {
+      status: "finished" as const,
+      jobId,
+      reused: false,
+      result: {
+        schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
         jobId,
-        reused: false,
-        result: {
-          schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
-          jobId,
-          outcome: "failed" as const,
-          failure: "budget-exceeded" as const,
-          finishedAt: now().toISOString(),
-        },
-      };
-    }
-    return fail("provider-error");
-  }
+        outcome: "failed" as const,
+        failure: "budget-exceeded" as const,
+        finishedAt: now().toISOString(),
+      },
+    };
+  };
   const dir = `research-jobs/${jobId}`;
+
+  // 1. One bounded provider call. No retry on any provider error. A report
+  // saved by an attempt that later stopped for lack of credit is reused, so a
+  // recovery neither pays for the report again nor diverges from the pinned one.
+  let report: Awaited<ReturnType<SonarClient["research"]>>;
+  const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
+  if (savedReport) {
+    const saved = JSON.parse(await input.artifacts.read(savedReport)) as {
+      model: string;
+      report: string;
+      citations: string[];
+      omittedCitations?: number;
+    };
+    report = {
+      model: saved.model,
+      report: saved.report,
+      citations: saved.citations,
+      ...(saved.omittedCitations ? { omittedCitations: saved.omittedCitations } : {}),
+    } as typeof report;
+  } else {
+    try {
+      report = await input.sonar.research(researchPrompt(request), signal);
+    } catch (error) {
+      if (error instanceof ModelProviderError && error.code === "timeout") return fail("timeout");
+      if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+        return creditBlocked();
+      }
+      return fail("provider-error");
+    }
+  }
   const reportRef = await writeOnce(input.artifacts, `${dir}/report.json`, {
     schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
     jobId,
@@ -292,7 +314,12 @@ export async function runResearchJob(input: {
           .slice(0, 50)
           .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
         support = own ? "unverified" : passages.length > 0 ? "supported" : "unverified";
-      } catch {
+      } catch (error) {
+        // A judge that ran out of credit must not leave the citation "not
+        // checked" in a terminal result: stop the job, recoverably (#407).
+        if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+          return creditBlocked();
+        }
         support = own ? "unverified" : "not-checked";
       }
     } else if (own) {
