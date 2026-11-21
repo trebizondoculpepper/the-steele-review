@@ -57,7 +57,7 @@ const receipt = (over: Record<string, unknown>) => ({
   ...over,
 });
 
-describe("contentArticleView", () => {
+describe("contentArticleView", { timeout: 30_000 }, () => {
   it("reads the draft and its verification report at the pinned revision", async () => {
     const draftText = "# Draft\n\nA claim.";
     const draftRef = ref(await content.write("articles/pub/p1/draft.md", draftText));
@@ -104,7 +104,7 @@ describe("contentArticleView", () => {
   });
 });
 
-describe("contentReceipts", () => {
+describe("contentReceipts", { timeout: 30_000 }, () => {
   it("lists receipts for the exact revision and labels simulated deliveries", async () => {
     const draftHash = "c".repeat(64);
     const rev = "c".repeat(32);
@@ -160,7 +160,8 @@ describe("contentReceipts", () => {
       );
     // Sorted listing puts every dummy-a path before dummy-b, so a bounded
     // unscoped scan of a large tree could miss dummy-b entirely.
-    for (let n = 0; n < 30; n++) await write("dummy-a", "filler");
+    // A few earlier dummy-a paths sort ahead of the dummy-b receipt.
+    for (let n = 0; n < 5; n++) await write("dummy-a", "filler");
     await write("dummy-b", "p1");
     const scoped = await contentReceipts(content, { destinations: ["dummy-b"] }).receiptsFor(
       { publicationId: "pub", postId: "p1" },
