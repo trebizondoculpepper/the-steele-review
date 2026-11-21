@@ -261,17 +261,30 @@ function pinnedTransport(resolve: (hostname: string) => Promise<string[]>) {
         lookup: pinnedLookup as never,
       });
       req.on("response", (res) => {
-        const headers = new Headers();
-        for (const [k, v] of Object.entries(res.headers)) {
-          if (typeof v === "string") headers.set(k, v);
-          else if (Array.isArray(v)) headers.set(k, v.join(", "));
+        try {
+          const status = res.statusCode;
+          if (
+            typeof status !== "number" ||
+            !Number.isInteger(status) ||
+            status < 200 ||
+            status > 599
+          )
+            throw new WebAdapterError("bad-response");
+          const headers = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (typeof v === "string") headers.set(k, v);
+            else if (Array.isArray(v)) headers.set(k, v.join(", "));
+          }
+          const nullBody = status === 204 || status === 205 || status === 304;
+          if (nullBody) res.resume();
+          const body = nullBody ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>);
+          resolveResponse(new Response(body, { status, headers }));
+        } catch {
+          // A synchronous callback exception does not reject the enclosing promise.
+          // Close the response and reject with a bounded category instead of crashing the worker.
+          res.destroy();
+          reject(new WebAdapterError("bad-response"));
         }
-        const status = res.statusCode ?? 502;
-        const body =
-          status === 204 || status === 304
-            ? null
-            : (Readable.toWeb(res) as ReadableStream<Uint8Array>);
-        resolveResponse(new Response(body, { status, headers }));
       });
       req.on("error", reject);
       req.end();
