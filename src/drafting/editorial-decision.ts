@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
@@ -91,9 +92,28 @@ const asReference = (ref: ArtifactRef): ArtifactReference => ({
 export const editorialDecisionKey = (requestId: string): string =>
   `editorial-decision:${requestId}`;
 
-/** Stable operation key: current disposition of one exact draft version. */
-export const editorialDispositionKey = (draftHash: string): string =>
-  `editorial-disposition:${draftHash}`;
+/**
+ * Stable key for the current disposition of one exact draft identity. Scoped
+ * by post and full artifact identity, so identical bytes in another post (or
+ * repository) can never share a disposition.
+ */
+export const editorialDispositionKey = (input: {
+  publicationId: string;
+  postId: string;
+  draft: ArtifactReference;
+}): string =>
+  `editorial-disposition:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.publicationId,
+        input.postId,
+        input.draft.repository,
+        input.draft.commit,
+        input.draft.path,
+        input.draft.hash,
+      ]),
+    )
+    .digest("hex")}`;
 
 /** Immutable path of one decision record. */
 export function editorialDecisionPath(request: {
@@ -117,7 +137,7 @@ export async function recordEditorialDecision(input: {
   content: Pick<GitArtifactStore, "lookupAt" | "lookup" | "write" | "read">;
   operations: Pick<
     OperationStore,
-    "claim" | "complete" | "reconcileCompleted" | "yieldClaim" | "operationStatus"
+    "claim" | "complete" | "yieldClaim" | "recordEditorialDisposition" | "operationStatus"
   >;
   request: EditorialDecisionRequest;
   owner: string;
@@ -141,7 +161,15 @@ export async function recordEditorialDecision(input: {
     stored = undefined;
   }
   if (!stored) return { status: "stale-version", reason: "missing-draft" };
-  if (stored.ref.sha256 !== toRef(request.draft).sha256) {
+  // The full authoritative identity must match, not just the bytes: a request
+  // naming another repository or revision is not this article's draft.
+  const identity = toRef(request.draft);
+  if (
+    stored.ref.repository !== identity.repository ||
+    stored.ref.commit !== identity.commit ||
+    stored.ref.path !== identity.path ||
+    stored.ref.sha256 !== identity.sha256
+  ) {
     return { status: "stale-version", reason: "version-mismatch" };
   }
 
@@ -189,8 +217,11 @@ export async function recordEditorialDecision(input: {
       input.operations.yieldClaim(claimed.claim);
       throw error;
     }
+    // A crash after the artifact write but before completion: reuse the
+    // retained record only when it is the same decision, and report that
+    // record (not the newly constructed one) as the outcome.
     const existing = await readDecision(input.content, path);
-    if (!existing) {
+    if (!existing || !sameDecision(existing, decision)) {
       input.operations.yieldClaim(claimed.claim);
       return { status: "conflict" };
     }
@@ -199,15 +230,41 @@ export async function recordEditorialDecision(input: {
       input.operations.yieldClaim(claimed.claim);
       return { status: "conflict" };
     }
+    input.operations
+      .recordEditorialDisposition({
+        key: editorialDispositionKey(request),
+        decision: asReference(decisionRef),
+        decidedAt: existing.decidedAt,
+      });
+    input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
+    return { status: "recorded", decision: existing, duplicate: true };
   }
 
-  // Current disposition for this exact draft version; repeats reconcile to the
-  // same artifact, so an out-of-order request cannot silently rewrite history.
-  input.operations.reconcileCompleted(editorialDispositionKey(request.draft.hash), {
+  // Current disposition for this exact draft identity. The ordered register
+  // keeps the newest decision, so an approve followed by a reject really does
+  // change the disposition, while a late older arrival cannot regress it.
+  input.operations.recordEditorialDisposition({
+    key: editorialDispositionKey(request),
     decision: asReference(decisionRef),
-  }, []);
+    decidedAt: decision.decidedAt,
+  });
   input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
   return { status: "recorded", decision, duplicate: false };
+}
+
+/** True when a retained record is the same semantic decision as the request. */
+function sameDecision(a: EditorialDecision, b: EditorialDecision): boolean {
+  return (
+    a.requestId === b.requestId &&
+    a.publicationId === b.publicationId &&
+    a.postId === b.postId &&
+    a.action === b.action &&
+    (a.comment ?? "") === (b.comment ?? "") &&
+    a.draft.repository === b.draft.repository &&
+    a.draft.commit === b.draft.commit &&
+    a.draft.path === b.draft.path &&
+    a.draft.hash === b.draft.hash
+  );
 }
 
 async function readDecision(

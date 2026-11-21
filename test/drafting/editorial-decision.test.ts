@@ -76,7 +76,10 @@ describe("manual editorial decisions (#447)", () => {
       }),
     );
     expect(stored).toBeDefined();
-    expect(operations.operationStatus(editorialDispositionKey(ref.hash))?.status).toBe("completed");
+    expect(
+      operations.editorialDisposition(editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref }))
+        ?.decision,
+    ).toMatchObject({ path: expect.stringContaining("decision-1") });
   });
 
   it("returns the original record for a duplicate request instead of a second decision", async () => {
@@ -99,7 +102,9 @@ describe("manual editorial decisions (#447)", () => {
     expect(
       await decide({ draft: { ...ref, path: "articles/pub/p1/missing.md" } }),
     ).toEqual({ status: "stale-version", reason: "missing-draft" });
-    expect(operations.operationStatus(editorialDispositionKey(ref.hash))).toBeUndefined();
+    expect(
+      operations.editorialDisposition(editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref })),
+    ).toBeUndefined();
   });
 
   it("keeps decisions for different versions separate", async () => {
@@ -111,8 +116,112 @@ describe("manual editorial decisions (#447)", () => {
     expect(
       await decide({ draft: second, action: "feedback", comment: "Tighten the second claim.", requestId: "b" }),
     ).toMatchObject({ status: "recorded", decision: { action: "feedback" } });
-    expect(operations.operationStatus(editorialDispositionKey(first.hash))?.status).toBe("completed");
-    expect(operations.operationStatus(editorialDispositionKey(second.hash))?.status).toBe("completed");
+    const disposition = (draftHash: string, draftRef: typeof first) =>
+      operations.editorialDisposition(
+        editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: { ...draftRef, hash: draftHash } }),
+      );
+    expect(disposition(first.hash, first)?.decision).toMatchObject({
+      path: expect.stringContaining("/a.json"),
+    });
+    expect(disposition(second.hash, second)?.decision).toMatchObject({
+      path: expect.stringContaining("/b.json"),
+    });
+  });
+
+  it("lets a newer decision replace the current disposition", async () => {
+    const ref = await draft();
+    expect(await decide({ draft: ref, action: "approve", requestId: "a" })).toMatchObject({
+      status: "recorded",
+    });
+    const key = editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref });
+    expect(operations.editorialDisposition(key)).toMatchObject({
+      decidedAt: "2026-01-01T00:00:00.000Z",
+    });
+    // A later, distinct reject request for the same revision supersedes it.
+    const later = await recordEditorialDecision({
+      content,
+      operations,
+      request: request({ draft: ref, action: "reject", requestId: "b" }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-02T00:00:00.000Z"),
+    });
+    expect(later).toMatchObject({ status: "recorded", duplicate: false });
+    expect(operations.editorialDisposition(key)).toMatchObject({
+      decidedAt: "2026-01-02T00:00:00.000Z",
+    });
+  });
+
+  it("does not let a late older decision regress the disposition", async () => {
+    const ref = await draft();
+    const key = editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref });
+    await recordEditorialDecision({
+      content,
+      operations,
+      request: request({ draft: ref, action: "approve", requestId: "a" }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-02T00:00:00.000Z"),
+    });
+    await recordEditorialDecision({
+      content,
+      operations,
+      request: request({ draft: ref, action: "reject", requestId: "b" }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+    });
+    expect(operations.editorialDisposition(key)).toMatchObject({
+      decidedAt: "2026-01-02T00:00:00.000Z",
+    });
+  });
+
+  it("keeps the disposition separate for identical drafts in different posts", async () => {
+    const ref = await draft();
+    const otherPost = `editorial-disposition:${ref.hash}`;
+    const a = editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref });
+    const b = editorialDispositionKey({ publicationId: "pub", postId: "p2", draft: ref });
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(otherPost);
+  });
+
+  it("refuses a draft reference from another repository", async () => {
+    const ref = await draft();
+    expect(
+      await decide({ draft: { ...ref, repository: "someone-elses-repo" } }),
+    ).toEqual({ status: "stale-version", reason: "version-mismatch" });
+  });
+
+  it("recovers a crashed decision only when it matches the request", async () => {
+    const ref = await draft();
+    const path = editorialDecisionPath({
+      publicationId: "pub",
+      postId: "p1",
+      draft: ref,
+      requestId: "decision-1",
+    });
+    // Simulate a crash after the artifact write: the record exists, but the
+    // operation was never completed.
+    await content.write(
+      path,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          requestId: "decision-1",
+          publicationId: "pub",
+          postId: "p1",
+          draft: ref,
+          action: "approve",
+          decidedAt: "2026-01-01T00:00:00.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const recovered = await decide({ draft: ref });
+    expect(recovered).toMatchObject({
+      status: "recorded",
+      decision: { action: "approve", decidedAt: "2026-01-01T00:00:00.000Z" },
+    });
+    // A conflicting reuse of the same request ID is refused, not rewritten.
+    expect(await decide({ draft: ref, action: "reject" })).toEqual({ status: "conflict" });
   });
 
   it("rejects invalid requests and feedback without a comment", async () => {
