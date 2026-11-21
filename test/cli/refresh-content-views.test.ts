@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-// #420: the content-view refresh script against real temporary repositories.
-const SCRIPT = join(process.cwd(), "deploy/content-views/refresh-checkouts.sh");
+// #420: the content-view refresh command against real temporary repositories.
+const CLI = ["--import", "tsx", join(process.cwd(), "src/cli/refresh-content-views.ts")];
 let dir: string;
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, {
@@ -43,11 +43,26 @@ async function view(name: string) {
   return { checkout, commitUpstream };
 }
 
-const status = join("status");
+const statusDir = () => join(dir, "status");
 const run = (...views: string[]) =>
-  execFileSync("sh", [SCRIPT, join(dir, status), ...views], { encoding: "utf8", stdio: "pipe" });
+  execFileSync(process.execPath, [...CLI, statusDir(), ...views], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+/** Run and return combined stdout and stderr, whatever the exit code. */
+const runAll = (...args: string[]) => {
+  try {
+    return execFileSync(process.execPath, [...CLI, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const e = error as { stdout?: string; stderr?: string };
+    return `${e.stdout ?? ""}${e.stderr ?? ""}`;
+  }
+};
 const read = async (name: string) =>
-  JSON.parse(await readFile(join(dir, status, `${name}.json`), "utf8")) as Record<string, string>;
+  JSON.parse(await readFile(join(statusDir(), `${name}.json`), "utf8")) as Record<string, string>;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "steele-refresh-"));
@@ -56,7 +71,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("refresh-checkouts.sh (#420)", { timeout: 60_000 }, () => {
+describe("refresh-content-views (#420)", { timeout: 60_000 }, () => {
   it("fast-forwards clean archive and content views to new commits", async () => {
     const archive = await view("archive");
     const content = await view("content");
@@ -67,7 +82,6 @@ describe("refresh-checkouts.sh (#420)", { timeout: 60_000 }, () => {
     expect(git(content.checkout, "rev-parse", "HEAD")).toBe(c);
     expect(await read("content")).toMatchObject({ view: "content", state: "fresh", revision: c });
     expect((await read("content")).lastSuccessAt).toBeTruthy();
-    // Up to date: still fresh, nothing changes.
     run(`content=${content.checkout}`);
     expect(await read("content")).toMatchObject({ state: "fresh", revision: c });
   });
@@ -82,7 +96,6 @@ describe("refresh-checkouts.sh (#420)", { timeout: 60_000 }, () => {
     expect(await readFile(join(content.checkout, "notes.txt"), "utf8")).toBe("my notes\n");
     expect(await read("content")).toMatchObject({ state: "stale", reason: "local-changes" });
 
-    // A local commit the remote does not have: diverged, left as is.
     git(content.checkout, "add", ".");
     git(content.checkout, "commit", "--quiet", "-m", "local");
     const local = git(content.checkout, "rev-parse", "HEAD");
@@ -101,29 +114,33 @@ describe("refresh-checkouts.sh (#420)", { timeout: 60_000 }, () => {
     expect(await read("content")).toMatchObject({ state: "stale", reason: "fast-forward-failed" });
   });
 
-  it("keeps private paths out of its output for a missing checkout", async () => {
+  it("keeps private paths out of its output for a missing checkout or status directory", async () => {
     const missing = join(dir, "private-account", "nowhere");
-    const out = execFileSync(
-      "sh",
-      ["-c", `sh "$0" "$1" "$2" 2>&1`, SCRIPT, join(dir, status), `content=${missing}`],
-      {
-        encoding: "utf8",
-      },
-    );
+    const out = runAll(statusDir(), `content=${missing}`);
     expect(out).not.toContain("private-account");
     expect(await read("content")).toMatchObject({ state: "stale", reason: "not-a-checkout" });
+
+    await writeFile(join(dir, "secret-home"), "a file, not a directory");
+    const bad = runAll(join(dir, "secret-home", "status"), "content=/nowhere");
+    expect(bad).toContain("status-dir-unavailable");
+    expect(bad).not.toContain("secret-home");
   });
 
-  it("does nothing while another refresh holds the lock, and records no paths", async () => {
+  it("leaves a live owner's lock alone and takes over only a dead owner's lock", async () => {
     const content = await view("content");
     const before = git(content.checkout, "rev-parse", "HEAD");
-    await content.commitUpstream("draft.md");
-    await mkdir(join(dir, status, ".refresh.lock"), { recursive: true });
+    const next = await content.commitUpstream("draft.md");
+    await mkdir(statusDir(), { recursive: true });
+    const lock = join(statusDir(), ".refresh.lock");
+    // A live owner (this test process) on this host: never taken over, whatever its age.
+    await writeFile(lock, JSON.stringify({ host: hostname(), pid: process.pid }));
     run(`content=${content.checkout}`);
     expect(git(content.checkout, "rev-parse", "HEAD")).toBe(before);
-    await rm(join(dir, status, ".refresh.lock"), { recursive: true });
+    // A dead owner: its lock is taken over and the refresh runs.
+    await writeFile(lock, JSON.stringify({ host: hostname(), pid: 2 ** 22 + 12_345 }));
     run(`content=${content.checkout}`);
-    const raw = await readFile(join(dir, status, "content.json"), "utf8");
+    expect(git(content.checkout, "rev-parse", "HEAD")).toBe(next);
+    const raw = await readFile(join(statusDir(), "content.json"), "utf8");
     expect(raw).not.toContain(dir);
     expect(JSON.parse(raw)).toMatchObject({ state: "fresh" });
   });
