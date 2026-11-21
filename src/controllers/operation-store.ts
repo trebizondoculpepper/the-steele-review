@@ -21,7 +21,7 @@ import { ArtifactReferenceSchema, type ArtifactReference } from "../content/arti
  * proceed during writes. Errors carry codes only: no paths or payloads.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export interface OperationStoreConfig {
   /** Absolute path of the SQLite file on a local persistent volume (runtime configuration). */
@@ -174,6 +174,21 @@ const MIGRATION_V3 = `
 CREATE INDEX IF NOT EXISTS pending_events_by_operation ON pending_events (operation_key, status);
 `;
 
+/**
+ * #447: the current manual editorial disposition for one exact draft identity.
+ * A small ordered register, separate from immutable operation completion: the
+ * newest decision by `decided_at` wins, and an older late arrival never
+ * overwrites it.
+ */
+const MIGRATION_V4 = `
+CREATE TABLE IF NOT EXISTS editorial_dispositions (
+  key TEXT PRIMARY KEY,
+  decision TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  order_key TEXT NOT NULL
+);
+`;
+
 interface OperationRow {
   status: string;
   owner: string | null;
@@ -247,6 +262,12 @@ export class OperationStore {
       this.transaction(() => {
         this.db.exec(MIGRATION_V3);
         this.db.exec("PRAGMA user_version = 3");
+      });
+    }
+    if (version < 4) {
+      this.transaction(() => {
+        this.db.exec(MIGRATION_V4);
+        this.db.exec("PRAGMA user_version = 4");
       });
     }
   }
@@ -723,6 +744,118 @@ export class OperationStore {
     };
   }
 
+  /**
+   * Record the current manual editorial disposition for one exact draft
+   * identity (#447). Ordered by the decision timestamp: an equal or newer
+   * decision replaces the previous one atomically; an older one is ignored so
+   * a late delivery cannot regress the disposition.
+   */
+  recordEditorialDisposition(input: {
+    key: string;
+    decision: unknown;
+    decidedAt: string;
+    /** Total-order tiebreak (for example the request ID) for equal timestamps. */
+    order: string;
+  }): { applied: boolean } {
+    if (
+      !Key.safeParse(input.key).success ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(input.decidedAt) ||
+      !Key.safeParse(input.order).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+        .get(input.key) as { decided_at: string; order_key: string } | undefined;
+      // Compare the (decided_at, order) pair as a total order: equal timestamps
+      // still have a deterministic winner, so replaying an earlier decision
+      // cannot overwrite a later one.
+      if (
+        existing &&
+        (existing.decided_at > input.decidedAt ||
+          (existing.decided_at === input.decidedAt && existing.order_key >= input.order))
+      ) {
+        return { applied: false };
+      }
+      this.db
+        .prepare(
+          "INSERT INTO editorial_dispositions (key, decision, decided_at, order_key) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, order_key = excluded.order_key",
+        )
+        .run(input.key, JSON.stringify(input.decision), input.decidedAt, input.order);
+      return { applied: true };
+    });
+  }
+
+  /**
+   * Complete an editorial decision request and update the exact-version
+   * disposition in one transaction (#447). The caller must still hold the
+   * request's claim: an expired or reclaimed owner changes neither the
+   * disposition nor the operation (throws `not-owner`), and any failure rolls
+   * both back. A request that is already completed returns its artifact
+   * without touching the disposition.
+   */
+  completeEditorialDecision(
+    claim: OperationClaim,
+    disposition: { key: string; decision: unknown; decidedAt: string; order: string },
+    artifact: unknown,
+  ): { applied: boolean; artifact: unknown } {
+    if (
+      !Key.safeParse(disposition.key).success ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(disposition.decidedAt) ||
+      !Key.safeParse(disposition.order).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction(() => {
+      const row = this.row(claim.key);
+      if (row?.status === "completed") {
+        return { applied: false, artifact: JSON.parse(row.artifact ?? "null") as unknown };
+      }
+      if (!this.holds(row, claim)) throw new OperationStoreError("not-owner");
+      const existing = this.db
+        .prepare("SELECT decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+        .get(disposition.key) as { decided_at: string; order_key: string } | undefined;
+      const newer =
+        !existing ||
+        existing.decided_at < disposition.decidedAt ||
+        (existing.decided_at === disposition.decidedAt && existing.order_key < disposition.order);
+      if (newer) {
+        this.db
+          .prepare(
+            "INSERT INTO editorial_dispositions (key, decision, decided_at, order_key) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, order_key = excluded.order_key",
+          )
+          .run(
+            disposition.key,
+            JSON.stringify(disposition.decision),
+            disposition.decidedAt,
+            disposition.order,
+          );
+      }
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), this.now(), claim.key);
+      return { applied: newer, artifact };
+    });
+  }
+
+  /** Current editorial disposition for one exact draft identity, if any. */
+  editorialDisposition(
+    key: string,
+  ): { decision: unknown; decidedAt: string; order: string } | undefined {
+    const row = this.db
+      .prepare("SELECT decision, decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+      .get(key) as { decision: string; decided_at: string; order_key: string } | undefined;
+    if (!row) return undefined;
+    return {
+      decision: JSON.parse(row.decision) as unknown,
+      decidedAt: row.decided_at,
+      order: row.order_key,
+    };
+  }
+
   /** Delivery status of one recorded event, or undefined if none was recorded. */
   pendingEventStatus(eventId: string): "pending" | "sent" | undefined {
     const row = this.db
@@ -1123,7 +1256,9 @@ export class OperationInspector {
     private readonly db: DatabaseSync,
     private readonly now: () => number,
     private readonly resolvedPath: string,
-    private readonly identity: StoreIdentity,
+    /** Quiescent reads re-check the file; a WAL snapshot keeps its transaction. */
+    private readonly mode: "quiescent" | "snapshot",
+    private readonly identity: StoreIdentity | undefined,
     private readonly counts: StatementSync,
     private readonly operation: StatementSync,
   ) {}
@@ -1146,20 +1281,22 @@ export class OperationInspector {
       // path must be followed before looking for the sidecar or opening it.
       const resolved = realpathSync(path);
       // A WAL sidecar means a writer is live or frames are uncheckpointed. The
-      // quiescent-immutable strategy below cannot read that state safely, so
-      // report unavailable rather than lock, modify or guess.
-      if (existsSync(`${resolved}-wal`)) return { status: "unavailable" };
-      // Record the file identity before opening. The immutable connection's
-      // page cache is only trustworthy if the file does not change between
-      // this snapshot and the schema read below, so the two are compared.
-      const identity = storeIdentity(resolved);
-      if (!identity) return { status: "unavailable" };
-      // `immutable=1` reads without locking or creating `-wal`/`-shm`
-      // sidecars, which a plain read-only connection would create.
-      // A file URL encodes `?` and `#` in a path, which encodeURI would leave
-      // ambiguous; the query parameter then selects immutable mode.
+      // immutable strategy below cannot see committed WAL content, so a WAL
+      // store is read through a read-only connection inside one deferred read
+      // transaction instead (#454). That yields a consistent snapshot without
+      // checkpointing, deleting WAL or mutating anything; an unreadable or
+      // locked WAL state is reported unavailable.
+      const hasWal = existsSync(`${resolved}-wal`);
+      // A read-only connection needs the shared-memory sidecar whenever WAL
+      // content exists, and SQLite would create one if missing. Inspection
+      // must not create files, so an orphaned WAL is reported unavailable.
+      if (hasWal && !existsSync(`${resolved}-shm`)) return { status: "unavailable" };
+      const identity = hasWal ? undefined : storeIdentity(resolved);
+      if (!hasWal && !identity) return { status: "unavailable" };
       const fileUrl = pathToFileURL(resolved);
-      fileUrl.searchParams.set("immutable", "1");
+      // `immutable=1` reads without locking or creating `-wal`/`-shm`
+      // sidecars; never use it when WAL content must be honoured.
+      if (!hasWal) fileUrl.searchParams.set("immutable", "1");
       db = new DatabaseSync(fileUrl.href, { readOnly: true, timeout: busy });
       const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
         user_version: number;
@@ -1188,9 +1325,18 @@ export class OperationInspector {
       // read: a writer that committed in between leaves this connection with
       // stale pages, while the identity would describe the newer file and
       // every later check would pass. Reject the connection in that case.
-      if (existsSync(`${resolved}-wal`) || !unchanged(identity, storeIdentity(resolved))) {
-        db.close();
-        return { status: "unavailable" };
+      if (!hasWal) {
+        if (existsSync(`${resolved}-wal`) || !unchanged(identity!, storeIdentity(resolved))) {
+          db.close();
+          return { status: "unavailable" };
+        }
+      } else {
+        // Snapshot for the inspector's lifetime: readers see one committed
+        // state and cannot affect writers. Closing rolls the transaction back.
+        db.exec("BEGIN DEFERRED");
+        // Start the snapshot with a bounded read: aggregation belongs to
+        // statusCounts(), not to opening a single-operation inspector.
+        db.prepare("SELECT key FROM operations LIMIT 1").get();
       }
       return {
         status: "available",
@@ -1198,6 +1344,7 @@ export class OperationInspector {
           db,
           options.now ?? Date.now,
           resolved,
+          hasWal ? "snapshot" : "quiescent",
           identity,
           counts,
           operation,
@@ -1217,13 +1364,19 @@ export class OperationInspector {
    * immutable connection may have mixed pages from two versions of the file.
    */
   private read<T>(query: () => T): T {
-    if (this.changed()) throw new OperationStoreChangedError();
-    const value = query();
-    if (this.changed()) throw new OperationStoreChangedError();
-    return value;
+    if (this.mode === "quiescent") {
+      if (this.changed()) throw new OperationStoreChangedError();
+      const value = query();
+      if (this.changed()) throw new OperationStoreChangedError();
+      return value;
+    }
+    // Snapshot mode: the open read transaction defines the view; a live writer
+    // may change the file at any time without affecting this result.
+    return query();
   }
 
   private changed(): boolean {
+    if (!this.identity) return true;
     if (existsSync(`${this.resolvedPath}-wal`)) return true;
     return !unchanged(this.identity, storeIdentity(this.resolvedPath));
   }
@@ -1278,6 +1431,14 @@ export class OperationInspector {
   }
 
   close(): void {
-    if (this.db.isOpen) this.db.close();
+    if (!this.db.isOpen) return;
+    if (this.mode === "snapshot") {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Already settled; closing still releases the connection.
+      }
+    }
+    this.db.close();
   }
 }

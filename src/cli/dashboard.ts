@@ -36,6 +36,7 @@ import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
+  archivedSource,
   contentArticleView,
   contentReceipts,
   indexArticles,
@@ -44,6 +45,8 @@ import {
 } from "../dashboard/adapters.js";
 import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
+import { draftViews } from "../dashboard/draft-views.js";
+import { draftInventory } from "../dashboard/drafts.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -128,6 +131,7 @@ const views = [
   ...(trigger ? [trigger.view] : []),
   ...articleViews({
     canTrigger: Boolean(trigger),
+    ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
     trace: (post) =>
@@ -164,7 +168,22 @@ const views = [
           }),
         }
       : {}),
+    ...(archive ? { source: archivedSource(archive) } : {}),
   }),
+  // Every saved draft with its exact verification and delivery status (#440).
+  ...draftViews(
+    content
+      ? draftInventory(
+          content,
+          contentReceipts(content, {
+            destinations: (e.STEELE_DASHBOARD_DESTINATIONS ?? "")
+              .split(",")
+              .map((d) => d.trim())
+              .filter(Boolean),
+          }),
+        )
+      : undefined,
+  ),
   // Preserve old bookmarks without a second navigation entry or placeholder.
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];

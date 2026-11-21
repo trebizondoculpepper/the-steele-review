@@ -38,6 +38,14 @@ describe("dashboard shell (#375)", () => {
     expect(html).not.toContain("<script");
   });
 
+  it("wraps article, source and diagnostic text within the viewport (#495)", async () => {
+    const html = await (await fetch(`${base}/overview`)).text();
+    expect(html).toMatch(/main pre \{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere;/);
+    expect(html).toMatch(
+      /main td, main th, main dd, main code, main a, main h1, main p \{ overflow-wrap: anywhere; \}/,
+    );
+  });
+
   it("redirects the root to the first view and reports health", async () => {
     const root = await fetch(`${base}/`, { redirect: "manual" });
     expect(root.status).toBe(303);

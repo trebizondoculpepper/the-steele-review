@@ -3,6 +3,8 @@ import {
   traceArticle,
   type ArticleContentPort,
   type ArticleTrace,
+  type CapturedSource,
+  type SourcePort,
   type ReceiptsPort,
   type RecentArticlesPort,
   type RunStatusPort,
@@ -20,7 +22,11 @@ export interface ArticleViewDeps {
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
   content?: ArticleContentPort;
   receipts?: ReceiptsPort;
+  /** Retained captured source for the detail page (#446). */
+  source?: SourcePort;
   canTrigger?: boolean;
+  /** Validated canonical origin from entry-point configuration, never request headers. */
+  actionOrigin?: string;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -30,6 +36,10 @@ const badge = (state: string, text = state) =>
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
+  const runLink = (publicationId: string, postId: string, revision: string) =>
+    escapeHtml(
+      `${deps.actionOrigin ?? ""}/articles/run?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
+    );
   const list: DashboardView = {
     path: "/articles",
     title: "Articles",
@@ -62,11 +72,18 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
               summary = "unknown";
             }
           }
-          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td></tr>`;
+          const action = deps.canTrigger
+            ? `<td>${
+                /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
+                  ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
+                  : "Revision unavailable"
+              }</td>`
+            : "";
+          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
       return `${creditBlocked ? creditWarning(creditBlocked) : ""}<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
-<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>`;
     },
   };
@@ -89,10 +106,11 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.trace ? { trace: () => deps.trace!(post) } : {}),
         ...(deps.content ? { content: deps.content } : {}),
         ...(deps.receipts ? { receipts: deps.receipts } : {}),
+        ...(deps.source ? { source: deps.source } : {}),
       });
       const trigger =
         deps.canTrigger && t.sourceVersion
-          ? `<p><a href="/articles/run?publication=${encodeURIComponent(publicationId)}&amp;post=${encodeURIComponent(postId)}&amp;revision=${encodeURIComponent(t.sourceVersion)}">Run this revision</a></p>`
+          ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
       return trigger + renderTrace(t);
     },
@@ -107,6 +125,26 @@ export const isCreditBlocked = (reason?: string) =>
 /** Actionable, secret-free warning: what happened and how to recover. */
 export function creditWarning(runs: number): string {
   return `<p class="warning" role="alert"><strong>Provider credit exhausted.</strong> ${runs} recent run${runs === 1 ? "" : "s"} stopped because the model provider's credit budget ran out. This is not a finding about any article. Add credit or raise the key's limit with the provider, then recover the affected revisions as described in the article pipeline operations guide (provider credit exhaustion); completed stage results are reused.</p>`;
+}
+
+function renderSource(source: CapturedSource | undefined): string {
+  if (!source) return "";
+  if (source.state !== "recorded") {
+    return `<h2>Retained source</h2><p class="empty">Captured source: ${escapeHtml(source.state)}.</p>`;
+  }
+  const link =
+    source.url === undefined
+      ? ""
+      : ` <a href="${escapeHtml(source.url)}" rel="noopener noreferrer">source</a>`;
+  const mismatch =
+    source.matchesRevision === false
+      ? '<p class="s-failed">This capture does not match the revision selected for the run; the recorded text is shown as archived.</p>'
+      : "";
+  return `<h2>Retained source</h2>
+<p>${source.title ? escapeHtml(source.title) : "untitled"}${link} · ${escapeHtml(source.method)} · ${source.complete ? "complete" : "INCOMPLETE"} · <code>${escapeHtml(source.revision)}</code></p>
+${mismatch}
+<p>Shown as text; markup is never executed.${source.truncated ? " Display truncated." : ""}</p>
+<pre>${escapeHtml(source.text)}</pre>`;
 }
 
 export function renderTrace(t: ArticleTrace): string {
@@ -146,6 +184,7 @@ export function renderTrace(t: ArticleTrace): string {
   const diagnostics = t.trace
     ? `<h2>Capture and analysis</h2><pre>${escapeHtml(renderPostTrace(t.trace))}</pre>`
     : "";
+  const source = renderSource(t.source);
   const draft = t.draft
     ? `<h2>Draft</h2><p>Saved revision <code>sha256:${escapeHtml(t.draft.hash)}</code>. Shown as text; its markup is never executed.</p><pre>${escapeHtml(t.draft.text)}</pre>`
     : "";
@@ -177,9 +216,9 @@ export function renderTrace(t: ArticleTrace): string {
             ? ""
             : `<div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${receiptRows}</tbody></table></div>`
         }`;
-  return `${isCreditBlocked(t.reason) ? creditWarning(1) : ""}<p><a href="/articles">All articles</a></p>
+  return `${isCreditBlocked(t.reason) ? creditWarning(1) : ""}<p><a href="/articles">All articles</a> · <a href="/drafts?${escapeHtml(new URLSearchParams({ publication: t.post.publicationId, post: t.post.postId }).toString())}">All saved drafts for this post</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${research}${draft}${verification}${receipts}${diagnostics}`;
 }

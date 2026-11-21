@@ -25,6 +25,10 @@ export const archive = {
 } as unknown as GitArtifactStore;
 
 const WRITER = JSON.stringify({
+  title: "A treaty already bans weather weapons",
+  subtitle: "What the post claims, and what the evidence shows",
+  excerpt:
+    "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
   summary: "The post says a treaty bans weather weapons.",
   themes: ["Weather warfare"],
   responses: [
@@ -87,4 +91,3 @@ export async function approvedReport(content: GitArtifactStore, verdict = "appro
   if (verified.status !== "verified") throw new Error(verified.status);
   return verified.ref;
 }
-

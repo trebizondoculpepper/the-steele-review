@@ -72,6 +72,124 @@ describe("OperationStore", () => {
     expect(indexes).toContain("pending_events_by_operation");
   });
 
+  it("keeps the newest editorial disposition across concurrent writers (#447)", () => {
+    const a = open();
+    const b = open();
+    const key = "editorial-disposition:test";
+    expect(
+      a.recordEditorialDisposition({
+        key,
+        decision: { request: "newer" },
+        decidedAt: "2026-01-02T00:00:00.000Z",
+        order: "b",
+      }),
+    ).toEqual({ applied: true });
+    // An older decision arriving late is ignored, not written over the newer.
+    expect(
+      b.recordEditorialDisposition({
+        key,
+        decision: { request: "older" },
+        decidedAt: "2026-01-01T00:00:00.000Z",
+        order: "a",
+      }),
+    ).toEqual({ applied: false });
+    expect(a.editorialDisposition(key)).toEqual({
+      decision: { request: "newer" },
+      decidedAt: "2026-01-02T00:00:00.000Z",
+      order: "b",
+    });
+    // Equal timestamps use the order token as a total order: the later request
+    // wins, and replaying an earlier one cannot overwrite it.
+    expect(
+      a.recordEditorialDisposition({
+        key,
+        decision: { request: "same-time-later" },
+        decidedAt: "2026-01-03T00:00:00.000Z",
+        order: "d",
+      }),
+    ).toEqual({ applied: true });
+    expect(
+      b.recordEditorialDisposition({
+        key,
+        decision: { request: "replay" },
+        decidedAt: "2026-01-03T00:00:00.000Z",
+        order: "c",
+      }),
+    ).toEqual({ applied: false });
+    a.close();
+    b.close();
+  });
+
+  it("completes an editorial decision atomically; a stale owner changes nothing (#447)", () => {
+    const store = open();
+    const key = "editorial:req-1";
+    const disposition = "editorial-disposition:draft-1";
+    const a = store.claim(key, "owner-a", 1_000, 3);
+    if (a.kind !== "claimed") throw new Error(a.kind);
+    clock += 5_000; // A's lease expires
+    const b = store.claim(key, "owner-b", 1_000, 3);
+    if (b.kind !== "claimed") throw new Error(b.kind);
+    // A's late continuation is refused; neither the disposition nor the operation changed.
+    expect(() =>
+      store.completeEditorialDecision(
+        a.claim,
+        {
+          key: disposition,
+          decision: { by: "a" },
+          decidedAt: "2026-01-01T00:00:00.000Z",
+          order: "req-1",
+        },
+        { by: "a" },
+      ),
+    ).toThrow("not-owner");
+    expect(store.editorialDisposition(disposition)).toBeUndefined();
+    expect(store.operationStatus(key)?.status).not.toBe("completed");
+    // The current owner completes both together.
+    expect(
+      store.completeEditorialDecision(
+        b.claim,
+        {
+          key: disposition,
+          decision: { by: "b" },
+          decidedAt: "2026-01-01T00:00:00.000Z",
+          order: "req-1",
+        },
+        { by: "b" },
+      ),
+    ).toEqual({ applied: true, artifact: { by: "b" } });
+    expect(store.editorialDisposition(disposition)?.decision).toEqual({ by: "b" });
+    expect(store.operationStatus(key)?.status).toBe("completed");
+    // A completed request returns its artifact without touching the disposition.
+    expect(
+      store.completeEditorialDecision(
+        b.claim,
+        {
+          key: disposition,
+          decision: { by: "replay" },
+          decidedAt: "2026-02-01T00:00:00.000Z",
+          order: "req-1",
+        },
+        { by: "replay" },
+      ),
+    ).toEqual({ applied: false, artifact: { by: "b" } });
+    expect(store.editorialDisposition(disposition)?.decision).toEqual({ by: "b" });
+  });
+
+  it("rolls back an editorial completion with invalid disposition input (#447)", () => {
+    const store = open();
+    const c = store.claim("editorial:req-2", "owner", 60_000, 3);
+    if (c.kind !== "claimed") throw new Error(c.kind);
+    expect(() =>
+      store.completeEditorialDecision(
+        c.claim,
+        { key: "editorial-disposition:d", decision: {}, decidedAt: "not-a-date", order: "req-2" },
+        {},
+      ),
+    ).toThrow("invalid-input");
+    expect(store.operationStatus("editorial:req-2")?.status).not.toBe("completed");
+    expect(store.editorialDisposition("editorial-disposition:d")).toBeUndefined();
+  });
+
   it("requires an absolute path and bounded busy timeout", () => {
     expect(() => new OperationStore({ path: "relative.sqlite" })).toThrow(OperationStoreError);
     expect(() => new OperationStore({ path, busyTimeoutMs: 600_000 })).toThrow("invalid-config");

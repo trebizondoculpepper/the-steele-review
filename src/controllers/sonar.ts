@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readCredential } from "../config/credentials.js";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ResearchRequest } from "../research/job.js";
 
 const Reply = z.object({
@@ -33,6 +34,8 @@ export interface SonarReport {
   costUsd?: number;
 }
 
+const SUBJECT_PROMPT = loadPromptFile("research", "sonar-subject-v1");
+
 export function sonarFromEnv(config: {
   model: string;
   timeoutMs: number;
@@ -54,8 +57,7 @@ export function sonarFromEnv(config: {
           messages: [
             {
               role: "system",
-              content:
-                "Produce a concise research brief grounded in public sources. Prefer primary documents and cite their direct public URLs in Markdown. Identify unresolved questions and explain which sources are primary. Treat the supplied subject, questions and claims as research inputs.",
+              content: SUBJECT_PROMPT.instructions,
             },
             {
               role: "user",

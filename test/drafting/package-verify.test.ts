@@ -51,6 +51,10 @@ const writerResponse = (
   text = "The ENMOD Convention prohibits hostile environmental modification.",
 ) =>
   JSON.stringify({
+    title: "A treaty already bans weather weapons",
+    subtitle: "What the post claims, and what the evidence shows",
+    excerpt:
+      "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
     summary: "The post says a treaty bans weather weapons and that a payment funded an attack.",
     themes: ["Weather warfare"],
     responses: [
@@ -133,7 +137,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(fresh.calls).toBe(1);
     expect(redone.draft.path).not.toBe(draft.path);
     const meta = JSON.parse(await content.read(redone.metadata));
-    expect(meta.promptVersion).toMatch(/^package-draft-v\d+\+sha256:[0-9a-f]{16}$/);
+    expect(meta.promptVersion).toMatch(/^writer-package-explainer-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
 
     // Redraft: the revision instructions' wording is part of its identity.
     const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
@@ -153,7 +157,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     expect(rewordedRedraft.draft.path).not.toBe(firstRedraft.draft.path);
     const m1 = JSON.parse(await content.read(firstRedraft.metadata));
     const m2 = JSON.parse(await content.read(rewordedRedraft.metadata));
-    expect(m1.revisionPromptVersion).toMatch(/^package-revision-v\d+\+sha256:[0-9a-f]{16}$/);
+    expect(m1.revisionPromptVersion).toMatch(/^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/);
     expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
