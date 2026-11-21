@@ -93,7 +93,8 @@ export class ConsumerConflictError extends Error {
 
 /**
  * Explicitly create a durable pull consumer with explicit acknowledgment if
- * it does not exist. An existing consumer is never modified.
+ * it does not exist. An existing consumer is only ever changed to apply an
+ * explicitly requested delivery budget.
  */
 export async function provisionDurableConsumer(
   nats: Pick<NatsController, "manager">,
@@ -121,6 +122,13 @@ export async function provisionDurableConsumer(
           existing.config.max_deliver !== (config.maxDeliver ?? 10)))
     ) {
       throw new ConsumerConflictError();
+    }
+    // An explicitly requested delivery budget is enforced on an existing
+    // consumer too; max_deliver is an updatable setting, and nothing else
+    // (start position, filter, ack policy) changes.
+    if (config.maxDeliver !== undefined && existing.config.max_deliver !== config.maxDeliver) {
+      await jsm.consumers.update(config.stream, config.name, { max_deliver: config.maxDeliver });
+      return "updated";
     }
     return "unchanged";
   }
