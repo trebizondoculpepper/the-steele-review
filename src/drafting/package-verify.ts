@@ -387,6 +387,7 @@ export async function verifyWithRevisions(input: {
       return { outcome: "approved", draft: draftRef, metadata, report: verified.ref, revisions };
     }
     const substantive = verified.report.issues.filter((i) => i.severity === "substantive");
+    const MAX_OBSERVATIONS = 20;
     if (revisions >= max) {
       const unresolved = await writeOnce(
         input.content,
@@ -433,6 +434,15 @@ export async function verifyWithRevisions(input: {
       revision: {
         number: revisions + 1,
         feedback: substantive.map((i) => ({ passage: i.passage, reason: i.reason })),
+        // Minor notes ride along as non-blocking context only when a substantive
+        // redraft is already required (#576); approval policy is unchanged.
+        ...(() => {
+          const minor = verified.report.issues
+            .filter((i) => i.severity === "minor")
+            .slice(0, MAX_OBSERVATIONS)
+            .map((i) => ({ passage: i.passage, reason: i.reason }));
+          return minor.length ? { observations: minor } : {};
+        })(),
       },
       ...(input.now ? { now: input.now } : {}),
     });

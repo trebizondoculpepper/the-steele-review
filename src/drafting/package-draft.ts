@@ -449,7 +449,16 @@ export async function draftFromPackage(input: {
    * Verifier feedback for a redraft (#150): the passages and reasons to fix.
    * Part of the draft's identity, so each revision is a new, separately saved draft.
    */
-  revision?: { number: number; feedback: { passage: string; reason: string }[] };
+  revision?: {
+    number: number;
+    feedback: { passage: string; reason: string }[];
+    /**
+     * The verifier's minor issues from the same report (#576): context only.
+     * They never block approval and the writer is told so; they let an
+     * already-required redraft avoid leaving a known weakness in place.
+     */
+    observations?: { passage: string; reason: string }[];
+  };
   /**
    * The exact immediately preceding saved draft (#489). The writer revises
    * that article; it is not asked to regenerate from feedback alone. Its
@@ -604,6 +613,12 @@ export async function draftFromPackage(input: {
             number: input.revision.number,
             instruction: revisionInstructions,
             feedback: input.revision.feedback,
+            ...(input.revision.observations?.length
+              ? {
+                  // Guidance lives in package-revision.md (content-hashed); only data here.
+                  nonBlockingObservations: input.revision.observations,
+                }
+              : {}),
             ...(input.previousDraft
               ? {
                   previousDraft: input.previousDraft.markdown.slice(0, MAX_PREVIOUS_DRAFT_CHARS),

@@ -13,6 +13,11 @@ import {
   DEFAULT_PACKAGE_DRAFT_PROMPT,
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
+import { readFileSync } from "node:fs";
+const DEFAULT_REVISION_TEXT = readFileSync(
+  new URL("../../src/prompts/writer/package-revision.md", import.meta.url),
+  "utf8",
+);
 import {
   renderPackageDraft,
   modelCitationIssues,
@@ -878,6 +883,65 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     expect(second.number).toBe(2);
     expect(second.previousDraft).toContain("(revision 1)");
     expect(second.previousDraft).not.toBe(initial);
+  });
+
+  it("hands the revision exact prior refs and fields, and minor issues only as non-blocking context (#576)", async () => {
+    const { pkg, metadata, draft } = await drafted();
+    const users: string[] = [];
+    const writer = {
+      modelVersion: "fake/handoff-writer",
+      async complete(request: { user: string }) {
+        users.push(request.user);
+        return writerResponse(
+          "The ENMOD Convention prohibits hostile environmental modification (revised).",
+        );
+      },
+    };
+    const MIXED = JSON.stringify({
+      verdict: "redraft",
+      issues: [
+        { passage: "proves", reason: "overstated", severity: "substantive" },
+        { passage: "Florida filing", reason: "date imprecise", severity: "minor" },
+      ],
+    });
+    const out = await verifyWithRevisions({
+      operations,
+      content,
+      archive,
+      package: pkg.ref,
+      metadata,
+      writer: writer as never,
+      verifier: model("fake/independent-verifier", MIXED, APPROVE),
+      sourceUrl: "https://pub.example.com/p/p1",
+    });
+    expect(out.outcome).toBe("approved");
+    const revision = loadRevision(users[0]!).revision as {
+      feedback: { passage: string }[];
+      previousFields: { title: string; subtitle: string; excerpt: string };
+      nonBlockingObservations: { passage: string }[];
+    };
+    // Only substantive issues are required feedback; the minor one is context.
+    expect(revision.feedback.map((f) => f.passage)).toEqual(["proves"]);
+    expect(revision.nonBlockingObservations.map((i) => i.passage)).toEqual(["Florida filing"]);
+    // The guidance is in the content-hashed prompt file, not hard-coded.
+    expect(DEFAULT_REVISION_TEXT).toMatch(/not required for approval/);
+    expect(Object.keys(revision.previousFields).sort()).toEqual(["excerpt", "subtitle", "title"]);
+    // The saved writer attempt pins the exact prior body, metadata and verifier report.
+    const manifests: { kind: string; context: { path: string }[] }[] = [];
+    for (let after: string | undefined; ;) {
+      const page = await content.list("writer-attempts", 1000, after);
+      for (const p of page.filter((p) => p.endsWith("/manifest.json"))) {
+        manifests.push(JSON.parse(await content.read((await content.lookup(p))!)));
+      }
+      if (page.length < 1000) break;
+      after = page.at(-1);
+    }
+    const revisionAttempt = manifests.find((m) => m.kind === "revision");
+    expect(revisionAttempt).toBeDefined();
+    const contextPaths = revisionAttempt!.context.map((c) => c.path);
+    expect(contextPaths).toContain(draft.path);
+    expect(contextPaths).toContain(metadata.path);
+    expect(contextPaths.some((p) => /verif/.test(p))).toBe(true);
   });
 
   it("stops before any model call when the previous draft cannot be read (#489)", async () => {
