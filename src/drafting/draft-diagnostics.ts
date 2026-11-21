@@ -87,6 +87,7 @@ export const DraftAttemptDiagnosticSchema = z
     outputHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     outputChars: z.number().int().min(0).max(40_000),
     completion: z.enum(["completed", "length-limit", "unknown"]),
+    writerAttempt: ArtifactReferenceSchema.optional(),
   })
   .strict();
 
@@ -102,6 +103,7 @@ export async function saveDraftDiagnostic(input: {
   issues: SafeDraftIssue[];
   raw: string;
   completion: "completed" | "length-limit" | "unknown";
+  writerAttempt?: ArtifactRef;
 }): Promise<ArtifactRef> {
   const diagnostic = DraftAttemptDiagnosticSchema.parse({
     schemaVersion: 1,
@@ -120,6 +122,16 @@ export async function saveDraftDiagnostic(input: {
     outputHash: `sha256:${createHash("sha256").update(input.raw).digest("hex")}`,
     outputChars: input.raw.length,
     completion: input.completion,
+    ...(input.writerAttempt
+      ? {
+          writerAttempt: {
+            repository: input.writerAttempt.repository,
+            commit: input.writerAttempt.commit,
+            path: input.writerAttempt.path,
+            hash: `sha256:${input.writerAttempt.sha256}`,
+          },
+        }
+      : {}),
   });
   const body = `${JSON.stringify(diagnostic, null, 2)}\n`;
   const hash = createHash("sha256").update(body).digest("hex");

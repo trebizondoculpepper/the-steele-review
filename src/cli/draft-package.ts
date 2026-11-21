@@ -17,6 +17,7 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { OperationStore } from "../controllers/operation-store.js";
 import { writerModel } from "../config/writer-model.js";
 import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
@@ -24,6 +25,7 @@ import { draftFromPackage } from "../drafting/package-draft.js";
 const USAGE =
   "Usage: draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--single-attempt] [--json]";
 const Env = z.object({
+  STEELE_STATE_PATH: z.string().min(1),
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_ARCHIVE_PATH: z.string().min(1),
@@ -38,6 +40,7 @@ async function main(): Promise<number> {
         package: { type: "string" },
         "source-url": { type: "string" },
         model: { type: "string" },
+        "writer-recovery-id": { type: "string" },
         "single-attempt": { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean" },
@@ -108,55 +111,65 @@ async function main(): Promise<number> {
     console.error(JSON.stringify({ event: "draft-package", outcome: "package-not-found" }));
     return 1;
   }
-  const out = await draftFromPackage({
-    content,
-    archive,
-    package: pkg,
-    provider,
-    ...(url.data ? { sourceUrl: url.data } : {}),
-    ...(requested?.success ? { requestedModel: requested.data } : {}),
-    resolvedModel: () => resolved,
-    // Experiments (#261): exactly one model request, never a second attempt.
-    ...(values["single-attempt"] ? { maxAttempts: 1 } : {}),
-  });
-  const report =
-    out.status === "drafted"
-      ? {
-          event: "draft-package",
-          outcome: "drafted",
-          reused: out.reused,
-          draft: `${out.draft.commit.slice(0, 12)}:${out.draft.path}`,
-          metadata: out.metadata.path,
-        }
-      : {
-          event: "draft-package",
-          // An unknown or unavailable requested model is reported, never swapped for another.
-          outcome:
-            out.status === "failed" && out.providerError === "bad-request"
-              ? "model-unavailable"
-              : out.status,
-          ...(requested?.success ? { model: requested.data } : {}),
-          ...("reason" in out ? { reason: out.reason } : {}),
-          ...("validationFailure" in out ? { validationFailure: out.validationFailure } : {}),
-          ...("diagnostics" in out && out.diagnostics
-            ? {
-                diagnostics: out.diagnostics.map((ref) => ({
-                  commit: ref.commit,
-                  path: ref.path,
-                  sha256: ref.sha256,
-                })),
-              }
-            : {}),
-          ...("problems" in out && out.problems ? { problems: out.problems } : {}),
-        };
-  console.log(
-    values.json
-      ? JSON.stringify(report)
-      : out.status === "drafted"
-        ? `Saved draft ${report.draft}${out.reused ? " (reused)" : ""}.`
-        : `No draft: ${JSON.stringify(report)}`,
-  );
-  return out.status === "drafted" ? 0 : 1;
+  const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
+  try {
+    const out = await draftFromPackage({
+      operations,
+      ...(values["writer-recovery-id"] ? { writerRecoveryId: values["writer-recovery-id"] } : {}),
+      content,
+      archive,
+      package: pkg,
+      provider,
+      ...(url.data ? { sourceUrl: url.data } : {}),
+      ...(requested?.success ? { requestedModel: requested.data } : {}),
+      resolvedModel: () => resolved,
+      // Experiments (#261): exactly one model request, never a second attempt.
+      ...(values["single-attempt"] ? { maxAttempts: 1 } : {}),
+    });
+    const report =
+      out.status === "drafted"
+        ? {
+            event: "draft-package",
+            outcome: "drafted",
+            reused: out.reused,
+            draft: `${out.draft.commit.slice(0, 12)}:${out.draft.path}`,
+            metadata: out.metadata.path,
+            retention: out.retention,
+            writerAttempts: out.writerAttempts,
+          }
+        : {
+            event: "draft-package",
+            // An unknown or unavailable requested model is reported, never swapped for another.
+            outcome:
+              out.status === "failed" && out.providerError === "bad-request"
+                ? "model-unavailable"
+                : out.status,
+            ...(requested?.success ? { model: requested.data } : {}),
+            ...("reason" in out ? { reason: out.reason } : {}),
+            ...("writerAttempts" in out ? { writerAttempts: out.writerAttempts } : {}),
+            ...("validationFailure" in out ? { validationFailure: out.validationFailure } : {}),
+            ...("diagnostics" in out && out.diagnostics
+              ? {
+                  diagnostics: out.diagnostics.map((ref) => ({
+                    commit: ref.commit,
+                    path: ref.path,
+                    sha256: ref.sha256,
+                  })),
+                }
+              : {}),
+            ...("problems" in out && out.problems ? { problems: out.problems } : {}),
+          };
+    console.log(
+      values.json
+        ? JSON.stringify(report)
+        : out.status === "drafted"
+          ? `Saved draft ${report.draft}${out.reused ? " (reused)" : ""}.`
+          : `No draft: ${JSON.stringify(report)}`,
+    );
+    return out.status === "drafted" ? 0 : 1;
+  } finally {
+    operations.close();
+  }
 }
 
 process.exitCode = await main();

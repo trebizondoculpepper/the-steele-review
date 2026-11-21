@@ -1,3 +1,4 @@
+import { OperationStore } from "../../src/controllers/operation-store.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,14 +16,17 @@ import { SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.
 // #370: a post with a known prior claim from the same speaker, through the
 // normal package and writer path; and a no-match run that keeps diagnostics
 // but leaves history out of the article.
+let operations: OperationStore;
 let dir: string;
 let content: GitArtifactStore;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "steele-speaker-cmp-"));
+  operations = new OperationStore({ path: join(dir, "state.sqlite") });
   content = new GitArtifactStore({ repoPath: dir, repository: "content" });
   await content.initialise();
 });
 afterEach(async () => {
+  operations.close();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -216,6 +220,7 @@ describe("same-speaker comparisons in the unattended essay (#370)", { timeout: 6
       comparisons: [{ kind: "repetition", pattern: "single-comparison" }],
     });
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -275,6 +280,7 @@ describe("same-speaker comparisons in the unattended essay (#370)", { timeout: 6
     });
     expect(pkg.context!.history).toMatchObject({ status: "gap", omitWhenAbsent: true });
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,

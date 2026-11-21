@@ -207,7 +207,44 @@ describe("per-call completion evidence (#524)", () => {
       },
       new AbortController().signal,
     );
-    expect(metadata).toEqual({ stopReason: expected });
+    expect(metadata).toMatchObject({ stopReason: expected });
     expect(JSON.stringify(metadata)).not.toContain("PRIVATE_PROVIDER_SENTINEL");
+  });
+});
+
+describe("private output capture boundary (#536)", () => {
+  it("awaits output retention before rejecting an oversized returned body", async () => {
+    const { p } = provider(() => ok("raw oversized body"));
+    const retained: string[] = [];
+    await expect(
+      p.complete(
+        {
+          ...req,
+          maxOutputChars: 1,
+          onOutput: async (text, metadata) => {
+            await Promise.resolve();
+            retained.push(text);
+            expect(metadata.resolvedModel).toBe("vendor/m");
+          },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "response-too-large" });
+    expect(retained).toEqual(["raw oversized body"]);
+  });
+  it("does not swallow archive failures as retryable provider failures", async () => {
+    const { p } = provider(() => ok("raw"));
+    const error = new Error("capture-failed");
+    await expect(
+      p.complete(
+        {
+          ...req,
+          onOutput: async () => {
+            throw error;
+          },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toBe(error);
   });
 });

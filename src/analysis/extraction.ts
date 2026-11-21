@@ -37,6 +37,8 @@ export interface ExtractionModelProvider {
       maxOutputChars: number;
       /** Per-call, allowlisted adapter evidence; never raw provider response data. */
       onCompletion?: (metadata: ModelCompletionMetadata) => void;
+      /** Await durable private capture before the adapter returns or validates text limits. */
+      onOutput?: (text: string, metadata: ModelCompletionMetadata) => Promise<void>;
     },
     signal: AbortSignal,
   ): Promise<string>;
@@ -44,6 +46,8 @@ export interface ExtractionModelProvider {
 
 export interface ModelCompletionMetadata {
   stopReason: "completed" | "length-limit" | "unknown";
+  /** Validated public provider model identifier, never a response/error payload. */
+  resolvedModel?: string;
 }
 
 /** Versioned extraction instructions. Change `version` whenever the text changes. */
