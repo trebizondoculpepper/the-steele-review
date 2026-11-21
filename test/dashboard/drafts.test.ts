@@ -1,0 +1,153 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { GitArtifactStore, type ArtifactRef } from "../../src/controllers/artifact-store.js";
+import { draftViews } from "../../src/dashboard/draft-views.js";
+import { DRAFT_PAGE, draftInventory } from "../../src/dashboard/drafts.js";
+
+let dir: string;
+let content: GitArtifactStore;
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "steele-drafts-"));
+  content = new GitArtifactStore({ repoPath: dir, repository: "content" });
+  await content.initialise();
+});
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+const ref = (r: ArtifactRef) => ({
+  repository: r.repository,
+  commit: r.commit,
+  path: r.path,
+  hash: `sha256:${r.sha256}`,
+});
+const any = {
+  repository: "content",
+  commit: "a".repeat(40),
+  path: "x.json",
+  hash: `sha256:${"b".repeat(64)}`,
+};
+const key = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 32);
+
+/** Save one draft (Markdown plus metadata) as the writer would. */
+async function saveDraft(post: string, markdown: string, title?: string) {
+  const k = key(`${post}:${markdown}`);
+  const md = await content.write(`articles/pub/${post}/${k}.md`, markdown);
+  await content.write(
+    `articles/pub/${post}/${k}.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      package: any,
+      source: any,
+      themes: any,
+      templateVersion: "package-explainer-v5",
+      promptVersion: "package-draft-v9+sha256:0123456789abcdef",
+      modelVersion: "fake/writer",
+      draft: `${md.commit}:${md.path}`,
+      ...(title ? { fields: { title, subtitle: "s", excerpt: "e" } } : {}),
+      draftedAt: "2026-11-21T12:00:00.000Z",
+    }),
+  );
+  return { md, metadata: `articles/pub/${post}/${k}.json` };
+}
+
+async function report(
+  post: string,
+  draft: ReturnType<typeof ref>,
+  outcome: "approved" | "redraft",
+) {
+  await content.write(
+    `verifications/pub/${post}/${key(JSON.stringify(draft) + outcome)}.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      outcome,
+      draft,
+      package: any,
+      source: any,
+      themes: any,
+      issues: [],
+      checks: [],
+      verifierModel: "fake/verifier",
+      promptVersion: "p",
+      verifiedAt: "2026-11-21T12:05:00.000Z",
+    }),
+  );
+}
+
+describe("draft inventory (#440)", { timeout: 60_000 }, () => {
+  it("binds approval to one exact draft and never infers it", async () => {
+    const r1 = await saveDraft("p1", "First revision.", "Revision one");
+    const r2 = await saveDraft("p1", "Second revision.", "Revision two");
+    const manual = await saveDraft("p2", "A manual draft with <script>alert(1)</script>.");
+    await report("p1", ref(r1.md), "approved");
+    // A report naming the right hash in another repository approves nothing.
+    await report("p1", { ...ref(r2.md), repository: "elsewhere" }, "approved");
+    const page = await draftInventory(content).page({});
+    const byPath = new Map(page.entries.map((e) => [e.path, e]));
+    expect(byPath.get(r1.metadata)).toMatchObject({ status: "approved", title: "Revision one" });
+    expect(byPath.get(r2.metadata)).toMatchObject({ status: "unverified", title: "Revision two" });
+    expect(byPath.get(manual.metadata)).toMatchObject({ status: "unverified" });
+    expect(page.next).toBeUndefined();
+  });
+
+  it("shows a redraft verdict and an unreadable record without guessing", async () => {
+    const d = await saveDraft("p3", "Needs work.");
+    await report("p3", ref(d.md), "redraft");
+    await content.write(`articles/pub/p4/${"c".repeat(32)}.json`, "{not json");
+    const entries = (await draftInventory(content).page({})).entries;
+    expect(entries.find((e) => e.postId === "p3")).toMatchObject({ status: "redraft" });
+    expect(entries.find((e) => e.postId === "p4")).toMatchObject({
+      status: "unreadable",
+      limitation: expect.stringContaining("unreadable"),
+    });
+  });
+
+  it("shows an incomplete verification scan as incomplete, not unverified", async () => {
+    const d = await saveDraft("p5", "Only draft.");
+    const failing = new Proxy(content, {
+      get(target, prop) {
+        if (prop === "list") {
+          return async (prefix: string, limit: number, after?: string) => {
+            if (prefix.startsWith("verifications/")) throw new Error("unavailable");
+            return target.list(prefix, limit, after);
+          };
+        }
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const entry = (await draftInventory(failing).page({})).entries.find(
+      (e) => e.path === d.metadata,
+    );
+    expect(entry).toMatchObject({
+      status: "incomplete",
+      limitation: expect.stringContaining("incomplete"),
+    });
+  });
+
+  it("pages honestly and escapes untrusted draft text", async () => {
+    for (let i = 0; i < DRAFT_PAGE + 3; i++)
+      await saveDraft(`post-${String(i).padStart(2, "0")}`, `Draft ${i}.`);
+    const inventory = draftInventory(content);
+    const first = await inventory.page({});
+    expect(first.entries).toHaveLength(DRAFT_PAGE);
+    expect(first.next).toBeTruthy();
+    const second = await inventory.page({ after: first.next! });
+    expect(second.entries.length).toBeGreaterThan(0);
+    expect(new Set([...first.entries, ...second.entries].map((e) => e.path)).size).toBe(
+      DRAFT_PAGE + 3,
+    );
+
+    const [list, view] = draftViews(inventory);
+    expect(await list!.render(new URL("http://x/drafts"))).toContain("not the complete inventory");
+    const manual = await saveDraft("zz", "Hello <script>alert(1)</script>.");
+    const html = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(manual.metadata)}`),
+    );
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+});
