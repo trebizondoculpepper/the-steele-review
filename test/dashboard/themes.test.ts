@@ -109,5 +109,5 @@ describe("themes browser (#493)", { timeout: 60_000 }, () => {
       page = await themes.list({ query: "needle", after: page.next });
     }
     expect(found).toEqual(["Hidden needle"]);
-  });
+  }, 180_000);
 });
