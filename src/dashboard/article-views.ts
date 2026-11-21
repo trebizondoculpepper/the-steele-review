@@ -20,6 +20,7 @@ export interface ArticleViewDeps {
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
   content?: ArticleContentPort;
   receipts?: ReceiptsPort;
+  canTrigger?: boolean;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -89,7 +90,11 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.content ? { content: deps.content } : {}),
         ...(deps.receipts ? { receipts: deps.receipts } : {}),
       });
-      return renderTrace(t);
+      const trigger =
+        deps.canTrigger && t.sourceVersion
+          ? `<p><a href="/articles/run?publication=${encodeURIComponent(publicationId)}&amp;post=${encodeURIComponent(postId)}&amp;revision=${encodeURIComponent(t.sourceVersion)}">Run this revision</a></p>`
+          : "";
+      return trigger + renderTrace(t);
     },
   };
   return [list, detail];

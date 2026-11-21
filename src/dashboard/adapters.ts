@@ -254,3 +254,15 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
     },
   };
 }
+
+/** Submit through the same Restate identity as automatic capture and the CLI. */
+export function restateSubmitter(ingressUrl: string) {
+  const ingress = clients.connect({ url: ingressUrl });
+  return {
+    async submit(input: import("../workflow/article-run.js").ArticleRunInput): Promise<void> {
+      await ingress
+        .workflowClient<ArticleRunApi>({ name: "ArticleRun" }, articleRunKey(input))
+        .workflowSubmit(input, clients.rpc.sendOpts({ signal: AbortSignal.timeout(10_000) }));
+    },
+  };
+}
