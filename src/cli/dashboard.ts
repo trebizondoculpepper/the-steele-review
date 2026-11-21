@@ -47,6 +47,8 @@ import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { draftViews } from "../dashboard/draft-views.js";
 import { draftInventory } from "../dashboard/drafts.js";
+import { claimViews } from "../dashboard/claim-views.js";
+import { savedClaims } from "../dashboard/claims.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -184,6 +186,8 @@ const views = [
         )
       : undefined,
   ),
+  // Saved claim proposals with their quotations, read-only (#494).
+  ...claimViews(content ? savedClaims(content) : undefined),
   // Preserve old bookmarks without a second navigation entry or placeholder.
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
