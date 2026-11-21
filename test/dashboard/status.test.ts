@@ -1,3 +1,5 @@
+import type { AddressInfo } from "node:net";
+import { createDashboardServer } from "../../src/dashboard/server.js";
 import { describe, expect, it } from "vite-plus/test";
 import { statusView, type StatusSnapshot, type StatusSource } from "../../src/dashboard/status.js";
 
@@ -24,7 +26,7 @@ const source = (value: StatusSnapshot | Error): StatusSource => ({
 });
 
 const render = async (value: StatusSnapshot | Error) => {
-  const html = await statusView(source(value)).render(new URL("http://dashboard.test/status"));
+  const html = await statusView(source(value)).render(new URL("http://dashboard.test/overview"));
   return html;
 };
 
@@ -57,9 +59,7 @@ describe("statusView", () => {
   });
 
   it("distinguishes unreadable pipeline counts from an empty pipeline", async () => {
-    const unavailable = await render(
-      snapshot({ pipelineState: "unavailable", operations: [] }),
-    );
+    const unavailable = await render(snapshot({ pipelineState: "unavailable", operations: [] }));
     expect(unavailable).toContain(">unavailable<");
     expect(unavailable).not.toContain("No operations recorded yet.");
 
@@ -73,7 +73,9 @@ describe("statusView", () => {
   });
 
   it("reports a truncated archive scan", async () => {
-    const html = await render(snapshot({ archive: { state: "ok", captured: 2000, truncated: true } }));
+    const html = await render(
+      snapshot({ archive: { state: "ok", captured: 2000, truncated: true } }),
+    );
     expect(html).toContain("scan truncated");
   });
 
@@ -83,9 +85,27 @@ describe("statusView", () => {
     expect(html).not.toContain("boom");
   });
 
-  it("registers under /status with a navigation title", () => {
+  it("registers the actual status page as Overview", () => {
     const view = statusView(source(snapshot()));
-    expect(view.path).toBe("/status");
-    expect(view.title).toBe("Status");
+    expect(view.path).toBe("/overview");
+    expect(view.title).toBe("Overview");
+  });
+  it("serves real diagnostics through the default Overview landing route", async () => {
+    const server = createDashboardServer([statusView(source(snapshot()))]);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const root = await fetch(base, { redirect: "manual" });
+      expect(root.headers.get("location")).toBe("/overview");
+      const response = await fetch(`${base}/overview`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("12 captured");
+      expect(html).toContain("2 change(s) pending");
+      expect(html).toContain("Feed poll");
+      expect(html).toContain('aria-current="page">Overview');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

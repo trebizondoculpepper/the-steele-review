@@ -44,7 +44,7 @@ import {
 } from "../dashboard/adapters.js";
 import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
-import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
+import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
   .object({
@@ -108,8 +108,23 @@ const trigger =
         researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
       })
     : undefined;
+const overview = statusView(
+  systemStatusSource({
+    runtime: {
+      ...(state ? { state } : {}),
+      ...(nats ? { nats } : {}),
+      // Reuse the dashboard's search client rather than opening a second one.
+      ...(es ? { elasticsearch: { check: (signal?: AbortSignal) => es.check(signal) } } : {}),
+    },
+    ...(archive ? { archive } : {}),
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(e.STEELE_DISCOVERY_STATUS_PATH
+      ? { discoveryStatusPath: e.STEELE_DISCOVERY_STATUS_PATH }
+      : {}),
+  }),
+);
 const views = [
-  DEFAULT_VIEWS[0]!,
+  overview,
   ...(trigger ? [trigger.view] : []),
   ...articleViews({
     canTrigger: Boolean(trigger),
@@ -150,21 +165,8 @@ const views = [
         }
       : {}),
   }),
-  statusView(
-    systemStatusSource({
-      runtime: {
-        ...(state ? { state } : {}),
-        ...(nats ? { nats } : {}),
-        // Reuse the dashboard's search client rather than opening a second one.
-        ...(es ? { elasticsearch: { check: (signal?: AbortSignal) => es.check(signal) } } : {}),
-      },
-      ...(archive ? { archive } : {}),
-      ...(checkpoint ? { checkpoint } : {}),
-      ...(e.STEELE_DISCOVERY_STATUS_PATH
-        ? { discoveryStatusPath: e.STEELE_DISCOVERY_STATUS_PATH }
-        : {}),
-    }),
-  ),
+  // Preserve old bookmarks without a second navigation entry or placeholder.
+  { ...overview, path: "/status", title: "Status", hidden: true },
 ];
 
 const server = createDashboardServer(
