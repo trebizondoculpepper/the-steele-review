@@ -149,18 +149,18 @@ describe("contentReceipts", () => {
 
   it("marks truncation when destinations remain unscanned at the limit", async () => {
     const rev = "c".repeat(32);
-    const destinations = Array.from({ length: 21 }, (_, n) => `dest-${n}`);
+    const destinations = Array.from({ length: 3 }, (_, n) => `dest-${n}`);
     for (const destination of destinations) {
       await content.write(
         `publications/${destination}/draft/pub/p1/${rev}/receipt.json`,
         `${JSON.stringify(receipt({ destination }))}\n`,
       );
     }
-    const result = await contentReceipts(content, { destinations }).receiptsFor(
+    const result = await contentReceipts(content, { destinations, limit: 2 }).receiptsFor(
       { publicationId: "pub", postId: "p1" },
       `sha256:${rev}`,
     );
-    expect(result.receipts).toHaveLength(20);
+    expect(result.receipts).toHaveLength(2);
     expect(result.truncated).toBe(true);
   });
 

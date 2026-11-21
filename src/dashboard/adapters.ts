@@ -91,6 +91,8 @@ const RECEIPT_PATH =
   /^publications\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\/receipt\.json$/;
 
 export interface ReceiptScanOptions {
+  /** Maximum receipts to return; defaults to RECEIPT_LIMIT. */
+  limit?: number;
   /**
    * Known destination names. When present the scan is scoped to those
    * destinations, so an unrelated backlog cannot crowd out an article's
@@ -108,6 +110,7 @@ export function contentReceipts(
   content: Pick<GitArtifactStore, "list" | "lookup" | "read">,
   options: ReceiptScanOptions = {},
 ): ReceiptsPort {
+  const limit = options.limit ?? RECEIPT_LIMIT;
   const prefixes = (options.destinations ?? [])
     .filter((name) => /^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
     .map((name) => `publications/${name}`);
@@ -127,7 +130,7 @@ export function contentReceipts(
             const [, , , publicationId, postId, rev] = match;
             if (publicationId !== post.publicationId || postId !== post.postId) continue;
             if (revision && rev !== revision) continue;
-            if (receipts.length >= RECEIPT_LIMIT) {
+            if (receipts.length >= limit) {
               truncated = true;
               return;
             }
@@ -160,7 +163,7 @@ export function contentReceipts(
       if (prefixes.length > 0) {
         for (let index = 0; index < prefixes.length; index++) {
           await scanPrefix(prefixes[index]!);
-          if (receipts.length >= RECEIPT_LIMIT) {
+          if (receipts.length >= limit) {
             // Destinations after this one were never scanned.
             if (index < prefixes.length - 1) truncated = true;
             break;
