@@ -15,6 +15,8 @@ import { readPublicationPayload } from "../drafting/publication-payload.js";
 
 export const REVIEW_PAGE = 20;
 export const REVIEW_SCAN = 200;
+/** Bound on manual editorial decisions scanned for one history page. */
+export const EDITORIAL_SCAN = 200;
 const LIST_PAGE = 50;
 const REPORT_PATH = /^verifications\/([^/]+)\/([^/]+)\/[^/]+\.json$/;
 
@@ -319,24 +321,39 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       });
 
       const editorial: EditorialDecisionView[] = [];
-      try {
-        const decisionPaths = await content.list(
-          `editorial-decisions/${post.publicationId}/${post.postId}`,
-          100,
-        );
-        for (const path of decisionPaths) {
-          if (!path.endsWith(".json")) continue;
-          try {
-            const ref = await content.lookup(path);
-            if (!ref) continue;
-            const view = asDecision(JSON.parse(await content.read(ref)));
-            if (view) editorial.push({ ...view, path });
-          } catch {
-            // An unreadable manual decision is omitted, not guessed.
-          }
+      let editorialTruncated = false;
+      const decisionPaths: string[] = [];
+      let decisionAfter: string | undefined;
+      for (let calls = 0; calls < 10; calls++) {
+        let batch: string[];
+        try {
+          batch = await content.list(
+            `editorial-decisions/${post.publicationId}/${post.postId}`,
+            LIST_PAGE,
+            decisionAfter,
+          );
+        } catch {
+          // No decisions directory is simply no manual decisions.
+          break;
         }
-      } catch {
-        // No decisions directory is simply no manual decisions.
+        decisionPaths.push(...batch);
+        if (batch.length < LIST_PAGE) break;
+        if (decisionPaths.length >= EDITORIAL_SCAN) {
+          editorialTruncated = true;
+          break;
+        }
+        decisionAfter = batch.at(-1);
+      }
+      for (const path of decisionPaths.slice(0, EDITORIAL_SCAN)) {
+        if (!path.endsWith(".json")) continue;
+        try {
+          const ref = await content.lookup(path);
+          if (!ref) continue;
+          const view = asDecision(JSON.parse(await content.read(ref)));
+          if (view) editorial.push({ ...view, path });
+        } catch {
+          // An unreadable manual decision is omitted, not guessed.
+        }
       }
       editorial.sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
 
@@ -344,7 +361,11 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       const reviews = parsed.slice(startIndex, startIndex + REVIEW_PAGE);
       const next = parsed.length > startIndex + REVIEW_PAGE ? start + 1 : undefined;
       const incomplete =
-        truncated || unreadableReports > 0 || unreadableListing || payloadUnreadable > 0;
+        truncated ||
+        unreadableReports > 0 ||
+        unreadableListing ||
+        payloadUnreadable > 0 ||
+        editorialTruncated;
       const state =
         parsed.length === 0 ? (incomplete ? "partial" : "none") : incomplete ? "partial" : "ok";
       return {
