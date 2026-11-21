@@ -555,7 +555,7 @@ export async function draftFromPackage(input: {
         ...(isCorrection ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
         ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
         signal: AbortSignal.timeout(180_000),
-        ...(input.writerRecoveryId && attempt === 0 ? { recoveryId: input.writerRecoveryId } : {}),
+        ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
       });
     } catch (error) {
       if (error instanceof WriterAttemptError)

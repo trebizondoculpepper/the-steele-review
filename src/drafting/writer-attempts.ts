@@ -157,7 +157,9 @@ export async function captureWriterAttempt(input: {
     const originalRaw = await input.content.lookup(`writer-attempts/${originalId}/response.txt`);
     if (originalRaw) return captureWriterAttempt({ ...input, recoveryId: undefined });
     const original = await input.content.lookup(`writer-attempts/${originalId}/manifest.json`);
-    if (!original) throw new WriterAttemptError("interrupted");
+    // A new correction has no previous rejection to recover. Its normal
+    // stable capture identity still owns and deduplicates the first call.
+    if (!original) return captureWriterAttempt({ ...input, recoveryId: undefined });
     const previous = WriterAttemptManifestSchema.parse(
       JSON.parse(await input.content.read(original)),
     );

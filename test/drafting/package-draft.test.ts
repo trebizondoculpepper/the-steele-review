@@ -405,6 +405,37 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     expect(recovered.writerAttempts).toHaveLength(2);
   });
 
+  it("explicitly recovers a rejected correction while reusing the retained initial response", async () => {
+    const ref = await packageRef();
+    let calls = 0;
+    const provider = {
+      modelVersion: "fake/correction-recovery",
+      complete: async () => {
+        calls++;
+        if (calls === 2) throw new ModelProviderError("rate-limited");
+        return calls === 1 ? "malformed output" : GOOD;
+      },
+    };
+    const input = {
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://x/p",
+    };
+    expect(await draftFromPackage(input)).toMatchObject({
+      status: "failed",
+      providerError: "rate-limited",
+    });
+    const recovered = await draftFromPackage({
+      ...input,
+      writerRecoveryId: "correction-recovery-1",
+    });
+    expect(recovered.status).toBe("drafted");
+    expect(calls).toBe(3);
+  });
+
   it("does not draft from an evidence-gap package", async () => {
     const ref = await packageRef(() => "failed");
     expect(
