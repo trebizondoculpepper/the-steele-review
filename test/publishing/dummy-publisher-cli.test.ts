@@ -57,7 +57,7 @@ beforeAll(async () => {
       stream: PUBLICATION_STREAM,
       name: `dummy-${x}`,
       filterSubject: ARTICLE_APPROVED_SUBJECT,
-      maxDeliver: -1, // as provision.ts configures publisher consumers
+      maxDeliver: 300, // as provision.ts configures publisher consumers
     });
 }, 120_000);
 

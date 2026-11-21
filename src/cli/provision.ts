@@ -50,6 +50,9 @@ import { ARTICLE_APPROVED_SUBJECT, PUBLICATION_STREAM } from "../events/article-
 import { STREAMS, streamName } from "../events/registry.js";
 import { TEXT_READY_SUBJECT } from "../events/text-ready-event.js";
 
+/** Broker redelivery budget for destination consumers (#315). */
+const PUBLISHER_MAX_DELIVER = 300;
+
 const EnvSchema = z.object({
   STEELE_COLLECT_CONSUMER: z.string().min(1).default("steele-collector"),
   STEELE_INDEX_CONSUMER: z.string().min(1).default("steele-indexer"),
@@ -134,11 +137,12 @@ async function main(): Promise<number> {
         stream: names.get(PUBLICATION_STREAM)!,
         name,
         filterSubject: ARTICLE_APPROVED_SUBJECT,
-        // Unlimited broker redelivery: the handler owns the attempt budget (its
-        // claim gives up after five attempts and terms the message), and a
-        // restart can leave a claim "busy" for its full lease; a broker limit
-        // would run out first and strand that destination's receipt.
-        maxDeliver: -1,
+        // A finite budget sized above the handler's own: a restart can leave a
+        // claim "busy" for its 10-minute lease (about 120 redeliveries at 5 s),
+        // and the handler terms after five claimed attempts. Failures before a
+        // claim (an unreadable artifact) still stop, after about 2.5 hours of
+        // 30-second retries, instead of looping forever.
+        maxDeliver: PUBLISHER_MAX_DELIVER,
       });
     }
     report.fulltextIndex = await es.provisionIndex(c.STEELE_FULLTEXT_INDEX, FULLTEXT_INDEX_MAPPING);
