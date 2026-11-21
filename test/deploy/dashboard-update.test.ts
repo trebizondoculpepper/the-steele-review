@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { githubBuilds, portainerDashboardStack } from "../../src/controllers/dashboard-deploy.js";
+import { createDashboardServer } from "../../src/dashboard/server.js";
+import {
+  githubBuilds,
+  httpReadiness,
+  portainerDashboardStack,
+} from "../../src/controllers/dashboard-deploy.js";
 import {
   updateDashboard,
   type Build,
@@ -263,6 +268,39 @@ describe("dashboard auto-update (#476)", () => {
     expect(put.prune).toBe(false);
     expect(put.stackFileContent).toBe("services: {}\n");
     expect(put.env).toEqual([env[0], { name: "STEELE_DASHBOARD_IMAGE", value: img(B) }, env[2]]);
+  });
+
+  it("readiness rejects a page whose render failed", async () => {
+    const server = createDashboardServer([
+      {
+        path: "/articles",
+        title: "Articles",
+        render: async () => {
+          throw new Error("broken");
+        },
+      },
+      { path: "/drafts", title: "Drafts", render: async () => "ok" },
+    ] as never);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const { port } = server.address() as { port: number };
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const broken = await fetch(`${base}/articles`);
+      expect(broken.status).toBe(200);
+      expect(broken.headers.get("x-view-status")).toBe("unavailable");
+      expect(await httpReadiness({ baseUrl: base, deadlineMs: 50, intervalMs: 10 }).ready()).toBe(
+        false,
+      );
+      expect(
+        await httpReadiness({
+          baseUrl: base,
+          paths: ["/health", "/drafts"],
+          deadlineMs: 50,
+        }).ready(),
+      ).toBe(true);
+    } finally {
+      server.close();
+    }
   });
 
   it("GitHub adapter treats only 'ahead' as newer", async () => {

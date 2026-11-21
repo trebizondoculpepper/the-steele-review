@@ -209,7 +209,9 @@ export function httpReadiness(config: {
               signal: AbortSignal.timeout(Math.min(TIMEOUT_MS, deadline)),
             });
             await res.arrayBuffer();
-            if (res.status !== 200) ok = false;
+            // A page whose render failed still answers 200, flagged by the server.
+            if (res.status !== 200 || res.headers.get("x-view-status") === "unavailable")
+              ok = false;
           } catch {
             ok = false;
           }
