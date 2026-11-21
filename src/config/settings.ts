@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { DEFAULT_OPENROUTER_BASE_URL } from "../controllers/openrouter.js";
 
 /**
  * Application settings registry (#542): one typed description of every
@@ -140,6 +141,8 @@ export const SETTINGS: readonly SettingSpec[] = [
       const u = parseUrl(v);
       return !!u && u.protocol === "https:" && !u.username && !u.password;
     }),
+    // The adapters fall back to this public endpoint when none is configured.
+    default: DEFAULT_OPENROUTER_BASE_URL,
     sensitivity: "private",
     activation: "restart",
   },
