@@ -20,7 +20,7 @@ External configuration includes source publications, destination publication, po
 
 ## Observability
 
-Emit structured logs containing source ID, source version, correlation ID, stage, attempt, duration, and outcome. Preserve error causes and readable stack traces. Choose an error-tracking backend later; no provider has been selected.
+Emit structured logs containing source ID, source version, correlation ID, stage, attempt, duration, and outcome. Preserve error causes and readable stack traces. Article milestones use a stable post correlation ID across revisions. They are written to local container logs and may also be exported to Sentry Logs when a runtime DSN is configured. The remote exporter uses fixed messages and an attribute allowlist. Error tracking and tracing are separate signals.
 
 Track successful and failed polls, pipeline lag, retry counts, skipped articles and reasons, publication uncertainties, model usage/cost, and resource use. Expose worker liveness separately from remote dependency readiness. Notify the operator about prolonged outages or uncertain publication without making routine processing require approval.
 

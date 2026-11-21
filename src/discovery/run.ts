@@ -1,3 +1,4 @@
+import { logPipeline } from "../observability/pipeline-log.js";
 import { randomUUID } from "node:crypto";
 import type { SubstackItem } from "../content/substack-item.js";
 import type {
@@ -101,7 +102,9 @@ export async function runDiscovery(input: DiscoveryRunInput): Promise<DiscoveryR
       }
       try {
         await input.publisher.publish(event, signal);
+        logPipeline(next.value, "discovery", "published");
       } catch (error) {
+        logPipeline(next.value, "discovery", "failed");
         return stop("publish", error);
       }
       summary.published++;

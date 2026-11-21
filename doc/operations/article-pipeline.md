@@ -96,3 +96,28 @@ uncommissioned gaps. An omitted limit preserves the full plan, and zero disables
 research commissioning for the run. The limit is part of the original workflow
 input and changing it on duplicate submission does not rerun that revision.
 The shared concurrency cap and the batch deadline still apply independently.
+
+### Find activity for one original post
+
+Find the `article.pipeline` JSON line from discovery in the service logs and copy
+its `correlation_id`. The discovery event also carries it as `postcorrelationid`.
+The existing discovery `correlationid` still identifies the poll batch.
+Downstream event producers and logs derive the same post ID from the stable
+article identity. Redelivery and edits keep the ID, and workflow records include
+`revision` to distinguish the captured text versions. Publisher logs include a
+hashed `destination_id` to distinguish independent destinations. These logs
+are diagnostics. The workflow journal, outbox, and durable receipts remain
+the authoritative records.
+
+To activate remote search, create a Node.js project in Sentry and supply its DSN
+privately at runtime as `SENTRY_DSN` to each participating service. The Restate
+Compose definitions pass it through. For services deployed independently, set
+the same variable in their runtime configuration. A process with a mounted
+secret may use `SENTRY_DSN_FILE` instead. Restart the participating services,
+run one fixture, and search Sentry Logs for `correlation_id:<copied-id>`.
+Confirm one ID links the discovery, collection, bridge, article worker, approval
+dispatcher, and both publisher outcomes when those stages participate.
+
+With no DSN, the same milestones appear in local stdout as JSON. Remote
+export sends an allowlisted set of pipeline fields with fixed event messages.
+Keep local logs for container and broker diagnostics.
