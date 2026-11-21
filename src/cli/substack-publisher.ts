@@ -20,6 +20,7 @@
  *   STEELE_SUBSTACK_ORIGIN                           https://<publication>.substack.com (private)
  *   STEELE_SUBSTACK_SESSION_FILE                     file holding the substack.sid value (private)
  *   STEELE_SUBSTACK_DELIVERY?                        "live" to deliver; anything else stays off
+ *   STEELE_SUBSTACK_BYLINE_ID?                       explicit destination byline id (digits)
  *   STEELE_PUBLISHER_DESTINATION?                    default substack
  *   STEELE_PUBLISHER_CONSUMER?                       default steele-publisher-substack
  *   STEELE_PUBLICATION_STREAM?                       default STEELE_PUBLICATION
@@ -49,6 +50,7 @@ const EnvSchema = z.object({
   STEELE_SUBSTACK_ORIGIN: z.url({ protocol: /^https$/ }),
   STEELE_SUBSTACK_SESSION_FILE: z.string().min(1),
   STEELE_SUBSTACK_DELIVERY: z.string().optional(),
+  STEELE_SUBSTACK_BYLINE_ID: z.string().regex(/^[0-9]+$/).optional(),
   STEELE_PUBLISHER_DESTINATION: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
@@ -123,7 +125,10 @@ async function main(): Promise<number> {
       nats,
       stream: c.STEELE_PUBLICATION_STREAM,
       consumer: c.STEELE_PUBLISHER_CONSUMER,
-      destination: new SubstackDraftDestination(client, { name: c.STEELE_PUBLISHER_DESTINATION }),
+      destination: new SubstackDraftDestination(client, {
+        name: c.STEELE_PUBLISHER_DESTINATION,
+        ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
+      }),
       content,
       operations,
       owner: `substack-publisher:${hostname()}:${process.pid}`,

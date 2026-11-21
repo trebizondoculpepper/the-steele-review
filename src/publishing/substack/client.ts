@@ -50,6 +50,11 @@ export const DraftSchema = z.looseObject({
   draft_body: z.string().nullable().optional(),
   is_published: z.boolean().optional(),
   draft_created_at: z.string().nullable().optional(),
+  /** Bylines the editor reports for the draft, when it reports any. */
+  draft_bylines: z
+    .array(z.looseObject({ id: Id.optional(), name: z.string().optional() }))
+    .nullable()
+    .optional(),
 });
 export type SubstackDraft = z.infer<typeof DraftSchema>;
 
@@ -58,6 +63,8 @@ export interface NewDraft {
   subtitle?: string;
   /** ProseMirror document, serialised as Substack expects. */
   body: unknown;
+  /** Explicit destination byline IDs; omitted means no explicit selection. */
+  bylines?: string[];
 }
 
 export class SubstackClient {
@@ -145,8 +152,8 @@ export class SubstackClient {
       {
         draft_title: draft.title,
         draft_subtitle: draft.subtitle ?? "",
-        // Required by the editor API even when no explicit bylines are chosen.
-        draft_bylines: [],
+        // The editor requires the field even when no explicit byline is chosen.
+        draft_bylines: (draft.bylines ?? []).map((id) => ({ id })),
         draft_body: JSON.stringify(draft.body),
         audience: "everyone",
         type: "newsletter",

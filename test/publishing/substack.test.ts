@@ -143,6 +143,16 @@ describe("Substack client (#385)", () => {
     expect(sent).not.toHaveProperty("send_email");
   });
 
+  it("sends an explicitly selected byline id when one is configured (#459)", async () => {
+    const { f, calls } = fakeFetch(() => json({ id: 456 }));
+    await client(f).createDraft({
+      title: "t",
+      body: { type: "doc", content: [] },
+      bylines: ["42"],
+    });
+    expect(JSON.parse(String(calls[0]!.init.body)).draft_bylines).toEqual([{ id: "42" }]);
+  });
+
   it("uses the draft filter for access checks and every reconciliation page", async () => {
     const { f, calls } = fakeFetch(({ url }) => {
       const query = new URL(url).searchParams;
@@ -215,7 +225,7 @@ function fakeSubstack() {
       if (f) throw f;
       return [...drafts].reverse().slice(offset, offset + limit);
     },
-    async createDraft(d: { title: string; body: unknown }) {
+    async createDraft(d: { title: string; body: unknown; bylines?: string[] }) {
       const f = faults.create?.shift();
       if (f instanceof SubstackError) throw f;
       const draft = {
@@ -224,6 +234,7 @@ function fakeSubstack() {
         draft_body: JSON.stringify(d.body),
         is_published: false,
         draft_created_at: new Date().toISOString(),
+        draft_bylines: (d.bylines ?? []).map((id) => ({ id })),
       };
       drafts.push(draft);
       if (f === "lost") throw new SubstackError("uncertain"); // created, response lost
@@ -248,6 +259,48 @@ describe("Substack draft destination (#385)", () => {
     expect(receipt).toMatchObject({ simulated: false, externalId: "100" });
     expect(s.drafts).toHaveLength(1);
     expect(s.drafts[0]!.is_published).toBe(false);
+  });
+
+  it("selects the configured byline and confirms it on read-back (#459)", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s, { bylineId: "42" });
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data });
+    expect(JSON.parse(preview.body).bylineId).toBe("42");
+    expect(await d.deliver(preview, "k")).toMatchObject({ simulated: false, externalId: "100" });
+    expect(s.drafts[0]!.draft_bylines).toEqual([{ id: "42" }]);
+  });
+
+  it("never claims delivery when the platform drops the requested byline (#459)", async () => {
+    const s = fakeSubstack();
+    const stripped = {
+      ...s,
+      async createDraft(d: { title: string; body: unknown; bylines?: string[] }) {
+        const { id } = await s.createDraft({ ...d, bylines: [] });
+        return { id };
+      },
+    };
+    const d = new SubstackDraftDestination(stripped, { bylineId: "42" });
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data });
+    await expect(d.deliver(preview, "k")).rejects.toBeInstanceOf(UncertainDeliveryError);
+    // The attribution-less draft is not reclaimed as delivered either.
+    expect(await d.reconcile("k", { preview, intentAt: new Date().toISOString() })).toBe("unknown");
+  });
+
+  it("pins the byline selected when the intent was rendered (#459)", async () => {
+    const s = fakeSubstack();
+    const rendered = new SubstackDraftDestination(s, { bylineId: "42" }).render({
+      markdown: WRITER_MARKDOWN,
+      data,
+    });
+    // Configuration changed later; the in-flight intent keeps its own choice.
+    const changed = new SubstackDraftDestination(s, { bylineId: "99" });
+    await changed.deliver(rendered, "k");
+    expect(s.drafts[0]!.draft_bylines).toEqual([{ id: "42" }]);
+
+    // An intent rendered with no byline is never upgraded by later config.
+    const plain = new SubstackDraftDestination(s).render({ markdown: WRITER_MARKDOWN, data });
+    await changed.deliver(plain, "k");
+    expect(s.drafts[1]!.draft_bylines).toEqual([]);
   });
 
   it("stops before creating anything when the session has expired", async () => {
