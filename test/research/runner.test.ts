@@ -64,8 +64,10 @@ const pages: Record<string, string | WebAdapterError> = {
   "https://example.org/gone": new WebAdapterError("not-found"),
   "https://author.substack.com/p/post": TREATY,
 };
+let fetched = 0;
 const fetcher: PageFetcher = {
   async fetch(url) {
+    fetched++;
     const p = pages[url];
     if (p instanceof WebAdapterError) throw p;
     if (p === undefined) throw new WebAdapterError("not-found");
@@ -106,6 +108,7 @@ describe("research runner", () => {
       },
     };
     const first = await run(s1, { judge: brokeJudge });
+    const fetchedAfterFirst = fetched;
     expect(first).toMatchObject({ result: { outcome: "failed", failure: "budget-exceeded" } });
     expect(await artifacts.lookup(`research-jobs/${first.jobId}/result.json`)).toBeUndefined();
     // Credit restored: the saved report is reused (no second paid call).
@@ -113,6 +116,8 @@ describe("research runner", () => {
     const second = await run(s2);
     expect(s2.calls).toBe(0);
     expect(second.jobId).toBe(first.jobId);
+    // The saved source snapshot is what gets judged, not a fresh fetch.
+    expect(fetched).toBe(fetchedAfterFirst);
     expect((second as { result: { outcome: string } }).result.outcome).not.toBe("failed");
   });
 

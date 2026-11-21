@@ -268,27 +268,35 @@ export async function runResearchJob(input: {
       });
       continue;
     }
-    let page;
-    try {
-      page = await withDeadline(limits.sourceTimeoutMs, (s) => input.fetcher.fetch(url, s));
-    } catch (error) {
-      const { retrieval, reason } = retrievalOf(error);
-      citations.push({ url, retrieval, retrievalReason: reason, passages: [] });
-      continue;
-    }
-    const text = page.text.slice(0, limits.maxSourceChars);
-    const archived = await writeOnce(
-      input.artifacts,
-      `${dir}/sources/${sha(url).slice(0, 32)}.json`,
-      {
+    const sourcePath = `${dir}/sources/${sha(url).slice(0, 32)}.json`;
+    // A snapshot saved by an earlier attempt of this job (one that stopped for
+    // lack of credit) is the pinned source: judge exactly that text rather
+    // than a fresh fetch that may have changed since (#407).
+    const savedSource = await input.artifacts.lookup(sourcePath);
+    let text: string;
+    let archived;
+    if (savedSource) {
+      archived = savedSource;
+      text = (JSON.parse(await input.artifacts.read(savedSource)) as { text: string }).text;
+    } else {
+      let page;
+      try {
+        page = await withDeadline(limits.sourceTimeoutMs, (s) => input.fetcher.fetch(url, s));
+      } catch (error) {
+        const { retrieval, reason } = retrievalOf(error);
+        citations.push({ url, retrieval, retrievalReason: reason, passages: [] });
+        continue;
+      }
+      text = page.text.slice(0, limits.maxSourceChars);
+      archived = await writeOnce(input.artifacts, sourcePath, {
         url,
         title: page.title,
         ...(page.publisher ? { publisher: page.publisher } : {}),
         ...(page.publishedAt ? { publishedAt: page.publishedAt } : {}),
         truncated: page.text.length > text.length,
         text,
-      },
-    );
+      });
+    }
     let passages: ResearchManifest["citations"][number]["passages"] = [];
     let support: "supported" | "unverified" | "not-checked" = "not-checked";
     let sourceType: string | undefined;
