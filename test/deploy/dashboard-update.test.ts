@@ -149,6 +149,25 @@ describe("dashboard auto-update (#476)", () => {
     expect(saved.at(-1)?.pending).toBeUndefined();
   });
 
+  it("resumes an interrupted or failed rollback before anything else", async () => {
+    // Saved after the failure was decided, before the rollback write landed.
+    const interrupted: UpdateState = {
+      deployed: { commit: A, image: img(A), at: "t" },
+      failed: { commit: B, image: img(B), at: "t" },
+      rollback: true,
+    };
+    const h = harness({ live: img(B), state: interrupted, ready: [true] });
+    const out = await h.run();
+    expect(out.result).toMatchObject({ outcome: "rolled-back", restored: img(A) });
+    expect(h.calls).toEqual([`set ${img(A)}`]);
+    expect(out.state.rollback).toBeUndefined();
+    // A rollback that fails keeps its intent, so the next pass tries again.
+    const stuck = harness({ live: img(B), state: interrupted, ready: [false] });
+    const again = await stuck.run();
+    expect(again.result.outcome).toBe("rollback-failed");
+    expect(again.state.rollback).toBe(true);
+  });
+
   it("reconciles an update whose write applied but whose response was lost", async () => {
     const saved: UpdateState[] = [];
     let live = img(A);

@@ -31,3 +31,8 @@ Before the stack is touched, the pass saves a `pending` marker. If Portainer's r
 - If the new image is live, readiness and rollback run as normal.
 - If the old image is still live, the marker is cleared (`not-applied`).
 - Anything else is reported as drift for an operator.
+
+## Rollback recovery and locking
+
+- **Rollback recovery:** when readiness fails, the failed revision and a `rollback` intent are saved before the previous image is restored. The intent is cleared only once that image is live and ready. A pass that stops mid-rollback, or a rollback that fails, is resumed by the next pass before any build is considered.
+- **Locking:** the CLI's own lock file fails closed. A lock left by a run that died is reported as `stale-lock` and never reclaimed by the CLI. Run the CLI under a crash-released host lock such as `flock -n`. A wrapper holding that lock may remove a stale lock file before invoking the CLI, because the host lock guarantees no other updater is running.

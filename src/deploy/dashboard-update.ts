@@ -64,6 +64,12 @@ export interface UpdateState {
    * touched, so an uncertain write or an interrupted pass is reconciled first.
    */
   pending?: DeployedRevision;
+  /**
+   * A rollback that has been decided but not yet confirmed. Saved before the
+   * rollback write and cleared only once the previous image is live and ready,
+   * so an interrupted or failed rollback is resumed by the next pass.
+   */
+  rollback?: true;
 }
 
 export type UpdateOutcome =
@@ -114,14 +120,18 @@ export async function updateDashboard(input: {
         state: { deployed: { commit, image, at: now() } },
       };
     }
-    const restored = deployed.image;
-    // Record the failure before rolling back, so a pass that stops mid-rollback
-    // is never mistaken for an update that did not apply.
+    // Record the failure and the rollback intent before rolling back.
     const failed = { commit, image, at: now() };
-    await save({ deployed, failed });
+    await save({ deployed, failed, rollback: true });
+    return rollBack(deployed, failed);
+  };
+
+  /** Restore the previous image; the intent stays saved until it is confirmed. */
+  const rollBack = async (deployed: DeployedRevision, failed: DeployedRevision) => {
+    const restored = deployed.image;
     let back = false;
     try {
-      await stack.setImage(restored);
+      if ((await stack.currentImage()) !== restored) await stack.setImage(restored);
       back = await readiness.ready();
     } catch {
       back =
@@ -131,13 +141,18 @@ export async function updateDashboard(input: {
     return {
       result: {
         outcome: back ? ("rolled-back" as const) : ("rollback-failed" as const),
-        commit,
-        image,
+        commit: failed.commit,
+        image: failed.image,
         restored,
       },
-      state: { deployed, failed },
+      state: back ? { deployed, failed } : { deployed, failed, rollback: true as const },
     };
   };
+
+  // Finish a rollback a previous pass decided on, before anything else.
+  if (state.rollback && state.deployed && state.failed) {
+    return rollBack(state.deployed, state.failed);
+  }
 
   // Reconcile an update a previous pass started but never confirmed.
   if (state.pending && state.deployed) {

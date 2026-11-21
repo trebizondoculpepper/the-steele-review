@@ -15,6 +15,8 @@
  *   STEELE_DEPLOY_DASHBOARD_URL    dashboard base URL for readiness checks
  *   STEELE_DEPLOY_GITHUB_TOKEN_FILE   optional read-only token file (rate limits)
  *
+ * Run it under a crash-released host lock (e.g. `flock -n`); see the lock below.
+ *
  * Output is one JSON line with fixed fields. Exit: 0 deployed, skipped or
  * another pass is running; 1 rolled back, rollback failed or an adapter
  * failed (the previous image stays recorded); 2 invalid usage or configuration.
@@ -44,64 +46,27 @@ function alive(pid: number): boolean {
 }
 
 /**
- * An exclusive lock. A dead owner's lock on this host is reclaimed only by
- * the run holding the exclusive `.reclaim` marker, and only if the lock file
- * still names that same dead owner, so a replacement owner's live lock is
- * never removed.
+ * An exclusive lock file. It fails closed: a lock left by a run that died is
+ * reported as `stale-lock` and never reclaimed here, because no read-then-
+ * remove sequence is ownership-safe. Run the CLI under a crash-released host
+ * lock (for example `flock -n`), which may remove a stale lock file safely
+ * while it holds that lock.
  */
-async function lock(path: string): Promise<boolean> {
-  const take = async () => {
-    try {
-      const h = await open(path, "wx");
-      await h.writeFile(JSON.stringify({ host: hostname(), pid: process.pid }));
-      await h.close();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (await take()) return true;
-  let seen: string;
+async function lock(path: string): Promise<"held" | "busy" | "stale"> {
   try {
-    seen = await readFile(path, "utf8");
-    const owner = JSON.parse(seen) as { host?: string; pid?: number };
-    if (owner.host !== hostname() || typeof owner.pid !== "number" || alive(owner.pid)) {
-      return false;
-    }
+    const h = await open(path, "wx");
+    await h.writeFile(JSON.stringify({ host: hostname(), pid: process.pid }));
+    await h.close();
+    return "held";
   } catch {
-    return false;
-  }
-  const marker = `${path}.reclaim`;
-  const claimMarker = async () => {
     try {
-      const h = await open(marker, "wx");
-      await h.writeFile(JSON.stringify({ host: hostname(), pid: process.pid }));
-      await h.close();
-      return true;
+      const owner = JSON.parse(await readFile(path, "utf8")) as { host?: string; pid?: number };
+      return owner.host === hostname() && typeof owner.pid === "number" && !alive(owner.pid)
+        ? "stale"
+        : "busy";
     } catch {
-      return false;
+      return "busy";
     }
-  };
-  if (!(await claimMarker())) {
-    // A marker left by a reclaimer that died is itself reclaimable, once.
-    try {
-      const raw = await readFile(marker, "utf8");
-      const m = JSON.parse(raw) as { host?: string; pid?: number };
-      if (m.host !== hostname() || typeof m.pid !== "number" || alive(m.pid)) return false;
-      if ((await readFile(marker, "utf8")) !== raw) return false;
-      await rm(marker, { force: true });
-    } catch {
-      return false;
-    }
-    if (!(await claimMarker())) return false;
-  }
-  try {
-    // Re-read under the marker: remove only the dead owner we inspected.
-    if ((await readFile(path, "utf8").catch(() => "")) !== seen) return false;
-    await rm(path, { force: true });
-    return await take();
-  } finally {
-    await rm(marker, { force: true });
   }
 }
 
@@ -146,9 +111,14 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const lockPath = join(dir, ".update.lock");
-  if (!(await lock(lockPath))) {
+  const held = await lock(lockPath);
+  if (held === "busy") {
     log({ outcome: "skipped", reason: "already-running" });
     return 0;
+  }
+  if (held === "stale") {
+    log({ outcome: "failed", reason: "stale-lock" });
+    return 1;
   }
   try {
     if (argv[0] === "--adopt") {
