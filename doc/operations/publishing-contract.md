@@ -38,3 +38,14 @@ Each destination runs its own durable consumer and calls `handleApprovedArticle`
 - A delivery whose outcome is unknown is recorded with an `uncertain.json` marker; the next attempt asks the adapter to reconcile before sending again, so an uncertain delivery is never repeated blindly.
 
 Adapters implement `DestinationAdapter`: `render` (own format and capabilities), idempotent `deliver`, and `reconcile`. `SimulatedDestination` is the placeholder used for the end-to-end proof: it makes no external call and needs no credentials, and its receipt is marked `simulated: true`, which is the terminal publishing result for that test.
+
+## Approval outbox dispatch (#271)
+
+`dispatchApprovedArticles` (`src/publishing/approval-dispatch.ts`) is the one path from a recorded approval to the publisher stream. It publishes every due `steele.v1.article.approved` outbox event from the state controller with its event ID as the JetStream message ID, marks it sent, and leaves a failed publish pending with the same ID for a later retry. Destinations consume only the stream. A production entry point (a periodic dispatch beside the article worker) belongs to #244.
+
+`test/workflow/two-sources-two-publishers.test.ts` proves the whole chain against real NATS and Restate containers with deterministic models:
+- a Substack source and a non-Substack fixture source each emit one captured-content event;
+- the bridge submits both to `ArticleRun`, and both drafts are verified;
+- the dispatcher publishes both approvals;
+- two independent simulated destinations each save a receipt per approved revision, one of them after a failed first attempt;
+- replaying a captured event and an approval event creates no new draft or delivery.
