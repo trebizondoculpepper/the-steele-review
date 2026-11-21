@@ -63,6 +63,27 @@ services:
     secrets: [openrouter]
     networks: [steele]
 
+  # LAN-only operator dashboard (#375). No login by owner decision: exposure
+  # is set by STEELE_DASHBOARD_BIND, configured privately (for example the
+  # Pi's LAN address and a port). The default binds to loopback only.
+  dashboard:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/dashboard.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    ports:
+      - "${STEELE_DASHBOARD_BIND:-127.0.0.1:8090}:8090"
+    networks: [steele]
+
   # Publishes approved articles from the worker's state outbox to
   # STEELE_PUBLICATION (#314). Shares the worker's state file, never content.
   approval-dispatcher:
