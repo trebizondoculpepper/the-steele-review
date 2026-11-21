@@ -22,8 +22,8 @@ export const FrequencyPeriodSchema = z
     matchedPosts: z.number().int().min(0),
     /** Raw distinct occurrences, which is not comparable across coverage. */
     distinctOccurrences: z.number().int().min(0),
-    /** Posts analysed in this period: the denominator for the rate. */
-    analysedPosts: z.number().int().min(1),
+    /** Posts analysed in this period: the denominator for the rate. Zero is a valid, empty period. */
+    analysedPosts: z.number().int().min(0),
   })
   .strict();
 export type FrequencyPeriod = z.infer<typeof FrequencyPeriodSchema>;
@@ -81,6 +81,8 @@ const LIMITATION =
   "Observed among the analysed posts only; this is not prevalence across the publication, movement or internet.";
 
 function rate(matchedPosts: number, analysedPosts: number): number {
+  // An empty period has no rate; it is reported, and never compared.
+  if (analysedPosts === 0) return 0;
   return Math.round((matchedPosts / analysedPosts) * 10_000) / 10_000;
 }
 
@@ -107,7 +109,12 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
   if (f.truncated) reasons.push("the underlying period result was truncated");
   if (f.datesSparse) reasons.push("a material share of posts carry no usable date");
   if (f.periods.length < 2) reasons.push("fewer than two periods were supplied");
-  const small = f.periods.filter((p) => p.analysedPosts < f.minimumAnalysedPosts);
+  const empty = f.periods.filter((p) => p.analysedPosts === 0);
+  if (empty.length > 0)
+    reasons.push(`period(s) ${empty.map((p) => p.period).join(", ")} have no analysed posts`);
+  const small = f.periods.filter(
+    (p) => p.analysedPosts > 0 && p.analysedPosts < f.minimumAnalysedPosts,
+  );
   if (small.length > 0)
     reasons.push(
       `period(s) ${small.map((p) => p.period).join(", ")} analysed fewer than ${f.minimumAnalysedPosts} posts`,

@@ -96,6 +96,20 @@ describe("claim family frequency (#404)", () => {
     expect(at(10, 14)).toBe("flat");
   });
 
+  it("returns a qualified no-assessment for a period with no analysed posts", () => {
+    const a = assessClaimFamilyFrequency({
+      ...base,
+      periods: [
+        { period: "2025-H1", matchedPosts: 0, distinctOccurrences: 0, analysedPosts: 0 },
+        { period: "2025-H2", matchedPosts: 10, distinctOccurrences: 12, analysedPosts: 100 },
+      ],
+    });
+    expect(a.kind).toBe("no-assessment");
+    if (a.kind !== "no-assessment") throw new Error(a.kind);
+    expect(a.reasons).toContain("period(s) 2025-H1 have no analysed posts");
+    expect(a.observations[0]!.rate).toBe(0);
+  });
+
   it("returns a qualified no-assessment for unknown coverage", () => {
     const a = assessClaimFamilyFrequency({ ...base, coverage: "unknown" });
     expect(a.kind).toBe("no-assessment");
