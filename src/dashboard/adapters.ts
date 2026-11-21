@@ -51,6 +51,44 @@ export function indexArticles(
       );
       return hits.map((h) => toArticle(h.source)).filter((a): a is ArchivedArticle => Boolean(a));
     },
+    async page({ sort, after, limit }) {
+      // Tie-break on stable source identity so a page boundary cannot repeat or
+      // skip a row when several posts share a publication date.
+      const order = sort === "newest" ? "desc" : "asc";
+      const esSort = [
+        { publishedAt: { order, missing: sort === "newest" ? "_last" : "_first" } },
+        { publicationId: { order: "asc" } },
+        { postId: { order: "asc" } },
+      ];
+      let searchAfter: unknown[] | undefined;
+      if (after) {
+        try {
+          const parsed = JSON.parse(Buffer.from(after, "base64url").toString("utf8"));
+          if (Array.isArray(parsed)) searchAfter = parsed;
+        } catch {
+          // A malformed cursor restarts from the first page rather than failing.
+          searchAfter = undefined;
+        }
+      }
+      const hits = await search.search(
+        index,
+        { match_all: {} },
+        {
+          size: limit,
+          sort: esSort,
+          ...(searchAfter ? { searchAfter } : {}),
+        } as { size?: number; sort?: unknown; searchAfter?: unknown[] },
+      );
+      const entries = hits
+        .map((h) => toArticle(h.source))
+        .filter((a): a is ArchivedArticle => Boolean(a));
+      const last = hits[hits.length - 1] as { sort?: unknown[] } | undefined;
+      const next =
+        hits.length === limit && last?.sort
+          ? Buffer.from(JSON.stringify(last.sort)).toString("base64url")
+          : undefined;
+      return { entries, ...(next ? { next } : {}) };
+    },
     async find(publicationId, postId) {
       const hits = await search.search(
         index,
