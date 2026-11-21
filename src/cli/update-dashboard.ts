@@ -128,10 +128,9 @@ async function main(argv: string[]): Promise<number> {
         log({ outcome: "invalid-usage" });
         return 2;
       }
-      const previous = await readState();
-      // Adopting is an operator decision: it clears any pending update.
-      const { pending: _pending, ...rest } = previous;
-      await writeState({ ...rest, deployed: { commit, image, at: new Date().toISOString() } });
+      // Adopting is an operator decision: it starts a clean baseline, clearing
+      // any pending update, rollback intent and failed-revision marker.
+      await writeState({ deployed: { commit, image, at: new Date().toISOString() } });
       log({ outcome: "adopted", commit, image: digestOnly(image) });
       return 0;
     }
