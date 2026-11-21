@@ -40,7 +40,7 @@ const citationHtml = (c: ResearchCitation, claims: Map<string, string>) => {
     status.unshift(`source type: ${c.sourceType}`);
   }
   if (c.confidenceRationale) status.push(`rationale: ${c.confidenceRationale}`);
-  return `<li>${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p.passage)}</blockquote>${p.claimRecordId ? `<span class="empty">checked against: ${escapeHtml(claims.get(p.claimRecordId) ?? "a claim not in the saved request")} <code>${escapeHtml(p.claimRecordId)}</code></span>` : ""}`).join("")}</li>`;
+  return `<li${c.id ? ` id="cite-${escapeHtml(c.id)}"` : ""}>${c.id ? `<code>${escapeHtml(c.id)}</code> ` : ""}${c.title ? `${escapeHtml(c.title)}<br>` : ""}${external(c.url)}${status.length ? `<br><span class="empty">${escapeHtml(status.join("; "))}</span>` : ""}${c.passages.map((p) => `<blockquote>${escapeHtml(p.passage)}</blockquote>${p.claimRecordId ? `<span class="empty">checked against: ${escapeHtml(claims.get(p.claimRecordId) ?? "a claim not in the saved request")} <code>${escapeHtml(p.claimRecordId)}</code></span>` : ""}`).join("")}</li>`;
 };
 
 export function researchViews(research?: ResearchPort): DashboardView[] {
@@ -163,13 +163,26 @@ export function researchViews(research?: ResearchPort): DashboardView[] {
           : d.citations.length === 0
             ? '<p class="empty">No citations recorded.</p>'
             : `<ol>${d.citations.map((c) => citationHtml(c, claimStatements)).join("")}</ol>${d.omittedCitations ? `<p class="empty">${d.omittedCitations} further citation(s) were omitted when saved.</p>` : ""}`;
+      const coverage = d.coverage
+        ? `<h2>Claim coverage</h2>${
+            d.coverage.length === 0
+              ? '<p class="empty">No claims recorded in this dossier.</p>'
+              : `<ul>${d.coverage
+                  .map((c) =>
+                    c.status === "covered"
+                      ? `<li><code>${escapeHtml(c.claimId)}</code>: covered by ${c.citations.map((id) => `<a href="#cite-${escapeHtml(id)}">${escapeHtml(id)}</a>`).join(", ")}</li>`
+                      : `<li><code>${escapeHtml(c.claimId)}</code>: <strong>gap</strong>, ${escapeHtml(c.reason)}</li>`,
+                  )
+                  .join("")}</ul>`
+          }`
+        : "";
       const gaps = d.gaps?.length
         ? `<h2>Recorded gaps</h2><ul>${d.gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul>`
         : "";
       return `<p><a href="/research">All research</a></p>
 <h2>${escapeHtml(d.title)}</h2>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-<h2>Citations</h2>${provenance}${citations}${gaps}
+${coverage}<h2>Citations</h2>${provenance}${citations}${gaps}
 <h2>Saved text</h2><p class="empty">Shown as saved Markdown source; links in it are not followed.</p>
 <pre>${escapeHtml(d.text)}</pre>`;
     },

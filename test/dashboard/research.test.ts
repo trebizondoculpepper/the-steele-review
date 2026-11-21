@@ -121,8 +121,19 @@ async function corpus() {
         themeId: "fivegee",
         title: "5G dossier",
         scope: "5G as a weapon",
-        claims: [],
-        citations: [],
+        claims: [
+          { claimId: "claim-a", status: "covered", citations: ["who"] },
+          { claimId: "claim-b", status: "gap", reason: "No source addresses the tower claim." },
+        ],
+        citations: [
+          {
+            id: "who",
+            url: "https://who.example/5g",
+            title: "WHO",
+            passage: "Exposure is below limits.",
+            checkedAt: "2026-11-20",
+          },
+        ],
         gaps: [],
         updatedAt: "2026-11-20",
       },
@@ -202,6 +213,18 @@ describe("research browser (#507)", { timeout: 60_000 }, () => {
       savedResearch({ list: async () => Promise.reject(new Error("x")) } as never),
     );
     expect(await down!.render(new URL("http://x/research"))).toContain("unavailable right now");
+  });
+
+  it("shows dossier claim coverage, its citations and gap reasons", async () => {
+    await corpus();
+    const [, detail] = researchViews(savedResearch(content));
+    const row = (await savedResearch(content).list({ kind: "dossier" })).rows[0]!;
+    const page = await detail!.render(
+      new URL(`http://x/research/view?${new URLSearchParams({ path: row.path, at: row.commit })}`),
+    );
+    expect(page).toContain('covered by <a href="#cite-who">who</a>');
+    expect(page).toContain("<strong>gap</strong>, No source addresses the tower claim.");
+    expect(page).toContain('id="cite-who"');
   });
 
   it("ignores job records that are not bound to the report", async () => {

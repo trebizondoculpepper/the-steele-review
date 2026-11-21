@@ -49,6 +49,8 @@ export interface ResearchCitation {
   support?: string;
   /** Supporting passages, each with the requested claim it was checked against. */
   passages: { passage: string; claimRecordId?: string }[];
+  /** Dossier citation id, referenced by claim coverage. */
+  id?: string;
   /** Recorded source classification, e.g. `monitored-source` (the claimant's own material). */
   sourceType?: string;
   confidenceRationale?: string;
@@ -76,6 +78,11 @@ export interface ResearchDocument {
   citations?: ResearchCitation[];
   omittedCitations?: number;
   gaps?: string[];
+  /** Dossier per-claim coverage: covering citation ids, or the recorded gap reason. */
+  coverage?: (
+    | { claimId: string; status: "covered"; citations: string[] }
+    | { claimId: string; status: "gap"; reason: string }
+  )[];
   /** Saved job records that failed their binding to this report (shown, never trusted). */
   provenanceProblems?: string[];
   /** Dossier theme id, when recorded. */
@@ -137,7 +144,13 @@ export function savedResearch(content: Store): ResearchPort {
           date: d.metadata.updatedAt,
           themeId: d.metadata.themeId,
           text: d.body,
+          coverage: d.metadata.claims.map((c) =>
+            c.status === "covered"
+              ? { claimId: c.claimId, status: "covered" as const, citations: c.citations }
+              : { claimId: c.claimId, status: "gap" as const, reason: c.reason },
+          ),
           citations: d.metadata.citations.map((c) => ({
+            id: c.id,
             url: c.url,
             title: c.title,
             passages: [{ passage: c.passage }],
