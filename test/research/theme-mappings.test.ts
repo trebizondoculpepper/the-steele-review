@@ -117,3 +117,103 @@ describe("theme mapping catalogue (#518)", () => {
     expect(await artifacts.lookup(path)).toBeDefined();
   });
 });
+
+describe("mapping supersession (#518)", () => {
+  const by = { publicationId: "pub", postId: "p1" };
+
+  it("redirects new lookups after a canonical merge without rewriting the original", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    const original = await catalogue.record({
+      proposal: "5G health risks",
+      description: "Health concerns about 5G",
+      canonicalThemeId: "five-g-health",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: by,
+      rationale: "same topic",
+    });
+    const originalRef = await artifacts.lookup(
+      `librarian/theme-mappings/global/${themeMappingPath(original).split("/").pop()}`,
+    );
+    const before = originalRef ? await artifacts.read(originalRef) : undefined;
+
+    await catalogue.supersede({
+      proposal: "5G health risks",
+      description: "Health concerns about 5G",
+      from: "five-g-health",
+      to: "five-g-merged",
+      reason: "canonical merge into the broader 5G dossier",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: by,
+    });
+    expect(
+      await catalogue.lookup({ proposal: "5G health risks", description: "Health concerns about 5G" }),
+    ).toMatchObject({ canonicalThemeId: "five-g-merged" });
+
+    // The original immutable mapping still records the decision it made.
+    const after = originalRef ? await artifacts.read(originalRef) : undefined;
+    expect(after).toBe(before);
+  });
+
+  it("follows a chain of redirects and stops safely on a cycle", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    await catalogue.record({
+      proposal: "Smart cities",
+      canonicalThemeId: "smart-cities",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: by,
+      rationale: "topic",
+    });
+    await catalogue.supersede({
+      proposal: "Smart cities",
+      from: "smart-cities",
+      to: "agenda-2030",
+      reason: "merge",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: by,
+    });
+    await catalogue.supersede({
+      proposal: "Smart cities",
+      from: "agenda-2030",
+      to: "global-governance",
+      reason: "second merge",
+      decidedAt: "2026-01-03T00:00:00Z",
+      decidedBy: by,
+    });
+    expect(await catalogue.lookup({ proposal: "Smart cities" })).toMatchObject({
+      canonicalThemeId: "global-governance",
+    });
+
+    await catalogue.supersede({
+      proposal: "Smart cities",
+      from: "global-governance",
+      to: "smart-cities",
+      reason: "cycle for the test",
+      decidedAt: "2026-01-04T00:00:00Z",
+      decidedBy: by,
+    });
+    // A cycle returns the last distinct ID instead of looping forever.
+    const resolved = await catalogue.lookup({ proposal: "Smart cities" });
+    expect(["global-governance", "smart-cities"]).toContain(resolved?.canonicalThemeId);
+  });
+
+  it("keeps the first supersession event for the same redirect", async () => {
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    const first = await catalogue.supersede({
+      proposal: "Chemtrails",
+      from: "chemtrails",
+      to: "geoengineering",
+      reason: "merge",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: by,
+    });
+    const again = await catalogue.supersede({
+      proposal: "Chemtrails",
+      from: "chemtrails",
+      to: "geoengineering",
+      reason: "duplicate retry",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: by,
+    });
+    expect(again).toEqual(first);
+  });
+});
