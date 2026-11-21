@@ -17,6 +17,11 @@
  *
  * Output is one JSON line with identities, counts and versions only.
  */
+import {
+  postAttribution,
+  SourceMetadataError,
+  sourceMetadataFromEnv,
+} from "../content/source-metadata.js";
 import { z } from "zod";
 import {
   CLAIM_OCCURRENCE_INDEX_MAPPING,
@@ -131,8 +136,25 @@ async function main(argv: string[]): Promise<number> {
       name: p.title,
       definition: p.description ?? p.title,
     }));
+    let sourceMetadata;
+    try {
+      sourceMetadata = sourceMetadataFromEnv(process.env);
+    } catch (error) {
+      report({
+        outcome:
+          error instanceof SourceMetadataError
+            ? `source-metadata-${error.code}`
+            : "source-metadata-invalid-configuration",
+      });
+      return 2;
+    }
+    const attribution = postAttribution(sourceMetadata, {
+      publicationId: post.publicationId,
+      ...(record.item.author ? { author: record.item.author } : {}),
+    });
     const outcome = await extractGroundedClaims({
       provider,
+      ...(attribution ? { attribution } : {}),
       artifacts: content,
       ...(es ? { index: es } : {}),
       themes,

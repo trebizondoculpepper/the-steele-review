@@ -446,7 +446,7 @@ describe("configured source attribution (#462)", () => {
     });
   });
 
-  it("does not record an unresolved attribution", async () => {
+  it("records an unknown or ambiguous attribution explicitly", async () => {
     const out = await extractGroundedClaims({
       provider: model(RESPONSE),
       artifacts: content,
@@ -454,11 +454,84 @@ describe("configured source attribution (#462)", () => {
       themes,
       attribution: {
         status: "unknown",
-        reason: "no-byline-no-default",
+        reason: "ambiguous-byline",
         sourceMetadataVersion: `source-metadata-sha256:${"a".repeat(64)}`,
       },
     });
     if (out.status !== "extracted") throw new Error(out.status);
-    expect(out.record.extraction.attribution).toBeUndefined();
+    expect(out.record.extraction.attribution).toEqual({
+      status: "unknown",
+      reason: "ambiguous-byline",
+      sourceMetadataVersion: `source-metadata-sha256:${"a".repeat(64)}`,
+    });
+  });
+
+  it("gives the resolved author to author-voice occurrences only, never a quoted speaker", async () => {
+    const out = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-voice"),
+      themes,
+      attribution: { ...attribution, authorId: "configured-author" },
+    });
+    if (out.status !== "extracted") throw new Error(out.status);
+    const kinds: Record<string, unknown[]> = {};
+    for (const c of out.record.claims) {
+      const id = c.claimRecordId!;
+      const ref = (await content.lookup(`claims/${id}.json`))!;
+      const rec = JSON.parse(await content.read(ref));
+      for (const o of rec.occurrences.filter(
+        (o: { postId: string }) => o.postId === "p-attr-voice",
+      )) {
+        (kinds[o.speakerKind] ??= []).push(o.author);
+      }
+    }
+    expect(kinds["author-voice"]?.length).toBeGreaterThan(0);
+    for (const a of kinds["author-voice"]!) {
+      expect(a).toEqual({
+        name: "Configured Author",
+        id: "configured-author",
+        basis: "source-configured",
+        sourceMetadataVersion: attribution.sourceMetadataVersion,
+      });
+    }
+    for (const a of kinds["quoted"] ?? []) expect(a).toBeUndefined();
+  });
+
+  it("re-extracts under a changed configuration instead of relabelling", async () => {
+    const first = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-change"),
+      themes,
+      attribution,
+    });
+    const same = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-change"),
+      themes,
+      attribution,
+    });
+    const changed = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-change"),
+      themes,
+      attribution: {
+        ...attribution,
+        sourceMetadataVersion: `source-metadata-sha256:${"b".repeat(64)}`,
+      },
+    });
+    if (
+      first.status !== "extracted" ||
+      same.status !== "extracted" ||
+      changed.status !== "extracted"
+    )
+      throw new Error("expected extractions");
+    // Unchanged input reuses; a configuration change gets its own identity.
+    expect(same.reused).toBe(true);
+    expect(changed.reused).toBe(false);
+    expect(changed.recordRef.path).not.toBe(first.recordRef.path);
   });
 });

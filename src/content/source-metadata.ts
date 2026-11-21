@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
@@ -25,6 +26,14 @@ export const SourceMetadataSchema = z
     displayName: z.string().trim().min(1).max(200),
     /** Only used when a post carries no explicit single-author byline. */
     defaultAuthor: z.string().trim().min(1).max(200).optional(),
+    /**
+     * Stable identity of the default author, so person resolution (#470/#471)
+     * never relies on display-name equality across different sources.
+     */
+    defaultAuthorId: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,99}$/)
+      .optional(),
   })
   .strict();
 export type SourceMetadata = z.infer<typeof SourceMetadataSchema>;
@@ -57,8 +66,55 @@ export interface ParsedSourceMetadata {
  * canonical configuration, so changing any default changes the identity that
  * derived artifacts record.
  */
+/**
+ * The private configuration document (schema version 1): a revisioned list of
+ * sources whose default author carries a stable id and a display name.
+ */
+const SourceDocumentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    revision: z.number().int().min(1),
+    sources: z
+      .array(
+        z
+          .object({
+            id: SourceIdSchema,
+            type: z.string().min(1).max(40),
+            name: z.string().trim().min(1).max(200),
+            defaultAuthor: z
+              .object({
+                id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
+                name: z.string().trim().min(1).max(200),
+              })
+              .strict()
+              .optional(),
+            /** Recorded as configured attribution; resolution reports `source-configured`. */
+            attributionBasis: z.literal("owner-configured").optional(),
+          })
+          .strict(),
+      )
+      .max(500),
+  })
+  .strict();
+
+/** Accepts the versioned document or the earlier bare registry array. */
+function normalise(input: unknown): SourceMetadata[] {
+  if (Array.isArray(input)) return SourceMetadataRegistrySchema.parse(input);
+  const doc = SourceDocumentSchema.parse(input);
+  return SourceMetadataRegistrySchema.parse(
+    doc.sources.map((s) => ({
+      sourceId: s.id,
+      sourceType: s.type,
+      displayName: s.name,
+      ...(s.defaultAuthor
+        ? { defaultAuthor: s.defaultAuthor.name, defaultAuthorId: s.defaultAuthor.id }
+        : {}),
+    })),
+  );
+}
+
 export function parseSourceMetadata(input: unknown): ParsedSourceMetadata {
-  const sources = SourceMetadataRegistrySchema.parse(input);
+  const sources = normalise(input);
   const canonical = JSON.stringify(
     [...sources].sort((a, b) => a.sourceId.localeCompare(b.sourceId)),
   );
@@ -73,11 +129,17 @@ export type PostAuthorResolution =
   | {
       status: "resolved";
       author: string;
+      /** Stable configured identity, when the source records one. */
+      authorId?: string;
       basis: AttributionBasis;
       /** Configuration version the resolution relied on. */
       sourceMetadataVersion: string;
     }
-  | { status: "unknown"; reason: "no-byline-no-default" | "ambiguous-byline"; sourceMetadataVersion: string };
+  | {
+      status: "unknown";
+      reason: "no-byline-no-default" | "ambiguous-byline";
+      sourceMetadataVersion: string;
+    };
 
 /**
  * Resolve the author of an archived post.
@@ -110,6 +172,7 @@ export function resolvePostAuthor(input: {
     return {
       status: "resolved",
       author: configured,
+      ...(source?.defaultAuthorId ? { authorId: source.defaultAuthorId } : {}),
       basis: "source-configured",
       sourceMetadataVersion: version,
     };
@@ -141,7 +204,7 @@ export function authorVoiceAuthor(
  */
 export function attributionIdentity(r: PostAuthorResolution): string {
   return r.status === "resolved"
-    ? `${r.basis}:${r.author}:${r.sourceMetadataVersion}`
+    ? `${r.basis}:${r.authorId ? `${r.authorId}=` : ""}${r.author}:${r.sourceMetadataVersion}`
     : `unknown:${r.reason}:${r.sourceMetadataVersion}`;
 }
 
@@ -176,4 +239,60 @@ export class SourceMetadataError extends Error {
   constructor(readonly code: "unreadable-configuration" | "invalid-configuration") {
     super(`source metadata: ${code}`);
   }
+}
+
+/**
+ * Authors named by a captured post's byline. Several names joined by "and",
+ * "&" or commas are kept separate so the byline resolves as ambiguous rather
+ * than collapsing to one person or to the source default.
+ */
+export function bylineAuthors(author: string | undefined): string[] | undefined {
+  const text = author?.trim();
+  if (!text) return undefined;
+  return text
+    .split(/\s+(?:and|&)\s+|\s*,\s*/i)
+    .map((a) => a.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Source metadata named by `STEELE_SOURCE_METADATA_PATH`, or undefined when it
+ * is not configured (extraction then records legacy, unconfigured
+ * attribution). A configured but unreadable or invalid file is a startup
+ * failure with a fixed category, never a silent fallback.
+ */
+export function sourceMetadataFromEnv(
+  env: Record<string, string | undefined>,
+): ParsedSourceMetadata | undefined {
+  const path = env.STEELE_SOURCE_METADATA_PATH?.trim();
+  if (!path) return undefined;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new SourceMetadataError("unreadable-configuration");
+  }
+  try {
+    return parseSourceMetadata(JSON.parse(raw));
+  } catch {
+    throw new SourceMetadataError("invalid-configuration");
+  }
+}
+
+/**
+ * Attribution for one captured post: its byline first, then the configured
+ * default of its source (the publication id is the logical source id).
+ * Undefined without configuration, so older behaviour and identities hold.
+ */
+export function postAttribution(
+  metadata: ParsedSourceMetadata | undefined,
+  post: { publicationId: string; author?: string },
+): PostAuthorResolution | undefined {
+  if (!metadata) return undefined;
+  const byline = bylineAuthors(post.author);
+  return resolvePostAuthor({
+    sourceId: post.publicationId,
+    metadata,
+    ...(byline ? { byline } : {}),
+  });
 }

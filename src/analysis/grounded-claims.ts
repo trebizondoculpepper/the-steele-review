@@ -1,8 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import {
-  attributionIdentity,
-  type PostAuthorResolution,
-} from "../content/source-metadata.js";
+import { attributionIdentity, type PostAuthorResolution } from "../content/source-metadata.js";
 import { z } from "zod";
 import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
@@ -177,14 +174,29 @@ export const ClaimExtractionRecordSchema = z
         extractedAt: z.string(),
         /** Quotation-matching rules used (#202); absent on older records (exact only). */
         matchingVersion: z.string().optional(),
-        /** How the post author was attributed (#462); absent when unresolved. */
+        /**
+         * How the post author was attributed (#462/#482). An unknown or
+         * ambiguous resolution is recorded as such; absent only on legacy
+         * records extracted without source configuration.
+         */
         attribution: z
-          .object({
-            author: z.string(),
-            basis: z.enum(["post-byline", "source-configured"]),
-            sourceMetadataVersion: z.string(),
-          })
-          .strict()
+          .union([
+            z
+              .object({
+                author: z.string(),
+                authorId: z.string().optional(),
+                basis: z.enum(["post-byline", "source-configured"]),
+                sourceMetadataVersion: z.string(),
+              })
+              .strict(),
+            z
+              .object({
+                status: z.literal("unknown"),
+                reason: z.enum(["no-byline-no-default", "ambiguous-byline"]),
+                sourceMetadataVersion: z.string(),
+              })
+              .strict(),
+          ])
           .optional(),
       })
       .strict(),
@@ -211,6 +223,20 @@ export const ClaimRecordSchema = z
             /** Exact source passage and speaker kind, so comparisons see context. */
             passage: z.string().max(4000).optional(),
             speakerKind: z.string().optional(),
+            /**
+             * The resolved post author an author-voice occurrence speaks as
+             * (#482), with its basis; absent for quoted speakers and legacy
+             * records (unknown attribution).
+             */
+            author: z
+              .object({
+                name: z.string().min(1).max(200),
+                id: z.string().optional(),
+                basis: z.enum(["post-byline", "source-configured"]),
+                sourceMetadataVersion: z.string(),
+              })
+              .strict()
+              .optional(),
             /**
              * Every extraction (commit:path) that produced this occurrence, oldest
              * first, so theme IDs accumulated from different results stay traceable
@@ -466,15 +492,24 @@ export async function extractGroundedClaims(input: {
     // Attribution belongs to the saved extraction record, not to the strict
     // claim metadata that every claim shares (#482).
     const extractionAttribution =
-      input.attribution?.status === "resolved"
-        ? {
-            attribution: {
-              author: input.attribution.author,
-              basis: input.attribution.basis,
-              sourceMetadataVersion: input.attribution.sourceMetadataVersion,
-            },
-          }
-        : {};
+      input.attribution === undefined
+        ? {}
+        : input.attribution.status === "resolved"
+          ? {
+              attribution: {
+                author: input.attribution.author,
+                ...(input.attribution.authorId ? { authorId: input.attribution.authorId } : {}),
+                basis: input.attribution.basis,
+                sourceMetadataVersion: input.attribution.sourceMetadataVersion,
+              },
+            }
+          : {
+              attribution: {
+                status: "unknown" as const,
+                reason: input.attribution.reason,
+                sourceMetadataVersion: input.attribution.sourceMetadataVersion,
+              },
+            };
     const claims: ClaimExtractionRecord["claims"] = [];
     const candidates: NonNullable<ClaimExtractionRecord["candidates"]> = [];
     const rejected: ClaimExtractionRecord["rejected"] = [];
@@ -619,7 +654,7 @@ export async function extractGroundedClaims(input: {
     byRecord.set(c.claimRecordId, [...(byRecord.get(c.claimRecordId) ?? []), c]);
   }
   for (const [id, items] of byRecord) {
-    await upsertClaimRecord(input.artifacts, id, items, post, extractionRef);
+    await upsertClaimRecord(input.artifacts, id, items, post, extractionRef, input.attribution);
   }
 
   let indexed = 0;
@@ -644,12 +679,26 @@ export async function extractGroundedClaims(input: {
   };
 }
 
+/** Author fields for an occurrence: only author-voice inherits the post author. */
+function authorFor(kind: string, attribution?: PostAuthorResolution) {
+  if (kind !== "author-voice" || attribution?.status !== "resolved") return {};
+  return {
+    author: {
+      name: attribution.author,
+      ...(attribution.authorId ? { id: attribution.authorId } : {}),
+      basis: attribution.basis,
+      sourceMetadataVersion: attribution.sourceMetadataVersion,
+    },
+  };
+}
+
 export async function upsertClaimRecord(
   artifacts: GitArtifactStore,
   id: string,
   items: ClaimExtractionRecord["claims"],
   post: { publicationId: string; postId: string },
   extractionRef: string,
+  attribution?: PostAuthorResolution,
 ): Promise<void> {
   const path = `claims/${id}.json`;
   for (let attempt = 0; ; attempt++) {
@@ -667,7 +716,14 @@ export async function upsertClaimRecord(
         };
     // A redirected claim's occurrences belong to its canonical record.
     if (current.canonical && current.canonical !== id) {
-      await upsertClaimRecord(artifacts, current.canonical, items, post, extractionRef);
+      await upsertClaimRecord(
+        artifacts,
+        current.canonical,
+        items,
+        post,
+        extractionRef,
+        attribution,
+      );
       return;
     }
     const known = new Set(current.occurrences.map((o) => o.occurrenceId));
@@ -709,6 +765,7 @@ export async function upsertClaimRecord(
           extraction: extractionRef,
           passage: (c.occurrence as ClaimOccurrence).passage.slice(0, 4000),
           speakerKind: (c.occurrence as ClaimOccurrence).speaker.kind,
+          ...authorFor((c.occurrence as ClaimOccurrence).speaker.kind, attribution),
         })),
       ],
     };
