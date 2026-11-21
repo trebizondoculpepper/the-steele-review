@@ -150,7 +150,12 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     await commit({ [path("a")]: record("a", "2026-03-01T00:00:00.000Z") });
     const head = await commit({ [path("b")]: null });
 
-    const report = await catchUpIndex({ artifacts, index, checkpoint: cp.store });
+    const report = await catchUpIndex({
+      artifacts,
+      index,
+      checkpoint: cp.store,
+      publicationId: "example-pub",
+    });
     expect(report).toMatchObject({
       ok: true,
       full: false,
@@ -168,7 +173,12 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     expect(cp.state).not.toHaveProperty("pending");
 
     // Nothing new: an unchanged pass writes nothing.
-    const again = await catchUpIndex({ artifacts, index, checkpoint: cp.store });
+    const again = await catchUpIndex({
+      artifacts,
+      index,
+      checkpoint: cp.store,
+      publicationId: "example-pub",
+    });
     expect(again).toMatchObject({ unchanged: true, indexed: 0, removed: 0 });
   });
 
@@ -192,10 +202,10 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
       await catchUpIndex({ artifacts, index, checkpoint: cp.store, signal: abort.signal }),
     ).toMatchObject({ interrupted: true, checkpointAdvanced: false });
 
-    // The next pass reconciles everything, not just the diff from the old checkpoint.
+    // The next pass reapplies every change since the last good commit.
     const recovered = await catchUpIndex({ artifacts, index, checkpoint: cp.store });
-    expect(recovered).toMatchObject({ ok: true, full: true, checkpointAdvanced: true });
-    expect([...index.docs.keys()].sort()).toEqual([id("a"), id("b"), id("c"), id("d")]);
+    expect(recovered).toMatchObject({ ok: true, full: false, checkpointAdvanced: true });
+    expect([...index.docs.keys()].sort()).toEqual([id("c"), id("d")]);
     expect(cp.state).not.toHaveProperty("pending");
   });
 
@@ -216,5 +226,48 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     });
     expect(report).toMatchObject({ ok: true, indexed: 1 });
     expect([...index.docs.keys()]).toEqual([id("a")]);
+  });
+
+  it("keeps a deletion that failed until a later pass applies it", async () => {
+    const first = await commit({ [path("a")]: record("a") });
+    const index = fakeIndex();
+    await index.indexDocument("i", id("a"), {}, {});
+    const cp = memoryCheckpoint({ commit: first });
+    await commit({ [path("a")]: null });
+    let failDelete = true;
+    const flaky = {
+      ...index,
+      async deleteDocument(i: string, docId: string) {
+        if (failDelete) throw new IndexingError("unavailable", true);
+        return index.deleteDocument(i, docId);
+      },
+    };
+    expect(await catchUpIndex({ artifacts, index: flaky, checkpoint: cp.store })).toMatchObject({
+      ok: false,
+    });
+    // Another commit lands before the retry; the deletion is still applied.
+    await commit({ [path("b")]: record("b") });
+    failDelete = false;
+    expect(await catchUpIndex({ artifacts, index: flaky, checkpoint: cp.store })).toMatchObject({
+      ok: true,
+      removed: 1,
+    });
+    expect(index.docs.has(id("a"))).toBe(false);
+  });
+
+  it("refuses a checkpoint made for another publication scope", async () => {
+    const first = await commit({ [path("a")]: record("a") });
+    const cp = memoryCheckpoint({ publicationId: "example-pub", commit: first });
+    const report = await catchUpIndex({ artifacts, index: fakeIndex(), checkpoint: cp.store });
+    expect(report.failed).toEqual([{ path: "", reason: "checkpoint-scope-mismatch" }]);
+    expect(
+      await catchUpIndex({
+        artifacts,
+        index: fakeIndex(),
+        checkpoint: cp.store,
+        publicationId: "example-pub",
+      }),
+    ).toMatchObject({ ok: true });
+    expect(cp.state).toMatchObject({ publicationId: "example-pub" });
   });
 });

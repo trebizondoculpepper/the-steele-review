@@ -18,9 +18,11 @@ import { handleTextReadyEvent, type FulltextIndexPort } from "./indexing-handler
  * The checkpoint is the same JSON marker the bulk load writes (#249): its
  * `commit` is the archive revision the index reflects. A pass marks itself
  * `pending` before writing; if it is interrupted or a change fails, the
- * marker keeps `pending`, and the next pass reconciles every current record
- * (a full pass) rather than trusting a diff from a checkpoint the index may
- * have moved past.
+ * marker keeps its last good `commit`, and the next pass reapplies every
+ * change since then (including deletions it had not reached). The writes are
+ * idempotent: indexing is externally versioned and deletes are repeatable.
+ * The checkpoint records its publication scope; a pass for another scope is
+ * refused rather than trusting a commit that never covered it.
  *
  * A full pass indexes every current record but cannot detect records removed
  * before it started, because the strict index mapping has no generation
@@ -76,7 +78,25 @@ export async function catchUpIndex(input: {
 }): Promise<CatchUpReport> {
   const indexName = input.indexName ?? "steele-source-text-v1";
   const marker = (await input.checkpoint.load()) ?? {};
-  const from = marker.pending ? undefined : marker.commit;
+  // A checkpoint is only valid for the publication scope it was made for.
+  const scope = typeof marker.publicationId === "string" ? marker.publicationId : undefined;
+  if (scope !== undefined && scope !== input.publicationId) {
+    return {
+      ok: false,
+      full: false,
+      unchanged: false,
+      indexed: 0,
+      stale: 0,
+      incomplete: 0,
+      removed: 0,
+      failed: [{ path: "", reason: "checkpoint-scope-mismatch" }],
+      interrupted: false,
+      checkpointAdvanced: false,
+    };
+  }
+  // An unfinished pass is retried from the last good commit, so every change
+  // it had not applied (including deletions) is applied again.
+  const from = marker.commit;
   const { head, full, changes } = await input.artifacts.changesSince(from);
   const report: CatchUpReport = {
     ok: true,
@@ -170,6 +190,7 @@ export async function catchUpIndex(input: {
     const { pending: _pending, ...rest } = marker;
     await input.checkpoint.save({
       ...rest,
+      ...(input.publicationId ? { publicationId: input.publicationId } : {}),
       commit: head,
       completedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
