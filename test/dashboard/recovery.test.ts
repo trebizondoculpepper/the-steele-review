@@ -6,6 +6,7 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { articleRecovery } from "../../src/dashboard/recovery-view.js";
 import { restateSubmitter } from "../../src/dashboard/adapters.js";
+import { articleViews } from "../../src/dashboard/article-views.js";
 import {
   RECOVERY_RUN_SUFFIX,
   recoveryIdentities,
@@ -207,5 +208,25 @@ describe("recover stopped run action (#480)", () => {
     );
     expect(ineligible).not.toContain("Confirm recovery");
     expect(ineligible).toContain("not stopped on a recoverable");
+  });
+});
+
+describe("recovery link (#480)", () => {
+  it("uses the configured canonical origin so aliases can confirm recovery", async () => {
+    const [, detail] = articleViews({
+      canRecover: true,
+      actionOrigin: "https://console.example",
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: version }),
+      },
+      runs: { status: async () => creditBlocked },
+    });
+    const html = await detail!.render(
+      new URL("http://alias.local/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).toContain(
+      `href="https://console.example/articles/recover?publication=pub&amp;post=p1&amp;revision=${encodeURIComponent(version)}"`,
+    );
   });
 });

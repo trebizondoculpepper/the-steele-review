@@ -96,9 +96,14 @@ services:
       STEELE_ARCHIVE_REPOSITORY: ${STEELE_ARCHIVE_REPOSITORY}
       STEELE_CONTENT_PATH: /data/content
       STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      # Recovery identities (#480) live in the worker's state controller. The
+      # dashboard writes only tiny recovery records through that controller,
+      # never SQL, and reads pipeline counts through its inspection API.
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
     volumes:
       - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
       - ${STEELE_CONTENT_DIR}:/data/content:ro
+      - ${STEELE_STATE_DIR}:/data/state
     ports:
       - "${STEELE_DASHBOARD_BIND:-127.0.0.1:8090}:8090"
     networks: [steele]

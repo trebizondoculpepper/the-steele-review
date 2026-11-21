@@ -38,6 +38,10 @@ const badge = (state: string, text = state) =>
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
+  const recoveryLink = (publicationId: string, postId: string, revision: string) =>
+    escapeHtml(
+      `${deps.actionOrigin ?? ""}/articles/recover?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
+    );
   const runLink = (publicationId: string, postId: string, revision: string) =>
     escapeHtml(
       `${deps.actionOrigin ?? ""}/articles/run?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
@@ -117,7 +121,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       // A run stopped on provider credit can be recovered explicitly (#480).
       const recovery =
         deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
-          ? `<p><a href="/articles/recover?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(t.sourceVersion)}">Recover stopped run</a></p>`
+          ? `<p><a href="${recoveryLink(publicationId, postId, t.sourceVersion)}">Recover stopped run</a></p>`
           : "";
       return trigger + recovery + renderTrace(t);
     },
