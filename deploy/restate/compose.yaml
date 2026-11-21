@@ -162,6 +162,34 @@ services:
       - ${STEELE_STATE_DIR}:/data/state
     networks: [steele]
 
+  # Live Substack destination, draft-only (#385). Delivery stays off until
+  # STEELE_SUBSTACK_DELIVERY=live (the one-draft proof, #384). Its consumer
+  # must be provisioned new-only (STEELE_PUBLISHER_NEW_ONLY_CONSUMERS) so an
+  # existing approval backlog never becomes real drafts. The origin and the
+  # session file path are private deployment settings.
+  substack-publisher:
+    image: ${STEELE_IMAGE:-steele-review:latest}
+    command: ["node", "--enable-source-maps", "dist/cli/substack-publisher.js"]
+    restart: unless-stopped
+    user: "${STEELE_UID:-1000}:${STEELE_GID:-1000}"
+    healthcheck:
+      disable: true
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      NATS_URL: ${NATS_URL}
+      NATS_TOKEN: ${NATS_TOKEN:-}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+      STEELE_STATE_PATH: /data/state/article-worker.sqlite
+      STEELE_SUBSTACK_ORIGIN: ${STEELE_SUBSTACK_ORIGIN}
+      STEELE_SUBSTACK_SESSION_FILE: /run/secrets/substack-session
+      STEELE_SUBSTACK_DELIVERY: ${STEELE_SUBSTACK_DELIVERY:-off}
+    volumes:
+      - ${STEELE_CONTENT_DIR}:/data/content
+      - ${STEELE_STATE_DIR}:/data/state
+    secrets: [substack-session]
+    networks: [steele]
+
 volumes:
   restate-data:
 
@@ -171,3 +199,5 @@ networks:
 secrets:
   openrouter:
     file: ${OPENROUTER_KEY_FILE}
+  substack-session:
+    file: ${SUBSTACK_SESSION_FILE:-/dev/null}

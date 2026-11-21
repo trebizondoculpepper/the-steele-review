@@ -24,7 +24,6 @@
  *
  * Status lines are sanitised JSON. SIGTERM/SIGINT stop after the in-flight message.
  */
-import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import { z } from "zod";
 import { describeSetupError, natsConnection } from "../config/credentials.js";
@@ -32,7 +31,8 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { NatsController } from "../controllers/nats.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { PUBLICATION_STREAM } from "../events/article-approved-event.js";
-import { handleApprovedArticle, SimulatedDestination } from "../publishing/approved-article.js";
+import { SimulatedDestination } from "../publishing/approved-article.js";
+import { runPublisherService } from "../publishing/publisher-service.js";
 
 const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1),
@@ -82,40 +82,19 @@ async function main(): Promise<number> {
     );
   try {
     await nats.connect(`steele-dummy-publisher-${c.STEELE_PUBLISHER_DESTINATION}`);
-    log({ state: "consuming" });
-    await nats.consume(
-      c.STEELE_PUBLICATION_STREAM,
-      c.STEELE_PUBLISHER_CONSUMER,
-      async (m) => {
-        const decision = await handleApprovedArticle({
-          payload: new TextDecoder().decode(m.data),
-          destination,
-          schedule: { delayMs: c.STEELE_PUBLISHER_DELAY_MS },
-          content,
-          operations,
-          owner,
-          retryDelayMs: c.STEELE_PUBLISHER_RETRY_DELAY_MS,
-        });
-        if (decision.action === "ack") {
-          log({ action: "ack", outcome: decision.outcome, receipt: decision.receipt.path });
-          await m.ack();
-        } else if (decision.action === "nak") {
-          log({ action: "nak", reason: decision.reason });
-          m.nak(decision.delayMs);
-        } else {
-          // A content digest stays stable across redelivery and identifies even
-          // malformed payloads without trusting or retaining their content.
-          const digest = createHash("sha256").update(m.data).digest("hex");
-          operations.recordPermanentFailure(
-            `publisher-rejected:${destination.name}:${digest}`,
-            decision.reason,
-          );
-          log({ action: "term", reason: decision.reason });
-          m.term();
-        }
-      },
-      abort.signal,
-    );
+    await runPublisherService({
+      nats,
+      stream: c.STEELE_PUBLICATION_STREAM,
+      consumer: c.STEELE_PUBLISHER_CONSUMER,
+      destination,
+      content,
+      operations,
+      owner,
+      delayMs: c.STEELE_PUBLISHER_DELAY_MS,
+      retryDelayMs: c.STEELE_PUBLISHER_RETRY_DELAY_MS,
+      log,
+      signal: abort.signal,
+    });
     return 0;
   } catch {
     console.error(

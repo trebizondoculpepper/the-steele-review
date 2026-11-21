@@ -140,6 +140,28 @@ export class UncertainDeliveryError extends Error {
 }
 
 /**
+ * The destination cannot be used right now (expired session, rate limit or
+ * outage) and nothing was sent. The delivery waits without spending its
+ * attempt budget, so an expired session never exhausts an approval.
+ */
+export class DestinationUnavailableError extends Error {
+  constructor(
+    readonly reason: "auth-expired" | "rate-limited" | "unavailable",
+    readonly retryAfterMs: number,
+  ) {
+    super(`destination unavailable: ${reason}`);
+    this.name = "DestinationUnavailableError";
+  }
+}
+
+/** What `reconcile` knows about the uncertain attempt it is resolving. */
+export interface ReconcileContext {
+  preview: DestinationPreview;
+  /** When intent was recorded, before the attempt; absent for older attempts. */
+  intentAt?: string;
+}
+
+/**
  * One destination. It owns rendering and its capabilities; `deliver` must be
  * idempotent for the given key, and `reconcile` reports whether an earlier
  * uncertain delivery for that key actually happened.
@@ -154,6 +176,7 @@ export interface DestinationAdapter {
   ): Promise<Omit<DeliveryReceipt, "destination" | "action">>;
   reconcile(
     key: string,
+    context?: ReconcileContext,
   ): Promise<
     | { delivered: Omit<DeliveryReceipt, "destination" | "action"> }
     | { delivered: false }
@@ -168,7 +191,18 @@ export interface DestinationSchedule {
 
 export type DeliveryDecision =
   | { action: "ack"; outcome: "delivered" | "reused"; receipt: ArtifactRef }
-  | { action: "nak"; delayMs: number; reason: "scheduled" | "busy" | "retry" | "uncertain" }
+  | {
+      action: "nak";
+      delayMs: number;
+      reason:
+        | "scheduled"
+        | "busy"
+        | "retry"
+        | "uncertain"
+        | "auth-expired"
+        | "rate-limited"
+        | "unavailable";
+    }
   | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
 
 function deliveryDirectory(
@@ -298,8 +332,15 @@ async function deliverApprovedArticle(
     let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
     // An earlier uncertain attempt must be reconciled before any retry.
     // The uncertain marker is a durable, write-once artifact beside the receipt.
+    // Intent, with its time, is durable before any external attempt, so
+    // reconciliation can tell whether a listing covers the attempt.
+    const intentRef = await input.content.lookup(`${dir}/intent.json`);
+    const intentAt = intentRef
+      ? (JSON.parse(await input.content.read(intentRef)) as { at?: string }).at
+      : (await writeOnce(input.content, `${dir}/intent.json`, { key, at: now.toISOString() }),
+        now.toISOString());
     if (await input.content.lookup(`${dir}/uncertain.json`)) {
-      const r = await destination.reconcile(key);
+      const r = await destination.reconcile(key, { preview, ...(intentAt ? { intentAt } : {}) });
       if (r === "unknown") {
         input.operations.fail(claim.claim, "uncertain-delivery", true);
         return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
@@ -317,6 +358,11 @@ async function deliverApprovedArticle(
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);
     return { action: "ack", outcome: "delivered", receipt: ref };
   } catch (error) {
+    if (error instanceof DestinationUnavailableError) {
+      // Nothing was sent: wait without spending the attempt budget.
+      input.operations.yieldClaim(claim.claim);
+      return { action: "nak", delayMs: error.retryAfterMs, reason: error.reason };
+    }
     if (error instanceof UncertainDeliveryError) {
       await writeOnce(input.content, `${dir}/uncertain.json`, {
         key,
