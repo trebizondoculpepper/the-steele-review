@@ -128,10 +128,22 @@ const code = (p: Promise<unknown>) =>
   );
 
 describe("Substack client (#385)", () => {
+  it("uses the draft filter for access checks and every reconciliation page", async () => {
+    const { f, calls } = fakeFetch(({ url }) => {
+      const query = new URL(url).searchParams;
+      return query.get("filter") === "draft" ? json([]) : json({ error: "filter-required" }, 400);
+    });
+    const api = client(f);
+    await expect(api.listDrafts({ limit: 1 })).resolves.toEqual([]);
+    await expect(api.listDrafts({ limit: 25, offset: 25 })).resolves.toEqual([]);
+    expect(calls.map(({ url }) => new URL(url).searchParams.get("offset"))).toEqual(["0", "25"]);
+    expect(calls.every(({ init }) => init.method === "GET")).toBe(true);
+  });
+
   it("sends the cookie only to the configured origin, never following redirects", async () => {
     const { f, calls } = fakeFetch(() => json([]));
     await client(f).listDrafts({ limit: 5 });
-    expect(calls[0]!.url).toBe(`${ORIGIN}/api/v1/drafts?limit=5&offset=0`);
+    expect(calls[0]!.url).toBe(`${ORIGIN}/api/v1/drafts?filter=draft&limit=5&offset=0`);
     expect(calls[0]!.init.redirect).toBe("manual");
     expect((calls[0]!.init.headers as Record<string, string>).cookie).toBe(
       "substack.sid=s3cret-cookie",

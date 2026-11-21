@@ -126,7 +126,7 @@ export class SubstackClient {
     const limit = Math.min(Math.max(options.limit, 1), 50);
     const raw = await this.request(
       "GET",
-      `/api/v1/drafts?limit=${limit}&offset=${options.offset ?? 0}`,
+      `/api/v1/drafts?filter=draft&limit=${limit}&offset=${options.offset ?? 0}`,
       undefined,
       signal,
       false,
