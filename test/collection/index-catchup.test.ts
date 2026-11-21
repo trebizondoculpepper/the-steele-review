@@ -305,4 +305,24 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     });
     expect(report.failed).toEqual([{ path: "", reason: "checkpoint-incomplete" }]);
   });
+
+  it("calls keepAlive before each change and abandons the pass when it throws", async () => {
+    const first = await commit({ [path("a")]: record("a") });
+    const cp = memoryCheckpoint({ commit: first });
+    await commit({ [path("b")]: record("b"), [path("c")]: record("c") });
+    let calls = 0;
+    const index = fakeIndex();
+    await expect(
+      catchUpIndex({
+        artifacts,
+        index,
+        checkpoint: cp.store,
+        keepAlive: () => {
+          if (++calls === 2) throw new Error("lease lost");
+        },
+      }),
+    ).rejects.toThrow("lease lost");
+    expect(index.docs.size).toBe(1);
+    expect(cp.state).toMatchObject({ commit: first, pending: expect.any(String) });
+  });
 });
