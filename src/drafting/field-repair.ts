@@ -47,6 +47,8 @@ export function fieldRepairRequest(repair: FieldRepair) {
           singleLine: true,
           plainText: true,
           noHeading: true,
+          // Final references are rendered by the application (#491).
+          noNumberedCitations: true,
         },
       ]),
     ),
