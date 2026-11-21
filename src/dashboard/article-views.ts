@@ -21,6 +21,8 @@ export interface ArticleViewDeps {
   content?: ArticleContentPort;
   receipts?: ReceiptsPort;
   canTrigger?: boolean;
+  /** Validated canonical origin from entry-point configuration, never request headers. */
+  actionOrigin?: string;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -30,6 +32,10 @@ const badge = (state: string, text = state) =>
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
+  const runLink = (publicationId: string, postId: string, revision: string) =>
+    escapeHtml(
+      `${deps.actionOrigin ?? ""}/articles/run?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&revision=${encodeURIComponent(revision)}`,
+    );
   const list: DashboardView = {
     path: "/articles",
     title: "Articles",
@@ -65,7 +71,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
           const action = deps.canTrigger
             ? `<td>${
                 /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
-                  ? `<a href="/articles/run?publication=${encodeURIComponent(a.publicationId)}&amp;post=${encodeURIComponent(a.postId)}&amp;revision=${encodeURIComponent(a.sourceVersion)}">Run this revision</a>`
+                  ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
                   : "Revision unavailable"
               }</td>`
             : "";
@@ -99,7 +105,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       });
       const trigger =
         deps.canTrigger && t.sourceVersion
-          ? `<p><a href="/articles/run?publication=${encodeURIComponent(publicationId)}&amp;post=${encodeURIComponent(postId)}&amp;revision=${encodeURIComponent(t.sourceVersion)}">Run this revision</a></p>`
+          ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
       return trigger + renderTrace(t);
     },

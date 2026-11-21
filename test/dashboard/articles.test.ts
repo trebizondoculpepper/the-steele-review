@@ -305,6 +305,17 @@ describe("article pages (#377)", () => {
     expect(await readOnly!.render(new URL("http://x/articles"))).not.toContain("/articles/run");
   });
 
+  it("uses the configured canonical origin instead of a request alias", async () => {
+    const [list] = articleViews({
+      articles,
+      canTrigger: true,
+      actionOrigin: "https://console.example.test",
+    });
+    const html = await list!.render(new URL("http://alias.example.test/articles"));
+    expect(html).toContain('href="https://console.example.test/articles/run?');
+    expect(html).not.toContain('href="http://alias.example.test/articles/run?');
+  });
+
   it("does not offer an action for an unknown indexed revision", async () => {
     const [list] = articleViews({
       articles: { ...articles, recent: async () => [{ ...post, sourceVersion: "unknown" }] },
