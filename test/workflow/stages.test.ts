@@ -106,6 +106,9 @@ const provider = {
       ...req.user.matchAll(/"claimRecordId":"(claim-[0-9a-f]+)"[^}]*?"status":"(covered|gap)"/g),
     ];
     return JSON.stringify({
+      title: "Weather claims in context",
+      subtitle: "What the supplied evidence can establish",
+      excerpt: "A review of the claims and the limits of the available evidence.",
       summary: "The post claims a treaty bans weather weapons and that a payment funded an attack.",
       themes: ["Weather warfare"],
       responses: claims.map(([, id, status]) =>

@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
-import { draftFromPackage, draftProblems } from "../../src/drafting/package-draft.js";
+import {
+  CurrentPackageDraftMetadataSchema,
+  PackageDraftMetadataSchema,
+  draftFromPackage,
+  draftProblems,
+} from "../../src/drafting/package-draft.js";
 import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/writer-package.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
@@ -86,6 +91,9 @@ const model = (...responses: string[]) => {
 };
 
 const GOOD = JSON.stringify({
+  title: "Weather claims in context",
+  subtitle: "What the supplied evidence can establish",
+  excerpt: "A review of the claims and the limits of the available evidence.",
   summary:
     "The post says a treaty bans weather weapons and that a 56 million payment funded an attack.",
   themes: ["Weather warfare"],
@@ -132,9 +140,98 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     expect(md).toContain("No source documenting");
     const meta = JSON.parse(await content.read(out.metadata));
     expect(meta).toMatchObject({
+      schemaVersion: 2,
+      title: "Weather claims in context",
+      subtitle: "What the supplied evidence can establish",
+      excerpt: "A review of the claims and the limits of the available evidence.",
+      body: { commit: out.draft.commit, path: out.draft.path, hash: `sha256:${out.draft.sha256}` },
       package: { path: ref.path },
-      templateVersion: "package-explainer-v4",
+      templateVersion: "package-explainer-v5",
       modelVersion: "fake/writer",
+    });
+  });
+
+  it.each([
+    ["title", undefined],
+    ["title", " "],
+    ["title", "x".repeat(201)],
+    ["subtitle", "x".repeat(301)],
+    ["excerpt", "x".repeat(501)],
+    ["excerpt", "first line\nsecond line"],
+    ["subtitle", 42],
+  ])("rejects malformed generated %s metadata", async (field, value) => {
+    const ref = await packageRef();
+    const candidate = { ...JSON.parse(GOOD), [String(field)]: value };
+    const out = await draftFromPackage({
+      content,
+      archive,
+      package: ref,
+      provider: model(JSON.stringify(candidate)),
+      sourceUrl: "https://x/p",
+      maxAttempts: 1,
+    });
+    expect(out).toMatchObject({ status: "failed", reason: "malformed-output" });
+  });
+
+  it("reads legacy v1 metadata while requiring v2 fields for current generation", async () => {
+    const ref = await packageRef();
+    const out = await draftFromPackage({
+      content,
+      archive,
+      package: ref,
+      provider: model(GOOD),
+      sourceUrl: "https://x/p",
+    });
+    if (out.status !== "drafted") throw new Error(out.status);
+    const current = JSON.parse(await content.read(out.metadata));
+    expect(
+      PackageDraftMetadataSchema.safeParse({
+        ...current,
+        body: { ...current.body, path: "different.md" },
+      }).success,
+    ).toBe(false);
+    const legacy = { ...current, schemaVersion: 1 };
+    delete legacy.title;
+    delete legacy.subtitle;
+    delete legacy.excerpt;
+    delete legacy.body;
+    expect(PackageDraftMetadataSchema.parse(legacy).schemaVersion).toBe(1);
+    expect(CurrentPackageDraftMetadataSchema.safeParse(legacy).success).toBe(false);
+    expect(PackageDraftMetadataSchema.safeParse({ ...legacy, schemaVersion: 2 }).success).toBe(
+      false,
+    );
+  });
+
+  it("keeps revised metadata and body distinct, preserving the original", async () => {
+    const ref = await packageRef();
+    const first = await draftFromPackage({
+      content,
+      archive,
+      package: ref,
+      provider: model(GOOD),
+      sourceUrl: "https://x/p",
+    });
+    const revised = {
+      ...JSON.parse(GOOD),
+      title: "A revised explanation",
+      summary: "The post makes two claims; the evidence settles only one.",
+    };
+    const second = await draftFromPackage({
+      content,
+      archive,
+      package: ref,
+      provider: model(JSON.stringify(revised)),
+      sourceUrl: "https://x/p",
+      revision: { number: 1, feedback: [{ passage: "opening", reason: "Clarify scope." }] },
+    });
+    if (first.status !== "drafted" || second.status !== "drafted")
+      throw new Error("expected drafts");
+    expect(second.metadata.path).not.toBe(first.metadata.path);
+    expect(second.draft.sha256).not.toBe(first.draft.sha256);
+    expect(JSON.parse(await content.read(first.metadata)).title).toBe("Weather claims in context");
+    expect(JSON.parse(await content.read(second.metadata))).toMatchObject({
+      title: "A revised explanation",
+      body: { hash: `sha256:${second.draft.sha256}` },
     });
   });
 
@@ -165,6 +262,9 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
   it("never turns a gap into a correction or confirmation", async () => {
     const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(await packageRef())));
     const bad = {
+      title: "Weather claims in context",
+      subtitle: "What the supplied evidence can establish",
+      excerpt: "A review of the claims and the limits of the available evidence.",
       summary: "s",
       themes: [],
       responses: [

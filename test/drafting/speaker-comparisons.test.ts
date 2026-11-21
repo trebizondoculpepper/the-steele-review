@@ -158,6 +158,9 @@ function models(writer: unknown) {
 }
 
 const ESSAY = {
+  title: "Weather claims in context",
+  subtitle: "What the supplied evidence can establish",
+  excerpt: "A review of the claims and the limits of the available evidence.",
   summary: "The post says a treaty bans weather weapons.",
   themes: ["Weather warfare"],
   responses: [

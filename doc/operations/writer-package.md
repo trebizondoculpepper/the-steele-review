@@ -29,6 +29,12 @@ The writer receives the package and the pinned full source text and themes (#164
 
 From template `package-explainer-v2` (#176) the draft also has a narrative-development section and a wider-movement section. Each is either supported, citing the package's own historical comparisons (earlier passages quoted with dates and links; the comparison text labelled as analysis, not evidence, with any qualification) or its independently sourced dossier background, or stated as a limitation. A section that claims support without that context, or cites context the package does not hold, rejects the draft.
 
+### Generated article fields (#456)
+
+New package drafts save schema-v2 metadata containing a model-generated `title` (1–200 characters), `subtitle` (1–300), and `excerpt` (1–500), each trimmed and on one line. These are separate from the source title and from the body. The existing evidence-validated summary, responses and context remain the sole body authority, rendered to the `.md` artifact; metadata `body` pins that exact artifact while the legacy `draft` pointer remains available. No publication author or byline is generated.
+
+The first-draft prompt remains `src/prompts/writer/package-explainer.md`, with revision instructions in `package-revision.md`. Schema, template and prompt identities distinguish the new contract from cached earlier output; identical new inputs reuse saved artifacts. Readers still accept saved schema-v1 metadata without inventing missing fields. Generated metadata is untrusted prose and is not approved for delivery merely because the body has passed the current body-only verifier. Exact metadata-and-body verification is a separate prerequisite (#457), followed by destination mapping (#458).
+
 ## Verifying a draft (#150)
 
 ```sh

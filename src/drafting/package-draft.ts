@@ -29,8 +29,8 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v4";
-export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v5";
+export const PACKAGE_DRAFT_SCHEMA_VERSION = 2;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
 export const PACKAGE_REVISION_INSTRUCTIONS = readFileSync(
@@ -38,19 +38,42 @@ export const PACKAGE_REVISION_INSTRUCTIONS = readFileSync(
   "utf8",
 ).trim();
 /** Identity of the revision instructions; part of a redraft's identity. */
-export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
+export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v2";
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "package-draft-v10",
+  version: "package-draft-v11",
   instructions: readFileSync(
     new URL("../prompts/writer/package-explainer.md", import.meta.url),
     "utf8",
   ).trim(),
 };
 
+/** Generated metadata is plain, bounded prose, not source identity or a byline. */
+const titleField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[^\r\n]+$/);
+const subtitleField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(300)
+  .regex(/^[^\r\n]+$/);
+const excerptField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .regex(/^[^\r\n]+$/);
+
 const ModelDraftSchema = z
   .object({
+    title: titleField,
+    subtitle: subtitleField,
+    excerpt: excerptField,
     summary: z.string().trim().min(1).max(3000),
     themes: z.array(z.string().trim().min(1).max(200)).max(20),
     responses: z
@@ -103,9 +126,9 @@ const Ref = z
   .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
   .strict();
 
-export const PackageDraftMetadataSchema = z
+const LegacyPackageDraftMetadataSchema = z
   .object({
-    schemaVersion: z.literal(PACKAGE_DRAFT_SCHEMA_VERSION),
+    schemaVersion: z.literal(1),
     package: Ref,
     source: Ref,
     themes: Ref,
@@ -122,6 +145,28 @@ export const PackageDraftMetadataSchema = z
     draftedAt: z.string(),
   })
   .strict();
+
+/** v2 keeps the body in its existing Markdown artifact, separate from metadata.
+ * Metadata is not approved for delivery merely because its body was verified;
+ * exact publication-payload verification is a separate stage (#457).
+ */
+export const CurrentPackageDraftMetadataSchema = LegacyPackageDraftMetadataSchema.extend({
+  schemaVersion: z.literal(PACKAGE_DRAFT_SCHEMA_VERSION),
+  title: titleField,
+  subtitle: subtitleField,
+  excerpt: excerptField,
+  body: Ref,
+})
+  .strict()
+  .refine((metadata) => metadata.draft === `${metadata.body.commit}:${metadata.body.path}`, {
+    message: "body reference must identify the saved draft",
+  });
+
+/** Existing saved v1 artifacts remain readable; only v2 is generated now. */
+export const PackageDraftMetadataSchema = z.discriminatedUnion("schemaVersion", [
+  LegacyPackageDraftMetadataSchema,
+  CurrentPackageDraftMetadataSchema,
+]);
 
 export class InvalidDraftError extends Error {
   constructor(reason: string) {
@@ -342,6 +387,7 @@ export async function draftFromPackage(input: {
         input.provider.modelVersion,
         promptId,
         PACKAGE_DRAFT_TEMPLATE_VERSION,
+        PACKAGE_DRAFT_SCHEMA_VERSION,
         ...(input.revision
           ? [input.revision, promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions)]
           : []),
@@ -468,8 +514,12 @@ export async function draftFromPackage(input: {
   }
   const markdown = renderPackageDraft(pkg, draft, sourceUrl);
   const draftRef = await writeOnce(input.content, `${base}.md`, markdown);
-  const metadata = PackageDraftMetadataSchema.parse({
+  const metadata = CurrentPackageDraftMetadataSchema.parse({
     schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
+    title: draft.title,
+    subtitle: draft.subtitle,
+    excerpt: draft.excerpt,
+    body: toRef(draftRef),
     package: toRef(input.package),
     source: pkg.source.artifact,
     themes: pkg.themeResult,
