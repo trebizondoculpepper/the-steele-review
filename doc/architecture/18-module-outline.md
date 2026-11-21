@@ -7,7 +7,7 @@ Agreed discussion outline, 2026-11-19. This describes responsibilities and hando
 | Discoverer | Poll subscribed feeds and announce each item seen. Repeated discovery is expected. Include enough source identity to fetch it. |
 | Fetcher | Reuse already captured content without another downstream announcement. For new content, capture text/transcript and provenance, save it, then announce its immutable artifact reference. |
 | Analyser | Extract proposed themes first, then proposed claims associated with those themes. Save validated structured results and announce one completed analysis per post/run. Default to reusing completed analysis; an explicit redo requests a new run without overwriting history. CLI and automatic requests use the same processing path. |
-| Librarian | Own canonical themes and dossier organisation. Map proposals to existing themes when substantially equivalent, otherwise request research. Check whether existing research answers each claim and commission additions for gaps. Preserve the original proposals and mapping. |
+| Librarian | Own canonical themes and dossier organisation. Map proposals to existing themes when substantially equivalent, otherwise establish a theme independently of whether research exists. Check whether existing research answers each claim and prioritise additions for gaps. Preserve the original proposals and mapping. |
 | Researcher | Accept a research brief, discover and archive cited sources, save the original discovery report, and signal completion. The brief contains a title, a paragraph describing the conspiracy narrative, and optional example claims. Provider/job details remain to be refined. The librarian decides how job artifacts join the canonical corpus. |
 | Drafter | Produce one draft using the versioned article template and supplied evidence brief. Begin with a short source summary, identify specific claims and evidence-based responses, then discuss narrative development and wider movement context where supported. An outline stage is not required. |
 | Verifier | Read the exact draft and its supplied context/evidence. Reject with specific reasons and comments for redrafting, or approve if supported and any defects are only minor. Minor notes cannot excuse unsupported substantive assertions. Approval identifies the exact draft version. |
@@ -16,6 +16,8 @@ Agreed discussion outline, 2026-11-19. This describes responsibilities and hando
 ## Shared handoffs
 
 Librarian (#139) and researcher (#210) are separate significant component epics under the programme (#140), each requiring its own detailed design and small estimated implementation tasks. Extraction does not wait for research: its themes and claims are proposals, and the librarian may reinterpret or recategorise them while preserving the originals and source provenance.
+
+The later [theme/dossier distinction](19-themes-and-dossiers.md) separates established topic identity from its research collection. A canonical theme can be unresearched; neither a theme match nor dossier existence proves coverage of a specific claim.
 
 The writer selects which proposed claims to include; it need not address every extracted claim. Unthemed candidates remain in a durable awaiting-categorisation backlog, distinct from quotation-validation failures. Existing Git results are inspectable before completion notifications are finished. A browsable UI is optional low-priority work, not a prerequisite.
 

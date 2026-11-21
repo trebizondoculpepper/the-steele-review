@@ -33,4 +33,6 @@ See [extraction-first checkpoint](17-extraction-first-contract.md) for the lates
 
 See the [pipeline module outline](18-module-outline.md) for the librarian and researcher workflow and writer handoff.
 
+See [themes and dossiers](19-themes-and-dossiers.md) for the target distinction between canonical topic identity, reusable mappings and research coverage.
+
 See [retained image annotations](19-image-annotations.md) for optional on-demand classification, pinned image inputs, renderer behaviour and separate OCR scope.
