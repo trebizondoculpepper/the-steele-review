@@ -58,7 +58,10 @@ function model(
 describe("broad-topic prompt (#168)", () => {
   it("asks for established researchable topics without treating notability as truth", () => {
     const text = DEFAULT_THEME_PROPOSAL_PROMPT.instructions;
-    expect(DEFAULT_THEME_PROPOSAL_PROMPT.version).toBe("theme-proposals-v2");
+    // The version carries the prompt file's content hash (#421).
+    expect(DEFAULT_THEME_PROPOSAL_PROMPT.version).toMatch(
+      /^analysis-theme-proposals-v2-sha256:[0-9a-f]{64}$/,
+    );
     expect(text).toMatch(/encyclopedia/);
     expect(text).toMatch(/not evidence that anything is true/);
     expect(text).toMatch(/Do not invent or cite article URLs/);
@@ -120,7 +123,7 @@ describe("proposeThemes", () => {
     expect(out.result.extraction).toMatchObject({
       schemaVersion: 1,
       modelVersion: "fake/a",
-      promptVersion: "theme-proposals-v2",
+      promptVersion: DEFAULT_THEME_PROPOSAL_PROMPT.version,
     });
   });
 

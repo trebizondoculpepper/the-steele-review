@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
   CandidateSnapshotSchema,
   MalformedResponseSchema,
@@ -65,15 +65,6 @@ import { rethrowCreditExhausted } from "../observability/provider-condition.js";
  * Equivalent-claim matching across different wordings is #145; here the
  * normalised key is exact normalised text.
  */
-
-function loadAnalysisPrompt(name: string): ExtractionPrompt {
-  const instructions = readFileSync(
-    new URL(`../prompts/analysis/${name}.md`, import.meta.url),
-    "utf8",
-  ).trim();
-  const hash = createHash("sha256").update(instructions).digest("hex");
-  return { version: `analysis-${name}-sha256:${hash}`, instructions };
-}
 
 export const DEFAULT_GROUNDED_CLAIM_PROMPT = loadAnalysisPrompt("grounded-claims-v6");
 
