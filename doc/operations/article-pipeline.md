@@ -99,8 +99,11 @@ The shared concurrency cap and the batch deadline still apply independently.
 
 ### Find activity for one original post
 
-Find the `article.pipeline` JSON line from discovery in the service logs and copy
-its `correlation_id`. The discovery event also carries it as `postcorrelationid`.
+To look up a known post, run
+`npm run -s post-trace -- <publication-id> <post-id> --correlation-id`.
+This prints just the ID and does not connect to any service. The discovery
+milestone includes the same `correlation_id` in local JSON logs, and the
+discovery event carries it as `postcorrelationid`.
 The existing discovery `correlationid` still identifies the poll batch.
 Downstream event producers and logs derive the same post ID from the stable
 article identity. Redelivery and edits keep the ID, and workflow records include
