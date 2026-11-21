@@ -24,6 +24,7 @@ export class SavedEvidenceError extends Error {
       | "unknown-job"
       | "job-not-finished"
       | "citation-not-archived"
+      | "monitored-source"
       | "passage-not-in-snapshot",
   ) {
     super(`saved evidence rejected: ${code}`);
@@ -74,6 +75,9 @@ export async function selectSavedEvidence(input: {
   );
   const citation = manifest.citations.find((c) => c.url === input.url);
   if (!citation?.archivedArtifact) throw new SavedEvidenceError("citation-not-archived");
+  // As in the librarian's own assessment, the monitored publication's material
+  // can never independently cover its own claim.
+  if (citation.sourceType === "monitored-source") throw new SavedEvidenceError("monitored-source");
   const snapshot = SnapshotSchema.parse(
     JSON.parse(await input.content.read(fromRef(citation.archivedArtifact))),
   );
@@ -87,7 +91,9 @@ export async function selectSavedEvidence(input: {
         ? {
             ...c,
             status: "evidence-found",
-            jobIds: [...new Set([...c.jobIds, input.jobId])],
+            // Last, so the package resolves the snapshot from the selected job
+            // (writer-package searches jobIds from the end).
+            jobIds: [...c.jobIds.filter((j) => j !== input.jobId), input.jobId],
             citations: [{ url: input.url, passage: normalise(input.passage) }],
             reason: `hand-selected from saved research ${input.jobId} (archived snapshot); ${input.note}`,
           }

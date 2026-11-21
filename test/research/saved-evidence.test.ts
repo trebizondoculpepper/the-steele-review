@@ -18,6 +18,8 @@ afterEach(async () => {
 });
 
 const URL_A = "https://example.org/radio-waves";
+const URL_M = "https://pub.example.com/p/p1";
+const SAME_TEXT = "Radio waves do not have enough energy to damage DNA.";
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
   commit: r.commit,
@@ -36,12 +38,24 @@ async function fixture(outcome = "complete-with-gaps") {
       text: "Intro.\nRadio waves do not have enough\n energy to damage DNA. More text.",
     }),
   );
+  const monitored = await content.write(
+    "research-jobs/job-1/sources/m.json",
+    JSON.stringify({ url: URL_M, title: "The post", truncated: false, text: SAME_TEXT }),
+  );
   const manifest = await content.write(
     "research-jobs/job-1/manifest.json",
     JSON.stringify({
       schemaVersion: 1,
       jobId: "job-1",
-      citations: [{ url: URL_A, retrieval: "archived", archivedArtifact: toRef(snapshot) }],
+      citations: [
+        { url: URL_A, retrieval: "archived", archivedArtifact: toRef(snapshot) },
+        {
+          url: URL_M,
+          retrieval: "archived",
+          sourceType: "monitored-source",
+          archivedArtifact: toRef(monitored),
+        },
+      ],
     }),
   );
   const any = toRef(snapshot);
@@ -61,7 +75,7 @@ async function fixture(outcome = "complete-with-gaps") {
           dossierId: "d1",
           status: "no-independent-evidence",
           reused: false,
-          jobIds: ["job-1"],
+          jobIds: ["job-1", "job-0"],
           citations: [],
           reason: "no independent supporting source was found after a search",
         })),
@@ -96,6 +110,8 @@ describe("selectSavedEvidence (#261)", () => {
       citations: [{ url: URL_A, passage: "Radio waves do not have enough energy to damage DNA." }],
     });
     expect(a!.reason).toContain("hand-selected from saved research job-1");
+    // The selected job comes last, so its snapshot wins in package resolution.
+    expect(a!.jobIds).toEqual(["job-0", "job-1"]);
     expect(b).toMatchObject({ status: "no-independent-evidence", citations: [] });
     // Stored and schema-valid; rerunning reuses the same record.
     expect(
@@ -121,6 +137,9 @@ describe("selectSavedEvidence (#261)", () => {
       "citation-not-archived",
     );
     expect(await code(select(coverage, { jobId: "job-2" }))).toBe("unknown-job");
+    expect(await code(select(coverage, { url: URL_M, passage: SAME_TEXT }))).toBe(
+      "monitored-source",
+    );
     expect(await code(select(coverage, { claimRecordId: "claim-z" }))).toBe("unknown-claim");
     expect(await code(select(await fixtureFailed()))).toBe("job-not-finished");
   });
