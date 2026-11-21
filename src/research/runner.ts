@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -31,7 +32,14 @@ import type { SonarClient } from "./sonar.js";
  *   request. Topical or uncertain matches are recorded as `unverified`.
  */
 
-export const RESEARCH_PROMPT_VERSION = "sonar-research-v1";
+const SONAR_RESEARCH_PROMPT = loadPromptFile("research", "sonar-research-v1");
+/**
+ * Identity of the research prompt wording. Editing the Markdown changes this
+ * version, so new jobs and report snapshots get a new identity. Snapshots
+ * written under a known earlier wording stay readable and reusable.
+ */
+export const RESEARCH_PROMPT_VERSION = SONAR_RESEARCH_PROMPT.version;
+const LEGACY_RESEARCH_PROMPT_VERSIONS: ReadonlySet<string> = new Set(["sonar-research-v1"]);
 
 /** Bound on a retained report snapshot; larger values are rejected, not used. */
 export const MAX_SAVED_REPORT_CHARS = 2_000_000;
@@ -83,7 +91,6 @@ const savedSourceSchema = (maxChars: number) =>
     })
     .strict();
 
-export const SUPPORT_PROMPT_VERSION = "source-support-v1";
 /** The finding id used for manual subject requests, which have no claims. */
 export const REQUEST_FINDING_ID = "request";
 
@@ -141,11 +148,7 @@ export function researchPrompt(request: ResearchRequest): { system: string; user
     for (const c of request.claims) lines.push(`- [${c.claimRecordId}] ${c.statement}`);
   }
   return {
-    system:
-      "You are a careful fact-checking researcher. Find primary and authoritative sources " +
-      "that establish what is actually documented about each claim or question. Cite every " +
-      "source you rely on. Distinguish evidence that supports, contradicts or fails to " +
-      "address each claim, and say plainly when no independent evidence was found.",
+    system: SONAR_RESEARCH_PROMPT.instructions,
     user: lines.join("\n"),
   };
 }
@@ -262,11 +265,11 @@ export async function runResearchJob(input: {
     const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
     // A retained snapshot that is not this job's validated report is a
     // terminal operational failure: never reuse it, never refetch over it.
-    if (
-      !saved.success ||
-      saved.data.jobId !== jobId ||
-      saved.data.promptVersion !== RESEARCH_PROMPT_VERSION
-    ) {
+    const knownPrompt =
+      saved.success &&
+      (saved.data.promptVersion === RESEARCH_PROMPT_VERSION ||
+        LEGACY_RESEARCH_PROMPT_VERSIONS.has(saved.data.promptVersion));
+    if (!saved.success || saved.data.jobId !== jobId || !knownPrompt) {
       return fail("invalid-report");
     }
     report = {

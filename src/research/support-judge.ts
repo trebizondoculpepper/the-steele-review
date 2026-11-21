@@ -1,14 +1,10 @@
 import { z } from "zod";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
-import {
-  type Finding,
-  SUPPORT_PROMPT_VERSION,
-  type SupportJudge,
-  type SupportJudgement,
-} from "./runner.js";
+import { loadPromptFile } from "../prompt-files.js";
+import type { Finding, SupportJudge, SupportJudgement } from "./runner.js";
 
 /**
- * Model-based support check (#216, prompt `source-support-v1`). The model
+ * Model-based support check (#216, prompt file `support-judge-v1`). The model
  * may only quote passages; the runner then keeps a passage only when it
  * appears verbatim in the archived source and names a known finding. A
  * malformed answer is treated as "no support found" for that source.
@@ -22,21 +18,10 @@ const Answer = z.object({
   rationale: z.string().min(1).max(2000).optional(),
 });
 
-const SYSTEM = [
-  "You check a research report against one of the sources it cites.",
-  "For each finding, consider what the report concludes about it while citing this source.",
-  "Return a passage only if it directly supports that specific conclusion as the report states it;",
-  "if the report overstates, adds to or misrepresents the source, return nothing for that finding.",
-  'Return JSON only: {"passages":[{"findingId":"...","passage":"..."}],"sourceType":"...","rationale":"..."}.',
-  "sourceType classifies the source (for example treaty, legislation, government record, court record, peer-reviewed study, news report, blog).",
-  "rationale briefly says why it is or is not reliable support for these findings.",
-  "Quote each passage exactly as it appears in the source, at most a few sentences.",
-  "Include a passage only if its text directly supports or directly refutes the specific finding.",
-  "Do not include passages that are merely on the same topic, uncertain, or require inference.",
-  'Return {"passages":[]} when nothing qualifies.',
-].join(" ");
+const SUPPORT_PROMPT = loadPromptFile("research", "support-judge-v1");
+const SYSTEM = SUPPORT_PROMPT.instructions;
 
-export const SUPPORT_JUDGE_PROMPT_VERSION = SUPPORT_PROMPT_VERSION;
+export const SUPPORT_JUDGE_PROMPT_VERSION = SUPPORT_PROMPT.version;
 
 export class ModelSupportJudge implements SupportJudge {
   constructor(
