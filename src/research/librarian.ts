@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
+import { ThemeMappingCatalogue } from "./theme-mappings.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import {
@@ -240,7 +241,7 @@ export const CoverageRecordSchema = z
           title: z.string(),
           dossierId: z.string(),
           created: z.boolean(),
-          method: z.enum(["embedding", "lexical"]),
+          method: z.enum(["embedding", "lexical", "catalogue"]),
           limitation: z.string().optional(),
           rationale: z.string(),
         })
@@ -640,6 +641,7 @@ export async function assessPostCoverage(input: {
     input.themeResult,
     input.claimResult,
   );
+  const catalogue = new ThemeMappingCatalogue(input.artifacts);
   for (const proposal of themes.proposals) {
     const p = { ...proposal, description: proposal.description ?? "" };
     const kept = savedMapping.get(p.id);
@@ -648,6 +650,24 @@ export async function assessPostCoverage(input: {
       titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
       if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, p.title);
       mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
+      continue;
+    }
+    // A decision made for the same proposal on another post is reused instead
+    // of recalculated, as long as its canonical dossier still exists (#518).
+    const catalogued = await catalogue.lookup({ proposal: p.title });
+    if (catalogued && existing.has(catalogued.canonicalThemeId)) {
+      const dossierId = catalogued.canonicalThemeId;
+      if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
+      dossierFor.set(p.id, dossierId);
+      titles.set(dossierId, existing.get(dossierId)?.metadata.title ?? p.title);
+      mappings.push({
+        proposalId: p.id,
+        title: p.title,
+        dossierId,
+        created: false,
+        method: "catalogue",
+        rationale: `reused saved catalogue decision (${catalogued.key})`,
+      });
       continue;
     }
     const shortlist = await input.shortlister.shortlist(p, summaries);
@@ -669,6 +689,17 @@ export async function assessPostCoverage(input: {
       ...(shortlist.limitation ? { limitation: shortlist.limitation } : {}),
       rationale: decision.rationale,
     });
+    // Only an accepted equivalence teaches the catalogue: a new dossier is
+    // this post's own invention and must not become a global default.
+    if (decision.themeId !== null) {
+      await catalogue.record({
+        proposal: p.title,
+        canonicalThemeId: dossierId,
+        decidedAt: now,
+        decidedBy: { publicationId: post.publicationId, postId: post.postId },
+        rationale: decision.rationale,
+      });
+    }
   }
 
   // 2. Account for every accepted claim: reuse, or group by dossier for research.

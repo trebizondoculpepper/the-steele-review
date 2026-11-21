@@ -526,6 +526,50 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
     expect(out.record.claims[0].status).toBe("claimant-only");
   });
 
+  it("reuses a saved catalogue decision instead of recalculating it (#518)", async () => {
+    const r = researcher(() => ({ passages: [] }));
+    const first = await analysis("p1", [claims[0]], "Mercury");
+    const created = await assessPostCoverage({
+      artifacts,
+      ...first,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const dossierId = created.record.mappings[0].dossierId;
+
+    // A second post accepts the existing dossier, which teaches the catalogue.
+    const second = await analysis("p2", [claims[1]], "Mercury");
+    const accepting = { decide: async () => ({ themeId: dossierId, rationale: "same subject" }) };
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accepting,
+    });
+
+    // A third post with the same proposal reuses the catalogue and never asks
+    // the judge again.
+    const third = await analysis("p3", [claims[0]], "Mercury");
+    const mustNotDecide = {
+      decide: async () => {
+        throw new Error("judge must not be consulted for a catalogue hit");
+      },
+    };
+    const reused = await assessPostCoverage({
+      artifacts,
+      ...third,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: mustNotDecide,
+    });
+    expect(reused.record.mappings[0]).toMatchObject({
+      dossierId,
+      method: "catalogue",
+      created: false,
+    });
+  });
+
   it("gives a theme its own dossier when the judge rejects a same-named one", async () => {
     const a = await analysis("p1", [claims[0]], "Mercury");
     const r = researcher(() => ({ passages: [] }));
