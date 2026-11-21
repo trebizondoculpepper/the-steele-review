@@ -72,6 +72,33 @@ describe("OperationStore", () => {
     expect(indexes).toContain("pending_events_by_operation");
   });
 
+  it("keeps the newest editorial disposition across concurrent writers (#447)", () => {
+    const a = open();
+    const b = open();
+    const key = "editorial-disposition:test";
+    expect(
+      a.recordEditorialDisposition({
+        key,
+        decision: { request: "newer" },
+        decidedAt: "2026-01-02T00:00:00.000Z",
+      }),
+    ).toEqual({ applied: true });
+    // An older decision arriving late is ignored, not written over the newer.
+    expect(
+      b.recordEditorialDisposition({
+        key,
+        decision: { request: "older" },
+        decidedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toEqual({ applied: false });
+    expect(a.editorialDisposition(key)).toEqual({
+      decision: { request: "newer" },
+      decidedAt: "2026-01-02T00:00:00.000Z",
+    });
+    a.close();
+    b.close();
+  });
+
   it("requires an absolute path and bounded busy timeout", () => {
     expect(() => new OperationStore({ path: "relative.sqlite" })).toThrow(OperationStoreError);
     expect(() => new OperationStore({ path, busyTimeoutMs: 600_000 })).toThrow("invalid-config");

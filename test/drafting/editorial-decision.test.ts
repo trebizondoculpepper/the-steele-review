@@ -166,6 +166,44 @@ describe("manual editorial decisions (#447)", () => {
     });
   });
 
+  it("replaces a rejection with a later approval and records feedback", async () => {
+    const ref = await draft();
+    const key = editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref });
+    await recordEditorialDecision({
+      content,
+      operations,
+      request: request({ draft: ref, action: "reject", requestId: "r" }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await recordEditorialDecision({
+      content,
+      operations,
+      request: request({ draft: ref, action: "approve", requestId: "a" }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-02T00:00:00.000Z"),
+    });
+    expect(operations.editorialDisposition(key)).toMatchObject({
+      decidedAt: "2026-01-02T00:00:00.000Z",
+    });
+    const feedback = await recordEditorialDecision({
+      content,
+      operations,
+      request: request({
+        draft: ref,
+        action: "feedback",
+        comment: "Add the missing source.",
+        requestId: "f",
+      }) as never,
+      owner: "owner",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    expect(feedback).toMatchObject({ status: "recorded", decision: { action: "feedback" } });
+    expect(operations.editorialDisposition(key)).toMatchObject({
+      decidedAt: "2026-01-03T00:00:00.000Z",
+    });
+  });
+
   it("does not let a late older decision regress the disposition", async () => {
     const ref = await draft();
     const key = editorialDispositionKey({ publicationId: "pub", postId: "p1", draft: ref });
