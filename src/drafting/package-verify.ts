@@ -391,12 +391,20 @@ export async function verifyWithRevisions(input: {
         issues: substantive,
       };
     }
+    // The exact draft the verifier just checked is the article to revise.
+    let previousMarkdown: string;
+    try {
+      previousMarkdown = await input.content.read(draftRef);
+    } catch {
+      return { outcome: "failed", reason: "draft-unavailable", revisions };
+    }
     const redraft = await draftFromPackage({
       content: input.content,
       archive: input.archive,
       package: input.package,
       provider: input.writer,
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
+      previousDraft: { ref: draftRef, markdown: previousMarkdown },
       revision: {
         number: revisions + 1,
         feedback: substantive.map((i) => ({ passage: i.passage, reason: i.reason })),

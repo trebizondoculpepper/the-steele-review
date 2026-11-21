@@ -86,6 +86,8 @@ const model = (version: string, ...responses: string[]) => {
     complete: async () => responses[Math.min(calls++, responses.length - 1)],
   };
 };
+const loadRevision = (user: string) => JSON.parse(user) as { revision?: unknown };
+
 const APPROVE = JSON.stringify({
   verdict: "approved",
   issues: [{ passage: "fairly", reason: "slightly informal", severity: "minor" }],
@@ -169,6 +171,35 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       /^writer-package-revision-sha256:[0-9a-f]{64}\+sha256:[0-9a-f]{16}$/,
     );
     expect(m2.revisionPromptVersion).not.toBe(m1.revisionPromptVersion);
+
+    // The revision writer receives the exact previous draft (#489).
+    const users: string[] = [];
+    const recording = {
+      modelVersion: "fake/writer",
+      async complete(request: { user: string }) {
+        users.push(request.user);
+        return writerResponse();
+      },
+    };
+    const previous = { ref: draft, markdown: "# Previous article\n\nThe treaty bans weapons." };
+    const withPrevious = await draftFromPackage({
+      ...base,
+      provider: recording as never,
+      revision,
+      previousDraft: previous,
+    });
+    if (withPrevious.status !== "drafted") throw new Error(withPrevious.status);
+    expect(loadRevision(users[0]!)).toMatchObject({
+      revision: {
+        number: 1,
+        previousDraft: previous.markdown,
+        previousDraftTruncated: false,
+      },
+    });
+    // The previous draft is part of the revision's identity.
+    const withoutPrevious = await draftFromPackage({ ...base, provider: model("fake/writer", writerResponse()), revision });
+    if (withoutPrevious.status !== "drafted") throw new Error(withoutPrevious.status);
+    expect(withPrevious.draft.path).not.toBe(withoutPrevious.draft.path);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
     const v1 = model("fake/verifier", APPROVE);
