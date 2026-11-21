@@ -91,6 +91,29 @@ describe("refresh-checkouts.sh (#420)", { timeout: 60_000 }, () => {
     expect(await read("content")).toMatchObject({ state: "stale", reason: "diverged" });
   });
 
+  it("never overwrites an ignored local file that upstream starts tracking", async () => {
+    const content = await view("content");
+    await writeFile(join(content.checkout, ".git", "info", "exclude"), "local.md\n");
+    await writeFile(join(content.checkout, "local.md"), "my private notes\n");
+    await content.commitUpstream("local.md");
+    run(`content=${content.checkout}`);
+    expect(await readFile(join(content.checkout, "local.md"), "utf8")).toBe("my private notes\n");
+    expect(await read("content")).toMatchObject({ state: "stale", reason: "fast-forward-failed" });
+  });
+
+  it("keeps private paths out of its output for a missing checkout", async () => {
+    const missing = join(dir, "private-account", "nowhere");
+    const out = execFileSync(
+      "sh",
+      ["-c", `sh "$0" "$1" "$2" 2>&1`, SCRIPT, join(dir, status), `content=${missing}`],
+      {
+        encoding: "utf8",
+      },
+    );
+    expect(out).not.toContain("private-account");
+    expect(await read("content")).toMatchObject({ state: "stale", reason: "not-a-checkout" });
+  });
+
   it("does nothing while another refresh holds the lock, and records no paths", async () => {
     const content = await view("content");
     const before = git(content.checkout, "rev-parse", "HEAD");

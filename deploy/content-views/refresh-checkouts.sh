@@ -10,6 +10,8 @@
 #   - the checkout has no tracked or untracked local changes;
 #   - its HEAD is an ancestor of the remote head (nothing local would be lost).
 #
+# Git diagnostics (which can contain private paths) are never forwarded:
+# only the sanitised reason categories below reach the status and logs.
 # Otherwise it is left exactly as it is: never reset, cleaned, stashed or
 # rebased. The view is then reported "stale" with a reason, so an operator can
 # see why it stopped refreshing. Concurrent runs are serialised by an atomic
@@ -66,15 +68,19 @@ refresh() { # name checkout
   name=$1
   dir=$2
   case "$name" in *[!a-z0-9-]* | "") echo "invalid view name" >&2; return 2 ;; esac
-  if ! head=$(git -C "$dir" rev-parse --verify -q HEAD); then
+  if ! head=$(git -C "$dir" rev-parse --verify -q HEAD 2>/dev/null); then
     write_status "$name" stale not-a-checkout ""
     return 0
   fi
-  if [ -n "$(git -C "$dir" status --porcelain --untracked-files=all)" ]; then
+  if ! changes=$(git -C "$dir" status --porcelain --untracked-files=all 2>/dev/null); then
+    write_status "$name" stale not-a-checkout "$head"
+    return 0
+  fi
+  if [ -n "$changes" ]; then
     write_status "$name" stale local-changes "$head"
     return 0
   fi
-  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD) || {
+  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
     write_status "$name" stale detached-head "$head"
     return 0
   }
@@ -82,16 +88,21 @@ refresh() { # name checkout
     write_status "$name" stale fetch-failed "$head"
     return 0
   fi
-  remote=$(git -C "$dir" rev-parse --verify -q FETCH_HEAD)
+  remote=$(git -C "$dir" rev-parse --verify -q FETCH_HEAD 2>/dev/null) || {
+    write_status "$name" stale fetch-failed "$head"
+    return 0
+  }
   if [ "$head" = "$remote" ]; then
     write_status "$name" fresh "" "$head"
     return 0
   fi
-  if ! git -C "$dir" merge-base --is-ancestor "$head" "$remote"; then
+  if ! git -C "$dir" merge-base --is-ancestor "$head" "$remote" 2>/dev/null; then
     write_status "$name" stale diverged "$head"
     return 0
   fi
-  if git -C "$dir" merge --ff-only --quiet "$remote" 2>/dev/null; then
+  # --no-overwrite-ignore: an ignored local file that upstream starts tracking
+  # is never silently replaced; the update fails and the view reports stale.
+  if git -C "$dir" merge --ff-only --no-overwrite-ignore --quiet "$remote" >/dev/null 2>&1; then
     write_status "$name" fresh "" "$remote"
   else
     write_status "$name" stale fast-forward-failed "$head"
