@@ -43,11 +43,12 @@ export const ThemeMappingSchema = z
   .object({
     schemaVersion: z.literal(THEME_MAPPING_SCHEMA_VERSION),
     /** Normalised proposal text the librarian recognised. */
-    key: z.string().min(1).max(1400),
+    key: z.string().min(1).max(2400),
     /** The proposal wording exactly as assessed, for review. */
     proposal: z.string().min(1).max(300),
     /** The proposal description, which separates same-titled different topics. */
-    description: z.string().max(1000).optional(),
+    /** Proposals allow descriptions up to 2000 characters (theme-proposals). */
+    description: z.string().max(2000).optional(),
     /** Optional scope, e.g. a publication or programme, when the decision was scoped. */
     scope: z.string().min(1).max(120).optional(),
     /** Stable canonical research topic / dossier the proposal maps to. */
