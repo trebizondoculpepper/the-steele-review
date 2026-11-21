@@ -58,11 +58,11 @@ Endpoint names are as observed in public clients and must be confirmed by #384 b
 
 ### Uncertain creates and reconciliation
 
-Substack drafts cannot carry our idempotency key, so a create whose response was lost must not simply be retried. The adapter records intent before the create. On `uncertain`, reconciliation lists recent drafts and looks for one whose title equals the preview title and whose normalised body fingerprint equals the preview's:
+Substack drafts cannot carry our idempotency key, so a create whose response was lost must not simply be retried. The adapter records intent, with its time, before the create. On `uncertain`, reconciliation lists recent drafts and looks for one whose title equals the preview title and whose normalised body fingerprint equals the preview's:
 
 - exactly one match: delivered (that draft's ID becomes the receipt);
-- a confirmed listing with no match: not delivered, safe to retry;
-- the listing fails or several drafts match: `unknown`, which stops automatic retries and is shown as a failed delivery for an operator.
+- no match, **and** the listing authoritatively covers the attempt (it reaches drafts created before the recorded intent time, or it is the complete list): not delivered, safe to retry. A bounded listing that does not reach back past the intent time proves nothing, because newer drafts may have pushed the created one out of the page;
+- the listing fails, does not cover the attempt, or several drafts match: `unknown`, which stops automatic retries and is shown as a failed delivery for an operator to reconcile.
 
 ### Formatting
 
