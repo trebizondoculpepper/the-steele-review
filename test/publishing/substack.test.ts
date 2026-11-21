@@ -425,6 +425,20 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
     expect(await handle(payload, d)).toMatchObject({ action: "ack", outcome: "reused" });
   });
 
+  it("keeps the pinned byline when configuration changes during retries (#459)", async () => {
+    const payload = await approvedPayload();
+    const s = fakeSubstack();
+    s.faults.list = [new SubstackError("auth-expired", 401)];
+    const pinned = new SubstackDraftDestination(s, { bylineId: "42", authRetryMs: 900_000 });
+    expect(await handle(payload, pinned)).toMatchObject({ action: "nak", reason: "auth-expired" });
+    // The owner changes the configured byline while the intent is pending.
+    const changed = new SubstackDraftDestination(s, { bylineId: "99" });
+    expect(await handle(payload, changed)).toMatchObject({ action: "ack", outcome: "delivered" });
+    expect(s.drafts).toHaveLength(1);
+    // The durable preview's byline wins, not the new configuration.
+    expect(s.drafts[0]!.draft_bylines).toEqual([{ id: "42" }]);
+  });
+
   it("reconciles an attempt that stopped before its receipt instead of creating again", async () => {
     const payload = await approvedPayload();
     const s = fakeSubstack();
