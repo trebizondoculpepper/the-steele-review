@@ -76,6 +76,7 @@ const stages: ArticleStages = {
     calls.claims++;
     // Synthetic provider credit exhaustion (#407): no paid request.
     if (post.postId === "no-credit") throw new ModelProviderError("credit-exhausted", 402);
+    if (post.postId === "slow-claims") await sleep(2_500); // observable in-progress stage (#439)
     return ref(`claim-extractions/${post.postId}.json`);
   },
   planResearch: async (themes) => {
@@ -219,6 +220,31 @@ describe("unattended article run on Restate (#243)", () => {
       outcome: "failed",
       reason: "invalid-input",
     });
+  }, 60_000);
+
+  it("records durable progress that advances in order and never regresses (#439)", async () => {
+    const run = ingress.workflowClient(Workflow, articleRunKey(input("slow-claims")));
+    await run.workflowSubmit(input("slow-claims"));
+    const seen: string[] = [];
+    let indexes: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const p = await run.progress();
+      if (p) {
+        seen.push(`${p.stage}:${p.status}`);
+        indexes.push(p.index);
+      }
+      if ((await run.workflowOutput()).ready) break;
+      await sleep(150);
+    }
+    await run.workflowAttach();
+    // While claims was slow, it was visible as the running stage after themes completed.
+    expect(seen).toContain("claims:running");
+    expect(seen.indexOf("claims:running")).toBeGreaterThan(-1);
+    // The stage index never moved backwards across polls.
+    indexes = indexes.filter((v, i, a) => i === 0 || v !== a[i - 1]);
+    expect([...indexes].sort((a, b) => a - b)).toEqual(indexes);
+    const final = await run.progress();
+    expect(final?.status).toBe("completed");
   }, 60_000);
 
   it("ends a run blocked on provider credit with a terminal, non-editorial reason, without retrying", async () => {

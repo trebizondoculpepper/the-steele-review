@@ -194,6 +194,28 @@ export const ArticleRunInputSchema = z
 /** Transient stage failures are retried a bounded number of times. */
 const STEP_RETRY = { maxRetryAttempts: 5 } as const;
 
+/** Stages in run order, for durable progress (#439). */
+export const PROGRESS_STAGES = [
+  "themes",
+  "claims",
+  "plan-research",
+  "research",
+  "coverage",
+  "package",
+  "draft",
+  "verify",
+  "record-approval",
+] as const;
+export type ProgressStage = (typeof PROGRESS_STAGES)[number];
+export interface RunProgress {
+  stage: ProgressStage;
+  status: "running" | "completed";
+  index: number;
+  /** When this stage last changed state (workflow clock). */
+  at: string;
+}
+const PROGRESS_KEY = "progress";
+
 export function articleRunWorkflow(stages: ArticleStages) {
   // Only the shape is used for typed calls; handlers run in the Research service.
   const Research = researchService(stages);
@@ -202,8 +224,30 @@ export function articleRunWorkflow(stages: ArticleStages) {
     ctx: restate.WorkflowContext,
     input: ArticleRunInput,
   ): Promise<ArticleRunResult> {
+    // Durable progress for operators (#439): the current stage and when it last
+    // changed, in the workflow's own state. The stage index only moves forward,
+    // so a duplicate or out-of-order update never regresses it.
+    const mark = async (stage: ProgressStage, status: RunProgress["status"]) => {
+      const at = new Date(await ctx.date.now()).toISOString();
+      const current = await ctx.get<RunProgress>(PROGRESS_KEY);
+      const index = PROGRESS_STAGES.indexOf(stage);
+      if (
+        current &&
+        (current.index > index || (current.index === index && current.status === "completed"))
+      ) {
+        return;
+      }
+      ctx.set<RunProgress>(PROGRESS_KEY, { stage, status, index, at });
+    };
+
     // A StageError is deterministic: terminal, not retried; others retry boundedly.
-    const step = <T>(name: string, fn: () => Promise<T>) =>
+    const step = async <T>(name: ProgressStage, fn: () => Promise<T>): Promise<T> => {
+      await mark(name, "running");
+      const result = await runStep(name, fn);
+      await mark(name, "completed");
+      return result;
+    };
+    const runStep = <T>(name: string, fn: () => Promise<T>) =>
       ctx.run(
         name,
         async () => {
@@ -237,6 +281,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
     const claims = await step("claims", () => stages.claims(input, themes));
     const requests = await step("plan-research", () => stages.planResearch(themes, claims));
 
+    await mark("research", "running");
     // Commission the configured prefix in librarian order. Restate limits concurrency separately.
     const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
     requests.slice(0, input.researchRequestLimit).forEach((request, i) => {
@@ -265,6 +310,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         pending.delete(next.i);
       }
     }
+    await mark("research", "completed");
     const pinned: PinnedResearch[] = requests.map((request, i) => {
       const jobId = researchJobId(request);
       if (input.researchRequestLimit !== undefined && i >= input.researchRequestLimit) {
@@ -333,6 +379,11 @@ export function articleRunWorkflow(stages: ArticleStages) {
   return restate.workflow({
     name: "ArticleRun",
     handlers: {
+      /** Read-only progress of this exact run (#439); null before the first stage. */
+      progress: restate.handlers.workflow.shared(
+        async (ctx: restate.WorkflowSharedContext): Promise<RunProgress | null> =>
+          (await ctx.get<RunProgress>(PROGRESS_KEY)) ?? null,
+      ),
       run: async (ctx: restate.WorkflowContext, raw: ArticleRunInput): Promise<ArticleRunFinal> => {
         const parsed = ArticleRunInputSchema.safeParse(raw);
         if (!parsed.success) return { outcome: "failed", reason: "invalid-input", research: [] };

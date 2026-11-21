@@ -116,6 +116,14 @@ export function renderTrace(t: ArticleTrace): string {
     ["Correlation ID", `<code>${escapeHtml(t.correlationId)}</code>`],
     ["Revision", t.sourceVersion ? `<code>${escapeHtml(t.sourceVersion)}</code>` : "unknown"],
     ["Run", badge(t.summary)],
+    ...(t.summary === "pending"
+      ? [
+          [
+            "Progress",
+            `${t.lastUpdate ? `last update ${escapeHtml(t.lastUpdate.slice(0, 19).replace("T", " "))} UTC · ` : ""}<a href="${escapeHtml(`/articles/trace?publication=${encodeURIComponent(t.post.publicationId)}&post=${encodeURIComponent(t.post.postId)}`)}">refresh</a>`,
+          ],
+        ]
+      : []),
     ...(t.outcome ? [["Outcome", escapeHtml(t.outcome)]] : []),
     ...(t.reason ? [["Reason", escapeHtml(t.reason)]] : []),
   ];
