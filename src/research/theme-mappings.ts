@@ -83,6 +83,42 @@ export function themeMappingPath(m: Pick<ThemeMapping, "key" | "scope">): string
   return `librarian/theme-mappings/${scope}/${pathSegment(normaliseMappingKey(m.key))}.json`;
 }
 
+export const THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION = 1;
+
+/**
+ * Explicit supersession of one mapping decision (#518).
+ *
+ * A canonical split, merge or changed scope is recorded as an immutable
+ * redirect from the old canonical ID to the new one. Earlier mapping versions
+ * and the briefs that referenced them stay untouched; only new lookups follow
+ * the redirect.
+ */
+export const ThemeMappingSupersessionSchema = z
+  .object({
+    schemaVersion: z.literal(THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION),
+    key: z.string().min(1).max(2400),
+    scope: z.string().min(1).max(120).optional(),
+    from: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
+    to: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
+    reason: z.string().min(1).max(1000),
+    decidedAt: z.iso.datetime({ offset: true }),
+    decidedBy: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
+  })
+  .strict();
+export type ThemeMappingSupersession = z.infer<typeof ThemeMappingSupersessionSchema>;
+
+/** Immutable artifact path for one supersession event. */
+export function themeMappingSupersessionPath(
+  s: Pick<ThemeMappingSupersession, "key" | "scope" | "from" | "to" | "decidedAt">,
+): string {
+  const scope = s.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(s.scope))}`;
+  const name = `${s.from}-to-${s.to}-${createHash("sha256")
+    .update(`${s.decidedAt}|${s.from}|${s.to}`)
+    .digest("hex")
+    .slice(0, 12)}`;
+  return `librarian/theme-mappings/supersessions/${scope}/${pathSegment(normaliseMappingKey(s.key))}/${name}.json`;
+}
+
 export interface ThemeMappingQuery {
   proposal: string;
   description?: string;
@@ -94,7 +130,9 @@ export interface ThemeMappingQuery {
  * the same proposal; nothing is guessed when neither exists.
  */
 export class ThemeMappingCatalogue {
-  constructor(private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write">) {}
+  constructor(
+    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write" | "list">,
+  ) {}
 
   async lookup(query: ThemeMappingQuery): Promise<ThemeMapping | undefined> {
     const key = proposalMappingKey(query.proposal, query.description);
@@ -105,9 +143,132 @@ export class ThemeMappingCatalogue {
       const ref = await this.artifacts.lookup(themeMappingPath(candidate));
       if (!ref) continue;
       const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
-      if (parsed.success) return parsed.data;
+      if (!parsed.success) continue;
+      const canonicalThemeId = await this.resolve(parsed.data);
+      return canonicalThemeId === parsed.data.canonicalThemeId
+        ? parsed.data
+        : { ...parsed.data, canonicalThemeId };
     }
     return undefined;
+  }
+
+  /** Follow saved supersessions to the current canonical ID (cycle-safe). */
+  private async resolve(mapping: ThemeMapping): Promise<string> {
+    const supersessions = await this.supersessions(mapping);
+    let current = mapping.canonicalThemeId;
+    const seen = new Set([current]);
+    for (let hops = 0; hops < 20; hops++) {
+      // The chronologically newest event from the current ID wins; ties keep
+      // the earlier event (stable sort in `supersessions`).
+      const next = [...supersessions].reverse().find((s) => s.from === current);
+      if (!next || seen.has(next.to)) return current;
+      seen.add(next.to);
+      current = next.to;
+    }
+    return current;
+  }
+
+  /** All recorded supersessions for one mapping, oldest first. */
+  async supersessions(
+    mapping: Pick<ThemeMapping, "key" | "scope">,
+  ): Promise<ThemeMappingSupersession[]> {
+    const scope = mapping.scope === undefined
+      ? "global"
+      : `scope-${pathSegment(normaliseMappingKey(mapping.scope))}`;
+    const base = `librarian/theme-mappings/supersessions/${scope}/${pathSegment(normaliseMappingKey(mapping.key))}`;
+    // Storage failures propagate: reporting "no supersessions" on a transient
+    // failure would let a stale canonical ID be reused as if current.
+    const paths = await this.listPrefix(base);
+    const found: ThemeMappingSupersession[] = [];
+    for (const path of paths.sort()) {
+      const ref = await this.artifacts.lookup(path);
+      if (!ref) continue;
+      let raw: string;
+      try {
+        raw = await this.artifacts.read(ref);
+      } catch (error) {
+        if (error instanceof ArtifactStoreError && error.code === "git-failed") throw error;
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(raw));
+      } catch {
+        continue; // malformed record: skipped, never guessed
+      }
+      if (parsed.success) found.push(parsed.data);
+    }
+    // Chronological order by parsed instant: timestamps may carry different
+    // UTC offsets, so text order is not time order. Equal instants keep a
+    // deterministic text tie-break.
+    return found.sort((a, b) => {
+      const ta = Date.parse(a.decidedAt);
+      const tb = Date.parse(b.decidedAt);
+      if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+      return a.decidedAt.localeCompare(b.decidedAt);
+    });
+  }
+
+  /**
+   * Record an explicit supersession. Write-once and idempotent: the first
+   * event for the same key, scope and from/to pair wins.
+   */
+  async supersede(input: {
+    proposal: string;
+    description?: string;
+    scope?: string;
+    from: string;
+    to: string;
+    reason: string;
+    decidedAt: string;
+    decidedBy: { publicationId: string; postId: string };
+  }): Promise<ThemeMappingSupersession> {
+    const key = proposalMappingKey(input.proposal, input.description);
+    if (key.length === 0) throw new Error("theme mapping: empty proposal");
+    if (input.from === input.to) throw new Error("theme mapping: supersession is a no-op");
+    const payload = ThemeMappingSupersessionSchema.parse({
+      schemaVersion: THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION,
+      key,
+      ...(input.scope === undefined ? {} : { scope: input.scope }),
+      from: input.from,
+      to: input.to,
+      reason: input.reason,
+      decidedAt: input.decidedAt,
+      decidedBy: input.decidedBy,
+    });
+    const path = themeMappingSupersessionPath(payload);
+    const read = async (): Promise<ThemeMappingSupersession | undefined> => {
+      const ref = await this.artifacts.lookup(path);
+      if (!ref) return undefined;
+      const parsed = ThemeMappingSupersessionSchema.safeParse(
+        JSON.parse(await this.artifacts.read(ref)),
+      );
+      return parsed.success ? parsed.data : undefined;
+    };
+    const existing = await read();
+    if (existing) return existing;
+    try {
+      await this.artifacts.write(path, `${JSON.stringify(payload, null, 2)}\n`);
+      return payload;
+    } catch (error) {
+      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+        const winner = await read();
+        if (winner) return winner;
+      }
+      throw error;
+    }
+  }
+
+  private async listPrefix(prefix: string): Promise<string[]> {
+    const out: string[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const paths = await this.artifacts.list(prefix, 200, after);
+      out.push(...paths);
+      if (paths.length < 200) break;
+      after = paths[paths.length - 1];
+    }
+    return out;
   }
 
   /**
