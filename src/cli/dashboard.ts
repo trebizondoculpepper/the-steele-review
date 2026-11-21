@@ -5,10 +5,14 @@
  *
  * Serves the dashboard over HTTP. No login, by owner decision: restrict
  * exposure with the Compose port binding (STEELE_DASHBOARD_BIND), which is
- * configured privately for the home LAN. Read-only.
+ * configured privately. Reads are read-only; an explicitly configured origin
+ * enables confirmed submission of one captured revision to ArticleRun.
  *
  * Configuration (environment), each optional; an unconfigured source is shown
  * as such on the page:
+ *   STEELE_DASHBOARD_ORIGIN?                         exact browser origin enabling actions
+ *   STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT?         server-side request bound (default 5)
+ *   STEELE_DASHBOARD_RESEARCH_DEADLINE_MS?            server-side deadline (default 1800000)
  *   STEELE_DASHBOARD_PORT?                           listen port (default 8090)
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY[_FILE]? full-text index (article list)
  *   STEELE_FULLTEXT_INDEX?                           index name (default steele-source-text-v1)
@@ -36,7 +40,9 @@ import {
   contentReceipts,
   indexArticles,
   restateRuns,
+  restateSubmitter,
 } from "../dashboard/adapters.js";
+import { articleTrigger } from "../dashboard/trigger.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
 
@@ -44,10 +50,21 @@ const env = z
   .object({
     STEELE_DASHBOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(8090),
     RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }).optional(),
+    STEELE_DASHBOARD_ORIGIN: z
+      .url({ protocol: /^https?$/ })
+      .refine((value) => value === new URL(value).origin)
+      .optional(),
+    STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: z.coerce.number().int().min(0).max(100).default(5),
+    STEELE_DASHBOARD_RESEARCH_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .max(86400000)
+      .default(1800000),
   })
   .safeParse(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== "")));
 if (!env.success) {
-  console.error("dashboard: invalid STEELE_DASHBOARD_PORT or RESTATE_INGRESS_URL");
+  console.error("dashboard: invalid dashboard configuration");
   process.exit(2);
 }
 const e = process.env;
@@ -82,9 +99,20 @@ const checkpoint = e.STEELE_CATCHUP_CHECKPOINT_PATH
   ? fileCheckpoint(e.STEELE_CATCHUP_CHECKPOINT_PATH)
   : undefined;
 
+const trigger =
+  archive && env.data.RESTATE_INGRESS_URL && env.data.STEELE_DASHBOARD_ORIGIN
+    ? articleTrigger({
+        archive,
+        submitter: restateSubmitter(env.data.RESTATE_INGRESS_URL),
+        researchRequestLimit: env.data.STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT,
+        researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
+      })
+    : undefined;
 const views = [
   DEFAULT_VIEWS[0]!,
+  ...(trigger ? [trigger.view] : []),
   ...articleViews({
+    canTrigger: Boolean(trigger),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
     trace: (post) =>
@@ -139,7 +167,15 @@ const views = [
   ),
 ];
 
-const server = createDashboardServer(views);
+const server = createDashboardServer(
+  views,
+  trigger
+    ? {
+        origin: env.data.STEELE_DASHBOARD_ORIGIN!,
+        routes: { "/articles/run": trigger.submit },
+      }
+    : undefined,
+);
 server.listen(env.data.STEELE_DASHBOARD_PORT, "0.0.0.0", () => {
   console.log(
     JSON.stringify({

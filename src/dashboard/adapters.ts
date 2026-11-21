@@ -66,7 +66,12 @@ const UnresolvedVerificationSchema = z
   })
   .strict();
 
-const persistedRef = (r: { repository: string; commit: string; path: string; hash: string }): Ref => ({
+const persistedRef = (r: {
+  repository: string;
+  commit: string;
+  path: string;
+  hash: string;
+}): Ref => ({
   repository: r.repository,
   commit: r.commit,
   path: r.path,
@@ -235,6 +240,18 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
         }
         return { state: "unavailable" };
       }
+    },
+  };
+}
+
+/** Submit through the same Restate identity as automatic capture and the CLI. */
+export function restateSubmitter(ingressUrl: string) {
+  const ingress = clients.connect({ url: ingressUrl });
+  return {
+    async submit(input: import("../workflow/article-run.js").ArticleRunInput): Promise<void> {
+      await ingress
+        .workflowClient<ArticleRunApi>({ name: "ArticleRun" }, articleRunKey(input))
+        .workflowSubmit(input, clients.rpc.sendOpts({ signal: AbortSignal.timeout(10_000) }));
     },
   };
 }

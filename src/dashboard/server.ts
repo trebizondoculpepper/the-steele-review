@@ -4,17 +4,23 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
  * LAN-only operator dashboard shell (#375).
  *
  * Owner decision: reachable from the home LAN without a login, so the server
- * itself holds no secrets and, in this shell, performs no actions. Exposure is
+ * keeps service credentials on the server. Exposure is
  * controlled by where Compose binds the port, configured privately.
  *
  * - Server-rendered HTML with no scripts; a strict Content-Security-Policy
  *   forbids scripts, frames and remote resources, so content shown later
  *   (#377/#378) cannot execute even if it contains markup.
- * - Only GET and HEAD are served. Mutations (#379) will be explicit
- *   same-origin POSTs added deliberately.
+ * - GET and HEAD are read-only. Explicitly configured actions require bounded,
+ *   same-origin POSTs against the configured dashboard origin and Host.
  * - Pages are registered by later tickets through `views`; the shell has the
  *   Overview and Articles navigation.
  */
+
+export interface DashboardActions {
+  /** Explicit configured browser origin; never trust forwarded headers. */
+  origin: string;
+  routes: Record<string, (form: URLSearchParams) => Promise<{ status: number; location?: string }>>;
+}
 
 export interface DashboardView {
   path: string;
@@ -108,14 +114,61 @@ export const DEFAULT_VIEWS: DashboardView[] = [
   },
 ];
 
-export function dashboardHandler(views: DashboardView[] = DEFAULT_VIEWS) {
+export function dashboardHandler(
+  views: DashboardView[] = DEFAULT_VIEWS,
+  actions?: DashboardActions,
+) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const method = request.method ?? "GET";
+    const url = new URL(request.url ?? "/", "http://dashboard.invalid");
+    if (method === "POST" && actions?.routes[url.pathname]) {
+      const origin = new URL(actions.origin);
+      if (
+        request.headers.origin !== origin.origin ||
+        request.headers.host !== origin.host ||
+        (request.headers["sec-fetch-site"] !== undefined &&
+          request.headers["sec-fetch-site"] !== "same-origin")
+      ) {
+        response.writeHead(403, SECURITY_HEADERS).end();
+        return;
+      }
+      if (request.headers["content-type"] !== "application/x-www-form-urlencoded") {
+        response.writeHead(415, SECURITY_HEADERS).end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of request) {
+        const bytes = Buffer.from(chunk);
+        size += bytes.length;
+        if (size > 4096) {
+          response.writeHead(413, SECURITY_HEADERS).end();
+          return;
+        }
+        chunks.push(bytes);
+      }
+      const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      if ([...new Set(form.keys())].some((key) => form.getAll(key).length !== 1)) {
+        response.writeHead(400, SECURITY_HEADERS).end();
+        return;
+      }
+      try {
+        const result = await actions.routes[url.pathname]!(form);
+        response
+          .writeHead(result.status, {
+            ...SECURITY_HEADERS,
+            ...(result.location ? { location: result.location } : {}),
+          })
+          .end();
+      } catch {
+        response.writeHead(503, SECURITY_HEADERS).end();
+      }
+      return;
+    }
     if (method !== "GET" && method !== "HEAD") {
       response.writeHead(405, { allow: "GET, HEAD", ...SECURITY_HEADERS }).end();
       return;
     }
-    const url = new URL(request.url ?? "/", "http://dashboard.invalid");
     const path = url.pathname;
     if (path === "/health") {
       response.writeHead(200, { "content-type": "application/json", ...SECURITY_HEADERS });
@@ -144,8 +197,11 @@ export function dashboardHandler(views: DashboardView[] = DEFAULT_VIEWS) {
   };
 }
 
-export function createDashboardServer(views: DashboardView[] = DEFAULT_VIEWS): Server {
-  const handle = dashboardHandler(views);
+export function createDashboardServer(
+  views: DashboardView[] = DEFAULT_VIEWS,
+  actions?: DashboardActions,
+): Server {
+  const handle = dashboardHandler(views, actions);
   return createServer((req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) res.writeHead(500, SECURITY_HEADERS);
