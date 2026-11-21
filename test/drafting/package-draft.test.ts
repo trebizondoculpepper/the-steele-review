@@ -959,6 +959,9 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
     expect(Object.keys(repair.invalidFields)).toEqual(["excerpt"]);
     expect(repair.errors).toEqual([{ code: "too_big", path: ["excerpt"], maximum: 500 }]);
     expect(repair.constraints.excerpt.maxLength).toBe(500);
+    expect(repair).not.toHaveProperty("post");
+    expect(repair).not.toHaveProperty("sourceContext");
+    expect(requests[1].user).not.toContain("sourceContext");
     expect(requests[1].user).not.toContain(original.summary);
     expect(requests[1].user).not.toContain(original.responses[0].text);
     const run = JSON.parse(await content.read(out.mechanicalRun));

@@ -34,6 +34,7 @@ const capture = (extra: Partial<CollectionRecord> = {}): CollectionRecord => ({
 describe("pinned source provenance", () => {
   it.each([
     ["written", { articleHtml: "<p>text</p>" }, "article-text"],
+    ["image", { articleHtml: "<p>caption</p>" }, "article-text"],
     ["video", { transcript: [{ start: 1, end: 2, text: "text" }] }, "transcript"],
     ["audio", { transcriptDocument: "text" }, "transcript"],
     [
