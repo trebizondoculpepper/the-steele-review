@@ -115,6 +115,10 @@ export async function updateDashboard(input: {
       };
     }
     const restored = deployed.image;
+    // Record the failure before rolling back, so a pass that stops mid-rollback
+    // is never mistaken for an update that did not apply.
+    const failed = { commit, image, at: now() };
+    await save({ deployed, failed });
     let back = false;
     try {
       await stack.setImage(restored);
@@ -131,7 +135,7 @@ export async function updateDashboard(input: {
         image,
         restored,
       },
-      state: { deployed, failed: { commit, image, at: now() } },
+      state: { deployed, failed },
     };
   };
 

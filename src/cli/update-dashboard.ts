@@ -72,10 +72,28 @@ async function lock(path: string): Promise<boolean> {
     return false;
   }
   const marker = `${path}.reclaim`;
-  try {
-    await (await open(marker, "wx")).close();
-  } catch {
-    return false; // another run is reclaiming
+  const claimMarker = async () => {
+    try {
+      const h = await open(marker, "wx");
+      await h.writeFile(JSON.stringify({ host: hostname(), pid: process.pid }));
+      await h.close();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!(await claimMarker())) {
+    // A marker left by a reclaimer that died is itself reclaimable, once.
+    try {
+      const raw = await readFile(marker, "utf8");
+      const m = JSON.parse(raw) as { host?: string; pid?: number };
+      if (m.host !== hostname() || typeof m.pid !== "number" || alive(m.pid)) return false;
+      if ((await readFile(marker, "utf8")) !== raw) return false;
+      await rm(marker, { force: true });
+    } catch {
+      return false;
+    }
+    if (!(await claimMarker())) return false;
   }
   try {
     // Re-read under the marker: remove only the dead owner we inspected.

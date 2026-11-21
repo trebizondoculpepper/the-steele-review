@@ -116,6 +116,39 @@ describe("dashboard auto-update (#476)", () => {
     expect(out.result.outcome).toBe("rollback-failed");
   });
 
+  it("saves the failed revision before rolling back", async () => {
+    const saved: UpdateState[] = [];
+    let live = img(A);
+    await updateDashboard({
+      imageRepository: REPO,
+      state: { deployed: { commit: A, image: img(A), at: "t" } },
+      builds: {
+        latestMainBuild: async () => ({
+          runId: 1,
+          commit: B,
+          conclusion: "success",
+          branch: "main",
+          event: "push",
+        }),
+        isStrictlyNewer: async () => true,
+      },
+      registry: { digestFor: async (c) => `sha256:${c[0]!.repeat(64)}` },
+      readiness: { ready: async () => live === img(A) },
+      save: async (s) => void saved.push(s),
+      stack: {
+        currentImage: async () => live,
+        pull: async () => {},
+        setImage: async (i) => {
+          // The rollback write must happen after the failure was saved.
+          if (i === img(A)) expect(saved.at(-1)?.failed?.commit).toBe(B);
+          live = i;
+        },
+      },
+    });
+    expect(saved.at(-1)).toMatchObject({ failed: { commit: B } });
+    expect(saved.at(-1)?.pending).toBeUndefined();
+  });
+
   it("reconciles an update whose write applied but whose response was lost", async () => {
     const saved: UpdateState[] = [];
     let live = img(A);
