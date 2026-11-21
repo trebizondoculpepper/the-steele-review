@@ -115,6 +115,42 @@ export const editorialDispositionKey = (input: {
     )
     .digest("hex")}`;
 
+/**
+ * Immutable request binding, written before any draft-dependent decision
+ * artifact. One request ID can therefore never silently become a decision for
+ * another draft, even if the first attempt crashed before completing state.
+ */
+export function editorialRequestPath(requestId: string): string {
+  return `editorial-decisions/requests/${requestId}.json`;
+}
+
+const BindingSchema = z
+  .object({
+    schemaVersion: z.literal(EDITORIAL_DECISION_SCHEMA_VERSION),
+    requestId: z.string().min(1).max(200),
+    publicationId: z.string().min(1).max(200),
+    postId: z.string().min(1).max(300),
+    draft: ArtifactReferenceSchema,
+    action: EditorialActionSchema,
+    comment: z.string().trim().min(1).max(MAX_EDITORIAL_COMMENT).optional(),
+  })
+  .strict();
+type Binding = z.infer<typeof BindingSchema>;
+
+function sameBinding(a: Binding, b: Binding): boolean {
+  return (
+    a.requestId === b.requestId &&
+    a.publicationId === b.publicationId &&
+    a.postId === b.postId &&
+    a.action === b.action &&
+    (a.comment ?? "") === (b.comment ?? "") &&
+    a.draft.repository === b.draft.repository &&
+    a.draft.commit === b.draft.commit &&
+    a.draft.path === b.draft.path &&
+    a.draft.hash === b.draft.hash
+  );
+}
+
 /** Immutable path of one decision record. */
 export function editorialDecisionPath(request: {
   publicationId: string;
@@ -207,6 +243,31 @@ export async function recordEditorialDecision(input: {
 
   // Save the durable record before any downstream handoff. An existing
   // immutable file is reused only when it is byte-identical.
+  // Bind the request ID to this exact request before writing the decision.
+  const binding: Binding = {
+    schemaVersion: EDITORIAL_DECISION_SCHEMA_VERSION,
+    requestId: request.requestId,
+    publicationId: request.publicationId,
+    postId: request.postId,
+    draft: request.draft,
+    action: request.action,
+    ...(request.comment === undefined ? {} : { comment: request.comment }),
+  };
+  const bindingPath = editorialRequestPath(request.requestId);
+  try {
+    await input.content.write(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+  } catch (error) {
+    if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict") {
+      input.operations.yieldClaim(claimed.claim);
+      throw error;
+    }
+    const retained = await readJson<Binding>(input.content, bindingPath, BindingSchema);
+    if (!retained || !sameBinding(retained, binding)) {
+      input.operations.yieldClaim(claimed.claim);
+      return { status: "conflict" };
+    }
+  }
+
   let decisionRef: ArtifactRef | undefined;
   try {
     decisionRef = await input.content.write(path, `${JSON.stringify(decision, null, 2)}\n`);
@@ -233,6 +294,7 @@ export async function recordEditorialDecision(input: {
         key: editorialDispositionKey(request),
         decision: asReference(decisionRef),
         decidedAt: existing.decidedAt,
+        order: request.requestId,
       });
     input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
     return { status: "recorded", decision: existing, duplicate: true };
@@ -245,6 +307,7 @@ export async function recordEditorialDecision(input: {
     key: editorialDispositionKey(request),
     decision: asReference(decisionRef),
     decidedAt: decision.decidedAt,
+    order: request.requestId,
   });
   input.operations.complete(claimed.claim, { decision: asReference(decisionRef) }, []);
   return { status: "recorded", decision, duplicate: false };
@@ -263,6 +326,21 @@ function sameDecision(a: EditorialDecision, b: EditorialDecision): boolean {
     a.draft.path === b.draft.path &&
     a.draft.hash === b.draft.hash
   );
+}
+
+async function readJson<T>(
+  content: Pick<GitArtifactStore, "lookup" | "read">,
+  path: string,
+  schema: z.ZodType<T>,
+): Promise<T | undefined> {
+  try {
+    const ref = await content.lookup(path);
+    if (!ref) return undefined;
+    const parsed = schema.safeParse(JSON.parse(await content.read(ref)));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readDecision(

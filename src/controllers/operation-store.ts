@@ -184,7 +184,8 @@ const MIGRATION_V4 = `
 CREATE TABLE IF NOT EXISTS editorial_dispositions (
   key TEXT PRIMARY KEY,
   decision TEXT NOT NULL,
-  decided_at TEXT NOT NULL
+  decided_at TEXT NOT NULL,
+  order_key TEXT NOT NULL
 );
 `;
 
@@ -753,31 +754,52 @@ export class OperationStore {
     key: string;
     decision: unknown;
     decidedAt: string;
+    /** Total-order tiebreak (for example the request ID) for equal timestamps. */
+    order: string;
   }): { applied: boolean } {
-    if (!Key.safeParse(input.key).success || !/^\d{4}-\d{2}-\d{2}T/.test(input.decidedAt)) {
+    if (
+      !Key.safeParse(input.key).success ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(input.decidedAt) ||
+      !Key.safeParse(input.order).success
+    ) {
       throw new OperationStoreError("invalid-input");
     }
     return this.transaction(() => {
       const existing = this.db
-        .prepare("SELECT decided_at FROM editorial_dispositions WHERE key = ?")
-        .get(input.key) as { decided_at: string } | undefined;
-      if (existing && existing.decided_at > input.decidedAt) return { applied: false };
+        .prepare("SELECT decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+        .get(input.key) as { decided_at: string; order_key: string } | undefined;
+      // Compare the (decided_at, order) pair as a total order: equal timestamps
+      // still have a deterministic winner, so replaying an earlier decision
+      // cannot overwrite a later one.
+      if (
+        existing &&
+        (existing.decided_at > input.decidedAt ||
+          (existing.decided_at === input.decidedAt && existing.order_key >= input.order))
+      ) {
+        return { applied: false };
+      }
       this.db
         .prepare(
-          "INSERT INTO editorial_dispositions (key, decision, decided_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at",
+          "INSERT INTO editorial_dispositions (key, decision, decided_at, order_key) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, order_key = excluded.order_key",
         )
-        .run(input.key, JSON.stringify(input.decision), input.decidedAt);
+        .run(input.key, JSON.stringify(input.decision), input.decidedAt, input.order);
       return { applied: true };
     });
   }
 
   /** Current editorial disposition for one exact draft identity, if any. */
-  editorialDisposition(key: string): { decision: unknown; decidedAt: string } | undefined {
+  editorialDisposition(
+    key: string,
+  ): { decision: unknown; decidedAt: string; order: string } | undefined {
     const row = this.db
-      .prepare("SELECT decision, decided_at FROM editorial_dispositions WHERE key = ?")
-      .get(key) as { decision: string; decided_at: string } | undefined;
+      .prepare("SELECT decision, decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+      .get(key) as { decision: string; decided_at: string; order_key: string } | undefined;
     if (!row) return undefined;
-    return { decision: JSON.parse(row.decision) as unknown, decidedAt: row.decided_at };
+    return {
+      decision: JSON.parse(row.decision) as unknown,
+      decidedAt: row.decided_at,
+      order: row.order_key,
+    };
   }
 
   /** Delivery status of one recorded event, or undefined if none was recorded. */

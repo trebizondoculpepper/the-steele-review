@@ -7,6 +7,7 @@ import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   editorialDecisionPath,
   editorialDispositionKey,
+  editorialRequestPath,
   recordEditorialDecision,
 } from "../../src/drafting/editorial-decision.js";
 
@@ -275,6 +276,34 @@ describe("manual editorial decisions (#447)", () => {
     });
     // A conflicting reuse of the same request ID is refused, not rewritten.
     expect(await decide({ draft: ref, action: "reject" })).toEqual({ status: "conflict" });
+  });
+
+  it("binds a request ID to its first draft even after a crash", async () => {
+    const first = await draft();
+    const second = await draft("another version");
+    // Simulate a crash after the binding write but before any completion.
+    await content.write(
+      editorialRequestPath("decision-1"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        requestId: "decision-1",
+        publicationId: "pub",
+        postId: "p1",
+        draft: first,
+        action: "approve",
+      })}\n`,
+    );
+    expect(await decide({ draft: second })).toEqual({ status: "conflict" });
+    expect(
+      await content.lookup(
+        editorialDecisionPath({
+          publicationId: "pub",
+          postId: "p1",
+          draft: second,
+          requestId: "decision-1",
+        }),
+      ),
+    ).toBeUndefined();
   });
 
   it("rejects invalid requests and feedback without a comment", async () => {

@@ -81,6 +81,7 @@ describe("OperationStore", () => {
         key,
         decision: { request: "newer" },
         decidedAt: "2026-01-02T00:00:00.000Z",
+        order: "b",
       }),
     ).toEqual({ applied: true });
     // An older decision arriving late is ignored, not written over the newer.
@@ -89,12 +90,32 @@ describe("OperationStore", () => {
         key,
         decision: { request: "older" },
         decidedAt: "2026-01-01T00:00:00.000Z",
+        order: "a",
       }),
     ).toEqual({ applied: false });
     expect(a.editorialDisposition(key)).toEqual({
       decision: { request: "newer" },
       decidedAt: "2026-01-02T00:00:00.000Z",
+      order: "b",
     });
+    // Equal timestamps use the order token as a total order: the later request
+    // wins, and replaying an earlier one cannot overwrite it.
+    expect(
+      a.recordEditorialDisposition({
+        key,
+        decision: { request: "same-time-later" },
+        decidedAt: "2026-01-03T00:00:00.000Z",
+        order: "d",
+      }),
+    ).toEqual({ applied: true });
+    expect(
+      b.recordEditorialDisposition({
+        key,
+        decision: { request: "replay" },
+        decidedAt: "2026-01-03T00:00:00.000Z",
+        order: "c",
+      }),
+    ).toEqual({ applied: false });
     a.close();
     b.close();
   });
