@@ -41,3 +41,13 @@ The existing destination guard still checks allowed download hosts and redirects
 
 Existing collector CPU/memory limits are not necessarily sufficient for inference. Benchmark with explicit trial limits first. Disabling the provider is the immediate rollback; it does not remove archived transcripts, reset state or make the pending backlog automatically retryable.
 The provider declares its maximum conversion/output scratch reservation. The adapter reserves that alongside the original download in the shared workspace budget before accepting each job, retaining the reservation until cleanup succeeds. Configuration is refused if a single download plus scratch cannot fit.
+
+## English transcription through OpenRouter (#234)
+
+`STEELE_TRANSCRIPTION_PROVIDER=openrouter` transcribes audio with a low-cost OpenRouter audio model when Substack supplies no usable transcript. The prompt (`src/prompts/transcription/english.md`) sets English explicitly, forbids translation (so strong regional accents are not rendered as Welsh), marks unintelligible words `[inaudible]`, and answers `[NO_SPEECH]` when there is no speech. The provider records the model and a prompt identity (`english-transcription-v1+<hash>`) in the transcript provenance.
+
+Settings: `OPENROUTER_API_KEY[_FILE]`, `STEELE_TRANSCRIPTION_WORKSPACE`, `STEELE_TRANSCRIPTION_ALLOWED_HOSTS`, optional `STEELE_TRANSCRIPTION_MODEL` (default `google/gemini-3.5-flash-lite`), `STEELE_TRANSCRIPTION_MAX_DURATION_SECONDS` (default 1200), `STEELE_TRANSCRIPTION_MAX_BYTES` (default 20 MiB, sent inline) and `STEELE_TRANSCRIPTION_TIMEOUT_MS` (default 10 minutes).
+
+- **Outcomes:** longer or larger audio gets an explicit `too-long` or `too-large` outcome. Chunking long episodes is a separate increment.
+- **No speech:** recorded as a durable, non-retryable `transcription-unusable` outcome for the post, and the post is skipped.
+- **Whisper:** the earlier Whisper trial is unchanged and not used on this path.

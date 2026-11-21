@@ -1,3 +1,4 @@
+import { TranscriptionError } from "../../src/transcription/adapter.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,6 +313,29 @@ describe("CollectionWorker", () => {
     expect(await worker.handle(m)).toBe("transcription-unavailable");
     expect(m.acked).toBe(1);
     expect(operations.claim(collectionKey(item), "x", 1_000).kind).toBe("exhausted");
+  });
+
+  it("records no intelligible speech as a durable transcription-unusable outcome (#234)", async () => {
+    const needsAudio: CollectionResult = {
+      kind: "transcription-required",
+      item,
+      media: { kind: "audio", url: "https://media.test/a.mp3" },
+      provenance: { sourceUrl: item.url, acquiredAt: provenance.acquiredAt },
+    };
+    const transcriber: TranscriberPort = {
+      transcribe: async () => {
+        throw new TranscriptionError("empty-transcript", false);
+      },
+    };
+    const { worker, operations } = setup({ collect: () => needsAudio, transcriber });
+    const m = message();
+    expect(await worker.handle(m)).toBe("transcription-unavailable");
+    expect(m.acked).toBe(1);
+    expect(m.naks).toHaveLength(0);
+    expect(operations.claim(collectionKey(item), "x", 1_000)).toEqual({
+      kind: "exhausted",
+      errorCode: "transcription-unusable",
+    });
   });
 
   it("transcribes audio, stores machine-transcript provenance and deletes media after commit", async () => {
