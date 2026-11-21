@@ -124,3 +124,22 @@ dispatcher, and both publisher outcomes when those stages participate.
 With no DSN, the same milestones appear in local stdout as JSON. Remote
 export sends an allowlisted set of pipeline fields with fixed event messages.
 Keep local logs for container and broker diagnostics.
+
+## Deployed fixture runner (#319)
+
+Run `node dist/cli/article-fixture-smoke.js <synthetic-post-id>` against the
+isolated fixture deployment. It requires the archive and content store
+settings, the fixture NATS connection and `STEELE_CONTENT_STREAM`, and
+`RESTATE_INGRESS_URL`. The archived fixture must be a complete live capture
+under `substack/steele-fixture` with a synthetic URL on
+`steele-fixture.example.test`. Use a fresh post ID for each run. The bridge must
+allow this synthetic source and the fixture worker must use deterministic
+providers. The fixture deployment must have no paid provider credentials or
+public publisher.
+
+The command checks that the workflow key is unused, emits the captured event
+over NATS, then attaches to the run started by the bridge. It checks the
+verification report against the saved draft and waits for both simulated
+receipts with the same full draft hash. The default wait is two minutes.
+Set `STEELE_FIXTURE_TIMEOUT_MS` to adjust it. A failure prints only the stage
+and outcome. Keep the resulting fixture evidence with the deployment record.
