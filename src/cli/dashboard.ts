@@ -57,6 +57,7 @@ import { savedResearch } from "../dashboard/research.js";
 import { claimViews } from "../dashboard/claim-views.js";
 import { savedClaims } from "../dashboard/claims.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
+import { collectActivity, renderActivity } from "../dashboard/activity.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -162,8 +163,29 @@ const overview = statusView(
       : {}),
   }),
 );
+// Live article-stage activity for the console (#479).
+const activityArticles = es
+  ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined)
+  : undefined;
+const activityRuns = env.data.RESTATE_INGRESS_URL
+  ? restateRuns(env.data.RESTATE_INGRESS_URL)
+  : undefined;
+const activityView =
+  activityArticles && activityRuns
+    ? [
+        {
+          path: "/activity",
+          title: "Activity",
+          render: async () =>
+            renderActivity(
+              await collectActivity({ articles: activityArticles, runs: activityRuns }),
+            ),
+        },
+      ]
+    : [];
 const views = [
   overview,
+  ...activityView,
   ...(trigger ? [trigger.view] : []),
   ...(recovery ? [recovery.view] : []),
   ...articleViews({
