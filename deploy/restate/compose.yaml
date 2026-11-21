@@ -80,6 +80,19 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 10s
+    environment:
+      # Read-only sources (#377); each is optional and shown as unconfigured
+      # when empty.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      ELASTICSEARCH_API_KEY: ${ELASTICSEARCH_API_KEY:-}
+      RESTATE_INGRESS_URL: http://restate:8080
+      STEELE_ARCHIVE_PATH: /data/archive
+      STEELE_ARCHIVE_REPOSITORY: ${STEELE_ARCHIVE_REPOSITORY}
+      STEELE_CONTENT_PATH: /data/content
+      STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
+    volumes:
+      - ${STEELE_ARCHIVE_DIR}:/data/archive:ro
+      - ${STEELE_CONTENT_DIR}:/data/content:ro
     ports:
       - "${STEELE_DASHBOARD_BIND:-127.0.0.1:8090}:8090"
     networks: [steele]
