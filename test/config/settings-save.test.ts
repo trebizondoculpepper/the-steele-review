@@ -11,7 +11,7 @@ const salt = "synthetic-salt";
 const publicKey = SETTINGS.find((s) => s.sensitivity === "public")!.key;
 const secretKey = SETTINGS.find((s) => s.sensitivity !== "public")!.key;
 const env = {} as NodeJS.ProcessEnv;
-const versionOf = (file: Record<string, string>) => savedFileVersion(file);
+const versionOf = (file: Record<string, string>) => savedFileVersion(file, salt);
 
 const base = (file: Record<string, string> = {}) => ({
   current: file,
@@ -48,6 +48,15 @@ describe("planned settings save (#545)", () => {
     expect(decision.status).toBe("rejected");
     if (decision.status !== "rejected") return;
     expect(["invalid-value", "invalid-configuration"]).toContain(decision.reason);
+  });
+
+  it("does not expose a private value through the version token", () => {
+    const a = savedFileVersion({ [secretKey]: "alpha" }, salt);
+    const b = savedFileVersion({ [secretKey]: "beta" }, salt);
+    expect(a).not.toBe(b); // it still changes when the value changes
+    expect(a).toMatch(/^config-file-sha256:[0-9a-f]{32}$/);
+    // The token cannot be used to confirm a guess without the salt.
+    expect(savedFileVersion({ [secretKey]: "alpha" }, "other-salt")).not.toBe(a);
   });
 
   it("validates a saved value even when the environment overrides it", () => {

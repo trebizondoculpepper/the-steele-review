@@ -302,11 +302,32 @@ export function configurationVersion(
 /** Longest value the configuration reader accepts, mirrored here so a save cannot exceed it. */
 export const MAX_SAVED_VALUE_LENGTH = 10_000;
 
-/** Deterministic identity of the saved file itself, independent of overrides. */
-export function savedFileVersion(file: Record<string, string>): string {
-  const canonical = Object.fromEntries(
-    Object.entries(file).sort(([a], [b]) => a.localeCompare(b)),
-  );
+/**
+ * Deterministic identity of the saved file itself, independent of overrides.
+ *
+ * Private values are folded in through a salted digest, exactly as the
+ * effective-configuration version does, so a low-entropy private value (for
+ * example a dashboard origin) cannot be recovered by testing candidates
+ * against the published token.
+ */
+export function savedFileVersion(
+  file: Record<string, string>,
+  salt: string,
+  registry: readonly SettingSpec[] = SETTINGS,
+): string {
+  const bySpec = new Map(registry.map((s) => [s.key, s]));
+  const canonical = Object.entries(file)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const spec = bySpec.get(key);
+      // Unknown keys are hashed salted as well: the registry decides what may
+      // be shown, and an unknown key is never public.
+      if (spec?.sensitivity === "public") return [key, value];
+      return [
+        key,
+        createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex"),
+      ];
+    });
   return `config-file-sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32)}`;
 }
 
@@ -394,8 +415,8 @@ export function planSettingsSave(
 
   // Concurrency token covers the saved file, not the resolved effective value:
   // an environment override would otherwise hide a change to the file.
-  const currentVersion = savedFileVersion(input.current);
-  const version = savedFileVersion(candidate);
+  const currentVersion = savedFileVersion(input.current, input.salt, registry);
+  const version = savedFileVersion(candidate, input.salt, registry);
   // A stale submission means another save already landed.
   if (currentVersion !== input.expectedVersion)
     return { status: "rejected", reason: "stale-version", keys: [] };
