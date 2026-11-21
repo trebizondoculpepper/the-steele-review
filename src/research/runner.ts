@@ -186,8 +186,25 @@ export async function runResearchJob(input: {
     report = await input.sonar.research(researchPrompt(request), signal);
   } catch (error) {
     if (error instanceof ModelProviderError && error.code === "timeout") return fail("timeout");
-    if (error instanceof ModelProviderError && error.code === "credit-exhausted")
-      return fail("budget-exceeded");
+    if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+      // Exhausted credit is an operational block, not a research result (#407):
+      // save nothing terminal and hand the claim back without spending it, so
+      // the same job (same ID, same request) runs again after credit is
+      // restored. The run that saw it stops at coverage with this outcome.
+      input.operations.yieldClaim(opened.claim);
+      return {
+        status: "finished" as const,
+        jobId,
+        reused: false,
+        result: {
+          schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
+          jobId,
+          outcome: "failed" as const,
+          failure: "budget-exceeded" as const,
+          finishedAt: now().toISOString(),
+        },
+      };
+    }
     return fail("provider-error");
   }
   const dir = `research-jobs/${jobId}`;
