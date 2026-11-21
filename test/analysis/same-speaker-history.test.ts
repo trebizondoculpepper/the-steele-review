@@ -84,7 +84,11 @@ function port(docs: ClaimOccurrence[]) {
   const search: OccurrenceSearchPort = {
     async search(_i, query) {
       queries.push(query);
-      return docs.map((source, i) => ({ id: String(i), score: 1, source }));
+      // The undated-count query asks for documents without a publication date.
+      const undatedOnly = JSON.stringify(query).includes('"exists"');
+      return docs
+        .filter((d) => (undatedOnly ? !d.sourcePublishedAt : true))
+        .map((source, i) => ({ id: String(i), score: 1, source }));
     },
   };
   return { search, queries };
@@ -199,5 +203,45 @@ describe("findSameSpeakerHistory (#368)", () => {
         occ({ post: "y", statement: CURRENT, speaker: { kind: "quoted", name: NAME } }),
       ),
     ).toBeUndefined();
+  });
+
+  it("rejects whitespace-only quotes", async () => {
+    const provider = model({
+      matches: [{ candidate: "c1", quote: "   ", confidence: "high", reason: "x" }],
+    });
+    const r = await findSameSpeakerHistory({
+      search: port([retold]).search,
+      occurrence: current,
+      provider,
+    });
+    expect(r.outcome).toBe("no-match");
+  });
+
+  it("sends a shared grouping key with a different statement to the model", async () => {
+    const plus = occ({
+      post: "p",
+      statement: "Output changed by +2%.",
+      publishedAt: "2026-06-01T00:00:00Z",
+    });
+    const minus = occ({
+      post: "m",
+      statement: "Output changed by -2%.",
+      publishedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(minus.grouping.key).toBe(plus.grouping.key);
+    const provider = model({ matches: [] });
+    const r = await findSameSpeakerHistory({
+      search: port([minus]).search,
+      occurrence: plus,
+      provider,
+    });
+    expect(r.outcome).toBe("no-match");
+    expect(provider.calls).toBe(1);
+  });
+
+  it("bounds the search by date so later posts cannot crowd out history", async () => {
+    const { search, queries } = port([exact]);
+    await findSameSpeakerHistory({ search, occurrence: current, provider: model({ matches: [] }) });
+    expect(JSON.stringify(queries[0])).toContain('"lt":"2026-06-01T00:00:00Z"');
   });
 });

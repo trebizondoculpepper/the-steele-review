@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
@@ -25,8 +26,8 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js"
  *   current post. Undated candidates cannot be placed before it and are
  *   counted, not returned. Identical passages in different posts (reposts)
  *   are kept once, at their earliest observed date.
- * - A candidate with the same grouping key is the same normalised assertion
- *   and is accepted directly. Others are judged by the model, which must name
+ * - A candidate with the same grouping key and an identical statement is
+ *   accepted directly. Others are judged by the model, which must name
  *   offered candidates and confirm the same proposition, not the same topic;
  *   only high-confidence matches with a verbatim quote from the candidate's
  *   passage are kept.
@@ -37,14 +38,10 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js"
 
 export const DEFAULT_SAME_SPEAKER_PROMPT: ExtractionPrompt = {
   version: "same-speaker-match-v1",
-  instructions: [
-    "Decide which earlier passages from the same speaker make the same specific claim or argumentative move as the current claim.",
-    "A match asserts the same proposition (same subject, same direction, compatible scope) or makes the same argumentative move (for example the same alleged culprit, mechanism or proof). Wording may differ, and a later retelling may add or change details.",
-    "A shared topic, a passing mention, or a different claim about the same subject is NOT a match.",
-    "Quote exactly from the earlier passage the words that make the matching claim.",
-    "Do not judge whether any claim is true.",
-    'Respond with JSON only: {"matches":[{"candidate":"<candidate id>","quote":"<verbatim>","confidence":"high"|"medium"|"low","reason":"<one sentence>"}]}. Use an empty list when nothing matches.',
-  ].join("\n"),
+  instructions: readFileSync(
+    new URL("../prompts/librarian/same-speaker-match.md", import.meta.url),
+    "utf8",
+  ).trim(),
 };
 
 export const MAX_HISTORY = 10;
@@ -107,7 +104,7 @@ const ModelOutputSchema = z.object({
     .array(
       z.object({
         candidate: z.string().min(1),
-        quote: z.string().min(1).max(2000),
+        quote: z.string().trim().min(1).max(2000),
         confidence: z.enum(["high", "medium", "low"]),
         reason: z.string().trim().min(1).max(1000),
       }),
@@ -190,7 +187,12 @@ export async function findSameSpeakerHistory(input: {
     index,
     {
       bool: {
-        filter: [speakerFilter(speaker)],
+        // The strict date bound is in the query, so later posts cannot use up
+        // the candidate budget; undated posts are counted separately below.
+        filter: [
+          speakerFilter(speaker),
+          { range: { sourcePublishedAt: { lt: current.sourcePublishedAt } } },
+        ],
         must_not: [
           { term: { postId: current.postId } },
           { term: { sourceVersion: current.sourceVersion } },
@@ -206,6 +208,27 @@ export async function findSameSpeakerHistory(input: {
     { size: MAX_HISTORY_CANDIDATES },
   );
 
+  try {
+    const undated = await input.search.search(
+      index,
+      {
+        bool: {
+          filter: [speakerFilter(speaker), { term: { "grouping.key": current.grouping.key } }],
+          must_not: [
+            { exists: { field: "sourcePublishedAt" } },
+            { term: { postId: current.postId } },
+          ],
+        },
+      },
+      { size: MAX_HISTORY_CANDIDATES },
+    );
+    diagnostics.excludedUndated = new Set(
+      undated.map((h) => (h.source as { postId?: string }).postId),
+    ).size;
+  } catch {
+    // Counting is best effort; the note still states the limitation.
+  }
+
   // Parse, then keep strictly earlier, dated candidates; collapse reposts.
   const byPassage = new Map<string, ClaimOccurrence>();
   const seen = new Set<string>();
@@ -218,10 +241,7 @@ export async function findSameSpeakerHistory(input: {
     const o = parsed.data;
     if (seen.has(o.occurrenceId) || o.postId === current.postId) continue;
     seen.add(o.occurrenceId);
-    if (!o.sourcePublishedAt) {
-      diagnostics.excludedUndated++;
-      continue;
-    }
+    if (!o.sourcePublishedAt) continue; // counted above
     if (Date.parse(o.sourcePublishedAt) >= sourceTime) continue;
     const key = collapse(o.passage).toLowerCase();
     const prior = byPassage.get(key);
@@ -263,7 +283,13 @@ export async function findSameSpeakerHistory(input: {
   const matches: SameSpeakerMatch[] = [];
   const toJudge: ClaimOccurrence[] = [];
   for (const o of candidates) {
-    if (o.grouping.key === current.grouping.key) matches.push(toMatch(o, o.passage, "grouping"));
+    // A shared grouping key is only a proposal (a loose key can merge "+2%" and
+    // "-2%"), so only an identical statement skips the model.
+    if (
+      o.grouping.key === current.grouping.key &&
+      collapse(o.statement) === collapse(current.statement)
+    )
+      matches.push(toMatch(o, o.passage, "grouping"));
     else toJudge.push(o);
   }
 
@@ -298,6 +324,7 @@ export async function findSameSpeakerHistory(input: {
       const quote = collapse(m.quote);
       if (
         !o ||
+        quote.length === 0 ||
         accepted.has(m.candidate) ||
         m.confidence !== "high" ||
         !collapse(o.passage).includes(quote)
