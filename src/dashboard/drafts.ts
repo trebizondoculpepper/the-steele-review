@@ -24,8 +24,10 @@ import type { ReceiptView, ReceiptsPort } from "./articles.js";
 export const DRAFT_PAGE = 25;
 const METADATA_PATH = /^articles\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\.json$/;
 export const REPORT_SCAN = 200;
+/** Bound on report pages per post (REPORT_SCAN each). */
+export const REPORT_MAX_PAGES = 10;
 
-export type DraftStatus = "approved" | "redraft" | "unverified" | "unreadable";
+export type DraftStatus = "approved" | "redraft" | "unverified" | "incomplete" | "unreadable";
 
 export interface DraftEntry {
   /** Metadata artifact path: the stable identity used for links. */
@@ -60,36 +62,51 @@ type Store = Pick<GitArtifactStore, "list" | "lookup" | "read" | "lookupAt">;
 const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 
 export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftInventoryPort {
-  /** Verification reports for one post, keyed by the exact draft they bind. */
+  /**
+   * Verification reports for one post, keyed by the exact draft they bind.
+   * `incomplete` is set when the scan bound was reached or a listing or report
+   * read failed: absence of a verdict then proves nothing.
+   */
   const reportsFor = async (publicationId: string, postId: string) => {
     const bound = new Map<string, "approved" | "redraft">();
-    let paths: string[] = [];
-    try {
-      paths = await content.list(`verifications/${publicationId}/${postId}`, REPORT_SCAN);
-    } catch {
-      return bound;
-    }
-    for (const path of paths) {
-      try {
-        const ref = await content.lookup(path);
-        if (!ref) continue;
-        const parsed = PackageVerificationReportSchema.safeParse(
-          JSON.parse(await content.read(ref)),
-        );
-        if (!parsed.success) continue; // legacy or wrapper formats bind nothing here
-        const key = `${parsed.data.draft.repository}|${parsed.data.draft.hash}`;
-        // Approval for one exact draft is never overridden by another report.
-        if (bound.get(key) !== "approved") bound.set(key, parsed.data.outcome);
-      } catch {
-        // an unreadable report approves nothing
+    let incomplete = false;
+    let after: string | undefined;
+    for (let page = 0; ; page++) {
+      if (page >= REPORT_MAX_PAGES) {
+        incomplete = true;
+        break;
       }
+      let paths: string[];
+      try {
+        paths = await content.list(`verifications/${publicationId}/${postId}`, REPORT_SCAN, after);
+      } catch {
+        incomplete = true;
+        break;
+      }
+      for (const path of paths) {
+        try {
+          const ref = await content.lookup(path);
+          if (!ref) continue;
+          const parsed = PackageVerificationReportSchema.safeParse(
+            JSON.parse(await content.read(ref)),
+          );
+          if (!parsed.success) continue; // legacy or wrapper formats bind nothing here
+          const key = `${parsed.data.draft.repository}|${parsed.data.draft.hash}`;
+          // Approval for one exact draft is never overridden by another report.
+          if (bound.get(key) !== "approved") bound.set(key, parsed.data.outcome);
+        } catch {
+          incomplete = true; // an unreadable report may have been this draft's verdict
+        }
+      }
+      if (paths.length < REPORT_SCAN) break;
+      after = paths.at(-1);
     }
-    return bound;
+    return { bound, incomplete };
   };
 
   const entryFor = async (
     path: string,
-    reports: Map<string, "approved" | "redraft">,
+    reports: { bound: Map<string, "approved" | "redraft">; incomplete: boolean },
   ): Promise<{ entry: DraftEntry; markdown?: string }> => {
     const m = METADATA_PATH.exec(path)!;
     const base = { path, publicationId: m[1]!, postId: m[2]!, receipts: [] as ReceiptView[] };
@@ -132,7 +149,7 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
     }
     // The hash of the bytes actually read, not a name or a recorded claim.
     const hash = `sha256:${createHash("sha256").update(draft.content).digest("hex")}`;
-    const verdict = reports.get(`${draft.ref.repository}|${hash}`);
+    const verdict = reports.bound.get(`${draft.ref.repository}|${hash}`);
     let delivered: { receipts: ReceiptView[]; truncated: boolean } = {
       receipts: [],
       truncated: false,
@@ -149,7 +166,11 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
         ...base,
         ...info,
         hash,
-        status: verdict ?? "unverified",
+        // No verdict from a partial scan is "incomplete", never "unverified".
+        status: verdict ?? (reports.incomplete ? "incomplete" : "unverified"),
+        ...(!verdict && reports.incomplete
+          ? { limitation: "the verification scan was incomplete or a report was unreadable" }
+          : {}),
         receipts: delivered.receipts,
         ...(delivered.truncated ? { receiptsTruncated: true } : {}),
       },
@@ -168,7 +189,7 @@ export function draftInventory(content: Store, receipts?: ReceiptsPort): DraftIn
       // Over-read: metadata and Markdown share the prefix.
       const paths = await content.list(prefix, DRAFT_PAGE * 2, after);
       const metadata = paths.filter((p) => METADATA_PATH.test(p)).slice(0, DRAFT_PAGE);
-      const reportCache = new Map<string, Map<string, "approved" | "redraft">>();
+      const reportCache = new Map<string, Awaited<ReturnType<typeof reportsFor>>>();
       const entries: DraftEntry[] = [];
       for (const path of metadata) {
         const m = METADATA_PATH.exec(path)!;

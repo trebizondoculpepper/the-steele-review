@@ -7,6 +7,7 @@ const STATUS_LABEL: Record<DraftEntry["status"], [string, string]> = {
   approved: ["done", "verification approved"],
   redraft: ["failed", "rejected / unresolved"],
   unverified: ["not-started", "unverified"],
+  incomplete: ["unknown", "verification incomplete"],
   unreadable: ["unknown", "unreadable"],
 };
 const badge = (e: DraftEntry) => {

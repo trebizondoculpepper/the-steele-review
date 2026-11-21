@@ -105,6 +105,29 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     });
   });
 
+  it("shows an incomplete verification scan as incomplete, not unverified", async () => {
+    const d = await saveDraft("p5", "Only draft.");
+    const failing = new Proxy(content, {
+      get(target, prop) {
+        if (prop === "list") {
+          return async (prefix: string, limit: number, after?: string) => {
+            if (prefix.startsWith("verifications/")) throw new Error("unavailable");
+            return target.list(prefix, limit, after);
+          };
+        }
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const entry = (await draftInventory(failing).page({})).entries.find(
+      (e) => e.path === d.metadata,
+    );
+    expect(entry).toMatchObject({
+      status: "incomplete",
+      limitation: expect.stringContaining("incomplete"),
+    });
+  });
+
   it("pages honestly and escapes untrusted draft text", async () => {
     for (let i = 0; i < DRAFT_PAGE + 3; i++)
       await saveDraft(`post-${String(i).padStart(2, "0")}`, `Draft ${i}.`);
