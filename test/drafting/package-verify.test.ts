@@ -143,7 +143,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     const md = await content.read(draft);
     const tampered = md
       .replace(SHARED, "https://invented.example/report")
-      .replace("**Unresolved.** No record", "**Contradicted by the evidence.** No record");
+      .replace(" unresolved -->", " contradicted -->");
     const issues = deterministicIssues(p, tampered);
     expect(issues.map((i) => i.reason)).toEqual(
       expect.arrayContaining([

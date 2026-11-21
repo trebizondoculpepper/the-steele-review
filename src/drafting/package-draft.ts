@@ -27,7 +27,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
  * or prompt yields a new draft and older drafts stay readable.
  */
 
-export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v2";
+export const PACKAGE_DRAFT_TEMPLATE_VERSION = "package-explainer-v3";
 export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
@@ -40,7 +40,7 @@ export const PACKAGE_REVISION_PROMPT_VERSION = "package-revision-v1";
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT: ExtractionPrompt = {
-  version: "package-draft-v2",
+  version: "package-draft-v5",
   instructions: readFileSync(
     new URL("../prompts/writer/package-explainer.md", import.meta.url),
     "utf8",
@@ -175,13 +175,6 @@ export function draftProblems(pkg: WriterPackage, draft: PackageModelDraft): str
   return problems;
 }
 
-const VERDICT_LABEL = {
-  supported: "Supported by the evidence",
-  contradicted: "Contradicted by the evidence",
-  unsupported: "Not supported as stated",
-  unresolved: "Unresolved",
-} as const;
-
 /** Readable Markdown with numbered sources traceable to the package's evidence. */
 export function renderPackageDraft(
   pkg: WriterPackage,
@@ -200,18 +193,7 @@ export function renderPackageDraft(
     }
     return index.get(key)!;
   };
-  const lines = [
-    `Original post: [${linkText}](<${sourceUrl}>)`,
-    "",
-    "## Summary of the post",
-    "",
-    draft.summary,
-    "",
-  ];
-  if (draft.themes.length > 0) {
-    lines.push("## Themes", "", ...draft.themes.map((t) => `- ${t}`), "");
-  }
-  lines.push("## Claims and the evidence", "");
+  const lines = [draft.summary, ""];
   for (const r of draft.responses) {
     const claim = claims.get(r.claimRecordId)!;
     const refs = r.evidence.map((i) => {
@@ -223,18 +205,17 @@ export function renderPackageDraft(
       );
     });
     lines.push(
-      `### "${claim.statement}"`,
+      `<!-- claim-verdict ${Buffer.from(r.claimRecordId).toString("hex")} ${r.verdict} -->`,
       "",
-      `**${VERDICT_LABEL[r.verdict]}.** ${r.text}${refs.length > 0 ? ` ${refs.map((n) => `[${n}]`).join("")}` : ""}`,
+      `${r.text}${refs.length > 0 ? ` ${refs.map((n) => `[${n}]`).join("")}` : ""}`,
       "",
     );
   }
   // Narrative development: earlier passages are quoted evidence (dated,
   // linked); the comparison text is generated analysis, labelled as such.
   if (draft.narrative) {
-    lines.push("## How this develops the author's narrative", "");
     if (draft.narrative.status === "limited") {
-      lines.push(`_Limitation: ${draft.narrative.limitation}_`, "");
+      lines.push(draft.narrative.limitation, "");
     } else {
       lines.push(draft.narrative.text, "");
       const comparisons = pkg.context?.history.comparisons ?? [];
@@ -254,9 +235,8 @@ export function renderPackageDraft(
     }
   }
   if (draft.widerContext) {
-    lines.push("## The wider movement", "");
     if (draft.widerContext.status === "limited") {
-      lines.push(`_Limitation: ${draft.widerContext.limitation}_`, "");
+      lines.push(draft.widerContext.limitation, "");
     } else {
       const passages = pkg.context?.background.passages ?? [];
       const refs = draft.widerContext.background.map((i) =>
@@ -265,13 +245,10 @@ export function renderPackageDraft(
       lines.push(`${draft.widerContext.text} ${refs.map((n) => `[${n}]`).join("")}`, "");
     }
   }
-  if (draft.limitations.length > 0) {
-    lines.push("## Limitations", "", ...draft.limitations.map((l) => `- ${l}`), "");
-  }
+  for (const limitation of draft.limitations) lines.push(limitation, "");
+  lines.push("## Sources", "", `Original post: [${linkText}](<${sourceUrl}>)`, "");
   if (sources.length > 0) {
     lines.push(
-      "## Sources",
-      "",
       ...sources.map(
         (s, i) =>
           `${i + 1}. ${s.url}${s.archived ? ` (archived ${s.archived})` : ""}: "${s.passage}"`,

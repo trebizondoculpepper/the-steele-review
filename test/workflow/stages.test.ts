@@ -216,8 +216,8 @@ describe("article stages composed (#243)", () => {
     const draft = await stages.draft(pkg.ref, input.sourceUrl);
     expect(draft.ref).toBeDefined();
     const md = await content.read(draft.ref!);
-    expect(md).toContain("**Supported by the evidence.**");
-    expect(md).toContain("**Unresolved.**");
+    expect(md).toMatch(/<!-- claim-verdict [a-f0-9]+ supported -->/);
+    expect(md).toMatch(/<!-- claim-verdict [a-f0-9]+ unresolved -->/);
     expect(await stages.verify(draft.ref!, pkg.ref, input.sourceUrl)).toMatchObject({
       approved: false,
       unavailable: expect.stringContaining("no verifier"),

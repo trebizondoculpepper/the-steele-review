@@ -102,6 +102,24 @@ export function deterministicIssues(pkg: WriterPackage, markdown: string): Verif
       });
     }
   }
+  const byId = new Map(pkg.claims.map((claim) => [claim.claimRecordId, claim]));
+  for (const marker of markdown.matchAll(/^<!-- claim-verdict ([a-f0-9]+) ([a-z]+) -->$/gm)) {
+    const claim = byId.get(Buffer.from(marker[1], "hex").toString("utf8"));
+    if (!claim || !["supported", "contradicted", "unsupported", "unresolved"].includes(marker[2])) {
+      issues.push({
+        passage: marker[0],
+        reason: "responds to a claim that is not in the package or declares an invalid verdict",
+        severity: "substantive",
+      });
+    } else if (claim.status === "gap" && marker[2] !== "unresolved") {
+      issues.push({
+        passage: claim.statement,
+        reason: "treats a claim with no evidence as settled",
+        severity: "substantive",
+      });
+    }
+  }
+  // Legacy renderer placed the statement and verdict in the visible prose.
   const claims = new Map(pkg.claims.map((c) => [c.statement, c]));
   for (const m of markdown.matchAll(/^### "(.+)"\s*\n\s*\n\*\*([^*]+)\.\*\*/gm)) {
     const claim = claims.get(m[1]);
