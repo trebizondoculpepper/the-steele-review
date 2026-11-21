@@ -297,3 +297,143 @@ export function configurationVersion(
     });
   return `config-sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32)}`;
 }
+
+/** A candidate save of desired configuration, never an activation (#545). */
+/** Longest value the configuration reader accepts, mirrored here so a save cannot exceed it. */
+export const MAX_SAVED_VALUE_LENGTH = 10_000;
+
+/**
+ * Deterministic identity of the saved file itself, independent of overrides.
+ *
+ * Private values are folded in through a salted digest, exactly as the
+ * effective-configuration version does, so a low-entropy private value (for
+ * example a dashboard origin) cannot be recovered by testing candidates
+ * against the published token.
+ */
+export function savedFileVersion(
+  file: Record<string, string>,
+  salt: string,
+  registry: readonly SettingSpec[] = SETTINGS,
+): string {
+  const bySpec = new Map(registry.map((s) => [s.key, s]));
+  const canonical = Object.entries(file)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const spec = bySpec.get(key);
+      // Unknown keys are hashed salted as well: the registry decides what may
+      // be shown, and an unknown key is never public.
+      if (spec?.sensitivity === "public") return [key, value];
+      return [
+        key,
+        createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex"),
+      ];
+    });
+  return `config-file-sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32)}`;
+}
+
+export interface SettingsSaveInput {
+  /** The saved file the operator was shown, keyed by setting key. */
+  current: Record<string, string>;
+  /** The effective version the operator saw; a stale value is refused. */
+  expectedVersion: string;
+  /** Raw values to set; an empty string removes the key from the saved file. */
+  changes: Record<string, string>;
+  env: NodeJS.ProcessEnv;
+  /** Private deployment salt used by `configurationVersion`. */
+  salt: string;
+  now?: () => Date;
+}
+
+export interface SettingsAuditEntry {
+  key: string;
+  action: "set" | "remove";
+  at: string;
+}
+
+export type SettingsSaveDecision =
+  | {
+      status: "accepted";
+      /** Canonical file content to write atomically; nothing is activated. */
+      content: string;
+      /** Version the saved file will have. */
+      version: string;
+      audit: SettingsAuditEntry[];
+      /** Components whose activation still needs a reload or restart. */
+      activation: Activation[];
+    }
+  | {
+      status: "rejected";
+      reason: "unknown-key" | "not-editable" | "invalid-value" | "invalid-configuration" | "stale-version";
+      keys: string[];
+    };
+
+/**
+ * Decide whether a save may happen. Pure: it validates the whole candidate
+ * configuration, refuses unknown keys, non-editable (non-public) settings and
+ * stale submissions, and returns the exact content to write. Saving records
+ * desired state only; activation is reported, never performed.
+ */
+export function planSettingsSave(
+  input: SettingsSaveInput,
+  registry: readonly SettingSpec[] = SETTINGS,
+): SettingsSaveDecision {
+  const byKey = new Map(registry.map((s) => [s.key, s]));
+  const keys = Object.keys(input.changes);
+  const unknown = keys.filter((k) => !byKey.has(k));
+  if (unknown.length > 0) return { status: "rejected", reason: "unknown-key", keys: unknown };
+  const notEditable = keys.filter((k) => byKey.get(k)!.sensitivity !== "public");
+  if (notEditable.length > 0)
+    return { status: "rejected", reason: "not-editable", keys: notEditable };
+
+  const candidate: Record<string, string> = { ...input.current };
+  for (const key of keys) {
+    const raw = input.changes[key]!;
+    if (raw === "") delete candidate[key];
+    else candidate[key] = raw;
+  }
+
+  // Validate every saved value against its own schema, independently of any
+  // environment override that would otherwise mask an invalid file value, and
+  // against the reader's length limit.
+  const invalidSaved = Object.entries(candidate)
+    .filter(([key, raw]) => {
+      const spec = byKey.get(key);
+      if (!spec) return true;
+      if (raw.length > MAX_SAVED_VALUE_LENGTH) return true;
+      return !spec.schema.safeParse(raw).success;
+    })
+    .map(([key]) => key);
+  if (invalidSaved.length > 0)
+    return { status: "rejected", reason: "invalid-value", keys: invalidSaved };
+
+  // Whole-configuration validation: a save may not smuggle in a broken value
+  // anywhere, including keys it did not touch.
+  const resolved = resolveSettings(input.env, candidate, registry);
+  const invalid = resolved.filter((r) => r.error !== undefined).map((r) => r.key);
+  if (invalid.length > 0)
+    return { status: "rejected", reason: "invalid-configuration", keys: invalid };
+
+  // Concurrency token covers the saved file, not the resolved effective value:
+  // an environment override would otherwise hide a change to the file.
+  const currentVersion = savedFileVersion(input.current, input.salt, registry);
+  const version = savedFileVersion(candidate, input.salt, registry);
+  // A stale submission means another save already landed.
+  if (currentVersion !== input.expectedVersion)
+    return { status: "rejected", reason: "stale-version", keys: [] };
+
+  const at = (input.now ?? (() => new Date()))().toISOString();
+  const canonical = Object.fromEntries(
+    Object.entries(candidate).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  return {
+    status: "accepted",
+    content: `${JSON.stringify(canonical, null, 2)}\n`,
+    version,
+    audit: keys.map((key) => ({
+      key,
+      action: input.changes[key] === "" ? "remove" : "set",
+      at,
+    })),
+    activation: [...new Set(keys.map((k) => byKey.get(k)!.activation))],
+  };
+}
