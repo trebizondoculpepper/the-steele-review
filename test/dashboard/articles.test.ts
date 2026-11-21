@@ -292,6 +292,29 @@ describe("article pages (#377)", () => {
     expect(asked).toBe(0);
   });
 
+  it("links list actions to confirmation for the exact archived revision", async () => {
+    const [list] = articleViews({ articles, canTrigger: true });
+    const html = await list!.render(new URL("http://x/articles"));
+    expect(html).toContain("<th>Action</th>");
+    expect(html).toContain(
+      `href="/articles/run?publication=pub&amp;post=p1&amp;revision=${encodeURIComponent(V)}"`,
+    );
+    expect(html).toContain("Run this revision</a>");
+    expect(html).not.toContain("<form");
+    const [readOnly] = articleViews({ articles });
+    expect(await readOnly!.render(new URL("http://x/articles"))).not.toContain("/articles/run");
+  });
+
+  it("does not offer an action for an unknown indexed revision", async () => {
+    const [list] = articleViews({
+      articles: { ...articles, recent: async () => [{ ...post, sourceVersion: "unknown" }] },
+      canTrigger: true,
+    });
+    const html = await list!.render(new URL("http://x/articles"));
+    expect(html).toContain("Revision unavailable");
+    expect(html).not.toContain("/articles/run");
+  });
+
   it("lists recent articles with run state, escaping titles", async () => {
     const [list] = articleViews({ articles, runs: runs({ p1: { state: "running" } }) });
     const html = await list!.render(new URL("http://x/articles"));

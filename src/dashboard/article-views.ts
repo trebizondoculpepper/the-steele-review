@@ -62,11 +62,18 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
               summary = "unknown";
             }
           }
-          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td></tr>`;
+          const action = deps.canTrigger
+            ? `<td>${
+                /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
+                  ? `<a href="/articles/run?publication=${encodeURIComponent(a.publicationId)}&amp;post=${encodeURIComponent(a.postId)}&amp;revision=${encodeURIComponent(a.sourceVersion)}">Run this revision</a>`
+                  : "Revision unavailable"
+              }</td>`
+            : "";
+          return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
       return `${creditBlocked ? creditWarning(creditBlocked) : ""}<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
-<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>`;
     },
   };
