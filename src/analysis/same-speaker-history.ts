@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
@@ -36,13 +36,12 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js"
  *   diagnostic reason and counts. Nothing is judged true or false.
  */
 
-export const DEFAULT_SAME_SPEAKER_PROMPT: ExtractionPrompt = {
-  version: "same-speaker-match-v1",
-  instructions: readFileSync(
-    new URL("../prompts/librarian/same-speaker-match.md", import.meta.url),
-    "utf8",
-  ).trim(),
-};
+// Loaded with a content hash in its identity (#425): editing the Markdown
+// changes the version recorded with, and keying, new results.
+export const DEFAULT_SAME_SPEAKER_PROMPT: ExtractionPrompt = loadPromptFile(
+  "librarian",
+  "same-speaker-match",
+);
 
 export const MAX_HISTORY = 10;
 export const MAX_HISTORY_CANDIDATES = 30;

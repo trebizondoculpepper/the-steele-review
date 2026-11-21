@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
@@ -36,13 +36,12 @@ import {
  *   shown dates. No claim is judged true or false.
  */
 
-export const DEFAULT_PARALLEL_PROMPT: ExtractionPrompt = {
-  version: "cross-speaker-parallel-v1",
-  instructions: readFileSync(
-    new URL("../prompts/librarian/cross-speaker-parallel.md", import.meta.url),
-    "utf8",
-  ).trim(),
-};
+// Loaded with a content hash in its identity (#425): editing the Markdown
+// changes the version recorded with, and keying, new results.
+export const DEFAULT_PARALLEL_PROMPT: ExtractionPrompt = loadPromptFile(
+  "librarian",
+  "cross-speaker-parallel",
+);
 
 export const MAX_PARALLELS = 10;
 export const MAX_PARALLEL_CANDIDATES = 30;
