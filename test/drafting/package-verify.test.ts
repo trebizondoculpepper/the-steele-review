@@ -13,7 +13,11 @@ import {
   DEFAULT_PACKAGE_DRAFT_PROMPT,
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
-import { renderPackageDraft, modelCitationProblems } from "../../src/drafting/package-draft.js";
+import {
+  renderPackageDraft,
+  modelCitationIssues,
+  modelCitationProblems,
+} from "../../src/drafting/package-draft.js";
 import {
   DEFAULT_PACKAGE_VERIFY_PROMPT,
   PackageVerificationReportSchema,
@@ -477,6 +481,77 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
 });
 
 describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
+  it("resolves background citations through their own indices when claim order changes", async () => {
+    const { pkg } = await drafted();
+    const raw = JSON.parse(await content.read(pkg.ref));
+    const bg = (url: string, passage: string) => ({
+      dossierId: "weather",
+      dossier: raw.coverage,
+      url,
+      title: "Background",
+      passage,
+      checkedAt: "2026-11-20",
+    });
+    raw.claims = raw.claims.map((c: Record<string, unknown>, i: number) => ({
+      ...c,
+      status: "covered",
+      coverage: "covered",
+      reason: undefined,
+      evidence: [{ url: `https://example.org/claim-${i}`, passage: `Claim ${i} passage.` }],
+    }));
+    raw.context = {
+      ...(raw.context ?? {}),
+      history: raw.context?.history ?? { status: "gap", reason: "none" },
+      background: {
+        status: "available",
+        passages: [
+          bg("https://example.org/bg-a", "Background A."),
+          bg("https://example.org/claim-1", "Claim 1 passage."),
+        ],
+      },
+    };
+    const render = (order: number[]) => {
+      const p = WriterPackageSchema.parse({ ...raw, claims: order.map((i) => raw.claims[i]) });
+      return renderPackageDraft(
+        p,
+        {
+          title: "T",
+          subtitle: "S",
+          excerpt: "E",
+          summary: "Summary.",
+          themes: ["Weather warfare"],
+          responses: order.map((i) => ({
+            claimRecordId: raw.claims[i].claimRecordId,
+            verdict: "supported",
+            text: `Response ${i}.`,
+            evidence: [0],
+          })),
+          limitations: [],
+          narrative: { status: "limited", limitation: "none" },
+          widerContext: { status: "supported", text: "Wider context.", background: [1, 0] },
+        } as never,
+        "https://pub.example.com/p/p1",
+      );
+    };
+    for (const order of [
+      [0, 1],
+      [1, 0],
+    ]) {
+      const markdown = render(order);
+      const sources = markdown
+        .split("## Sources")[1]!
+        .split("\n")
+        .filter((l) => /^\d+\./.test(l));
+      const numberOf = (url: string) => sources.findIndex((l) => l.includes(url)) + 1;
+      // Background index 1 is the same passage as claim 1's evidence: one shared source.
+      const wider = /Wider context\. ((?:\[\d+\])+)/.exec(markdown)![1];
+      expect(wider).toBe(
+        `[${numberOf("https://example.org/claim-1")}][${numberOf("https://example.org/bg-a")}]`,
+      );
+      expect(new Set(sources).size).toBe(sources.length);
+    }
+  });
+
   it("resolves local index-zero evidence to deduplicated global references", async () => {
     const { pkg } = await drafted();
     const raw = JSON.parse(await content.read(pkg.ref));
@@ -537,6 +612,103 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     expect(sources[0]).toContain(raw.claims[0].evidence[0].url);
     expect(sources[1]).toContain(raw.claims[1].evidence[0].url);
   });
+
+  it("names the exact schema field of every marker, including metadata", () => {
+    const draft = {
+      title: "Treaty [1]",
+      subtitle: "S",
+      excerpt: "E [0]",
+      summary: "Summary.",
+      themes: ["t"],
+      responses: [
+        { claimRecordId: "claim-x", verdict: "supported" as const, text: "Fine.", evidence: [0] },
+        {
+          claimRecordId: "claim-y",
+          verdict: "supported" as const,
+          text: "Bad [2].",
+          evidence: [0],
+        },
+      ],
+      limitations: ["ok", "also [3]"],
+      narrative: { status: "limited" as const, limitation: "none" },
+      widerContext: { status: "limited" as const, limitation: "see [4]" },
+    };
+    expect(modelCitationIssues(draft as never).map((i) => i.path)).toEqual([
+      ["title"],
+      ["excerpt"],
+      ["responses", 1, "text"],
+      ["widerContext", "limitation"],
+      ["limitations", 1],
+    ]);
+    // No claim IDs or raw marker text in the feedback.
+    const text = modelCitationProblems(draft as never).join(" ");
+    expect(text).not.toContain("claim-y");
+    expect(text).not.toContain("[2]");
+  });
+
+  it(
+    "repairs a metadata-only marker by correcting just that field, preserving the body",
+    { timeout: 60_000 },
+    async () => {
+      const users: string[] = [];
+      const first = JSON.parse(writerResponse());
+      first.title = "A treaty already bans weather weapons [1]";
+      const responses = [
+        JSON.stringify(first),
+        JSON.stringify({ title: "A treaty already bans weather weapons" }),
+      ];
+      const writer = {
+        modelVersion: "fake/writer-metadata-marker",
+        calls: 0,
+        async complete(request: { user: string }) {
+          users.push(request.user);
+          return responses[this.calls++]!;
+        },
+      };
+      const out = await draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: (await drafted()).pkg.ref,
+        provider: writer as never,
+        sourceUrl: "https://pub.example.com/p/p1",
+      });
+      if (out.status !== "drafted") throw new Error(out.status);
+      // The correction request carried only the title, with the citation constraint.
+      const correction = JSON.parse(users[1]!);
+      expect(Object.keys(correction.invalidFields)).toEqual(["title"]);
+      expect(correction.constraints.title.noNumberedCitations).toBe(true);
+      const metadata = JSON.parse(await content.read(out.metadata));
+      expect(metadata.fields.title).toBe("A treaty already bans weather weapons");
+      // Body and other metadata are byte-for-byte the first output's.
+      expect(metadata.fields.subtitle).toBe(first.subtitle);
+      expect(await content.read(out.draft)).toContain(first.summary);
+    },
+  );
+
+  it(
+    "rejects a metadata marker that is still present when the turns run out",
+    { timeout: 60_000 },
+    async () => {
+      const bad = JSON.parse(writerResponse());
+      bad.excerpt = "Still cites [0].";
+      const writer = model(
+        "fake/writer-stubborn-marker",
+        JSON.stringify(bad),
+        JSON.stringify({ excerpt: "Still cites [0]." }),
+      );
+      const out = await draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: (await drafted()).pkg.ref,
+        provider: writer,
+        sourceUrl: "https://pub.example.com/p/p1",
+        mechanicalPolicy: { maxTurns: 2 },
+      });
+      expect(out.status).toBe("failed");
+    },
+  );
 
   it("rejects model-written numeric citation markers as bounded feedback", () => {
     const base = {

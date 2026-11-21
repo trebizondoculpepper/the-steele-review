@@ -242,35 +242,51 @@ export function draftProblems(pkg: WriterPackage, draft: PackageModelDraft): str
  */
 const MODEL_CITATION = /\[(\d+(?:\s*[,;\u2013-]\s*\d+)*)\](?!\()/g;
 
-/** Prose fields whose text becomes part of the rendered article. */
-export function modelCitationProblems(draft: PackageModelDraft): string[] {
-  const problems: string[] = [];
-  const scan = (field: string, text: string | undefined) => {
-    if (!text) return;
-    for (const match of text.matchAll(MODEL_CITATION)) {
-      problems.push(
-        `${field} contains a model-written citation marker ${match[0]}; final references are rendered by the application`,
-      );
-    }
+/**
+ * Every field whose text reaches readers, with the schema-owned path of each
+ * model-written marker. Paths name only schema fields and array positions:
+ * never claim IDs, raw marker text or other model-controlled strings.
+ */
+export function modelCitationIssues(draft: PackageModelDraft): SafeDraftIssue[] {
+  const issues: SafeDraftIssue[] = [];
+  const scan = (path: SafeDraftIssue["path"], text: string | undefined) => {
+    if (text && text.search(MODEL_CITATION) >= 0) issues.push({ code: "custom", path });
+    MODEL_CITATION.lastIndex = 0;
   };
-  scan("summary", draft.summary);
-  for (const r of draft.responses) scan(`response ${r.claimRecordId}`, r.text);
+  scan(["title"], draft.title);
+  scan(["subtitle"], draft.subtitle);
+  scan(["excerpt"], draft.excerpt);
+  scan(["summary"], draft.summary);
+  draft.responses.forEach((r, i) => scan(["responses", i, "text"], r.text));
   if (draft.narrative) {
-    scan(
-      "narrative",
-      draft.narrative.status === "supported" ? draft.narrative.text : draft.narrative.limitation,
-    );
+    draft.narrative.status === "supported"
+      ? scan(["narrative", "text"], draft.narrative.text)
+      : scan(["narrative", "limitation"], draft.narrative.limitation);
   }
   if (draft.widerContext) {
-    scan(
-      "wider context",
-      draft.widerContext.status === "supported"
-        ? draft.widerContext.text
-        : draft.widerContext.limitation,
-    );
+    draft.widerContext.status === "supported"
+      ? scan(["widerContext", "text"], draft.widerContext.text)
+      : scan(["widerContext", "limitation"], draft.widerContext.limitation);
   }
-  for (const limitation of draft.limitations) scan("limitation", limitation);
-  return problems;
+  draft.limitations.forEach((l, i) => scan(["limitations", i], l));
+  return issues;
+}
+
+/** Human-readable problems for the bounded correction feedback (paths only). */
+export function modelCitationProblems(draft: PackageModelDraft): string[] {
+  return modelCitationIssues(draft).map(
+    (i) =>
+      `${i.path.join(".")} contains a model-written citation marker; final references are rendered by the application`,
+  );
+}
+
+/** True when every marker sits in an isolated publication-metadata field. */
+const METADATA_PATHS = new Set(["title", "subtitle", "excerpt"]);
+export function metadataOnlyMarkers(issues: SafeDraftIssue[]): boolean {
+  return (
+    issues.length > 0 &&
+    issues.every((i) => i.path.length === 1 && METADATA_PATHS.has(String(i.path[0])))
+  );
 }
 
 /** Readable Markdown with numbered sources traceable to the package's evidence. */
@@ -812,11 +828,25 @@ export async function draftFromPackage(input: {
       }
       if ((completion as string) === "length-limit") kind = "truncated-output";
       if (!kind && parsed) {
-        const problems = [...draftProblems(pkg, parsed), ...modelCitationProblems(parsed)];
-        if (problems.length > 0) {
+        const structural = draftProblems(pkg, parsed);
+        const markers = modelCitationIssues(parsed);
+        if (structural.length === 0 && metadataOnlyMarkers(markers)) {
+          // Markers only in isolated metadata fields: repair just those fields
+          // (#549's field-only path), preserving body and citation data.
+          kind = "schema-validation";
+          lastProblems = modelCitationProblems(parsed);
+          issues = markers;
+        } else if (structural.length > 0 || markers.length > 0) {
           kind = "evidence-validation";
-          lastProblems = problems;
-          issues = [{ code: "custom", path: ["responses"] }];
+          lastProblems = [...structural, ...modelCitationProblems(parsed)];
+          // Exact schema paths for markers; structural evidence problems stay
+          // attributed to the responses array.
+          issues = [
+            ...(structural.length > 0
+              ? [{ code: "custom" as const, path: ["responses" as const] }]
+              : []),
+            ...markers,
+          ];
         }
       }
       if (kind) {
