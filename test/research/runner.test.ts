@@ -168,10 +168,30 @@ describe("research runner", () => {
     expect(paid.calls).toBe(0);
   });
 
+  it("accepts a large retained citation list that the producer can generate (#432)", async () => {
+    const dirName = await jobDir();
+    const jobId = dirName.replace("research-jobs/", "");
+    const citations = [
+      "https://treaties.un.org/enmod",
+      ...Array.from({ length: 399 }, (_, n) => `https://example.org/missing-${n}`),
+    ];
+    await artifacts.write(`${dirName}/report.json`, `${JSON.stringify(validReport(jobId, citations))}\n`);
+    // A paused judge keeps the run recoverable; it must not be rejected as an
+    // invalid snapshot just because the report has many citations.
+    const paused: SupportJudge = {
+      judge: async () => {
+        throw new ModelProviderError("credit-exhausted", 402);
+      },
+    };
+    expect(await run(sonar([]), { judge: paused })).toMatchObject({
+      result: { outcome: "failed", failure: "budget-exceeded" },
+    });
+  });
+
   it("rejects an over-bound citation list in a retained report (#432)", async () => {
     const dirName = await jobDir();
     const jobId = dirName.replace("research-jobs/", "");
-    const citations = Array.from({ length: 201 }, (_, n) => `https://example.org/${n}`);
+    const citations = Array.from({ length: 501 }, (_, n) => `https://example.org/${n}`);
     await artifacts.write(`${dirName}/report.json`, `${JSON.stringify(validReport(jobId, citations))}\n`);
     const paid = sonar([]);
     expect(await run(paid)).toMatchObject({

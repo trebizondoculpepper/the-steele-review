@@ -35,8 +35,12 @@ export const RESEARCH_PROMPT_VERSION = "sonar-research-v1";
 
 /** Bound on a retained report snapshot; larger values are rejected, not used. */
 export const MAX_SAVED_REPORT_CHARS = 2_000_000;
-/** Bound on retained citations in a report snapshot. */
-export const MAX_SAVED_CITATIONS = 200;
+/**
+ * Bound on retained citations in a report snapshot. Matches what the Sonar
+ * client retains and the manifest schema accepts, so a legitimate snapshot is
+ * never rejected as invalid on recovery.
+ */
+export const MAX_SAVED_CITATIONS = 500;
 
 /**
  * Narrow runtime parsers for retained provider snapshots (#432). Git hash
