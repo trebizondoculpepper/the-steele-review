@@ -15,13 +15,21 @@
  *   RESTATE_INGRESS_URL                              ArticleRun results
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured-source archive (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   content repository (read only)
+ *   STEELE_STATE_PATH?                               state-controller database (read only)
+ *   NATS_URL, NATS_TOKEN[_FILE]?                     broker health
+ *   STEELE_CATCHUP_CHECKPOINT_PATH?                  index catch-up checkpoint
+ *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
  */
 import { z } from "zod";
-import { elasticsearchConnection } from "../config/credentials.js";
+import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { ElasticsearchController } from "../controllers/elasticsearch.js";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
+import { fileCheckpoint } from "../collection/catchup-checkpoint.js";
+import { systemStatusSource } from "../dashboard/status-adapters.js";
+import { statusView } from "../dashboard/status.js";
 import { tracePost } from "../diagnostics/post-trace.js";
+import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import { indexArticles, restateRuns } from "../dashboard/adapters.js";
 import { articleViews } from "../dashboard/article-views.js";
 import { createDashboardServer, DEFAULT_VIEWS } from "../dashboard/server.js";
@@ -53,6 +61,21 @@ if (e.ELASTICSEARCH_URL) {
 const archive = store(e.STEELE_ARCHIVE_PATH, e.STEELE_ARCHIVE_REPOSITORY);
 const content = store(e.STEELE_CONTENT_PATH, e.STEELE_CONTENT_REPOSITORY);
 
+// Status probes reuse the same read-only controllers as the `status` command.
+const state = e.STEELE_STATE_PATH ? stateProbeFor(e.STEELE_STATE_PATH) : undefined;
+let nats;
+try {
+  const conn = e.NATS_URL ? natsConnection() : undefined;
+  nats = conn ? natsProbe(conn) : undefined;
+} catch {
+  // Configured but unusable: the check reports unavailable rather than the
+  // dashboard failing to start.
+  nats = { check: async () => Promise.reject(new Error("configuration unusable")) };
+}
+const checkpoint = e.STEELE_CATCHUP_CHECKPOINT_PATH
+  ? fileCheckpoint(e.STEELE_CATCHUP_CHECKPOINT_PATH)
+  : undefined;
+
 const views = [
   DEFAULT_VIEWS[0]!,
   ...articleViews({
@@ -82,6 +105,21 @@ const views = [
         ...(content ? { content } : {}),
       }),
   }),
+  statusView(
+    systemStatusSource({
+      runtime: {
+        ...(state ? { state } : {}),
+        ...(nats ? { nats } : {}),
+        // Reuse the dashboard's search client rather than opening a second one.
+        ...(es ? { elasticsearch: { check: (signal?: AbortSignal) => es.check(signal) } } : {}),
+      },
+      ...(archive ? { archive } : {}),
+      ...(checkpoint ? { checkpoint } : {}),
+      ...(e.STEELE_DISCOVERY_STATUS_PATH
+        ? { discoveryStatusPath: e.STEELE_DISCOVERY_STATUS_PATH }
+        : {}),
+    }),
+  ),
 ];
 
 const server = createDashboardServer(views);
