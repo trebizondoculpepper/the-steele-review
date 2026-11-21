@@ -1,3 +1,4 @@
+import { readPublicationPayload, sameArtifact } from "../drafting/publication-payload.js";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
@@ -138,12 +139,20 @@ export function contentArticleView(content: Pick<GitArtifactStore, "read">): Art
   };
   const readReport = async (
     ref: Ref,
-  ): Promise<{ outcome: string; draftHash?: string } | undefined> => {
+  ): Promise<{ outcome: string; draftHash?: string; publicationHash?: string } | undefined> => {
     const text = await read(ref);
     if (text === undefined) return undefined;
     try {
       const report = PackageVerificationReportSchema.parse(JSON.parse(text));
-      return { outcome: report.outcome, draftHash: report.draft.hash };
+      if (report.schemaVersion === 2) {
+        const { payload } = await readPublicationPayload(content, report.publication);
+        if (!sameArtifact(payload.body, report.draft)) return undefined;
+      }
+      return {
+        outcome: report.outcome,
+        draftHash: report.draft.hash,
+        ...(report.schemaVersion === 2 ? { publicationHash: report.publication.hash } : {}),
+      };
     } catch {
       return undefined;
     }
@@ -160,7 +169,7 @@ export function contentArticleView(content: Pick<GitArtifactStore, "read">): Art
         // the terminal verdict; show that rather than omitting verification.
         const wrapper = UnresolvedVerificationSchema.parse(JSON.parse(text));
         const report = await readReport(persistedRef(wrapper.report));
-        if (report) return { outcome: wrapper.outcome, draftHash: report.draftHash };
+        if (report) return { ...report, outcome: wrapper.outcome };
         return { outcome: wrapper.outcome };
       } catch {
         return undefined;
@@ -203,12 +212,14 @@ export function contentReceipts(
     .filter((name) => /^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
     .map((name) => `publications/${name}`);
   return {
-    async receiptsFor(post, draftHash) {
+    async receiptsFor(post, draftHash, publicationHash) {
       const fullHash = draftHash?.replace(/^sha256:/, "");
       if (fullHash !== undefined && !/^[0-9a-f]{64}$/.test(fullHash)) {
         return { receipts: [], truncated: false };
       }
-      const revision = fullHash?.slice(0, 32);
+      if (publicationHash !== undefined && !/^sha256:[0-9a-f]{64}$/.test(publicationHash))
+        return { receipts: [], truncated: false };
+      const revision = (publicationHash?.slice(7) ?? fullHash)?.slice(0, 32);
       const receipts: ReceiptView[] = [];
       let truncated = false;
 
@@ -237,7 +248,8 @@ export function contentReceipts(
                 receipt.destination !== destination ||
                 receipt.action !== action ||
                 receiptHash === undefined ||
-                receiptHash.slice(0, 32) !== rev ||
+                (receipt.publicationHash?.slice(7) ?? receiptHash).slice(0, 32) !== rev ||
+                receipt.publicationHash !== publicationHash ||
                 (fullHash !== undefined && receiptHash !== fullHash)
               )
                 continue;

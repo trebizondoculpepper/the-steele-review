@@ -55,7 +55,11 @@ const fake = (version: string, response: string) => ({
 });
 
 /** An approved package draft and its saved verification report. */
-export async function approvedReport(content: GitArtifactStore, verdict = "approved") {
+export async function approvedReport(
+  content: GitArtifactStore,
+  verdict = "approved",
+  legacy = false,
+) {
   const fx = librarianFixtures(content);
   const a = await fx.analysis("p1", CLAIMS);
   const coverage = await assessPostCoverage({
@@ -75,10 +79,19 @@ export async function approvedReport(content: GitArtifactStore, verdict = "appro
     sourceUrl: "https://pub.example.com/p/p1",
   });
   if (draft.status !== "drafted") throw new Error(draft.status);
+  let metadata = draft.metadata;
+  if (legacy) {
+    const old = JSON.parse(await content.read(metadata));
+    delete old.fields;
+    metadata = await content.write(
+      metadata.path.replace(/\.json$/, "-legacy.json"),
+      JSON.stringify(old),
+    );
+  }
   const verified = await verifyPackageDraft({
     content,
     archive,
-    metadata: draft.metadata,
+    metadata,
     verifier: fake(
       "fake/verifier",
       JSON.stringify({

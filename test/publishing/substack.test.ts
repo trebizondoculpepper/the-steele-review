@@ -393,7 +393,11 @@ afterEach(async () => {
 
 describe("Substack through the approved-article handler (#385)", { timeout: 60_000 }, () => {
   async function approvedPayload() {
-    await recordApproval({ content, operations, report: await approvedReport(content) });
+    await recordApproval({
+      content,
+      operations,
+      report: await approvedReport(content, "approved", true),
+    });
     return operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0]!.payload;
   }
   const handle = (payload: string, destination: SubstackDraftDestination) =>

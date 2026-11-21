@@ -7,6 +7,12 @@ import {
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
+import {
+  readPublicationPayload,
+  sameArtifact,
+  PublicationPayloadError,
+  type PublicationPayload,
+} from "../drafting/publication-payload.js";
 import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
@@ -83,7 +89,14 @@ export async function recordApproval(input: {
   if (report.outcome !== "approved") throw new ApprovalError("report does not approve the draft");
   const draft = fromRef(report.draft);
   const markdown = await input.content.read(draft); // hash-verified read
-  if (!approvalValidFor(report, markdown))
+  const publication =
+    report.schemaVersion === 2
+      ? {
+          ref: report.publication,
+          ...(await readPublicationPayload(input.content, report.publication)),
+        }
+      : undefined;
+  if (!approvalValidFor(report, markdown, publication))
     throw new ApprovalError("approval does not match the draft");
   const pkg = JSON.parse(await input.content.read(fromRef(report.package))) as {
     post: { publicationId: string; postId: string };
@@ -94,6 +107,7 @@ export async function recordApproval(input: {
     postId: pkg.post.postId,
     draft: report.draft,
     approval: toRef(input.report),
+    ...(report.schemaVersion === 2 ? { publication: report.publication } : {}),
     package: report.package,
     approvedAt: report.verifiedAt,
   };
@@ -112,6 +126,8 @@ export interface DestinationPreview {
   /** Rendered content in the destination's own format. */
   body: string;
   contentType: string;
+  /** Exact saved payload, retained by simulated previews; live adapters map approved fields explicitly. */
+  publication?: PublicationPayload;
 }
 
 export const DeliveryReceiptSchema = z
@@ -120,6 +136,10 @@ export const DeliveryReceiptSchema = z
     action: z.string(),
     /** True for placeholder deliveries that made no external call. */
     simulated: z.boolean(),
+    publicationHash: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
     draftHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
@@ -169,7 +189,13 @@ export interface ReconcileContext {
 export interface DestinationAdapter {
   readonly name: string;
   readonly action: string;
-  render(article: { markdown: string; data: ArticleApprovedData }): DestinationPreview;
+  /** Opt in only when render consumes the exact structured fields without substitutions. */
+  readonly supportsPublicationPayload?: boolean;
+  render(article: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview;
   deliver(
     preview: DestinationPreview,
     key: string,
@@ -195,6 +221,7 @@ export type DeliveryDecision =
       action: "nak";
       delayMs: number;
       reason:
+        | "unsupported-payload"
         | "scheduled"
         | "busy"
         | "retry"
@@ -206,10 +233,12 @@ export type DeliveryDecision =
   | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
 
 function deliveryDirectory(
-  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft">,
+  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
   destination: Pick<DestinationAdapter, "name" | "action">,
 ): string {
-  const revision = article.draft.hash.replace(/^sha256:/, "").slice(0, 32);
+  const revision = (article.publication?.hash ?? article.draft.hash)
+    .replace(/^sha256:/, "")
+    .slice(0, 32);
   return `publications/${destination.name}/${destination.action}/${article.publicationId}/${article.postId}/${revision}`;
 }
 
@@ -228,7 +257,8 @@ export async function readDummyDeliveryProof(
       !receipt.simulated ||
       receipt.destination !== name ||
       receipt.action !== "draft" ||
-      receipt.draftHash !== approved.draft.hash
+      receipt.draftHash !== approved.draft.hash ||
+      receipt.publicationHash !== approved.publication?.hash
     ) {
       throw new ApprovalError("dummy receipt does not prove the approved draft");
     }
@@ -279,12 +309,24 @@ async function deliverApprovedArticle(
 
   // Re-check the approval against the exact stored bytes.
   let markdown: string;
+  let publication: PublicationPayload | undefined;
   try {
     markdown = await input.content.read(fromRef(event.draft));
     const report = PackageVerificationReportSchema.parse(
       JSON.parse(await input.content.read(fromRef(event.approval))),
     );
-    if (!approvalValidFor(report, markdown) || report.draft.hash !== event.draft.hash) {
+    const loaded = event.publication
+      ? {
+          ref: event.publication,
+          ...(await readPublicationPayload(input.content, event.publication)),
+        }
+      : undefined;
+    publication = loaded?.payload;
+    if (
+      !approvalValidFor(report, markdown, loaded) ||
+      !sameArtifact(report.draft, event.draft) ||
+      !sameArtifact(report.package, event.package)
+    ) {
       return { action: "term", reason: "approval-mismatch" };
     }
   } catch (error) {
@@ -295,20 +337,32 @@ async function deliverApprovedArticle(
     ) {
       return { action: "term", reason: "approval-mismatch" };
     }
-    if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    if (
+      error instanceof z.ZodError ||
+      error instanceof SyntaxError ||
+      error instanceof PublicationPayloadError
+    ) {
       return { action: "term", reason: "approval-mismatch" };
     }
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
   }
 
   const { destination } = input;
-  const revision = event.draft.hash.replace(/^sha256:/, "").slice(0, 32);
+  const revision = (event.publication?.hash ?? event.draft.hash)
+    .replace(/^sha256:/, "")
+    .slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
   const dir = deliveryDirectory(event, destination);
   // A receipt committed before a crash is the durable result: record completion
   // from it rather than delivering again or giving up on attempt limits.
   const committed = await input.content.lookup(`${dir}/receipt.json`);
   if (committed) {
+    const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(committed)));
+    if (
+      event.publication &&
+      (receipt.publicationHash !== event.publication.hash || receipt.draftHash !== event.draft.hash)
+    )
+      return { action: "term", reason: "approval-mismatch" };
     input.operations.reconcileCompleted(
       key,
       { path: committed.path, commit: committed.commit },
@@ -316,6 +370,8 @@ async function deliverApprovedArticle(
     );
     return { action: "ack", outcome: "reused", receipt: committed };
   }
+  if (publication?.mode === "structured" && destination.supportsPublicationPayload !== true)
+    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "unsupported-payload" };
   const claim = input.operations.claim(key, input.owner, 10 * 60_000, 5);
   if (claim.kind === "completed") {
     const saved = await input.content.lookup(`${dir}/receipt.json`);
@@ -326,28 +382,12 @@ async function deliverApprovedArticle(
   if (claim.kind !== "claimed")
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
-  // The preview (including any pinned byline, #459) is durable before the
-  // external attempt. A retry must reuse the stored one: re-rendering after a
-  // configuration change could otherwise alter or lose the pinned attribution.
-  const storedPreview = await input.content.lookup(`${dir}/preview.json`);
-  let preview: DestinationPreview;
-  if (storedPreview) {
-    try {
-      preview = JSON.parse(await input.content.read(storedPreview)) as DestinationPreview;
-    } catch (error) {
-      // A repository read failure is operational: retry rather than abandon an
-      // approval that may still reconcile to an existing draft.
-      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
-        input.operations.yieldClaim(claim.claim);
-        return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
-      }
-      input.operations.fail(claim.claim, "invalid-preview", false);
-      return { action: "term", reason: "approval-mismatch" };
-    }
-  } else {
-    preview = destination.render({ markdown, data: event });
-    await writeOnce(input.content, `${dir}/preview.json`, preview);
-  }
+  const preview = destination.render({
+    markdown,
+    data: event,
+    ...(publication ? { publication } : {}),
+  });
+  await writeOnce(input.content, `${dir}/preview.json`, preview);
   try {
     let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
     // An earlier uncertain attempt must be reconciled before any retry.
@@ -376,6 +416,7 @@ async function deliverApprovedArticle(
       action: destination.action,
       ...delivered,
       draftHash: event.draft.hash,
+      ...(event.publication ? { publicationHash: event.publication.hash } : {}),
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
     input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);
@@ -405,6 +446,7 @@ async function deliverApprovedArticle(
  * credentials. `failTimes` makes it fail its first deliveries, for tests.
  */
 export class SimulatedDestination implements DestinationAdapter {
+  readonly supportsPublicationPayload = true;
   readonly deliveries: string[] = [];
   private failures: number;
   constructor(
@@ -415,10 +457,19 @@ export class SimulatedDestination implements DestinationAdapter {
   ) {
     this.failures = options.failTimes ?? 0;
   }
-  render({ markdown, data }: { markdown: string; data: ArticleApprovedData }): DestinationPreview {
+  render({
+    markdown,
+    data,
+    publication,
+  }: {
+    markdown: string;
+    data: ArticleApprovedData;
+    publication?: PublicationPayload;
+  }): DestinationPreview {
     return {
       body: `<!-- ${this.name} preview for ${data.publicationId}/${data.postId} -->\n${markdown}`,
       contentType: "text/markdown",
+      ...(publication ? { publication } : {}),
     };
   }
   async deliver(_preview: DestinationPreview, key: string) {

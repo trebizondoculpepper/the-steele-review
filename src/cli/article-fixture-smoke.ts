@@ -1,3 +1,4 @@
+import { readPublicationPayload } from "../drafting/publication-payload.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { connect, HttpCallError, rpc } from "@restatedev/restate-sdk-clients";
 import { z } from "zod";
@@ -148,7 +149,16 @@ async function main(): Promise<number> {
     if (
       report.draft.hash !== draftHash ||
       result.approvalEvent !== approvedArticleEventId(result.draft, result.verification) ||
-      !approvalValidFor(report, await content.read(result.draft))
+      !approvalValidFor(
+        report,
+        await content.read(result.draft),
+        report.schemaVersion === 2
+          ? {
+              ref: report.publication,
+              ...(await readPublicationPayload(content, report.publication)),
+            }
+          : undefined,
+      )
     )
       throw new Error("approval mismatch");
 

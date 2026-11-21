@@ -1,3 +1,10 @@
+import {
+  readPublicationPayload,
+  savePublicationPayload,
+  artifactReference,
+  artifactRef,
+} from "../../src/drafting/publication-payload.js";
+import { PackageVerificationReportSchema } from "../../src/drafting/package-verify.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -230,5 +237,109 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     });
     expect(again).toMatchObject({ action: "ack", outcome: "reused" });
     expect(draftAction.deliveries).toHaveLength(1);
+  });
+  it("holds an unsupported destination without intent, then resumes the same payload when supported", async () => {
+    const approval = await recordApproval({ content, operations, report: await approved() });
+    const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0]!.payload;
+    const simulated = new SimulatedDestination("future", "draft");
+    let seen: unknown;
+    const destination = {
+      name: simulated.name,
+      action: simulated.action,
+      supportsPublicationPayload: false,
+      render: (article: Parameters<typeof simulated.render>[0]) => {
+        seen = article.publication;
+        return simulated.render(article);
+      },
+      deliver: simulated.deliver.bind(simulated),
+      reconcile: simulated.reconcile.bind(simulated),
+    };
+    const handle = () =>
+      handleApprovedArticle({
+        payload,
+        destination,
+        schedule: { delayMs: 0 },
+        content,
+        operations,
+        owner: "t",
+      });
+    expect(await handle()).toMatchObject({ action: "nak", reason: "unsupported-payload" });
+    expect(simulated.deliveries).toHaveLength(0);
+    expect(operations.listOperations("publish:")).toHaveLength(0);
+    expect(await content.list("publications", 100)).toHaveLength(0);
+    destination.supportsPublicationPayload = true;
+    const delivered = await handle();
+    expect(delivered).toMatchObject({ action: "ack", outcome: "delivered" });
+    if (!approval.data.publication || delivered.action !== "ack")
+      throw new Error("expected payload");
+    const expected = await readPublicationPayload(content, approval.data.publication);
+    expect(seen).toEqual(expected.payload);
+    expect(JSON.parse(await content.read(delivered.receipt))).toMatchObject({
+      publicationHash: approval.data.publication.hash,
+      draftHash: approval.data.draft.hash,
+    });
+    expect(await handle()).toMatchObject({ action: "ack", outcome: "reused" });
+    expect(simulated.deliveries).toHaveLength(1);
+  });
+
+  it("rejects substituted metadata and keeps a new title's receipt separate from identical body bytes", async () => {
+    const originalRef = await approved();
+    const first = await recordApproval({ content, operations, report: originalRef });
+    if (!first.data.publication) throw new Error("expected payload");
+    const originalEvent = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0]!.payload;
+    const { payload: original } = await readPublicationPayload(content, first.data.publication);
+    const metadata = JSON.parse(await content.read(artifactRef(original.metadata)));
+    metadata.fields.title = "A changed title";
+    const metadataRef = await content.write(
+      original.metadata.path.replace(/\.json$/, "-retitled.json"),
+      JSON.stringify(metadata),
+    );
+    const replacement = await savePublicationPayload({
+      content,
+      metadata: metadataRef,
+      body: artifactRef(original.body),
+      post: { publicationId: "pub", postId: "p1" },
+    });
+    const destination = new SimulatedDestination("site", "draft");
+    const handle = (payload: string) =>
+      handleApprovedArticle({
+        payload,
+        destination,
+        schedule: { delayMs: 0 },
+        content,
+        operations,
+        owner: "t",
+      });
+    expect(await handle(originalEvent)).toMatchObject({ action: "ack", outcome: "delivered" });
+    const tampered = JSON.parse(originalEvent);
+    tampered.data.publication = artifactReference(replacement.ref);
+    expect(await handle(JSON.stringify(tampered))).toMatchObject({
+      action: "term",
+      reason: "approval-mismatch",
+    });
+    delete tampered.data.publication;
+    expect(await handle(JSON.stringify(tampered))).toMatchObject({
+      action: "term",
+      reason: "approval-mismatch",
+    });
+    const report = PackageVerificationReportSchema.parse(
+      JSON.parse(await content.read(originalRef)),
+    );
+    const secondRef = await content.write(
+      "verifications/pub/p1/retitled.json",
+      JSON.stringify({ ...report, publication: artifactReference(replacement.ref) }),
+    );
+    const second = await recordApproval({ content, operations, report: secondRef });
+    const secondEvent = operations
+      .duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)
+      .find((e) => e.eventId === second.eventId);
+    if (!secondEvent) throw new Error("missing event");
+    expect(await handle(secondEvent.payload)).toMatchObject({
+      action: "ack",
+      outcome: "delivered",
+    });
+    expect(destination.deliveries).toHaveLength(2);
+    expect(new Set(destination.deliveries).size).toBe(2);
+    expect(await handle(secondEvent.payload)).toMatchObject({ action: "ack", outcome: "reused" });
   });
 });

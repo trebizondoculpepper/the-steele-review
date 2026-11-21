@@ -1,3 +1,8 @@
+import {
+  savePublicationPayload,
+  artifactReference,
+  artifactRef,
+} from "../../src/drafting/publication-payload.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,8 +38,13 @@ const any = {
 const key = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 32);
 
 /** Save one draft (Markdown plus metadata) as the writer would. */
-async function saveDraft(post: string, markdown: string, title?: string) {
-  const k = key(`${post}:${markdown}`);
+async function saveDraft(
+  post: string,
+  markdown: string,
+  title?: string,
+  extra: { subtitle?: string; excerpt?: string } = {},
+) {
+  const k = key(`${post}:${markdown}:${title ?? ""}:${JSON.stringify(extra)}`);
   const md = await content.write(`articles/pub/${post}/${k}.md`, markdown);
   await content.write(
     `articles/pub/${post}/${k}.json`,
@@ -47,7 +57,9 @@ async function saveDraft(post: string, markdown: string, title?: string) {
       promptVersion: "package-draft-v9+sha256:0123456789abcdef",
       modelVersion: "fake/writer",
       draft: `${md.commit}:${md.path}`,
-      ...(title ? { fields: { title, subtitle: "s", excerpt: "e" } } : {}),
+      ...(title
+        ? { fields: { title, subtitle: extra.subtitle ?? "s", excerpt: extra.excerpt ?? "e" } }
+        : {}),
       draftedAt: "2026-11-21T12:00:00.000Z",
     }),
   );
@@ -58,11 +70,22 @@ async function report(
   post: string,
   draft: ReturnType<typeof ref>,
   outcome: "approved" | "redraft",
+  metadataPath?: string,
 ) {
+  const metadata = metadataPath ? await content.lookup(metadataPath) : undefined;
+  const publication = metadata
+    ? await savePublicationPayload({
+        content,
+        metadata,
+        body: artifactRef(draft),
+        post: { publicationId: "pub", postId: post },
+      })
+    : undefined;
   await content.write(
     `verifications/pub/${post}/${key(JSON.stringify(draft) + outcome)}.json`,
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: publication ? 2 : 1,
+      ...(publication ? { publication: artifactReference(publication.ref) } : {}),
       outcome,
       draft,
       package: any,
@@ -82,7 +105,7 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     const r1 = await saveDraft("p1", "First revision.", "Revision one");
     const r2 = await saveDraft("p1", "Second revision.", "Revision two");
     const manual = await saveDraft("p2", "A manual draft with <script>alert(1)</script>.");
-    await report("p1", ref(r1.md), "approved");
+    await report("p1", ref(r1.md), "approved", r1.metadata);
     // A report naming the right hash in another repository approves nothing.
     await report("p1", { ...ref(r2.md), repository: "elsewhere" }, "approved");
     const page = await draftInventory(content).page({});
@@ -103,6 +126,67 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
       status: "unreadable",
       limitation: expect.stringContaining("unreadable"),
     });
+  });
+
+  it("does not share approval or receipts between different metadata over identical body bytes", async () => {
+    const first = await saveDraft("p1", "Identical body.", "First title");
+    const second = await saveDraft("p1", "Identical body.", "Second title");
+    expect(first.md.sha256).toBe(second.md.sha256);
+    await report("p1", ref(first.md), "approved", first.metadata);
+    // An older body-only report never approves the second title.
+    await report("p1", ref(second.md), "approved");
+    const asked: Array<string | undefined> = [];
+    const inventory = draftInventory(content, {
+      receiptsFor: async (_post, _body, publicationHash) => {
+        asked.push(publicationHash);
+        return {
+          receipts: [
+            {
+              destination: "sim",
+              action: "draft",
+              simulated: true,
+              deliveredAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+          truncated: false,
+        };
+      },
+    });
+    const entries = (await inventory.page({})).entries;
+    expect(entries.find((e) => e.path === first.metadata)).toMatchObject({
+      status: "approved",
+      approvalScope: "publication",
+      receipts: [{ destination: "sim" }],
+    });
+    expect(entries.find((e) => e.path === second.metadata)).toMatchObject({
+      status: "unverified",
+      receipts: [],
+      limitation: expect.stringContaining("only the body"),
+    });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it("labels legacy approval as body-only and escapes all saved generated fields", async () => {
+    const legacy = await saveDraft("p1", "Legacy body.");
+    await report("p1", ref(legacy.md), "approved");
+    const draft = await saveDraft("p2", "Body.", "<em>Title</em>", {
+      subtitle: "<img src=x>",
+      excerpt: "<script>alert(1)</script>",
+    });
+    const inventory = draftInventory(content);
+    expect((await inventory.text(legacy.metadata))?.entry).toMatchObject({
+      status: "approved",
+      approvalScope: "body-only",
+    });
+    const [, view] = draftViews(inventory);
+    const html = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(draft.metadata)}`),
+    );
+    expect(html).toContain("&lt;em&gt;Title&lt;/em&gt;");
+    expect(html).toContain("&lt;img src=x&gt;");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).not.toContain("<script>");
   });
 
   it("shows an incomplete verification scan as incomplete, not unverified", async () => {
