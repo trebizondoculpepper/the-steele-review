@@ -90,6 +90,10 @@ export type SkipReason =
 
 const COMMIT = /^[0-9a-f]{40}$/;
 
+/** Only the digest of an image reference is ever logged; registry hosts and paths stay private. */
+export const digestOnly = (image: string | undefined) =>
+  /@(sha256:[0-9a-f]{64})$/.exec(image ?? "")?.[1] ?? "unrecorded";
+
 /** The image reference pinned by digest, from the commit-tagged repository. */
 export const pinnedImage = (repository: string, digest: string) => `${repository}@${digest}`;
 

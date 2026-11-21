@@ -6,6 +6,7 @@ import {
   portainerDashboardStack,
 } from "../../src/controllers/dashboard-deploy.js";
 import {
+  digestOnly,
   updateDashboard,
   type Build,
   type UpdateState,
@@ -301,6 +302,13 @@ describe("dashboard auto-update (#476)", () => {
     } finally {
       server.close();
     }
+  });
+
+  it("logs only digests, never registry hosts", () => {
+    expect(digestOnly(`registry.internal.example:5000/team/app@sha256:${"f".repeat(64)}`)).toBe(
+      `sha256:${"f".repeat(64)}`,
+    );
+    expect(digestOnly("registry.internal.example/app:latest")).toBe("unrecorded");
   });
 
   it("GitHub adapter treats only 'ahead' as newer", async () => {

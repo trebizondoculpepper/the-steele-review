@@ -31,7 +31,7 @@ import {
   httpReadiness,
   portainerDashboardStack,
 } from "../controllers/dashboard-deploy.js";
-import { updateDashboard, type UpdateState } from "../deploy/dashboard-update.js";
+import { digestOnly, updateDashboard, type UpdateState } from "../deploy/dashboard-update.js";
 
 const log = (fields: Record<string, unknown>) =>
   console.log(JSON.stringify({ event: "dashboard-update", ...fields }));
@@ -132,7 +132,7 @@ async function main(argv: string[]): Promise<number> {
       // Adopting is an operator decision: it clears any pending update.
       const { pending: _pending, ...rest } = previous;
       await writeState({ ...rest, deployed: { commit, image, at: new Date().toISOString() } });
-      log({ outcome: "adopted", commit, image });
+      log({ outcome: "adopted", commit, image: digestOnly(image) });
       return 0;
     }
     if (argv.length > 0 || !env.STEELE_DEPLOY_DASHBOARD_URL) {
@@ -157,7 +157,11 @@ async function main(argv: string[]): Promise<number> {
       save: writeState,
     });
     if (next !== state) await writeState(next);
-    log({ ...result });
+    log({
+      ...result,
+      ...("image" in result ? { image: digestOnly(result.image) } : {}),
+      ...("restored" in result ? { restored: digestOnly(result.restored) } : {}),
+    });
     return result.outcome === "deployed" || result.outcome === "skipped" ? 0 : 1;
   } catch (error) {
     log({
