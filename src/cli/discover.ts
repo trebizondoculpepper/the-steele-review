@@ -13,6 +13,7 @@
  *   STEELE_MAX_BACKOFF_MS     optional
  *   STEELE_DISCOVERY_SUBJECT  optional
  *   STEELE_DISCOVERY_STREAM   optional, require this stream to capture events
+ *   STEELE_DISCOVERY_STATUS_PATH  optional, write the last poll status for the dashboard
  *
  * Status lines are sanitised JSON; connection details are never printed.
  * The existing connectivity health service (main.ts) is unchanged.
@@ -23,6 +24,7 @@ import { NatsDiscoveryPublisher } from "../controllers/nats-discovery.js";
 import { NatsController } from "../controllers/nats.js";
 import { SubstackRssDiscovery } from "../controllers/substack/rss.js";
 import { PeriodicDiscoveryRunner } from "../discovery/periodic.js";
+import { writeDiscoveryStatus } from "../discovery/status.js";
 import { runDiscovery } from "../discovery/run.js";
 import { createDiscoveryEvent } from "../events/discovery-event.js";
 
@@ -33,6 +35,7 @@ const EnvSchema = z.object({
   STEELE_MAX_BACKOFF_MS: z.coerce.number().int().positive().optional(),
   STEELE_DISCOVERY_SUBJECT: z.string().min(1).optional(),
   STEELE_DISCOVERY_STREAM: z.string().min(1).optional(),
+  STEELE_DISCOVERY_STATUS_PATH: z.string().min(1).optional(),
 });
 
 async function main(): Promise<number> {
@@ -80,6 +83,10 @@ async function main(): Promise<number> {
     onStatus: (status) => {
       if (status.state === "waiting" || status.state === "stopped") {
         console.log(JSON.stringify({ event: "discovery", ...status }));
+      }
+      // Best effort: a status file that cannot be written must not stop polling.
+      if (config.STEELE_DISCOVERY_STATUS_PATH) {
+        void writeDiscoveryStatus(config.STEELE_DISCOVERY_STATUS_PATH, status).catch(() => undefined);
       }
     },
   });
