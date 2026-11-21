@@ -1,3 +1,7 @@
+import { OperationStore } from "../../src/controllers/operation-store.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { draftFromPackage } from "../../src/drafting/package-draft.js";
 import { verifyPackageDraft } from "../../src/drafting/package-verify.js";
@@ -71,13 +75,18 @@ export async function approvedReport(
     shortlister: new LexicalShortlister(),
   });
   const pkg = await saveWriterPackage({ content, coverage: coverage.ref });
+  const stateDir = await mkdtemp(join(tmpdir(), "steele-approved-fixture-"));
+  const operations = new OperationStore({ path: join(stateDir, "state.sqlite") });
   const draft = await draftFromPackage({
+    operations,
     content,
     archive,
     package: pkg.ref,
     provider: fake("fake/writer", WRITER),
     sourceUrl: "https://pub.example.com/p/p1",
   });
+  operations.close();
+  await rm(stateDir, { recursive: true, force: true });
   if (draft.status !== "drafted") throw new Error(draft.status);
   let metadata = draft.metadata;
   if (legacy) {

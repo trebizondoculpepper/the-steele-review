@@ -61,3 +61,38 @@ A rejected writer response produces a versioned diagnostic tied to the exact wri
 The existing two-call budget is unchanged (the single-attempt CLI option still disables correction). When the first response fails validation, the remaining call receives the original source/evidence plus the rejected response as untrusted data and safe validation feedback. Correction instructions live in `src/prompts/writer/package-output-repair.md`; they cannot weaken grounding checks or independent verification. Exhaustion returns an operational failure with safe diagnostic references; no draft or approval is fabricated.
 
 Valid initial drafts keep their existing cache identity. Repaired drafts have a separate identity including the exact repair prompt content, and metadata records the repair prompt and diagnostic references. Both remain immutable and pass normal exact-payload verification before delivery. Deploy readers/consumers that accept these optional metadata fields before the producing worker. Old failures remain readable, but their discarded response details cannot be reconstructed. An explicit post-fix recovery can reuse its pinned research/package; it must not invent a source version or repeat full research merely to retry writing.
+
+### Private writer attempts
+
+Writer calls require `STEELE_STATE_PATH` as well as the private content repository.
+Every returned response is committed unchanged under `writer-attempts/` **before**
+JSON, schema, or evidence validation. This includes rejected responses and editorial
+revisions. Transport failures without returned text have an explicit no-response
+record; interrupted calls never invent a response or automatically repeat the call.
+
+Each attempt has a versioned input record, completion metadata, raw `response.txt`,
+and manifest. A separate validation manifest records accepted/rejected status and
+safe diagnostic references. Accepted draft metadata links its attempt manifests.
+Raw attempts are audit material, not articles, research evidence, or approvals.
+Legacy cached drafts remain readable and report retention as `legacy-unavailable`.
+
+A restart reuses the exact committed response and its completion metadata rather
+than charging for another call. If the call was interrupted before a response was
+committed, automatic processing holds. A late response is retained for deliberate
+rescue and cannot become an accepted article automatically. Archive failures stop
+processing. Repair and editorial verification budgets remain separate concerns.
+
+`readWriterAttempt` provides typed, hash-verified private inspection;
+`renderWriterAttemptText` escapes untrusted text for a private HTML view. Ordinary
+CLI/status/telemetry output contains references and allowlisted categories only.
+Never copy raw attempts, input prompts, credentials, or private paths into public
+issues, source, logs, or Sentry. Raw retention does not bypass independent exact
+publication-payload verification.
+
+`draft-package --writer-recovery-id <stable-token>` permits a deliberate new
+capture generation only after a confirmed rejection before any returned response
+(credit, rate limit, authentication, or invalid request). Reuse the same token
+when retrying that recovery. Existing raw output is always reused. Timeouts,
+unknown transport failures, and interrupted calls cannot use this mechanism to
+silently purchase another response. Workflow entry points do not generate these
+operator recovery tokens automatically.

@@ -16,6 +16,7 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { OperationStore } from "../controllers/operation-store.js";
 import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
 import { verifyPackageDraft, verifyWithRevisions } from "../drafting/package-verify.js";
@@ -100,33 +101,43 @@ async function main(): Promise<number> {
   let report: Record<string, unknown>;
   let ok: boolean;
   if (values.revise) {
-    const meta = PackageDraftMetadataSchema.parse(JSON.parse(await content.read(metadata)));
-    const pkg = {
-      repository: meta.package.repository,
-      commit: meta.package.commit,
-      path: meta.package.path,
-      sha256: meta.package.hash.replace(/^sha256:/, ""),
-    };
-    const out = await verifyWithRevisions({
-      content,
-      archive,
-      package: pkg,
-      metadata,
-      writer: writer!,
-      verifier,
-      ...(url.data ? { sourceUrl: url.data } : {}),
-    });
-    ok = out.outcome === "approved";
-    report =
-      out.outcome === "failed"
-        ? { outcome: "failed", reason: out.reason, revisions: out.revisions }
-        : {
-            outcome: out.outcome,
-            revisions: out.revisions,
-            draft: out.draft.path,
-            report: out.report.path,
-            ...(out.outcome === "unresolved" ? { issues: out.issues.length } : {}),
-          };
+    if (!process.env.STEELE_STATE_PATH) {
+      console.error("verify-package-draft: revision state must be configured");
+      return 2;
+    }
+    const operations = new OperationStore({ path: process.env.STEELE_STATE_PATH });
+    try {
+      const meta = PackageDraftMetadataSchema.parse(JSON.parse(await content.read(metadata)));
+      const pkg = {
+        repository: meta.package.repository,
+        commit: meta.package.commit,
+        path: meta.package.path,
+        sha256: meta.package.hash.replace(/^sha256:/, ""),
+      };
+      const out = await verifyWithRevisions({
+        operations,
+        content,
+        archive,
+        package: pkg,
+        metadata,
+        writer: writer!,
+        verifier,
+        ...(url.data ? { sourceUrl: url.data } : {}),
+      });
+      ok = out.outcome === "approved";
+      report =
+        out.outcome === "failed"
+          ? { outcome: "failed", reason: out.reason, revisions: out.revisions }
+          : {
+              outcome: out.outcome,
+              revisions: out.revisions,
+              draft: out.draft.path,
+              report: out.report.path,
+              ...(out.outcome === "unresolved" ? { issues: out.issues.length } : {}),
+            };
+    } finally {
+      operations.close();
+    }
   } else {
     const out = await verifyPackageDraft({ content, archive, metadata, verifier });
     ok = out.status === "verified" && out.report.outcome === "approved";

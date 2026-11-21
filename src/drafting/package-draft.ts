@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
+import type { OperationStore } from "../controllers/operation-store.js";
+import {
+  captureWriterAttempt,
+  finishWriterValidation,
+  WriterAttemptError,
+  type CapturedWriterAttempt,
+} from "./writer-attempts.js";
 import {
   safeDraftIssues,
   saveDraftDiagnostic,
@@ -125,6 +132,7 @@ export const PackageDraftMetadataSchema = z
     revisionPromptVersion: z.string().optional(),
     repairPromptVersion: z.string().optional(),
     diagnostics: z.array(Ref).max(2).optional(),
+    writerAttempts: z.array(Ref).max(100).optional(),
     modelVersion: z.string(),
     /** Model the caller asked for (#260); absent when the configured default was used. */
     requestedModel: z.string().optional(),
@@ -303,6 +311,8 @@ export type PackageDraftOutcome =
       metadata: ArtifactRef;
       reused: boolean;
       diagnostics?: ArtifactRef[];
+      writerAttempts?: ArtifactRef[];
+      retention?: "recorded" | "legacy-unavailable";
     }
   | { status: "evidence-gap" }
   | { status: "context-unavailable"; reason: string }
@@ -312,6 +322,9 @@ export type PackageDraftOutcome =
         | "provider-failed"
         | "malformed-output"
         | "invalid-draft"
+        | "writer-archive-failed"
+        | "writer-attempt-busy"
+        | "writer-attempt-interrupted"
         /** The caller's link differs from the package's pinned original URL (#276). */
         | "source-url-mismatch"
         /** Neither the package nor the caller supplies the original post's link. */
@@ -321,10 +334,13 @@ export type PackageDraftOutcome =
       providerError?: string;
       validationFailure?: DraftValidationKind;
       diagnostics?: ArtifactRef[];
+      writerAttempts?: ArtifactRef[];
     };
 
 export async function draftFromPackage(input: {
   content: GitArtifactStore;
+  operations: OperationStore;
+  writerRecoveryId?: string;
   archive: Pick<GitArtifactStore, "read">;
   package: ArtifactRef;
   provider: ExtractionModelProvider;
@@ -351,6 +367,8 @@ export async function draftFromPackage(input: {
    * reference is part of this draft's identity.
    */
   previousDraft?: { ref: ArtifactRef; markdown: string };
+  /** Exact saved inputs behind editorial feedback; not model-generated references. */
+  revisionInputs?: ArtifactRef[];
   /** Revision instructions; defaults to the editable package-revision.md. */
   revisionInstructions?: string;
   now?: () => Date;
@@ -393,23 +411,30 @@ export async function draftFromPackage(input: {
     .digest("hex")
     .slice(0, 32);
   const repairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${repairedKey}`;
-  // Stable input identity: a saved draft for exactly these inputs is reused.
-  const savedDraft = await input.content.lookup(`${base}.md`);
-  const savedMeta = await input.content.lookup(`${base}.json`);
-  if (savedDraft && savedMeta)
-    return { status: "drafted", draft: savedDraft, metadata: savedMeta, reused: true };
-  const repairedDraft = await input.content.lookup(`${repairedBase}.md`);
-  const repairedMeta = await input.content.lookup(`${repairedBase}.json`);
-  if (repairedDraft && repairedMeta)
+  // Existing accepted legacy drafts remain usable; absence of raw output is explicit.
+  const cached = async (
+    draft: ArtifactRef,
+    metadata: ArtifactRef,
+  ): Promise<PackageDraftOutcome> => {
+    const stored = PackageDraftMetadataSchema.parse(JSON.parse(await input.content.read(metadata)));
     return {
       status: "drafted",
-      draft: repairedDraft,
-      metadata: repairedMeta,
+      draft,
+      metadata,
       reused: true,
-      diagnostics: PackageDraftMetadataSchema.parse(
-        JSON.parse(await input.content.read(repairedMeta)),
-      ).diagnostics?.map(toArtifactRef),
+      ...(stored.diagnostics ? { diagnostics: stored.diagnostics.map(toArtifactRef) } : {}),
+      ...(stored.writerAttempts
+        ? { writerAttempts: stored.writerAttempts.map(toArtifactRef) }
+        : {}),
+      retention: stored.writerAttempts?.length ? "recorded" : "legacy-unavailable",
     };
+  };
+  const savedDraft = await input.content.lookup(`${base}.md`);
+  const savedMeta = await input.content.lookup(`${base}.json`);
+  if (savedDraft && savedMeta) return cached(savedDraft, savedMeta);
+  const repairedDraft = await input.content.lookup(`${repairedBase}.md`);
+  const repairedMeta = await input.content.lookup(`${repairedBase}.json`);
+  if (repairedDraft && repairedMeta) return cached(repairedDraft, repairedMeta);
 
   const loaded = await loadPinnedContext({
     archive: input.archive,
@@ -487,6 +512,7 @@ export async function draftFromPackage(input: {
   let lastFailure: "provider-failed" | "malformed-output" | "invalid-draft" = "malformed-output";
   let providerError: string | undefined;
   const diagnostics: ArtifactRef[] = [];
+  const writerAttempts: ArtifactRef[] = [];
   let correction:
     | { previousOutput: string; kind: DraftValidationKind; issues: SafeDraftIssue[] }
     | undefined;
@@ -500,39 +526,79 @@ export async function draftFromPackage(input: {
     const requestUser = correction
       ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
       : user;
+    let captured: CapturedWriterAttempt;
     try {
-      raw = await input.provider.complete(
-        {
+      captured = await captureWriterAttempt({
+        content: input.content,
+        operations: input.operations,
+        provider: input.provider,
+        request: {
           system: isCorrection
             ? `${prompt.instructions}\n\n${OUTPUT_REPAIR_PROMPT.instructions}`
             : prompt.instructions,
           user: requestUser,
           maxOutputChars: 40_000,
-          onCompletion: (metadata) => {
-            completion =
-              metadata?.stopReason === "completed" || metadata?.stopReason === "length-limit"
-                ? metadata.stopReason
-                : "unknown";
-          },
         },
-        AbortSignal.timeout(180_000),
-      );
+        package: input.package,
+        source: pkg.source.artifact,
+        context: [
+          pkg.coverage,
+          pkg.themeResult,
+          pkg.claimResult,
+          ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
+          ...(input.revisionInputs ?? []).map(toRef),
+        ],
+        kind: isCorrection ? "correction" : input.revision ? "revision" : "initial",
+        number: attempt + 1,
+        ...(input.revision ? { revision: input.revision.number } : {}),
+        promptVersion: promptId,
+        ...(isCorrection ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
+        ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+        signal: AbortSignal.timeout(180_000),
+        ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
+      });
     } catch (error) {
-      rethrowCreditExhausted(error); // waits for credit; never retried or flattened (#407)
-      if (
-        (completion as string) === "length-limit" &&
-        error instanceof ModelProviderError &&
-        error.code === "bad-response"
-      ) {
-        raw = ""; // The adapter supplied truncation evidence, even with no usable text.
-      } else {
-        lastFailure = "provider-failed";
-        providerError = error instanceof ModelProviderError ? error.code : "unavailable";
-        // An unknown or rejected model is not retried with the same request.
-        if (providerError === "bad-request" || providerError === "unauthorised") break;
-        continue;
-      }
+      if (error instanceof WriterAttemptError)
+        return {
+          status: "failed",
+          reason:
+            error.code === "archive-failed"
+              ? "writer-archive-failed"
+              : error.code === "busy"
+                ? "writer-attempt-busy"
+                : "writer-attempt-interrupted",
+          ...(writerAttempts.length ? { writerAttempts } : {}),
+          ...(diagnostics.length ? { diagnostics } : {}),
+        };
+      throw error;
     }
+    if (captured.manifest.outcome === "interrupted")
+      return {
+        status: "failed",
+        reason: "writer-attempt-interrupted",
+        writerAttempts: [...writerAttempts, captured.ref],
+      };
+    completion = captured.manifest.completion.stopReason;
+    if (
+      captured.text === undefined ||
+      (captured.manifest.failure && captured.manifest.failure !== "bad-response")
+    ) {
+      writerAttempts.push(
+        await finishWriterValidation({
+          content: input.content,
+          attempt: captured,
+          accepted: false,
+        }),
+      );
+      providerError = captured.manifest.failure ?? "unavailable";
+      if (providerError === "credit-exhausted")
+        rethrowCreditExhausted(new ModelProviderError("credit-exhausted"));
+      lastFailure = "provider-failed";
+      // Correction turns require an actual retained response, never an
+      // ambiguous transport failure or an automatic provider retry.
+      break;
+    }
+    raw = captured.text;
     let parsed: PackageModelDraft | undefined;
     let kind: DraftValidationKind | undefined;
     let issues: SafeDraftIssue[] = [];
@@ -579,11 +645,23 @@ export async function draftFromPackage(input: {
           issues,
           raw,
           completion,
+          writerAttempt: captured.ref,
+        }),
+      );
+      writerAttempts.push(
+        await finishWriterValidation({
+          content: input.content,
+          attempt: captured,
+          accepted: false,
+          diagnostic: diagnostics.at(-1),
         }),
       );
       correction = { previousOutput: raw, kind, issues };
       continue;
     }
+    writerAttempts.push(
+      await finishWriterValidation({ content: input.content, attempt: captured, accepted: true }),
+    );
     draft = parsed;
     repaired = isCorrection;
   }
@@ -597,6 +675,7 @@ export async function draftFromPackage(input: {
       ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
       ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
       ...(diagnostics.length ? { diagnostics } : {}),
+      ...(writerAttempts.length ? { writerAttempts } : {}),
     };
   }
   const markdown = renderPackageDraft(pkg, draft, sourceUrl);
@@ -611,6 +690,7 @@ export async function draftFromPackage(input: {
     promptVersion: promptId,
     ...(repaired ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
     ...(diagnostics.length ? { diagnostics: diagnostics.map(toRef) } : {}),
+    writerAttempts: writerAttempts.map(toRef),
     ...(input.revision
       ? {
           revisionPromptVersion: promptIdentity(
@@ -633,5 +713,7 @@ export async function draftFromPackage(input: {
     metadata: metaRef,
     reused: false,
     ...(diagnostics.length ? { diagnostics } : {}),
+    writerAttempts,
+    retention: "recorded",
   };
 }

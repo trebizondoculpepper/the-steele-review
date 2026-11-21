@@ -1,3 +1,4 @@
+import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   readPublicationPayload,
   savePublicationPayload,
@@ -24,16 +25,19 @@ import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/write
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
 
+let operations: OperationStore;
 let dir: string;
 let content: GitArtifactStore;
 let fx: ReturnType<typeof librarianFixtures>;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "steele-package-verify-"));
+  operations = new OperationStore({ path: join(dir, "state.sqlite") });
   content = new GitArtifactStore({ repoPath: dir, repository: "content" });
   await content.initialise();
   fx = librarianFixtures(content);
 });
 afterEach(async () => {
+  operations.close();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -115,6 +119,7 @@ async function drafted(writer = model("fake/writer", writerResponse())) {
   });
   const pkg = await saveWriterPackage({ content, coverage: coverage.ref });
   const out = await draftFromPackage({
+    operations,
     content,
     archive,
     package: pkg.ref,
@@ -135,12 +140,17 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     };
     // First draft: unchanged wording reuses; changed wording calls the provider again.
     const same = model("fake/writer", writerResponse());
-    const again = await draftFromPackage({ ...base, provider: same });
+    const again = await draftFromPackage({ operations, ...base, provider: same });
     if (again.status !== "drafted") throw new Error(again.status);
     expect(same.calls).toBe(0);
     expect(again.draft.path).toBe(draft.path);
     const fresh = model("fake/writer", writerResponse());
-    const redone = await draftFromPackage({ ...base, provider: fresh, prompt: reworded });
+    const redone = await draftFromPackage({
+      operations,
+      ...base,
+      provider: fresh,
+      prompt: reworded,
+    });
     if (redone.status !== "drafted") throw new Error(redone.status);
     expect(fresh.calls).toBe(1);
     expect(redone.draft.path).not.toBe(draft.path);
@@ -152,9 +162,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     // Redraft: the revision instructions' wording is part of its identity.
     const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
     const r1 = model("fake/writer", writerResponse());
-    const firstRedraft = await draftFromPackage({ ...base, provider: r1, revision });
+    const firstRedraft = await draftFromPackage({ operations, ...base, provider: r1, revision });
     const r2 = model("fake/writer", writerResponse());
     const rewordedRedraft = await draftFromPackage({
+      operations,
       ...base,
       provider: r2,
       revision,
@@ -183,6 +194,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     };
     const previous = { ref: draft, markdown: "# Previous article\n\nThe treaty bans weapons." };
     const withPrevious = await draftFromPackage({
+      operations,
       ...base,
       provider: recording as never,
       revision,
@@ -197,7 +209,12 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       },
     });
     // The previous draft is part of the revision's identity.
-    const withoutPrevious = await draftFromPackage({ ...base, provider: model("fake/writer", writerResponse()), revision });
+    const withoutPrevious = await draftFromPackage({
+      operations,
+      ...base,
+      provider: model("fake/writer", writerResponse()),
+      revision,
+    });
     if (withoutPrevious.status !== "drafted") throw new Error(withoutPrevious.status);
     expect(withPrevious.draft.path).not.toBe(withoutPrevious.draft.path);
 
@@ -421,6 +438,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     const { pkg, metadata } = await drafted(writer);
     const verifier = model("fake/verifier", OVERSTATED, APPROVE);
     const out = await verifyWithRevisions({
+      operations,
       content,
       archive,
       package: pkg.ref,
@@ -437,6 +455,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     const writer = model("fake/writer", writerResponse("The treaty proves the claim."));
     const { pkg, metadata } = await drafted(writer);
     const out = await verifyWithRevisions({
+      operations,
       content,
       archive,
       package: pkg.ref,

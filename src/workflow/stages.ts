@@ -278,6 +278,7 @@ export function articleStages(deps: {
 
     async draft(pkg, sourceUrl) {
       const out = await draftFromPackage({
+        operations: deps.operations,
         content: deps.content,
         archive: deps.archive,
         package: pkg,
@@ -303,6 +304,7 @@ export function articleStages(deps: {
       const metadata = await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
       const out = await verifyWithRevisions({
+        operations: deps.operations,
         content: deps.content,
         archive: deps.archive,
         package: pkg,

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type { OperationStore } from "../controllers/operation-store.js";
 import { writeOnce } from "../research/job.js";
 import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
 import { loadPinnedContext } from "./pinned-context.js";
@@ -347,6 +348,7 @@ export type RevisionLoopOutcome =
  */
 export async function verifyWithRevisions(input: {
   content: GitArtifactStore;
+  operations: OperationStore;
   archive: GitArtifactStore;
   package: ArtifactRef;
   metadata: ArtifactRef;
@@ -400,6 +402,8 @@ export async function verifyWithRevisions(input: {
     }
     const redraft = await draftFromPackage({
       content: input.content,
+      operations: input.operations,
+      revisionInputs: [metadata, verified.ref],
       archive: input.archive,
       package: input.package,
       provider: input.writer,

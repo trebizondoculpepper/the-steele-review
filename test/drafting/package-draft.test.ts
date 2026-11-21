@@ -1,3 +1,5 @@
+import { readWriterAttempt } from "../../src/drafting/writer-attempts.js";
+import { OperationStore } from "../../src/controllers/operation-store.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,16 +17,19 @@ import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/write
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
 
+let operations: OperationStore;
 let dir: string;
 let content: GitArtifactStore;
 let fx: ReturnType<typeof librarianFixtures>;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "steele-package-draft-"));
+  operations = new OperationStore({ path: join(dir, "state.sqlite") });
   content = new GitArtifactStore({ repoPath: dir, repository: "content" });
   await content.initialise();
   fx = librarianFixtures(content);
 });
 afterEach(async () => {
+  operations.close();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -123,6 +128,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const run = (provider: ReturnType<typeof model>, extra: Record<string, unknown> = {}) =>
       packageRef().then((ref) =>
         draftFromPackage({
+          operations,
           content,
           archive,
           package: ref,
@@ -141,6 +147,10 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
         subtitle: JSON.parse(GOOD).subtitle,
         excerpt: JSON.parse(GOOD).excerpt,
       });
+      expect(out.retention).toBe("recorded");
+      const attempt = await readWriterAttempt(content, out.writerAttempts![0]);
+      expect(attempt.text).toBe(GOOD);
+      expect(attempt.manifest.outcome).toBe("accepted");
       const md = await content.read(out.draft);
       expect(md).not.toMatch(/^# /m);
       expect(md).not.toContain(JSON.parse(GOOD).title);
@@ -192,6 +202,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       const ref = await packageRef();
       const draft = (provider: ReturnType<typeof model>, extra: Record<string, unknown> = {}) =>
         draftFromPackage({
+          operations,
           content,
           archive,
           package: ref,
@@ -219,6 +230,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const ref = await packageRef();
     const provider = model(GOOD);
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -248,6 +260,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const ref = await packageRef();
     const provider = model(GOOD);
     const one = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -255,6 +268,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       sourceUrl: "https://x/p",
     });
     const two = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -312,6 +326,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       ],
     });
     const failed = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -320,19 +335,112 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     });
     expect(failed).toMatchObject({ status: "failed", reason: "invalid-draft" });
     const ok = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
-      provider: model("not json", GOOD),
+      provider: { ...model("not json", GOOD), modelVersion: "fake/writer-corrected" },
       sourceUrl: "https://x/p",
     });
     expect(ok.status).toBe("drafted");
+  });
+
+  it("does not spend a correction turn after an ambiguous provider failure", async () => {
+    let calls = 0;
+    const ref = await packageRef();
+    const provider = {
+      modelVersion: "fake/timeout",
+      complete: async () => {
+        calls++;
+        throw new ModelProviderError("timeout");
+      },
+    };
+    const out = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://x/p",
+    });
+    expect(out).toMatchObject({ status: "failed", providerError: "timeout" });
+    expect(calls).toBe(1);
+    await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://x/p",
+    });
+    expect(calls).toBe(1);
+  });
+
+  it("corrects a retained malformed response after explicit recovery of a confirmed rejection", async () => {
+    const ref = await packageRef();
+    let calls = 0;
+    const provider = {
+      modelVersion: "fake/recovery",
+      complete: async () => {
+        calls++;
+        if (calls === 1) throw new ModelProviderError("rate-limited");
+        return calls === 2 ? "malformed output" : GOOD;
+      },
+    };
+    const input = {
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://x/p",
+    };
+    expect(await draftFromPackage(input)).toMatchObject({
+      status: "failed",
+      providerError: "rate-limited",
+    });
+    const recovered = await draftFromPackage({ ...input, writerRecoveryId: "operator-recovery-1" });
+    expect(recovered.status).toBe("drafted");
+    expect(calls).toBe(3);
+    expect(recovered.writerAttempts).toHaveLength(2);
+  });
+
+  it("explicitly recovers a rejected correction while reusing the retained initial response", async () => {
+    const ref = await packageRef();
+    let calls = 0;
+    const provider = {
+      modelVersion: "fake/correction-recovery",
+      complete: async () => {
+        calls++;
+        if (calls === 2) throw new ModelProviderError("rate-limited");
+        return calls === 1 ? "malformed output" : GOOD;
+      },
+    };
+    const input = {
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://x/p",
+    };
+    expect(await draftFromPackage(input)).toMatchObject({
+      status: "failed",
+      providerError: "rate-limited",
+    });
+    const recovered = await draftFromPackage({
+      ...input,
+      writerRecoveryId: "correction-recovery-1",
+    });
+    expect(recovered.status).toBe("drafted");
+    expect(calls).toBe(3);
   });
 
   it("does not draft from an evidence-gap package", async () => {
     const ref = await packageRef(() => "failed");
     expect(
       await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -345,6 +453,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
   it("keeps older drafts when the prompt version changes", async () => {
     const ref = await packageRef();
     const one = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -352,6 +461,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       sourceUrl: "https://x/p",
     });
     const two = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -429,6 +539,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
         expect.arrayContaining([expect.stringContaining("without historical evidence")]),
       );
       const out = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -478,6 +589,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
         comparisons: [cmp],
       });
       const out = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -519,6 +631,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       const ref = await packageRef();
       const a = model(GOOD);
       const one = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -529,6 +642,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       });
       const b = model(GOOD);
       const two = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -544,6 +658,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
         resolvedModel: "vendor/model-a-2026-01",
       });
       const again = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -562,6 +677,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
       const ref = await packageRef();
       let calls = 0;
       const out = await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -589,7 +705,13 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(ref)));
     expect(pkg.source).toMatchObject({ originalUrl: "https://pub.example.com/p/p1", title: "T" });
     // No URL from the caller: the package's is used, as an explicit titled link.
-    const out = await draftFromPackage({ content, archive, package: ref, provider: model(GOOD) });
+    const out = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider: model(GOOD),
+    });
     if (out.status !== "drafted") throw new Error(out.status);
     expect(await content.read(out.draft)).toContain(
       "Original post: [T](<https://pub.example.com/p/p1>)",
@@ -597,6 +719,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     // A matching URL is accepted and reuses the same draft.
     expect(
       await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -608,6 +731,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const provider = model(GOOD);
     expect(
       await draftFromPackage({
+        operations,
         content,
         archive,
         package: ref,
@@ -620,7 +744,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
   it("needs a link from somewhere for a package without a pinned URL", async () => {
     const ref = await packageRef();
     expect(
-      await draftFromPackage({ content, archive, package: ref, provider: model(GOOD) }),
+      await draftFromPackage({ operations, content, archive, package: ref, provider: model(GOOD) }),
     ).toEqual({ status: "failed", reason: "no-source-url" });
   });
 
@@ -628,6 +752,7 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     const ref = await packageRef();
     const provider = model("not json", GOOD);
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -659,6 +784,7 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
   ])("records %s without discarding the exact package binding", async (kind, raw, code, field) => {
     const ref = await packageRef();
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: ref,
@@ -696,7 +822,14 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
       },
     };
     const run = () =>
-      draftFromPackage({ content, archive, package: ref, provider, sourceUrl: "https://x/p" });
+      draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: ref,
+        provider,
+        sourceUrl: "https://x/p",
+      });
     const out = await run();
     expect(out.status).toBe("drafted");
     if (out.status !== "drafted") throw new Error("expected repaired draft");
@@ -724,6 +857,7 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
     });
     const provider = model(raw);
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: await packageRef(),
@@ -754,6 +888,7 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
       responses: [{ claimRecordId: sentinel, verdict: "supported", text: "x", evidence: [] }],
     });
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: await packageRef(),
@@ -781,6 +916,7 @@ describe("safe writer output recovery (#524)", { timeout: 60_000 }, () => {
       },
     };
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: await packageRef(),

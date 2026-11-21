@@ -192,15 +192,18 @@ export class OpenRouterProvider implements ExtractionModelProvider {
       throw new ModelProviderError("bad-response");
     }
     const choice = parsed.choices[0];
-    request.onCompletion?.({
+    const metadata = {
       stopReason:
         choice.finish_reason === "length"
-          ? "length-limit"
+          ? ("length-limit" as const)
           : choice.finish_reason === "stop"
-            ? "completed"
-            : "unknown",
-    });
+            ? ("completed" as const)
+            : ("unknown" as const),
+      ...(ModelName.safeParse(parsed.model).success ? { resolvedModel: parsed.model! } : {}),
+    };
+    request.onCompletion?.(metadata);
     const content = choice.message.content;
+    if (typeof content === "string") await request.onOutput?.(content, metadata);
     if (typeof content !== "string" || content.length === 0) {
       throw new ModelProviderError("bad-response");
     }
