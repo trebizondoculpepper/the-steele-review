@@ -19,6 +19,8 @@ import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article
  * Restate is retried by redelivery.
  */
 
+export const CAPTURE_BRIDGE_MAX_DELIVER = 10;
+
 export type SubmitResult = "started" | "already-running";
 
 export interface CapturedBridgeOptions {
@@ -94,4 +96,30 @@ export async function handleCapturedContent(
       key,
     };
   }
+}
+
+/** Record exhausted submission retries before the broker can discard the handoff. */
+export async function settleCapturedDelivery(
+  message: Pick<
+    import("../controllers/nats.js").DeliveredMessage,
+    "deliveryCount" | "ack" | "nak" | "term"
+  >,
+  decision: BridgeDecision,
+  state: Pick<import("../controllers/operation-store.js").OperationStore, "recordPermanentFailure">,
+): Promise<void> {
+  if (decision.action === "term") {
+    message.term();
+    return;
+  }
+  if (decision.action === "nak") {
+    if (message.deliveryCount < CAPTURE_BRIDGE_MAX_DELIVER) {
+      message.nak(decision.delayMs);
+      return;
+    }
+    state.recordPermanentFailure(
+      `capture-bridge:${decision.key}`,
+      "retries-exhausted:submission-failed",
+    );
+  }
+  await message.ack();
 }

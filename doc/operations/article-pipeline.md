@@ -55,6 +55,37 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 
 Configuration: `NATS_URL`, `NATS_TOKEN?`, `STEELE_CONTENT_STREAM`, `STEELE_CAPTURED_CONSUMER` (provisioned separately, filtered to `steele.v1.content.captured`), `RESTATE_INGRESS_URL`, `STEELE_ARTICLE_SOURCES`, optional `STEELE_RESEARCH_DEADLINE_MS` (default 30 minutes) and `STEELE_BRIDGE_RETRY_DELAY_MS`.
 
+### Deploy the capture bridge
+
+Add `deploy/restate/bridge.compose.yaml` to the same Compose project as
+`deploy/restate/compose.yaml`. Supply a pinned image and the broker connection
+through private deployment configuration. Provision a dedicated durable pull
+consumer with explicit acknowledgement, the captured-content subject filter,
+and new-only delivery before starting the bridge. Check the consumer's filter
+and delivery policy before reusing it.
+
+Run the explicit provisioner with an image that includes it and a broker
+credential authorised to manage that consumer. The provisioner refuses a
+conflicting consumer without changing it. Then start the bridge with the
+runtime credential after Restate and the worker are registered.
+
+```sh
+docker compose -f deploy/restate/compose.yaml -f deploy/restate/bridge.compose.yaml run --rm --no-deps captured-bridge node dist/cli/provision-captured-bridge.js
+docker compose -f deploy/restate/compose.yaml -f deploy/restate/bridge.compose.yaml up -d --no-deps captured-bridge
+```
+
+The source allowlist defaults to empty. Set it to the isolated test source for
+the fixture smoke test and enable the live source only after that test passes.
+The shared image's default web-server health check is disabled for the bridge
+until its role-specific probe is wired.
+
+The bridge keeps its own durable state file. After the final failed submission
+attempt it records `capture-bridge:<workflow-key>` with
+`retries-exhausted:submission-failed` before acknowledging. Inspect the
+record using the operation diagnostic. After restoring Restate, recover by
+submitting the original captured event for that exact revision through the
+configured bridge. Reusing the workflow key also covers a submission whose
+response was lost.
 ## Approval dispatch and dummy publishers (#314, #315)
 
 The Restate stack also runs these services:
