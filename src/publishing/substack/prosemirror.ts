@@ -61,6 +61,35 @@ function bareUrl(text: string): [string, string] | null {
   return url.length > "https://".length ? [url, url] : null;
 }
 
+/**
+ * `[text](<url>)` or `[text](url)` at the start of `s`. A bare destination may
+ * contain balanced parentheses (`report_(2026)`), as in CommonMark; an
+ * unbalanced or whitespace-broken destination is not a link.
+ */
+function explicitLink(s: string): { text: string; href: string; length: number } | null {
+  const label = /^\[((?:\\.|[^\]\\])+)\]\(/.exec(s);
+  if (!label) return null;
+  let i = label[0].length;
+  if (s[i] === "<") {
+    const end = s.indexOf(">", i);
+    if (end < 0 || s[end + 1] !== ")" || /\s/.test(s.slice(i + 1, end))) return null;
+    return { text: label[1]!, href: s.slice(i + 1, end), length: end + 2 };
+  }
+  let depth = 0;
+  const start = i;
+  for (; i < s.length; i++) {
+    const c = s[i]!;
+    if (/\s/.test(c)) return null;
+    if (c === "(") depth++;
+    else if (c === ")") {
+      if (depth === 0) break;
+      depth--;
+    }
+  }
+  if (i >= s.length || i === start) return null;
+  return { text: label[1]!, href: s.slice(start, i), length: i + 1 };
+}
+
 /** Inline Markdown to text nodes with marks. */
 export function inline(source: string): PmText[] {
   if (/<(?!https:\/\/)[a-z!/]/i.test(source)) throw new UnsupportedMarkdownError("inline html");
@@ -86,14 +115,11 @@ export function inline(source: string): PmText[] {
         continue;
       }
       // [text](<url>) or [text](url); a plain [n] citation stays text.
-      const link = /^\[((?:\\.|[^\]\\])+)\]\((?:<([^>\s]+)>|([^)\s]+))\)/.exec(rest);
+      const link = explicitLink(rest);
       if (link) {
         flush();
-        walk(link[1]!, [
-          ...marks,
-          { type: "link", attrs: { href: httpsUrl(link[2] ?? link[3]!) } },
-        ]);
-        i += link[0].length;
+        walk(link.text, [...marks, { type: "link", attrs: { href: httpsUrl(link.href) } }]);
+        i += link.length;
         continue;
       }
       const auto = /^<(https:\/\/[^>\s]+)>/.exec(rest) ?? bareUrl(rest);

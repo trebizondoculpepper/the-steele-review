@@ -70,6 +70,11 @@ describe("Markdown to Substack ProseMirror (#385)", () => {
     );
     expect(json).toContain('"href":"https://example.org/report_(2026)"');
     expect(json).toContain('"href":"https://a.example/x"');
+    const explicit = JSON.stringify(
+      markdownToProseMirror("See [the report](https://example.org/report_(2026)) now."),
+    );
+    expect(explicit).toContain('"href":"https://example.org/report_(2026)"');
+    expect(explicit).toContain('"text":" now."');
   });
 
   it("fails on HTML and non-https links rather than creating a malformed draft", () => {
