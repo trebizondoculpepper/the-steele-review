@@ -360,7 +360,8 @@ describe("unattended article run on Restate (#243)", () => {
 
   it("caps the ordered research plan and preserves the cap on duplicate submission", async () => {
     plans.set("capped", ["cap-first", "cap-second", "cap-third"]);
-    const post = { ...input("capped"), researchRequestLimit: 2 };
+    // Earlier tests can leave slow jobs queued under the shared concurrency rule.
+    const post = { ...input("capped"), researchRequestLimit: 2, researchDeadlineMs: 60_000 };
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     const before = calls.research;
     await client.workflowSubmit(post);
