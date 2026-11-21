@@ -159,7 +159,7 @@ export interface ArticleTrace {
   /** True when the receipt scan could not be completed within its bound. */
   receiptsTruncated: boolean;
   /** Retained captured source for this post (#446). */
-  source?: CapturedSource;
+  source: CapturedSource;
 }
 
 /** Fixed reasons the workflow itself produces, shown as they are. */
@@ -383,7 +383,9 @@ export async function traceArticle(input: {
   } else if (input.runs) {
     run = { state: "unavailable" };
   }
-  let source: CapturedSource | undefined;
+  // Always report a state, so an unconfigured archive is distinguishable from
+  // a page that simply omits the feature.
+  let source: CapturedSource = { state: "not-configured" };
   if (input.source) {
     try {
       source = await input.source.read(post, sourceVersion);
@@ -447,6 +449,6 @@ export async function traceArticle(input: {
     ...(verification ? { verification } : {}),
     receipts,
     receiptsTruncated,
-    ...(source ? { source } : {}),
+    source,
   };
 }

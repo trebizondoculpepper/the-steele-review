@@ -92,13 +92,16 @@ export const SOURCE_DISPLAY_CHARS = 20_000;
  * deployment path leaves this function.
  */
 export function archivedSource(
-  archive: Pick<GitArtifactStore, "lookup" | "read">,
+  archive: Pick<GitArtifactStore, "list" | "lookup" | "read">,
   options: { maxChars?: number } = {},
 ): SourcePort {
   const maxChars = options.maxChars ?? SOURCE_DISPLAY_CHARS;
   return {
     async read(post, expectedSourceVersion): Promise<CapturedSource> {
       try {
+        // lookup() treats an unreadable repository as "no branch yet"; list()
+        // fails instead, so probe first to tell broken storage from absence.
+        await archive.list("substack", 1);
         const ref = await archive.lookup(collectionArtifactPath(post));
         if (!ref) return { state: "missing" };
         const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));

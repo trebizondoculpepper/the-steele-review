@@ -97,6 +97,19 @@ describe("archivedSource (#446)", () => {
     });
   });
 
+  it("reports an unusable repository as unreadable, not missing", async () => {
+    const broken = await mkdtemp(join(tmpdir(), "steele-broken-"));
+    try {
+      const source = await archivedSource(
+        // A directory that is not a Git repository.
+        new GitArtifactStore({ repoPath: broken, repository: "archive" }),
+      ).read(post);
+      expect(source).toEqual({ state: "unreadable" });
+    } finally {
+      await rm(broken, { recursive: true, force: true });
+    }
+  });
+
   it("reports missing and unreadable captures distinctly", async () => {
     expect(await archivedSource(archive).read(post)).toEqual({ state: "missing" });
     await archive.write("substack/pub/p2/collected.json", "{not json");
