@@ -270,4 +270,39 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     ).toMatchObject({ ok: true });
     expect(cp.state).toMatchObject({ publicationId: "example-pub" });
   });
+
+  it("removes a document a failed pass wrote when a later commit deletes its post", async () => {
+    const first = await commit({ [path("a")]: record("a") });
+    const cp = memoryCheckpoint({ commit: first });
+    await commit({ [path("new")]: record("new"), [path("bad")]: record("bad") });
+    const index = fakeIndex((docId) => docId === id("bad"));
+    expect(await catchUpIndex({ artifacts, index, checkpoint: cp.store })).toMatchObject({
+      ok: false,
+    });
+    expect(index.docs.has(id("new"))).toBe(true);
+    // Both posts are removed before the retry: net change from the good commit is nothing.
+    await commit({ [path("new")]: null, [path("bad")]: null });
+    const healthy = fakeIndex();
+    for (const [k, v] of index.docs) healthy.docs.set(k, v);
+    expect(await catchUpIndex({ artifacts, index: healthy, checkpoint: cp.store })).toMatchObject({
+      ok: true,
+    });
+    expect(healthy.docs.has(id("new"))).toBe(false);
+  });
+
+  it("refuses a checkpoint from a filtered bulk load", async () => {
+    const first = await commit({ [path("a")]: record("a") });
+    const cp = memoryCheckpoint({
+      publicationId: "example-pub",
+      commit: first,
+      wholePublication: false,
+    });
+    const report = await catchUpIndex({
+      artifacts,
+      index: fakeIndex(),
+      checkpoint: cp.store,
+      publicationId: "example-pub",
+    });
+    expect(report.failed).toEqual([{ path: "", reason: "checkpoint-incomplete" }]);
+  });
 });

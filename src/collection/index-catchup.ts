@@ -80,7 +80,9 @@ export async function catchUpIndex(input: {
   const marker = (await input.checkpoint.load()) ?? {};
   // A checkpoint is only valid for the publication scope it was made for.
   const scope = typeof marker.publicationId === "string" ? marker.publicationId : undefined;
-  if (scope !== undefined && scope !== input.publicationId) {
+  // A filtered bulk load (#249: --post, --from, --to) never covered the whole publication.
+  const partial = marker.wholePublication === false;
+  if (partial || (scope !== undefined && scope !== input.publicationId)) {
     return {
       ok: false,
       full: false,
@@ -89,7 +91,9 @@ export async function catchUpIndex(input: {
       stale: 0,
       incomplete: 0,
       removed: 0,
-      failed: [{ path: "", reason: "checkpoint-scope-mismatch" }],
+      failed: [
+        { path: "", reason: partial ? "checkpoint-incomplete" : "checkpoint-scope-mismatch" },
+      ],
       interrupted: false,
       checkpointAdvanced: false,
     };
@@ -97,7 +101,18 @@ export async function catchUpIndex(input: {
   // An unfinished pass is retried from the last good commit, so every change
   // it had not applied (including deletions) is applied again.
   const from = marker.commit;
-  const { head, full, changes } = await input.artifacts.changesSince(from);
+  const since = await input.artifacts.changesSince(from);
+  const { head, full } = since;
+  const changes = [...since.changes];
+  // Recovering a pass that stopped part-way: it may have written documents at
+  // its own head that later commits removed or reverted. Reconcile every path
+  // it could have touched against the current head as well.
+  if (marker.pending && head && marker.pending !== head) {
+    const seen = new Set(changes.map((c) => c.path));
+    for (const c of (await input.artifacts.changesSince(marker.pending)).changes) {
+      if (!seen.has(c.path)) changes.push({ path: c.path, change: "upsert" });
+    }
+  }
   const report: CatchUpReport = {
     ok: true,
     ...(head ? { head } : {}),
@@ -146,7 +161,12 @@ export async function catchUpIndex(input: {
     let record;
     try {
       found = await input.artifacts.lookupAt(head, path);
-      if (!found) continue;
+      if (!found) {
+        // Absent at this head: no document may remain for it.
+        await input.index.deleteDocument(indexName, id);
+        report.removed++;
+        continue;
+      }
       record = CollectionRecordSchema.parse(JSON.parse(found.content));
     } catch {
       fail(path, "unreadable-record");
