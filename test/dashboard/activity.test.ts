@@ -55,8 +55,9 @@ describe("console activity (#479)", () => {
       } as RunState),
     );
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ state: "failed", errorCategory: "provider-credit" });
-    expect(events[1]).toMatchObject({ state: "completed" });
+    // Newest observation first: the recovery follows the failure.
+    expect(events[0]).toMatchObject({ state: "completed" });
+    expect(events[1]).toMatchObject({ state: "failed", errorCategory: "provider-credit" });
   });
 
   it("emits nothing for a run that never started", async () => {

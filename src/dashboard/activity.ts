@@ -37,6 +37,8 @@ export interface ActivityInput {
 }
 
 export const ACTIVITY_PAGE_SIZE = 25;
+/** Status requests in flight at once. */
+export const ACTIVITY_CONCURRENCY = 5;
 
 const STAGE_ORDER: readonly string[] = [
   "capture",
@@ -130,21 +132,35 @@ function eventsFor(
   ];
 }
 
-/** Recent article-stage activity, bounded and newest first. */
+/** Recent article-stage activity, newest observation first. */
 export async function collectActivity(input: ActivityInput): Promise<ActivityEvent[]> {
   const limit = input.limit ?? ACTIVITY_PAGE_SIZE;
   const articles = await input.articles.recent(limit);
+  // Bounded concurrency: a slow or unreachable workflow endpoint must not
+  // serialise the whole page, and must not open hundreds of sockets either.
   const out: ActivityEvent[] = [];
-  for (const article of articles) {
-    const post = { publicationId: article.publicationId, postId: article.postId };
-    let run: RunState;
-    try {
-      run = await input.runs.status({ ...post, sourceVersion: article.sourceVersion });
-    } catch {
-      run = { state: "unavailable" };
-    }
-    out.push(...eventsFor(run, post));
+  for (let i = 0; i < articles.length; i += ACTIVITY_CONCURRENCY) {
+    const batch = articles.slice(i, i + ACTIVITY_CONCURRENCY);
+    const observed = await Promise.all(
+      batch.map(async (article) => {
+        const post = { publicationId: article.publicationId, postId: article.postId };
+        let run: RunState;
+        try {
+          run = await input.runs.status({ ...post, sourceVersion: article.sourceVersion });
+        } catch {
+          run = { state: "unavailable" };
+        }
+        return eventsFor(run, post);
+      }),
+    );
+    for (const events of observed) out.push(...events);
   }
+  // Newest observation first; an undated event sorts last rather than first.
+  out.sort((a, b) => {
+    const at = a.at === undefined ? Number.NEGATIVE_INFINITY : Date.parse(a.at);
+    const bt = b.at === undefined ? Number.NEGATIVE_INFINITY : Date.parse(b.at);
+    return bt - at;
+  });
   return out.slice(0, limit);
 }
 
