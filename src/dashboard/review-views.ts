@@ -82,8 +82,8 @@ function renderEntry(entry: ReviewEntry, index: number): string {
 <p>Report <code>${escapeHtml(entry.reportPath)}</code></p>${issues}`;
   }
   return `<h2>Pass ${index + 1}: ${badge(entry.outcome)}</h2>
-<dl><dt>Reviewed draft</dt><dd><code>${escapeHtml(entry.draft.hash)}</code> · ${escapeHtml(entry.draft.path)}</dd>
-<dt>Verified</dt><dd>${escapeHtml(entry.verifiedAt)}</dd>
+<dl><dt>Reviewed draft</dt><dd><code>${escapeHtml(entry.draft.hash)}</code> · ${escapeHtml(entry.draft.path)}${entry.draft.repository ? "" : " (legacy worker report)"}</dd>
+<dt>Verified</dt><dd>${entry.verifiedAt ? escapeHtml(entry.verifiedAt) : '<span class="empty">not recorded</span>'}</dd>
 <dt>Scope</dt><dd>${escapeHtml(entry.scope)}</dd>
 ${entry.modelVersion ? `<dt>Model</dt><dd>${escapeHtml(entry.modelVersion)}</dd>` : ""}
 ${entry.promptVersion ? `<dt>Prompt</dt><dd><code>${escapeHtml(entry.promptVersion)}</code></dd>` : ""}

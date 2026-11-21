@@ -18,6 +18,41 @@ export const REVIEW_SCAN = 200;
 const LIST_PAGE = 50;
 const REPORT_PATH = /^verifications\/([^/]+)\/([^/]+)\/[^/]+\.json$/;
 
+/**
+ * Reports written by the earlier `VerificationWorker` (`src/drafting/verify.ts`)
+ * share the directory but use a different contract: `verdict`, `brief` and
+ * `problem`/`requiredChange` issues. They are valid saved reviews and are
+ * adapted, not reported as corrupt.
+ */
+const WorkerVerificationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    verdict: z.enum(["approve", "redraft", "skip"]),
+    draft: z.object({ path: z.string(), commit: z.string(), hash: z.string() }).strict(),
+    brief: z.object({ path: z.string(), commit: z.string(), hash: z.string() }).strict(),
+    issues: z
+      .array(
+        z
+          .object({
+            source: z.enum(["deterministic", "verifier"]).optional(),
+            passage: z.string().optional(),
+            problem: z.string(),
+            requiredChange: z.string(),
+          })
+          .strict(),
+      )
+      .max(50),
+    attempt: z.number().int().min(0),
+    maxAttempts: z.number().int().min(0),
+    verifier: z
+      .object({ modelVersion: z.string(), promptVersion: z.string() })
+      .strict()
+      .optional(),
+    rejectedIssues: z.number().int().min(0),
+    contextRef: z.string().optional(),
+  })
+  .loose();
+
 const UnresolvedWrapperSchema = z
   .object({
     outcome: z.literal("unresolved"),
@@ -40,13 +75,13 @@ export type ReviewEntry =
       kind: "review";
       /** Saved report path; stable identity. */
       path: string;
-      outcome: "approved" | "redraft";
-      verifiedAt: string;
-      draft: { repository: string; commit: string; path: string; hash: string };
+      outcome: "approved" | "redraft" | "skip";
+      verifiedAt?: string;
+      draft: { repository?: string; commit: string; path: string; hash: string };
       modelVersion?: string;
       promptVersion?: string;
-      /** `publication` when the report binds a structured payload, else `body-only`. */
-      scope: "publication" | "body-only";
+      /** Derived from the pinned payload; `unknown` when it cannot be read. */
+      scope: "publication" | "body-only" | "unknown";
       issues: ReviewIssue[];
       checks: string[];
     }
@@ -159,6 +194,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
 
       const parsed: ReviewEntry[] = [];
       let unreadableReports = 0;
+      let payloadUnreadable = 0;
       for (const path of paths) {
         if (!REPORT_PATH.test(path)) continue;
         let raw: unknown;
@@ -176,13 +212,16 @@ export function savedReviews(content: Store): ReviewHistoryPort {
           const r = report.data;
           // A schema-v2 report can still cover only a legacy body, so the
           // pinned payload's mode decides the scope, not the property.
-          let scope: "publication" | "body-only" = "body-only";
+          let scope: "publication" | "body-only" | "unknown" = "body-only";
           if ("publication" in r) {
             try {
               const { payload } = await readPublicationPayload(content, r.publication);
               scope = payload.mode === "structured" ? "publication" : "body-only";
             } catch {
-              scope = "body-only";
+              // A missing/corrupt payload does not prove a legacy body: keep the
+              // scope unknown and mark the history incomplete.
+              scope = "unknown";
+              payloadUnreadable++;
             }
           }
           parsed.push({
@@ -196,6 +235,31 @@ export function savedReviews(content: Store): ReviewHistoryPort {
             scope,
             issues: asIssues(r.issues),
             checks: r.checks,
+          });
+          continue;
+        }
+        const worker = WorkerVerificationSchema.safeParse(raw);
+        if (worker.success) {
+          const w = worker.data;
+          parsed.push({
+            kind: "review",
+            path,
+            outcome:
+              w.verdict === "approve" ? "approved" : w.verdict === "skip" ? "skip" : "redraft",
+            draft: {
+              commit: w.draft.commit,
+              path: w.draft.path,
+              hash: w.draft.hash,
+            },
+            ...(w.verifier ? { modelVersion: w.verifier.modelVersion } : {}),
+            ...(w.verifier ? { promptVersion: w.verifier.promptVersion } : {}),
+            scope: "body-only",
+            issues: w.issues.map((issue) => ({
+              passage: issue.passage ?? "",
+              reason: `${issue.problem} → ${issue.requiredChange}`,
+              severity: "substantive" as const,
+            })),
+            checks: ["worker-verification"],
           });
           continue;
         }
@@ -222,7 +286,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       const at = new Map<string, number>();
       for (const entry of parsed) {
         if (entry.kind === "review") {
-          const parsedAt = Date.parse(entry.verifiedAt);
+          const parsedAt = entry.verifiedAt === undefined ? 0 : Date.parse(entry.verifiedAt);
           at.set(entry.path, Number.isFinite(parsedAt) ? parsedAt : 0);
           continue;
         }
@@ -279,7 +343,8 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       const startIndex = start * REVIEW_PAGE;
       const reviews = parsed.slice(startIndex, startIndex + REVIEW_PAGE);
       const next = parsed.length > startIndex + REVIEW_PAGE ? start + 1 : undefined;
-      const incomplete = truncated || unreadableReports > 0 || unreadableListing;
+      const incomplete =
+        truncated || unreadableReports > 0 || unreadableListing || payloadUnreadable > 0;
       const state =
         parsed.length === 0 ? (incomplete ? "partial" : "none") : incomplete ? "partial" : "ok";
       return {

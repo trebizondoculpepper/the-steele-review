@@ -284,3 +284,70 @@ describe("review history edge cases (#499)", { timeout: 60_000 }, () => {
     expect(order.at(-1)).toBe("z-report.json");
   });
 });
+
+describe("review history legacy and unknown scope (#499)", { timeout: 60_000 }, () => {
+  it("adapts reports from the earlier verification worker instead of calling them corrupt", async () => {
+    await content.write(
+      "verifications/pub/p1/worker.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        verdict: "redraft",
+        draft: {
+          path: "articles/pub/p1/draft.md",
+          commit: "a".repeat(40),
+          hash: `sha256:${"1".repeat(64)}`,
+        },
+        brief: {
+          path: "briefs/pub/p1.json",
+          commit: "a".repeat(40),
+          hash: `sha256:${"2".repeat(64)}`,
+        },
+        issues: [
+          {
+            source: "verifier",
+            passage: "proves",
+            problem: "overstated",
+            requiredChange: "soften the claim",
+          },
+        ],
+        attempt: 2,
+        maxAttempts: 3,
+        verifier: { modelVersion: "fake/verifier", promptVersion: "draft-verifier-v1" },
+        rejectedIssues: 1,
+      }),
+    );
+    const history = await savedReviews(content).forPost(post);
+    expect(history.state).toBe("ok");
+    expect(history.reviews[0]).toMatchObject({
+      kind: "review",
+      outcome: "redraft",
+      scope: "body-only",
+      modelVersion: "fake/verifier",
+      promptVersion: "draft-verifier-v1",
+      draft: { path: "articles/pub/p1/draft.md" },
+    });
+    const entry = history.reviews[0];
+    if (entry?.kind !== "review") throw new Error("expected review");
+    expect(entry.issues).toEqual([
+      { passage: "proves", reason: "overstated → soften the claim", severity: "substantive" },
+    ]);
+  });
+
+  it("keeps an unreadable payload scope unknown and the history partial", async () => {
+    await writeReport(
+      "pass-v2",
+      report({
+        schemaVersion: 2,
+        publication: {
+          repository: "content",
+          commit: "a".repeat(40),
+          path: "publication-payloads/pub/p1/missing.json",
+          hash: `sha256:${"7".repeat(64)}`,
+        },
+      }),
+    );
+    const history = await savedReviews(content).forPost(post);
+    expect(history.reviews[0]).toMatchObject({ kind: "review", scope: "unknown" });
+    expect(history.state).toBe("partial");
+  });
+});
