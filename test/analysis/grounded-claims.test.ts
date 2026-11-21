@@ -154,7 +154,7 @@ describe("extractGroundedClaims", () => {
     });
     if (out.status !== "extracted") throw new Error(out.status);
     const { claims, rejected, candidates } = out.record;
-    expect(out.record.schemaVersion).toBe(3);
+    expect(out.record.schemaVersion).toBe(4);
     expect(claims.map((c) => [c.kind, c.classification])).toEqual([
       ["assertion", "themed"],
       ["quotation", "themed"],
@@ -405,5 +405,60 @@ describe("record versions (#182)", () => {
     expect(
       candidateReasons("quotation", ["geoengineering"], "The council raised fees by 3%"),
     ).toEqual([]);
+  });
+});
+
+describe("configured source attribution (#462)", () => {
+  const attribution = {
+    status: "resolved" as const,
+    author: "Configured Author",
+    basis: "source-configured" as const,
+    sourceMetadataVersion: `source-metadata-sha256:${"a".repeat(64)}`,
+  };
+
+  it("records the attribution basis and changes the cache identity", async () => {
+    const plain = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr"),
+      themes,
+    });
+    if (plain.status !== "extracted") throw new Error(plain.status);
+    expect(plain.record.extraction.attribution).toBeUndefined();
+
+    const attributed = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr"),
+      themes,
+      attribution,
+    });
+    if (attributed.status !== "extracted") throw new Error(attributed.status);
+
+    // A configured default must not reuse the unattributed extraction.
+    expect(attributed.reused).toBe(false);
+    expect(attributed.recordRef.path).not.toBe(plain.recordRef.path);
+    expect(attributed.record.schemaVersion).toBe(4);
+    expect(attributed.record.extraction.attribution).toEqual({
+      author: "Configured Author",
+      basis: "source-configured",
+      sourceMetadataVersion: attribution.sourceMetadataVersion,
+    });
+  });
+
+  it("does not record an unresolved attribution", async () => {
+    const out = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      source: source("p-attr-unknown"),
+      themes,
+      attribution: {
+        status: "unknown",
+        reason: "no-byline-no-default",
+        sourceMetadataVersion: `source-metadata-sha256:${"a".repeat(64)}`,
+      },
+    });
+    if (out.status !== "extracted") throw new Error(out.status);
+    expect(out.record.extraction.attribution).toBeUndefined();
   });
 });

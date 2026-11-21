@@ -1,4 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
+import {
+  attributionIdentity,
+  type PostAuthorResolution,
+} from "../content/source-metadata.js";
 import { z } from "zod";
 import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
@@ -115,7 +119,7 @@ export const ExtractedClaimSchema = z
  * candidates; 3 (#212) adds the `not-self-contained` candidate reason. Earlier
  * records stay readable and are never re-certified.
  */
-export const CLAIM_EXTRACTION_SCHEMA_VERSION = 3;
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = 4;
 
 /** Why a grounded assertion is a refinement candidate, not an accepted claim. */
 export const CandidateReasonSchema = z.enum([
@@ -142,7 +146,7 @@ export const ClaimCandidateSchema = z
 
 export const ClaimExtractionRecordSchema = z
   .object({
-    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     sourceVersion: z.string(),
     themeIds: z.array(z.string()),
@@ -173,6 +177,15 @@ export const ClaimExtractionRecordSchema = z
         extractedAt: z.string(),
         /** Quotation-matching rules used (#202); absent on older records (exact only). */
         matchingVersion: z.string().optional(),
+        /** How the post author was attributed (#462); absent when unresolved. */
+        attribution: z
+          .object({
+            author: z.string(),
+            basis: z.enum(["post-byline", "source-configured"]),
+            sourceMetadataVersion: z.string(),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
   })
@@ -307,12 +320,18 @@ export function claimExtractionPath(
   themeResult?: string,
   /** Explicit byline is grounding metadata; never reuse an unattributed cache for it. */
   sourceAuthor?: string,
+  /**
+   * Attribution contribution (#462). A configured default changes the identity,
+   * so an older unattributed extraction is never silently reused.
+   */
+  attribution?: string,
 ): string {
   const identity =
     themeResult === undefined
       ? [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion]
       : [CLAIM_EXTRACTION_SCHEMA_VERSION, modelVersion, promptVersion, themeResult];
   if (sourceAuthor !== undefined) identity.push(`author:${sourceAuthor}`);
+  if (attribution !== undefined) identity.push(`attribution:${attribution}`);
   const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
   return `claim-extractions/${post.publicationId}/${post.postId}/${sourceVersion.slice(7, 39)}-${key}.json`;
 }
@@ -355,6 +374,8 @@ export async function extractGroundedClaims(input: {
   themes: Array<Pick<CatalogueTheme, "id" | "name" | "definition">>;
   /** Reference (commit:path) to the theme result the themes come from. */
   themeResult?: string;
+  /** Resolved post authorship (#462); part of the cache identity and the record. */
+  attribution?: PostAuthorResolution;
   maxAttempts?: number;
   maxSourceChars?: number;
   maxResponseChars?: number;
@@ -375,6 +396,7 @@ export async function extractGroundedClaims(input: {
     prompt.version,
     input.themeResult,
     source.author,
+    input.attribution === undefined ? undefined : attributionIdentity(input.attribution),
   );
 
   let record: ClaimExtractionRecord;
@@ -441,6 +463,18 @@ export async function extractGroundedClaims(input: {
       promptVersion: prompt.version,
       extractedAt: (input.now ?? (() => new Date()))().toISOString(),
     };
+    // Attribution belongs to the saved extraction record, not to the strict
+    // claim metadata that every claim shares (#482).
+    const extractionAttribution =
+      input.attribution?.status === "resolved"
+        ? {
+            attribution: {
+              author: input.attribution.author,
+              basis: input.attribution.basis,
+              sourceMetadataVersion: input.attribution.sourceMetadataVersion,
+            },
+          }
+        : {};
     const claims: ClaimExtractionRecord["claims"] = [];
     const candidates: NonNullable<ClaimExtractionRecord["candidates"]> = [];
     const rejected: ClaimExtractionRecord["rejected"] = [];
@@ -552,7 +586,11 @@ export async function extractGroundedClaims(input: {
       candidates,
       rejected: detailed,
       ...(malformed.length > 0 ? { malformedAttempts: malformed } : {}),
-      extraction: { ...extraction, matchingVersion: PASSAGE_MATCHING_VERSION },
+      extraction: {
+        ...extraction,
+        matchingVersion: PASSAGE_MATCHING_VERSION,
+        ...extractionAttribution,
+      },
     });
     const content = `${JSON.stringify(record, null, 2)}\n`;
     for (let attempt = 0; ; attempt++) {

@@ -308,6 +308,16 @@ export async function inspectPost(
         ? { sourceVersionMismatch: true }
         : {}),
       versions: { model: record.extraction.modelVersion, prompt: record.extraction.promptVersion },
+      // Why this extraction attributed the post author (#462); never the raw configuration.
+      ...(record.extraction.attribution
+        ? {
+            attribution: {
+              author: record.extraction.attribution.author,
+              basis: record.extraction.attribution.basis,
+              sourceMetadataVersion: record.extraction.attribution.sourceMetadataVersion,
+            },
+          }
+        : {}),
       accepted: accepted.slice(0, limit),
       ...(isLegacy ? { legacy: legacy.slice(0, limit) } : {}),
       candidates: candidates.slice(0, limit),
