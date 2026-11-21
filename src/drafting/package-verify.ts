@@ -30,7 +30,7 @@ import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 export const VERIFICATION_REPORT_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PACKAGE_VERIFY_PROMPT: ExtractionPrompt = {
-  version: "package-verifier-v1",
+  version: "package-verifier-v2",
   instructions: readFileSync(
     new URL("../prompts/verifier/package-verifier.md", import.meta.url),
     "utf8",

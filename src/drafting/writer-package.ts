@@ -88,6 +88,8 @@ export const WriterPackageSchema = z
           .object({
             status: z.enum(["available", "gap"]),
             reason: z.string().optional(),
+            /** Unattended runs (#370): a gap is left out of the article, not stated. */
+            omitWhenAbsent: z.boolean().optional(),
             comparisons: z.array(
               z
                 .object({
@@ -95,6 +97,8 @@ export const WriterPackageSchema = z
                   result: Ref,
                   claimId: z.string(),
                   kind: z.string(),
+                  /** Same-speaker pattern (#369): "recurring" needs two or more dated posts. */
+                  pattern: z.enum(["recurring", "single-comparison", "none"]).optional(),
                   uncertainty: z.enum(["low", "medium", "high"]),
                   /** Quoted evidence: the current post's passage. */
                   current: z.object({ quote: z.string(), artifact: Ref }).strict(),
@@ -181,6 +185,7 @@ export const MAX_BACKGROUND_PASSAGES = 30;
 
 const ComparisonResultSchema = z.looseObject({
   claimId: z.string(),
+  pattern: z.enum(["recurring", "single-comparison", "none"]).optional(),
   findings: z.array(
     z.looseObject({
       kind: z.string(),
@@ -211,6 +216,8 @@ export async function buildWriterPackage(input: {
   coverage: ArtifactRef;
   /** Saved historical comparison results for this post (#36), by exact reference. */
   comparisons?: ArtifactRef[];
+  /** "omit" (unattended runs, #370): missing history is not discussed in the article. */
+  historyGap?: "state" | "omit";
 }): Promise<WriterPackage> {
   let record: CoverageRecord;
   try {
@@ -312,6 +319,7 @@ export async function buildWriterPackage(input: {
         result: toRefRecord(ref),
         claimId: result.claimId,
         kind: f.kind,
+        ...(result.pattern ? { pattern: result.pattern } : {}),
         uncertainty: f.uncertainty,
         current: { quote: f.current.quote, artifact: f.current.artifact },
         earlier: f.earlier.map((e) => ({
@@ -339,6 +347,7 @@ export async function buildWriterPackage(input: {
               (input.comparisons ?? []).length === 0
                 ? "no historical comparison was supplied"
                 : "the supplied comparisons found no earlier passages",
+            ...(input.historyGap === "omit" ? { omitWhenAbsent: true } : {}),
             comparisons: [],
           },
     background:
@@ -421,6 +430,7 @@ export async function saveWriterPackage(input: {
   archive?: GitArtifactStore;
   coverage: ArtifactRef;
   comparisons?: ArtifactRef[];
+  historyGap?: "state" | "omit";
 }): Promise<{ package: WriterPackage; ref: ArtifactRef }> {
   const pkg = await buildWriterPackage(input);
   const key = createHash("sha256").update(JSON.stringify(pkg)).digest("hex").slice(0, 32);
