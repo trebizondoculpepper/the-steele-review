@@ -2,6 +2,8 @@ import { initWithoutDefaultIntegrations, logger } from "@sentry/node";
 import { readCredential } from "../config/credentials.js";
 
 const message = "article.pipeline";
+// The SDK may print malformed DSNs. Validate the hosted HTTPS format first.
+const hostedDsn = /^https:\/\/[a-z0-9]+@[a-z0-9.-]+\/[0-9]+$/i;
 type Milestone = {
   correlation_id: string;
   stage: string;
@@ -18,6 +20,7 @@ export function exportPipelineLog(attributes: Milestone): void {
       enabled = false;
       const dsn = readCredential("SENTRY_DSN");
       if (!dsn) return;
+      if (!hostedDsn.test(dsn) || dsn.trim() !== dsn) throw new Error("invalid DSN");
       enabled = Boolean(
         initWithoutDefaultIntegrations({
           dsn,
