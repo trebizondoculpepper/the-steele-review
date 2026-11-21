@@ -13,13 +13,15 @@ import {
   substackCapturedContent,
 } from "../events/captured-content-event.js";
 import { approvedArticleEventId, readDummyDeliveryProof } from "../publishing/approved-article.js";
+import { FIXTURE_HOST, FIXTURE_PUBLICATION, FIXTURE_TEXT } from "../workflow/article-fixture.js";
 import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
 
 const Env = z.object({
+  STEELE_FIXTURE_DEPLOYMENT: z.literal("1"),
   STEELE_ARCHIVE_PATH: z.string().min(1),
-  STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
+  STEELE_ARCHIVE_REPOSITORY: z.literal("fixture-archive"),
   STEELE_CONTENT_PATH: z.string().min(1),
-  STEELE_CONTENT_REPOSITORY: z.string().min(1),
+  STEELE_CONTENT_REPOSITORY: z.literal("fixture-content"),
   STEELE_CONTENT_STREAM: z.string().min(1),
   RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }),
   STEELE_FIXTURE_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(120_000),
@@ -36,7 +38,7 @@ async function main(): Promise<number> {
   }
 
   const c = config.data;
-  const post = { publicationId: "steele-fixture", postId };
+  const post = { publicationId: FIXTURE_PUBLICATION, postId };
   const archive = new GitArtifactStore({
     repoPath: c.STEELE_ARCHIVE_PATH,
     repository: c.STEELE_ARCHIVE_REPOSITORY,
@@ -49,13 +51,31 @@ async function main(): Promise<number> {
   let stage = "load-fixture";
   let nats: NatsController | undefined;
   try {
-    const ref = await archive.lookup(collectionArtifactPath(post));
-    if (!ref) throw new Error("missing fixture");
+    const url = `https://${FIXTURE_HOST}/p/${postId}`;
+    const path = collectionArtifactPath(post);
+    const ref =
+      (await archive.lookup(path)) ??
+      (await archive.write(
+        path,
+        JSON.stringify({
+          item: { ...post, url, title: "Synthetic fixture" },
+          ingestionReason: "live",
+          text: FIXTURE_TEXT,
+          complete: true,
+          supplied: {},
+          provenance: {
+            sourceUrl: url,
+            acquiredAt: new Date().toISOString(),
+            method: "article-html",
+          },
+        }),
+      ));
     const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
     if (
       record.item.publicationId !== post.publicationId ||
       record.item.postId !== post.postId ||
-      new URL(record.item.url).hostname !== "steele-fixture.example.test" ||
+      record.item.url !== url ||
+      record.text !== FIXTURE_TEXT ||
       !record.complete ||
       record.ingestionReason !== "live"
     )

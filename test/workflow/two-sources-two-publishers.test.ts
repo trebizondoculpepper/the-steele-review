@@ -21,7 +21,7 @@ import {
   SimulatedDestination,
   type DeliveryDecision,
 } from "../../src/publishing/approved-article.js";
-import { LexicalShortlister } from "../../src/research/librarian.js";
+import { FIXTURE_TEXT as TEXT, fixtureProviders } from "../../src/workflow/article-fixture.js";
 import {
   RESEARCH_CONCURRENCY_RULE,
   articleRunTarget,
@@ -48,9 +48,6 @@ import { articleStages } from "../../src/workflow/stages.js";
  * Requires Docker.
  */
 
-const TEXT =
-  "A treaty bans hostile weather modification. A payment of 56 million funded an attack.";
-const TREATY = "https://treaties.un.org/enmod";
 const SOURCES = [
   {
     namespace: "substack/pub",
@@ -73,73 +70,6 @@ const SOURCES = [
     },
   },
 ] as const;
-
-const claim = (statement: string, passage: string, themeIds: string[]) => ({
-  statement,
-  passage,
-  claimType: "factual",
-  kind: "assertion",
-  qualifiers: [],
-  entities: [],
-  dates: [],
-  speaker: { kind: "author-voice" },
-  themeIds,
-});
-
-/** One deterministic provider answering each stage by recognising its prompt. */
-const provider = {
-  modelVersion: "fake/stage-model",
-  complete: async (req: { system: string; user: string }) => {
-    const isWriter = /"summary"/.test(req.system);
-    if (!isWriter && /theme/i.test(req.system) && /"themes"/.test(req.system)) {
-      return JSON.stringify({
-        themes: [{ title: "Weather warfare", description: "Weather modification as a weapon" }],
-      });
-    }
-    if (!isWriter && /claims/i.test(req.system) && /passage/i.test(req.system)) {
-      const id = /"id":"(theme-[0-9a-f]+)"/.exec(req.user)?.[1] ?? "x";
-      return JSON.stringify({
-        claims: [
-          claim(
-            "A treaty bans hostile weather modification",
-            "A treaty bans hostile weather modification.",
-            [id],
-          ),
-          claim(
-            "A payment of 56 million funded an attack",
-            "A payment of 56 million funded an attack.",
-            [id],
-          ),
-        ],
-      });
-    }
-    const claims = [
-      ...req.user.matchAll(/"claimRecordId":"(claim-[0-9a-f]+)"[^}]*?"status":"(covered|gap)"/g),
-    ];
-    return JSON.stringify({
-      summary: "The post claims a treaty bans weather weapons and that a payment funded an attack.",
-      themes: ["Weather warfare"],
-      responses: claims.map(([, id, status]) =>
-        status === "covered"
-          ? {
-              claimRecordId: id,
-              verdict: "supported",
-              text: "The ENMOD Convention prohibits this.",
-              evidence: [0],
-            }
-          : {
-              claimRecordId: id,
-              verdict: "unresolved",
-              text: "No record of this payment was found.",
-              evidence: [],
-            },
-      ),
-      limitations: [],
-      narrative: { status: "limited", limitation: "No earlier posts were compared." },
-      widerContext: { status: "limited", limitation: "No background used." },
-    });
-  },
-};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(what: string, probe: () => Promise<T | undefined> | T | undefined) {
@@ -217,44 +147,7 @@ beforeAll(async () => {
     archive,
     content,
     operations,
-    models: {
-      themes: provider,
-      claims: provider,
-      writer: provider,
-      verifier: {
-        modelVersion: "fake/verifier",
-        complete: async () => JSON.stringify({ verdict: "approved", issues: [] }),
-      },
-    },
-    shortlister: new LexicalShortlister(),
-    research: {
-      sonar: {
-        model: "fixture",
-        research: async () => ({
-          report: "Article I prohibits it.",
-          citations: [TREATY],
-          model: "fixture",
-        }),
-      },
-      fetcher: {
-        fetch: async (url) => ({
-          url,
-          title: "ENMOD",
-          text: "Article I. Each State Party undertakes not to engage in military or any other hostile use of environmental modification techniques.",
-        }),
-      },
-      judge: {
-        judge: async ({ findings }) => ({
-          passages: findings
-            .filter((f) => /treaty/i.test(f.statement))
-            .map((f) => ({
-              findingId: f.id,
-              passage: "not to engage in military or any other hostile use",
-            })),
-          sourceType: "treaty",
-        }),
-      },
-    },
+    ...fixtureProviders(),
     owner: "test",
   });
   restate = await RestateTestEnvironment.start(

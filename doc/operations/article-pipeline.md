@@ -128,14 +128,16 @@ Keep local logs for container and broker diagnostics.
 ## Deployed fixture runner (#319)
 
 Run `node dist/cli/article-fixture-smoke.js <synthetic-post-id>` against the
-isolated fixture deployment. It requires the archive and content store
-settings, the fixture NATS connection and `STEELE_CONTENT_STREAM`, and
-`RESTATE_INGRESS_URL`. The archived fixture must be a complete live capture
-under `substack/steele-fixture` with a synthetic URL on
-`steele-fixture.example.test`. Use a fresh post ID for each run. The bridge must
-allow this synthetic source and the fixture worker must use deterministic
-providers. The fixture deployment must have no paid provider credentials or
-public publisher.
+isolated fixture deployment. Set `STEELE_FIXTURE_DEPLOYMENT=1` and use
+separate archive and content repositories named `fixture-archive` and
+`fixture-content`. The runner needs their paths, the fixture NATS connection
+and `STEELE_CONTENT_STREAM`, and `RESTATE_INGRESS_URL`. It seeds a synthetic
+archive record when absent. Use a fresh post ID for each run. The fixture
+bridge allows only `substack/steele-fixture` and
+`node dist/cli/article-fixture-worker.js` serves the actual workflow stages
+with deterministic providers. Use a separate Restate deployment and event
+streams with dummy destinations only. The fixture worker refuses OpenRouter
+credentials.
 
 The command checks that the workflow key is unused, emits the captured event
 over NATS, then attaches to the run started by the bridge. It checks the
