@@ -131,3 +131,22 @@ last valid draft and its negative verifier report for inspection. Neither record
 is an approval. Deploy updated artifact readers/consumers before the writer that
 produces the new optional metadata fields; retain the active workflow endpoint
 until existing invocations finish.
+
+
+## Stable article identity and paths (#578, owner-authorised storage change)
+
+A redraft edits one logical article in place instead of writing a new unrelated document (#488). Two identities are kept apart:
+
+- **Logical article ID:** `article-<24 hex>`, derived only from the publication, the post and an *edition* slug (default `primary`). It survives redrafts and retries. Independent editorial articles about the same source use different editions, so they get different IDs. Helpers: `articleId`, `articlePaths` and `classifyArticlePath` in `src/drafting/article-identity.ts`.
+- **Generation identity:** the existing hash of package, model, prompt and revision inputs. It still keys caching and safe retries; it never names the canonical document.
+
+Canonical paths, edited in place, with earlier versions readable at their exact Git commits:
+
+```text
+articles/<publication>/<post>/<article-id>/article.md     # body
+articles/<publication>/<post>/<article-id>/article.json   # metadata and provenance
+```
+
+Synthetic example: publication `example-pub`, post `a-synthetic-post`, edition `primary` gives `articles/example-pub/a-synthetic-post/article-<24 hex>/article.md`.
+
+Existing hash-named drafts (`articles/<publication>/<post>/<32 hex>.md|json`) are unchanged and remain readable by exact commit, path and hash. Nothing is migrated or regenerated, and the two layouts can't collide. Writing canonical documents in place, with expected-version checks, comes in #579. Exact-version approval and delivery come in #580, and the console view of one article with its history comes in #581.
