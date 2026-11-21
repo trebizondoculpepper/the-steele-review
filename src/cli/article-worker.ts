@@ -1,3 +1,4 @@
+import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
 /**
  * Restate worker for unattended article runs (#243).
  *
@@ -97,6 +98,7 @@ function main(): number {
     const sourceMetadata = sourceMetadataFromEnv(process.env);
     stages = articleStages({
       ...(sourceMetadata ? { sourceMetadata } : {}),
+      mechanicalPolicy: writerMechanicalPolicy(process.env),
       archive: new GitArtifactStore({
         repoPath: c.STEELE_ARCHIVE_PATH,
         repository: c.STEELE_ARCHIVE_REPOSITORY,

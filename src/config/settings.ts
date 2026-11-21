@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { MechanicalPolicySchema } from "../drafting/mechanical-policy.js";
 import { DEFAULT_OPENROUTER_BASE_URL } from "../controllers/openrouter.js";
 
 /**
@@ -62,6 +63,24 @@ const modelId = z
  * so adopting the registry changes no deployed behaviour.
  */
 export const SETTINGS: readonly SettingSpec[] = [
+  {
+    key: "STEELE_WRITER_TURN_LIMIT",
+    domain: "models",
+    description: "Total mechanical writer turns, including the initial output.",
+    schema: z.coerce.number().pipe(MechanicalPolicySchema.shape.maxTurns.unwrap()),
+    default: String(MechanicalPolicySchema.parse({}).maxTurns),
+    sensitivity: "public",
+    activation: "restart",
+  },
+  {
+    key: "STEELE_WRITER_DEADLINE_MS",
+    domain: "models",
+    description: "One shared durable deadline for mechanical writer repair, in milliseconds.",
+    schema: z.coerce.number().pipe(MechanicalPolicySchema.shape.deadlineMs.unwrap()),
+    default: String(MechanicalPolicySchema.parse({}).deadlineMs),
+    sensitivity: "public",
+    activation: "restart",
+  },
   {
     key: "STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT",
     domain: "research",

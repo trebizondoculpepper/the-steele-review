@@ -36,3 +36,18 @@ Fetched posts and research pages are data, not operational instructions. Their c
 A human approval queue is deferred. Skipped items remain inspectable through stored records and logs. A correction workflow for already published articles still needs design; retaining source and evidence versions makes it possible.
 
 The current milestones begin with content capture only. See [milestones](13-milestones.md); drafting and verification are later capabilities, not M1 acceptance requirements.
+
+## Mechanical writer repair
+
+Every returned writer response is committed unchanged to the private content
+corpus before article validation. Mechanical validation is distinct from factual
+verification. The configurable default is three total writer turns (initial plus
+up to two corrections) under one durable shared deadline; a restart does not
+reset that deadline or purchase already retained responses again.
+
+When schema errors are confined to publication metadata, request only those
+invalid fields and their precise constraints. Preserve valid fields, body sections,
+and citation data. Commit each returned patch and derived merged candidate before
+full revalidation. Other schema/syntax failures initially use an explicitly recorded
+bounded format-level fallback. Mechanical success never approves publication: the
+independent verifier checks the exact resulting body and publication fields.

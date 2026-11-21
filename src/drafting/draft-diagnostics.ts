@@ -50,6 +50,9 @@ const CODES = [
 const SafeIssueSchema = z
   .object({
     code: z.enum(CODES),
+    minimum: z.number().min(0).max(40000).optional(),
+    maximum: z.number().min(0).max(40000).optional(),
+    expected: z.enum(["string", "number", "array", "object", "boolean"]).optional(),
     path: z
       .array(z.union([z.enum([...FIELD_NAMES, "unknown"]), z.number().int().min(0).max(999)]))
       .max(12),
@@ -61,6 +64,22 @@ export function safeDraftIssues(error: z.ZodError): SafeDraftIssue[] {
   return error.issues.slice(0, 30).map((issue) =>
     SafeIssueSchema.parse({
       code: (CODES as readonly string[]).includes(issue.code) ? issue.code : "custom",
+      ...("minimum" in issue &&
+      typeof issue.minimum === "number" &&
+      issue.minimum >= 0 &&
+      issue.minimum <= 40000
+        ? { minimum: issue.minimum }
+        : {}),
+      ...("maximum" in issue &&
+      typeof issue.maximum === "number" &&
+      issue.maximum >= 0 &&
+      issue.maximum <= 40000
+        ? { maximum: issue.maximum }
+        : {}),
+      ...("expected" in issue &&
+      ["string", "number", "array", "object", "boolean"].includes(String(issue.expected))
+        ? { expected: issue.expected }
+        : {}),
       path: issue.path
         .slice(0, 12)
         .map((part) =>

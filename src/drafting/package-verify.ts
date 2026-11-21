@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type { MechanicalPolicy } from "./mechanical-policy.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { writeOnce } from "../research/job.js";
 import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
@@ -340,13 +341,21 @@ export type RevisionLoopOutcome =
       revisions: number;
       issues: VerificationIssue[];
     }
-  | { outcome: "failed"; reason: string; revisions: number };
+  | {
+      outcome: "failed";
+      reason: string;
+      revisions: number;
+      draft?: ArtifactRef;
+      report?: ArtifactRef;
+      mechanicalRun?: ArtifactRef;
+    };
 
 /**
  * Verify, then redraft with the verifier's substantive feedback, up to the
  * existing revision limit. After that, save an unresolved result.
  */
 export async function verifyWithRevisions(input: {
+  mechanicalPolicy?: Partial<MechanicalPolicy>;
   content: GitArtifactStore;
   operations: OperationStore;
   archive: GitArtifactStore;
@@ -403,6 +412,7 @@ export async function verifyWithRevisions(input: {
     const redraft = await draftFromPackage({
       content: input.content,
       operations: input.operations,
+      mechanicalPolicy: input.mechanicalPolicy,
       revisionInputs: [metadata, verified.ref],
       archive: input.archive,
       package: input.package,
@@ -420,6 +430,11 @@ export async function verifyWithRevisions(input: {
         outcome: "failed",
         reason: redraft.status === "failed" ? redraft.reason : redraft.status,
         revisions,
+        draft: draftRef,
+        report: verified.ref,
+        ...("mechanicalRun" in redraft && redraft.mechanicalRun
+          ? { mechanicalRun: redraft.mechanicalRun }
+          : {}),
       };
     }
     metadata = redraft.metadata;

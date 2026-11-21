@@ -129,10 +129,21 @@ const stages: ArticleStages = {
         }
       : { ref: ref(`articles/${pkg.path}.md`) };
   },
-  verify: async (draft) => (
-    calls.verify++,
-    { ref: ref(`verifications/${draft.path}.json`), approved: !draft.path.includes("rejected") }
-  ),
+  verify: async (draft) => {
+    calls.verify++;
+    if (draft.path.includes("mechanical-redraft-failed"))
+      return {
+        approved: false,
+        failure: "verify: malformed-output",
+        draft,
+        ref: ref("verifications/last-valid.json"),
+        mechanicalRun: ref("writer-mechanical-runs/failed.json"),
+      };
+    return {
+      ref: ref(`verifications/${draft.path}.json`),
+      approved: !draft.path.includes("rejected"),
+    };
+  },
   approve: async (report) => (calls.approve++, { eventId: `approved-${report.path}` }),
 };
 
@@ -453,5 +464,18 @@ it("retains safe writer failure diagnostics without verifying or approving a fai
     draftDiagnostics: [ref("draft-diagnostics/fixture/syntax.json")],
   });
   expect(calls.verify).toBe(beforeVerify);
+  expect(calls.approve).toBe(beforeApprove);
+}, 60_000);
+
+it("retains mechanical failure and last valid verifier refs without approval", async () => {
+  const beforeApprove = calls.approve;
+  const wf = ingress.workflowClient(Workflow, articleRunKey(input("mechanical-redraft-failed")));
+  await wf.workflowSubmit(input("mechanical-redraft-failed"));
+  expect(await wf.workflowAttach()).toMatchObject({
+    outcome: "failed",
+    reason: "verify: malformed-output",
+    verification: ref("verifications/last-valid.json"),
+    revisionMechanicalRun: ref("writer-mechanical-runs/failed.json"),
+  });
   expect(calls.approve).toBe(beforeApprove);
 }, 60_000);

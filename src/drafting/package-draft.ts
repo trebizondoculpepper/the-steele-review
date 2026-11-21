@@ -14,10 +14,28 @@ import {
   type DraftValidationKind,
   type SafeDraftIssue,
 } from "./draft-diagnostics.js";
+import { MechanicalPolicySchema, type MechanicalPolicy } from "./mechanical-policy.js";
+import {
+  metadataFieldRepair,
+  fieldRepairRequest,
+  mergeFieldPatch,
+  type FieldRepair,
+} from "./field-repair.js";
+import {
+  commitMergedCandidate,
+  mechanicalStart,
+  saveMechanicalRecord,
+  mechanicalRef,
+  type MechanicalRecord,
+} from "./mechanical-record.js";
 import { PublicationFieldsSchema } from "../content/publication-fields.js";
 export { FIELD_LIMITS } from "../content/publication-fields.js";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
@@ -51,6 +69,11 @@ export const PACKAGE_DRAFT_SCHEMA_VERSION = 1;
 
 /** Revision instructions for redrafts (#150), from their own editable Markdown file. */
 const PACKAGE_REVISION_PROMPT = loadPromptFile("writer", "package-revision");
+const FIELD_REPAIR_PROMPT = loadPromptFile("writer", "package-field-repair");
+export const PACKAGE_FIELD_REPAIR_ID = promptIdentity(
+  FIELD_REPAIR_PROMPT.version,
+  FIELD_REPAIR_PROMPT.instructions,
+);
 const OUTPUT_REPAIR_PROMPT = loadPromptFile("writer", "package-output-repair");
 export const PACKAGE_OUTPUT_REPAIR_ID = promptIdentity(
   OUTPUT_REPAIR_PROMPT.version,
@@ -131,7 +154,9 @@ export const PackageDraftMetadataSchema = z
     /** Revision instructions identity, for redrafts only (#430). */
     revisionPromptVersion: z.string().optional(),
     repairPromptVersion: z.string().optional(),
-    diagnostics: z.array(Ref).max(2).optional(),
+    repairPromptVersions: z.array(z.string()).max(10).optional(),
+    diagnostics: z.array(Ref).max(10).optional(),
+    mechanicalRun: Ref.optional(),
     writerAttempts: z.array(Ref).max(100).optional(),
     modelVersion: z.string(),
     /** Model the caller asked for (#260); absent when the configured default was used. */
@@ -231,7 +256,10 @@ export function modelCitationProblems(draft: PackageModelDraft): string[] {
   scan("summary", draft.summary);
   for (const r of draft.responses) scan(`response ${r.claimRecordId}`, r.text);
   if (draft.narrative) {
-    scan("narrative", draft.narrative.status === "supported" ? draft.narrative.text : draft.narrative.limitation);
+    scan(
+      "narrative",
+      draft.narrative.status === "supported" ? draft.narrative.text : draft.narrative.limitation,
+    );
   }
   if (draft.widerContext) {
     scan(
@@ -354,6 +382,7 @@ export type PackageDraftOutcome =
       diagnostics?: ArtifactRef[];
       writerAttempts?: ArtifactRef[];
       retention?: "recorded" | "legacy-unavailable";
+      mechanicalRun?: ArtifactRef;
     }
   | { status: "evidence-gap" }
   | { status: "context-unavailable"; reason: string }
@@ -366,6 +395,7 @@ export type PackageDraftOutcome =
         | "writer-archive-failed"
         | "writer-attempt-busy"
         | "writer-attempt-interrupted"
+        | "mechanical-deadline-exhausted"
         /** The caller's link differs from the package's pinned original URL (#276). */
         | "source-url-mismatch"
         /** Neither the package nor the caller supplies the original post's link. */
@@ -376,6 +406,7 @@ export type PackageDraftOutcome =
       validationFailure?: DraftValidationKind;
       diagnostics?: ArtifactRef[];
       writerAttempts?: ArtifactRef[];
+      mechanicalRun?: ArtifactRef;
     };
 
 export async function draftFromPackage(input: {
@@ -395,8 +426,9 @@ export async function draftFromPackage(input: {
   /** Reports the model the provider actually served, once a call has succeeded. */
   resolvedModel?: () => string | undefined;
   prompt?: ExtractionPrompt;
-  /** May lower, but never increase, the existing two-call attempt budget. */
+  /** Legacy override of total mechanical turns; default is three, never extra retries. */
   maxAttempts?: number;
+  mechanicalPolicy?: Partial<MechanicalPolicy>;
   /**
    * Verifier feedback for a redraft (#150): the passages and reasons to fix.
    * Part of the draft's identity, so each revision is a new, separately saved draft.
@@ -448,10 +480,17 @@ export async function draftFromPackage(input: {
     .slice(0, 32);
   const base = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${key}`;
   const repairedKey = createHash("sha256")
-    .update(JSON.stringify([key, PACKAGE_OUTPUT_REPAIR_ID]))
+    .update(
+      JSON.stringify([key, PACKAGE_OUTPUT_REPAIR_ID, PACKAGE_FIELD_REPAIR_ID, "mechanical-v1"]),
+    )
     .digest("hex")
     .slice(0, 32);
   const repairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${repairedKey}`;
+  const legacyRepairedKey = createHash("sha256")
+    .update(JSON.stringify([key, PACKAGE_OUTPUT_REPAIR_ID]))
+    .digest("hex")
+    .slice(0, 32);
+  const legacyRepairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${legacyRepairedKey}`;
   // Existing accepted legacy drafts remain usable; absence of raw output is explicit.
   const cached = async (
     draft: ArtifactRef,
@@ -464,6 +503,7 @@ export async function draftFromPackage(input: {
       metadata,
       reused: true,
       ...(stored.diagnostics ? { diagnostics: stored.diagnostics.map(toArtifactRef) } : {}),
+      ...(stored.mechanicalRun ? { mechanicalRun: toArtifactRef(stored.mechanicalRun) } : {}),
       ...(stored.writerAttempts
         ? { writerAttempts: stored.writerAttempts.map(toArtifactRef) }
         : {}),
@@ -476,6 +516,9 @@ export async function draftFromPackage(input: {
   const repairedDraft = await input.content.lookup(`${repairedBase}.md`);
   const repairedMeta = await input.content.lookup(`${repairedBase}.json`);
   if (repairedDraft && repairedMeta) return cached(repairedDraft, repairedMeta);
+  const legacyDraft = await input.content.lookup(`${legacyRepairedBase}.md`);
+  const legacyMeta = await input.content.lookup(`${legacyRepairedBase}.json`);
+  if (legacyDraft && legacyMeta) return cached(legacyDraft, legacyMeta);
 
   const loaded = await loadPinnedContext({
     archive: input.archive,
@@ -558,203 +601,340 @@ export async function draftFromPackage(input: {
     | { previousOutput: string; kind: DraftValidationKind; issues: SafeDraftIssue[] }
     | undefined;
   let repaired = false;
+  const repairPromptVersions = new Set<string>();
+  let lastRepairPromptId: string | undefined;
   let validationFailure: DraftValidationKind | undefined;
-  const attempts = Math.min(2, Math.max(0, input.maxAttempts ?? 2));
-  for (let attempt = 0; attempt < attempts && !draft; attempt++) {
-    let raw: string;
-    let completion: "completed" | "length-limit" | "unknown" = "unknown";
-    const isCorrection = correction !== undefined;
-    const requestUser = correction
-      ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
-      : user;
-    let captured: CapturedWriterAttempt;
-    try {
-      captured = await captureWriterAttempt({
-        content: input.content,
-        operations: input.operations,
-        provider: input.provider,
-        request: {
-          system: isCorrection
-            ? `${prompt.instructions}\n\n${OUTPUT_REPAIR_PROMPT.instructions}`
-            : prompt.instructions,
-          user: requestUser,
-          maxOutputChars: 40_000,
-        },
-        package: input.package,
-        source: pkg.source.artifact,
-        context: [
-          pkg.coverage,
-          pkg.themeResult,
-          pkg.claimResult,
-          ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
-          ...(input.revisionInputs ?? []).map(toRef),
-        ],
-        kind: isCorrection ? "correction" : input.revision ? "revision" : "initial",
-        number: attempt + 1,
-        ...(input.revision ? { revision: input.revision.number } : {}),
-        promptVersion: promptId,
-        ...(isCorrection ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
-        ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
-        signal: AbortSignal.timeout(180_000),
-        ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
-      });
-    } catch (error) {
-      if (error instanceof WriterAttemptError)
+  try {
+    const configuredPolicy = MechanicalPolicySchema.parse(input.mechanicalPolicy ?? {});
+    const policy = {
+      ...configuredPolicy,
+      maxTurns: Math.min(
+        configuredPolicy.maxTurns,
+        Math.max(1, input.maxAttempts ?? configuredPolicy.maxTurns),
+      ),
+    };
+    const start = await mechanicalStart(
+      input.content,
+      [key, PACKAGE_OUTPUT_REPAIR_ID, PACKAGE_FIELD_REPAIR_ID, input.writerRecoveryId ?? null],
+      policy,
+    );
+    const deadline = start.deadlineAt;
+    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+    const mechanical: MechanicalRecord = {
+      schemaVersion: 1,
+      package: mechanicalRef(input.package),
+      start: mechanicalRef(start.ref),
+      policy,
+      outcome: "in-progress",
+      turns: [],
+    };
+    let mechanicalRun: ArtifactRef | undefined;
+    let fieldRepair: FieldRepair | undefined;
+    let previousCandidateRef: ArtifactRef | undefined;
+    const attempts = policy.maxTurns;
+    for (let attempt = 0; attempt < attempts && !draft; attempt++) {
+      if (Date.now() >= deadline || signal.aborted) {
+        mechanical.outcome = "deadline-exhausted";
+        mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
         return {
           status: "failed",
-          reason:
-            error.code === "archive-failed"
-              ? "writer-archive-failed"
-              : error.code === "busy"
-                ? "writer-attempt-busy"
-                : "writer-attempt-interrupted",
-          ...(writerAttempts.length ? { writerAttempts } : {}),
-          ...(diagnostics.length ? { diagnostics } : {}),
+          reason: "mechanical-deadline-exhausted",
+          mechanicalRun,
+          writerAttempts,
+          diagnostics,
         };
-      throw error;
-    }
-    if (captured.manifest.outcome === "interrupted")
-      return {
-        status: "failed",
-        reason: "writer-attempt-interrupted",
-        writerAttempts: [...writerAttempts, captured.ref],
-      };
-    completion = captured.manifest.completion.stopReason;
-    if (
-      captured.text === undefined ||
-      (captured.manifest.failure && captured.manifest.failure !== "bad-response")
-    ) {
-      writerAttempts.push(
-        await finishWriterValidation({
-          content: input.content,
-          attempt: captured,
-          accepted: false,
-        }),
-      );
-      providerError = captured.manifest.failure ?? "unavailable";
-      if (providerError === "credit-exhausted")
-        rethrowCreditExhausted(new ModelProviderError("credit-exhausted"));
-      lastFailure = "provider-failed";
-      // Correction turns require an actual retained response, never an
-      // ambiguous transport failure or an automatic provider retry.
-      break;
-    }
-    raw = captured.text;
-    let parsed: PackageModelDraft | undefined;
-    let kind: DraftValidationKind | undefined;
-    let issues: SafeDraftIssue[] = [];
-    try {
-      let json: unknown;
+      }
+      let raw: string;
+      let completion: "completed" | "length-limit" | "unknown" = "unknown";
+      const isCorrection = correction !== undefined;
+      const mode = fieldRepair
+        ? "metadata-fields"
+        : !isCorrection
+          ? "initial"
+          : correction?.kind === "evidence-validation"
+            ? "evidence"
+            : "format-schema";
+      const repairPromptId = fieldRepair ? PACKAGE_FIELD_REPAIR_ID : PACKAGE_OUTPUT_REPAIR_ID;
+      if (isCorrection) {
+        repairPromptVersions.add(repairPromptId);
+        lastRepairPromptId = repairPromptId;
+      }
+      const requestUser = fieldRepair
+        ? JSON.stringify(fieldRepairRequest(fieldRepair))
+        : correction
+          ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
+          : user;
+      let captured: CapturedWriterAttempt;
       try {
-        json = JSON.parse(raw);
-      } catch {
-        // Retain the existing tolerance for a JSON object wrapped in prose or
-        // a code fence, without misclassifying valid JSON scalars as syntax errors.
-        json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-      }
-      const checked = ModelDraftSchema.safeParse(json);
-      if (checked.success) parsed = checked.data;
-      else {
-        kind = "schema-validation";
-        issues = safeDraftIssues(checked.error);
-      }
-    } catch {
-      kind = "json-syntax";
-    }
-    if ((completion as string) === "length-limit") kind = "truncated-output";
-    if (!kind && parsed) {
-      const problems = [...draftProblems(pkg, parsed), ...modelCitationProblems(parsed)];
-      if (problems.length > 0) {
-        kind = "evidence-validation";
-        lastProblems = problems;
-        issues = [{ code: "custom", path: ["responses"] }];
-      }
-    }
-    if (kind) {
-      validationFailure = kind;
-      lastFailure = kind === "evidence-validation" ? "invalid-draft" : "malformed-output";
-      diagnostics.push(
-        await saveDraftDiagnostic({
+        captured = await captureWriterAttempt({
           content: input.content,
+          operations: input.operations,
+          provider: input.provider,
+          request: {
+            system: fieldRepair
+              ? FIELD_REPAIR_PROMPT.instructions
+              : isCorrection
+                ? `${prompt.instructions}\n\n${OUTPUT_REPAIR_PROMPT.instructions}`
+                : prompt.instructions,
+            user: requestUser,
+            maxOutputChars: 40_000,
+          },
           package: input.package,
-          baseKey: key,
-          attempt: attempt + 1,
+          source: pkg.source.artifact,
+          context: [
+            pkg.coverage,
+            pkg.themeResult,
+            pkg.claimResult,
+            ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
+            ...(input.revisionInputs ?? []).map(toRef),
+          ],
+          kind: isCorrection ? "correction" : input.revision ? "revision" : "initial",
+          number: attempt + 1,
+          ...(input.revision ? { revision: input.revision.number } : {}),
           promptVersion: promptId,
-          ...(isCorrection ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
-          modelVersion: input.provider.modelVersion,
+          ...(isCorrection ? { repairPromptVersion: repairPromptId } : {}),
+          ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+          signal,
+          leaseMs: Math.max(10 * 60_000, policy.deadlineMs + 60_000),
+          ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
+        });
+      } catch (error) {
+        if (error instanceof WriterAttemptError)
+          return {
+            status: "failed",
+            reason:
+              error.code === "archive-failed"
+                ? "writer-archive-failed"
+                : error.code === "busy"
+                  ? "writer-attempt-busy"
+                  : "writer-attempt-interrupted",
+            ...(writerAttempts.length ? { writerAttempts } : {}),
+            ...(diagnostics.length ? { diagnostics } : {}),
+          };
+        throw error;
+      }
+      if (captured.manifest.outcome === "interrupted")
+        return {
+          status: "failed",
+          reason: "writer-attempt-interrupted",
+          writerAttempts: [...writerAttempts, captured.ref],
+        };
+      const turn: MechanicalRecord["turns"][number] = {
+        number: attempt + 1,
+        mode,
+        attempt: mechanicalRef(captured.ref),
+      };
+      mechanical.turns.push(turn);
+      if (Date.now() >= deadline || signal.aborted) {
+        mechanical.outcome = "deadline-exhausted";
+        mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
+        return {
+          status: "failed",
+          reason: "mechanical-deadline-exhausted",
+          mechanicalRun,
+          writerAttempts: [...writerAttempts, captured.ref],
+          diagnostics,
+        };
+      }
+      completion = captured.manifest.completion.stopReason;
+      if (
+        captured.text === undefined ||
+        (captured.manifest.failure && captured.manifest.failure !== "bad-response")
+      ) {
+        writerAttempts.push(
+          await finishWriterValidation({
+            content: input.content,
+            attempt: captured,
+            accepted: false,
+          }),
+        );
+        providerError = captured.manifest.failure ?? "unavailable";
+        lastFailure = "provider-failed";
+        mechanical.outcome = "provider-failed";
+        mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
+        if (providerError === "credit-exhausted")
+          rethrowCreditExhausted(new ModelProviderError("credit-exhausted"));
+        // Correction turns require an actual retained response, never an
+        // ambiguous transport failure or an automatic provider retry.
+        break;
+      }
+      raw = captured.text;
+      let parsed: PackageModelDraft | undefined;
+      let candidate: unknown;
+      let candidateRef: ArtifactRef | undefined;
+      let kind: DraftValidationKind | undefined;
+      let issues: SafeDraftIssue[] = [];
+      try {
+        let json: unknown;
+        try {
+          json = JSON.parse(raw);
+        } catch {
+          // Retain the existing tolerance for a JSON object wrapped in prose or
+          // a code fence, without misclassifying valid JSON scalars as syntax errors.
+          json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+        }
+        if (fieldRepair) {
+          const merged = mergeFieldPatch(fieldRepair, json);
+          if (!merged) {
+            kind = "schema-validation";
+            issues = fieldRepair.fields.map((name) => ({ code: "custom", path: [name] }));
+          } else {
+            candidateRef = await commitMergedCandidate(input.content, merged, [
+              previousCandidateRef!,
+              captured.ref,
+            ]);
+            turn.candidate = mechanicalRef(candidateRef);
+            json = merged;
+          }
+        }
+        candidate = json;
+        const checked = kind ? undefined : ModelDraftSchema.safeParse(json);
+        if (checked?.success) parsed = checked.data;
+        else if (checked) {
+          kind = "schema-validation";
+          issues = safeDraftIssues(checked.error);
+        }
+      } catch (error) {
+        if (error instanceof SyntaxError) kind = "json-syntax";
+        else throw error;
+      }
+      if ((completion as string) === "length-limit") kind = "truncated-output";
+      if (!kind && parsed) {
+        const problems = [...draftProblems(pkg, parsed), ...modelCitationProblems(parsed)];
+        if (problems.length > 0) {
+          kind = "evidence-validation";
+          lastProblems = problems;
+          issues = [{ code: "custom", path: ["responses"] }];
+        }
+      }
+      if (kind) {
+        validationFailure = kind;
+        lastFailure = kind === "evidence-validation" ? "invalid-draft" : "malformed-output";
+        diagnostics.push(
+          await saveDraftDiagnostic({
+            content: input.content,
+            package: input.package,
+            baseKey: key,
+            attempt: attempt + 1,
+            promptVersion: promptId,
+            ...(isCorrection ? { repairPromptVersion: repairPromptId } : {}),
+            modelVersion: input.provider.modelVersion,
+            kind,
+            issues,
+            raw,
+            completion,
+            writerAttempt: captured.ref,
+          }),
+        );
+        writerAttempts.push(
+          await finishWriterValidation({
+            content: input.content,
+            attempt: captured,
+            accepted: false,
+            diagnostic: diagnostics.at(-1),
+          }),
+        );
+        turn.diagnostic = mechanicalRef(diagnostics.at(-1)!);
+        const nextFieldRepair =
+          kind === "schema-validation" && (!fieldRepair || candidateRef)
+            ? metadataFieldRepair(candidate, issues)
+            : undefined;
+        if (fieldRepair && kind !== "evidence-validation") {
+          // A malformed, truncated or overbroad patch cannot replace preserved fields.
+          fieldRepair = nextFieldRepair ?? {
+            ...fieldRepair,
+            issues: issues.length ? issues : fieldRepair.issues,
+          };
+          if (nextFieldRepair && candidateRef) previousCandidateRef = candidateRef;
+        } else {
+          fieldRepair = nextFieldRepair;
+          previousCandidateRef = candidateRef ?? captured.ref;
+        }
+        correction = {
+          previousOutput: candidateRef ? JSON.stringify(candidate) : raw,
           kind,
           issues,
-          raw,
-          completion,
-          writerAttempt: captured.ref,
-        }),
-      );
+        };
+        mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
+        continue;
+      }
       writerAttempts.push(
-        await finishWriterValidation({
-          content: input.content,
-          attempt: captured,
-          accepted: false,
-          diagnostic: diagnostics.at(-1),
-        }),
+        await finishWriterValidation({ content: input.content, attempt: captured, accepted: true }),
       );
-      correction = { previousOutput: raw, kind, issues };
-      continue;
+      mechanical.outcome = "valid";
+      mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
+      draft = parsed;
+      repaired = isCorrection;
     }
-    writerAttempts.push(
-      await finishWriterValidation({ content: input.content, attempt: captured, accepted: true }),
-    );
-    draft = parsed;
-    repaired = isCorrection;
-  }
-  if (!draft) {
+    if (!draft) {
+      if (mechanical.outcome === "in-progress") mechanical.outcome = "turns-exhausted";
+      mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
+      return {
+        mechanicalRun,
+        status: "failed",
+        reason: lastFailure,
+        // The detailed validator may mention untrusted model IDs. Never return
+        // those strings through CLI/status output.
+        ...(lastProblems.length > 0 ? { problems: ["evidence-validation-failed"] } : {}),
+        ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
+        ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
+        ...(diagnostics.length ? { diagnostics } : {}),
+        ...(writerAttempts.length ? { writerAttempts } : {}),
+      };
+    }
+    const markdown = renderPackageDraft(pkg, draft, sourceUrl);
+    const outputBase = repaired ? repairedBase : base;
+    const draftRef = await writeOnce(input.content, `${outputBase}.md`, markdown);
+    const metadata = PackageDraftMetadataSchema.parse({
+      schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
+      package: toRef(input.package),
+      source: pkg.source.artifact,
+      themes: pkg.themeResult,
+      templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
+      promptVersion: promptId,
+      ...(repaired
+        ? {
+            repairPromptVersion: lastRepairPromptId,
+            repairPromptVersions: [...repairPromptVersions],
+          }
+        : {}),
+      ...(diagnostics.length ? { diagnostics: diagnostics.map(toRef) } : {}),
+      writerAttempts: writerAttempts.map(toRef),
+      ...(mechanicalRun ? { mechanicalRun: toRef(mechanicalRun) } : {}),
+      ...(input.revision
+        ? {
+            revisionPromptVersion: promptIdentity(
+              PACKAGE_REVISION_PROMPT_VERSION,
+              revisionInstructions,
+            ),
+          }
+        : {}),
+      modelVersion: input.provider.modelVersion,
+      ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+      ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
+      draft: `${draftRef.commit}:${draftRef.path}`,
+      fields: { title: draft.title, subtitle: draft.subtitle, excerpt: draft.excerpt },
+      draftedAt: (input.now ?? (() => new Date()))().toISOString(),
+    });
+    const metaRef = await writeOnce(input.content, `${outputBase}.json`, metadata);
     return {
-      status: "failed",
-      reason: lastFailure,
-      // The detailed validator may mention untrusted model IDs. Never return
-      // those strings through CLI/status output.
-      ...(lastProblems.length > 0 ? { problems: ["evidence-validation-failed"] } : {}),
-      ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
-      ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
+      status: "drafted",
+      draft: draftRef,
+      metadata: metaRef,
+      reused: false,
       ...(diagnostics.length ? { diagnostics } : {}),
-      ...(writerAttempts.length ? { writerAttempts } : {}),
+      writerAttempts,
+      retention: "recorded",
+      ...(mechanicalRun ? { mechanicalRun } : {}),
     };
+  } catch (error) {
+    if (error instanceof ArtifactStoreError || error instanceof WriterAttemptError)
+      return {
+        status: "failed",
+        reason: "writer-archive-failed",
+        writerAttempts,
+        diagnostics,
+      };
+    throw error;
   }
-  const markdown = renderPackageDraft(pkg, draft, sourceUrl);
-  const outputBase = repaired ? repairedBase : base;
-  const draftRef = await writeOnce(input.content, `${outputBase}.md`, markdown);
-  const metadata = PackageDraftMetadataSchema.parse({
-    schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
-    package: toRef(input.package),
-    source: pkg.source.artifact,
-    themes: pkg.themeResult,
-    templateVersion: PACKAGE_DRAFT_TEMPLATE_VERSION,
-    promptVersion: promptId,
-    ...(repaired ? { repairPromptVersion: PACKAGE_OUTPUT_REPAIR_ID } : {}),
-    ...(diagnostics.length ? { diagnostics: diagnostics.map(toRef) } : {}),
-    writerAttempts: writerAttempts.map(toRef),
-    ...(input.revision
-      ? {
-          revisionPromptVersion: promptIdentity(
-            PACKAGE_REVISION_PROMPT_VERSION,
-            revisionInstructions,
-          ),
-        }
-      : {}),
-    modelVersion: input.provider.modelVersion,
-    ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
-    ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
-    draft: `${draftRef.commit}:${draftRef.path}`,
-    fields: { title: draft.title, subtitle: draft.subtitle, excerpt: draft.excerpt },
-    draftedAt: (input.now ?? (() => new Date()))().toISOString(),
-  });
-  const metaRef = await writeOnce(input.content, `${outputBase}.json`, metadata);
-  return {
-    status: "drafted",
-    draft: draftRef,
-    metadata: metaRef,
-    reused: false,
-    ...(diagnostics.length ? { diagnostics } : {}),
-    writerAttempts,
-    retention: "recorded",
-  };
 }
