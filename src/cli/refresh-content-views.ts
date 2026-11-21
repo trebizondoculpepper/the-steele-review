@@ -42,6 +42,30 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Remove a dead owner's lock, serialised with other reclaimers. */
+async function reclaim(lock: string, deadOwner: string): Promise<boolean> {
+  const marker = `${lock}.reclaim`;
+  try {
+    const handle = await open(marker, "wx");
+    await handle.close();
+  } catch {
+    return false; // another run is reclaiming right now
+  }
+  try {
+    let current: string;
+    try {
+      current = JSON.stringify(JSON.parse(await readFile(lock, "utf8")));
+    } catch {
+      return true; // already gone: free to try to acquire
+    }
+    if (current !== deadOwner) return false; // replaced by someone else's lock
+    await rm(lock, { force: true });
+    return true;
+  } finally {
+    await rm(marker, { force: true }).catch(() => undefined);
+  }
+}
+
 /** Take the lock, or report that a live owner holds it. */
 async function acquire(lock: string): Promise<"acquired" | "busy" | "error"> {
   const me = JSON.stringify({ host: hostname(), pid: process.pid });
@@ -64,7 +88,10 @@ async function acquire(lock: string): Promise<"acquired" | "busy" | "error"> {
     if (owner.host !== hostname() || typeof owner.pid !== "number" || alive(owner.pid)) {
       return "busy";
     }
-    await rm(lock, { force: true }).catch(() => undefined); // owner is gone
+    // The owner is gone. Reclaim under a separate exclusive marker, and only
+    // if the lock still names that same dead owner: a concurrent reclaimer may
+    // already have replaced it with a live lock, which must never be removed.
+    if (!(await reclaim(lock, JSON.stringify(owner)))) return "busy";
   }
   return "busy";
 }
