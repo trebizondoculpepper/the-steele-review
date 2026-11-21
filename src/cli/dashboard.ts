@@ -56,6 +56,7 @@ import { researchViews } from "../dashboard/research-views.js";
 import { savedResearch } from "../dashboard/research.js";
 import { claimViews } from "../dashboard/claim-views.js";
 import { savedClaims } from "../dashboard/claims.js";
+import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { createDashboardServer } from "../dashboard/server.js";
 
 const env = z
@@ -229,6 +230,8 @@ const views = [
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
 
+// Recoverable trash for saved drafts (#478); markers live in the content repo.
+const trashAction = content ? new DraftTrashStore(content).action() : undefined;
 const server = createDashboardServer(
   views,
   trigger
@@ -237,6 +240,7 @@ const server = createDashboardServer(
         routes: {
           "/articles/run": trigger.submit,
           ...(recovery ? { "/articles/recover": recovery.submit } : {}),
+          ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
         },
       }
     : undefined,
