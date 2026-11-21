@@ -62,5 +62,9 @@ describe("stable article identity (#578)", () => {
   it("rejects invalid identities", () => {
     expect(() => articleId({ publicationId: "Bad Pub", postId: "p" })).toThrow();
     expect(() => articleId({ ...post, edition: "../x" })).toThrow();
+    // Segments must fit the artifact store's 255-character limit.
+    expect(() => articlePaths({ publicationId: "a".repeat(256), postId: "p" })).toThrow();
+    const longest = articlePaths({ publicationId: "a".repeat(255), postId: "p" });
+    expect(() => assertArtifactPath(longest.body)).not.toThrow();
   });
 });

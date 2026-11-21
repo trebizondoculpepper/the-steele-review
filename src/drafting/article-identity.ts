@@ -25,7 +25,7 @@ import { z } from "zod";
 
 export const ARTICLE_IDENTITY_VERSION = "article-identity-v1";
 
-const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,299}$/);
+const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,254}$/);
 const Edition = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 
 export const ArticleKeySchema = z
@@ -74,9 +74,9 @@ export function articlePaths(key: ArticleKey): ArticlePaths {
 }
 
 const CANONICAL =
-  /^articles\/([a-z0-9][a-z0-9-]{0,299})\/([a-z0-9][a-z0-9-]{0,299})\/(article-[0-9a-f]{24})\/article\.(md|json)$/;
+  /^articles\/([a-z0-9][a-z0-9-]{0,254})\/([a-z0-9][a-z0-9-]{0,254})\/(article-[0-9a-f]{24})\/article\.(md|json)$/;
 const LEGACY =
-  /^articles\/([a-z0-9][a-z0-9-]{0,299})\/([a-z0-9][a-z0-9-]{0,299})\/([0-9a-f]{32})\.(md|json)$/;
+  /^articles\/([a-z0-9][a-z0-9-]{0,254})\/([a-z0-9][a-z0-9-]{0,254})\/([0-9a-f]{32})\.(md|json)$/;
 
 export type ArticlePathKind =
   | {
