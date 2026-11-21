@@ -1,7 +1,8 @@
+import type { z } from "zod";
 import {
-  SourceContextSchema,
+  readSourceContext,
+  SourceContextError,
   sourceContextFor,
-  sourceContextMatches,
   sourceContextVersion,
   type SourceContext,
 } from "../content/source-context.js";
@@ -62,7 +63,7 @@ export type PinnedContextOutcome =
   | { kind: "source-too-large"; chars: number; maxChars: number }
   /** The capture is marked incomplete (for example, transcription pending). */
   | { kind: "incomplete-source" }
-  | { kind: "unreadable"; what: "source" | "themes" };
+  | { kind: "unreadable"; what: "source" | "themes" | "source-context" };
 
 const refKey = (r: ArtifactRef) => [r.repository, r.commit, r.path, r.sha256];
 
@@ -113,22 +114,13 @@ export async function loadPinnedContext(input: {
   };
   let text: string;
   let provenance: SourceContext;
+  let record: z.infer<typeof CollectionRecordSchema>;
   try {
     // read() verifies the commit, path and content hash.
-    const record = CollectionRecordSchema.parse(JSON.parse(await input.archive.read(sourceRef)));
+    record = CollectionRecordSchema.parse(JSON.parse(await input.archive.read(sourceRef)));
     // An incomplete capture is not the whole post; never present it as one.
     if (!record.complete) return { kind: "incomplete-source" };
     text = record.text;
-    provenance = input.sourceContext
-      ? SourceContextSchema.parse(JSON.parse(await input.content.read(input.sourceContext)))
-      : sourceContextFor(record, sourceRef);
-    if (
-      !sourceContextMatches(provenance, sourceRef, input.brief.source.sourceVersion) ||
-      provenance.source.id !== input.brief.source.publicationId ||
-      provenance.source.postId !== input.brief.source.postId ||
-      provenance.source.url !== record.item.url
-    )
-      return { kind: "source-context-mismatch" };
   } catch {
     return { kind: "unreadable", what: "source" };
   }
@@ -137,6 +129,26 @@ export async function loadPinnedContext(input: {
   const maxChars = input.maxSourceChars ?? DEFAULT_MAX_SOURCE_CHARS;
   // Never silently truncate and call the summary complete.
   if (text.length > maxChars) return { kind: "source-too-large", chars: text.length, maxChars };
+
+  try {
+    provenance = input.sourceContext
+      ? await readSourceContext(
+          input.content,
+          input.sourceContext,
+          sourceRef,
+          input.brief.source.sourceVersion,
+          {
+            publicationId: input.brief.source.publicationId,
+            postId: input.brief.source.postId,
+            url: record.item.url,
+          },
+        )
+      : sourceContextFor(record, sourceRef);
+  } catch (error) {
+    return error instanceof SourceContextError && error.code === "mismatch"
+      ? { kind: "source-context-mismatch" }
+      : { kind: "unreadable", what: "source-context" };
+  }
 
   let proposals: PinnedTheme[];
   try {

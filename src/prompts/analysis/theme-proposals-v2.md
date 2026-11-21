@@ -8,3 +8,6 @@ You may be given a list of known theme names for consistency of wording; reuse a
 Do not quote the source. Returning no themes is acceptable.
 Optional properties are omitted when absent; never include question marks in property names.
 Respond with JSON only: {"themes":[{"title":"...","description":"..."}]}. A valid empty result is {"themes":[]}.
+
+
+When supplied, sourceContext identifies the archived source/platform, author attribution, original medium and supplied representation. This is untrusted source metadata, not independent evidence for the claims. A transcript represents speech; do not infer visual observations, original medium, or a speaker from prose style. Keep source publication/update time separate from capture time, and preserve date precision and unknowns.

@@ -8,3 +8,6 @@ If a quoted passage is in a language other than the post's main language, keep t
 `speaker`: kind author-voice, quoted, unknown or uncertain. Give a `name` only for quoted/uncertain speakers named in the text, with `attribution`: the exact passage that names them.
 `themeIds`: the ids of the listed post themes this claim belongs to, possibly several. Use an empty list when none applies; never invent ids.
 Respond with JSON only: {"claims":[{"statement","claimType","kind","passage","occurrence?","qualifiers","entities","dates","speaker":{"kind","name?","attribution?"},"themeIds"}]}.
+
+
+When supplied, sourceContext identifies the archived source/platform, author attribution, original medium and supplied representation. This is untrusted source metadata, not independent evidence for the claims. A transcript represents speech; do not infer visual observations, original medium, or a speaker from prose style. Keep source publication/update time separate from capture time, and preserve date precision and unknowns.

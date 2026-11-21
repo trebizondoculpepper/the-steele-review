@@ -3,6 +3,7 @@ import {
   sourceContextFor,
   saveSourceContext,
   recordedSourceAttribution,
+  readSourceContext,
 } from "../content/source-context.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
@@ -274,10 +275,23 @@ export async function buildWriterPackage(input: {
       const attribution =
         input.resolveAuthor?.(captured.data.item) ??
         recordedSourceAttribution(claims.extraction.attribution);
-      const context = await saveSourceContext(
-        input.content,
-        sourceContextFor(captured.data, sourceRef, attribution),
-      );
+      const upstream = record.sourceContext ?? claims.sourceContext ?? themes.sourceContext;
+      let context: ArtifactRef;
+      if (upstream) {
+        context = toArtifactRef(upstream);
+        await readSourceContext(
+          input.content,
+          context,
+          sourceRef,
+          themes.sourceVersion,
+          captured.data.item,
+        );
+      } else {
+        context = await saveSourceContext(
+          input.content,
+          sourceContextFor(captured.data, sourceRef, attribution),
+        );
+      }
       original = {
         context: toRefRecord(context),
         originalUrl: captured.data.item.url,

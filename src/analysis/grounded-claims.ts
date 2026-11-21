@@ -3,6 +3,7 @@ import {
   SourceContextError,
   contextArtifactReference,
   type SourceContext,
+  recordedSourceAttribution,
 } from "../content/source-context.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -452,6 +453,14 @@ export async function extractGroundedClaims(input: {
       };
     }
   }
+  const attribution = input.attribution ?? recordedSourceAttribution(provenance?.author);
+  const contextAttribution = recordedSourceAttribution(provenance?.author);
+  if (
+    input.attribution &&
+    contextAttribution &&
+    attributionIdentity(input.attribution) !== attributionIdentity(contextAttribution)
+  )
+    return { status: "failed", reason: "source-context-mismatch", attempts: 0 };
   const path = claimExtractionPath(
     post,
     source.sourceVersion,
@@ -459,7 +468,7 @@ export async function extractGroundedClaims(input: {
     prompt.version,
     input.themeResult,
     source.author,
-    input.attribution === undefined ? undefined : attributionIdentity(input.attribution),
+    attribution === undefined ? undefined : attributionIdentity(attribution),
     input.sourceContext ? JSON.stringify(contextArtifactReference(input.sourceContext)) : undefined,
   );
 
@@ -531,22 +540,22 @@ export async function extractGroundedClaims(input: {
     // Attribution belongs to the saved extraction record, not to the strict
     // claim metadata that every claim shares (#482).
     const extractionAttribution =
-      input.attribution === undefined
+      attribution === undefined
         ? {}
-        : input.attribution.status === "resolved"
+        : attribution.status === "resolved"
           ? {
               attribution: {
-                author: input.attribution.author,
-                ...(input.attribution.authorId ? { authorId: input.attribution.authorId } : {}),
-                basis: input.attribution.basis,
-                sourceMetadataVersion: input.attribution.sourceMetadataVersion,
+                author: attribution.author,
+                ...(attribution.authorId ? { authorId: attribution.authorId } : {}),
+                basis: attribution.basis,
+                sourceMetadataVersion: attribution.sourceMetadataVersion,
               },
             }
           : {
               attribution: {
                 status: "unknown" as const,
-                reason: input.attribution.reason,
-                sourceMetadataVersion: input.attribution.sourceMetadataVersion,
+                reason: attribution.reason,
+                sourceMetadataVersion: attribution.sourceMetadataVersion,
               },
             };
     const claims: ClaimExtractionRecord["claims"] = [];
@@ -696,7 +705,7 @@ export async function extractGroundedClaims(input: {
     byRecord.set(c.claimRecordId, [...(byRecord.get(c.claimRecordId) ?? []), c]);
   }
   for (const [id, items] of byRecord) {
-    await upsertClaimRecord(input.artifacts, id, items, post, extractionRef, input.attribution);
+    await upsertClaimRecord(input.artifacts, id, items, post, extractionRef, attribution);
   }
 
   let indexed = 0;

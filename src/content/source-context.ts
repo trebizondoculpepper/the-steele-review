@@ -55,16 +55,24 @@ export function temporalContext(
   if (/^\d{4}-\d{2}-\d{2}$/.test(parsed.data))
     return { kind: "date", basis, original: parsed.data, precision: "day" };
   const fraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/.exec(parsed.data)?.[1];
+  const isoUtc = new Date(parsed.data).toISOString();
+  const precision = fraction
+    ? "fractional-second"
+    : /T\d{2}:\d{2}:\d{2}/.test(parsed.data)
+      ? "second"
+      : "minute";
+  const utc =
+    precision === "fractional-second"
+      ? isoUtc.replace(/\.\d{3}Z$/, `.${fraction}Z`)
+      : precision === "second"
+        ? isoUtc.replace(/\.\d{3}Z$/, "Z")
+        : isoUtc.replace(/:\d{2}\.\d{3}Z$/, "Z");
   return TemporalContextSchema.parse({
     kind: "timestamp",
     basis,
     original: parsed.data,
-    utc: new Date(parsed.data).toISOString(),
-    precision: fraction
-      ? "fractional-second"
-      : /T\d{2}:\d{2}:\d{2}/.test(parsed.data)
-        ? "second"
-        : "minute",
+    utc,
+    precision,
     ...(fraction ? { fractionDigits: fraction.length } : {}),
     offset: /(Z|[+-]\d{2}:\d{2})$/.exec(parsed.data)![1],
   });
@@ -220,7 +228,12 @@ export function sourceContextFor(
     basis = "archived-media-kind";
   }
   const author = attribution
-    ? Author.parse(attribution)
+    ? Author.parse({
+        ...attribution,
+        ...(attribution.status === "unknown" && record.item.author
+          ? { observedByline: record.item.author }
+          : {}),
+      })
     : {
         status: "unknown" as const,
         reason: "legacy-unconfigured" as const,

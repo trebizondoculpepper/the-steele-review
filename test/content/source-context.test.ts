@@ -99,7 +99,7 @@ describe("pinned source provenance", () => {
       kind: "timestamp",
       basis: "source-observed",
       original: "2026-01-02T10:15:30.123456+02:00",
-      utc: "2026-01-02T08:15:30.123Z",
+      utc: "2026-01-02T08:15:30.123456Z",
       precision: "fractional-second",
       fractionDigits: 6,
       offset: "+02:00",
