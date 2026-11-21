@@ -586,6 +586,37 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
     });
   });
 
+  it("maps to an established theme that has no research yet, keeping its ID (#528)", async () => {
+    const { ThemeStore } = await import("../../src/research/theme-store.js");
+    const { themeCoverage } = await import("../../src/research/theme-coverage.js");
+    await new ThemeStore(artifacts).ensure({
+      id: "mercury-theme",
+      title: "Mercury",
+      description: "Claims about mercury.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect((await themeCoverage(artifacts, "mercury-theme"))?.state).toBe("unresearched");
+    const seen: string[][] = [];
+    const judge = {
+      decide: async (_p: unknown, shortlist: { candidates: { themeId: string }[] }) => {
+        seen.push(shortlist.candidates.map((c) => c.themeId));
+        return { themeId: "mercury-theme", rationale: "same subject" };
+      },
+    };
+    const a = await analysis("p1", [claims[0]], "Mercury");
+    const r = researcher(() => ({ passages: [] }));
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: judge as never,
+    });
+    // The dossier-less theme was a candidate, and the mapping kept its identity.
+    expect(seen[0]).toContain("mercury-theme");
+    expect(out.record.mappings[0]).toMatchObject({ dossierId: "mercury-theme", created: false });
+  });
+
   it("gives a theme its own dossier when the judge rejects a same-named one", async () => {
     const a = await analysis("p1", [claims[0]], "Mercury");
     const r = researcher(() => ({ passages: [] }));
@@ -713,8 +744,9 @@ describe("librarian coverage across extraction schema versions", () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
-    expect(
-      record.claims.map((c) => c.claimRecordId).sort(),
-    ).toEqual(["claim-payment", "claim-treaty"]);
+    expect(record.claims.map((c) => c.claimRecordId).sort()).toEqual([
+      "claim-payment",
+      "claim-treaty",
+    ]);
   });
 });

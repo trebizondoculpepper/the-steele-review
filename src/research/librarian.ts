@@ -3,7 +3,7 @@ import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
 import { ThemeMappingCatalogue } from "./theme-mappings.js";
-import { ThemeStore } from "./theme-store.js";
+import { listCanonicalThemes, ThemeStore } from "./theme-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import {
@@ -627,6 +627,18 @@ export async function assessPostCoverage(input: {
     existing.set(id, d);
     summaries.push({ themeId: id, title: d.metadata.title, scope: d.metadata.scope });
   }
+  // Canonical themes exist without research (#528): an established theme with
+  // no dossier yet is still a mapping target, so it is never duplicated.
+  const established = new Set(existing.keys());
+  for (const theme of await listCanonicalThemes(new ThemeStore(input.artifacts))) {
+    established.add(theme.id);
+    if (existing.has(theme.id)) continue;
+    summaries.push({
+      themeId: theme.id,
+      title: theme.title,
+      scope: theme.description ?? theme.title,
+    });
+  }
 
   // 1. Map proposed themes to dossiers.
   const mappings: CoverageRecord["mappings"] = [];
@@ -667,7 +679,7 @@ export async function assessPostCoverage(input: {
       proposal: p.title,
       ...(p.description ? { description: p.description } : {}),
     });
-    if (catalogued && existing.has(catalogued.canonicalThemeId)) {
+    if (catalogued && established.has(catalogued.canonicalThemeId)) {
       const dossierId = catalogued.canonicalThemeId;
       if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
       dossierFor.set(p.id, dossierId);
@@ -692,7 +704,7 @@ export async function assessPostCoverage(input: {
     const decision = await judge.decide(p, shortlist);
     let dossierId = decision.themeId ?? newDossierId(p.title);
     // A rejected equivalence must never land in the existing dossier it rejected.
-    for (let n = 2; decision.themeId === null && existing.has(dossierId); n++) {
+    for (let n = 2; decision.themeId === null && established.has(dossierId); n++) {
       dossierId = newDossierId(`${p.title}#${n}`);
     }
     if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
@@ -702,7 +714,7 @@ export async function assessPostCoverage(input: {
       proposalId: p.id,
       title: p.title,
       dossierId,
-      created: decision.themeId === null && !existing.has(dossierId),
+      created: decision.themeId === null && !established.has(dossierId),
       method: shortlist.method,
       ...(shortlist.limitation ? { limitation: shortlist.limitation } : {}),
       rationale: decision.rationale,
@@ -726,7 +738,7 @@ export async function assessPostCoverage(input: {
       });
       // A concurrent assessment may have stored a different winner. It is
       // authoritative: this mapping must not diverge from it.
-      if (winner.canonicalThemeId !== dossierId && existing.has(winner.canonicalThemeId)) {
+      if (winner.canonicalThemeId !== dossierId && established.has(winner.canonicalThemeId)) {
         const saved = mappings[mappings.length - 1]!;
         saved.dossierId = winner.canonicalThemeId;
         saved.method = "catalogue";

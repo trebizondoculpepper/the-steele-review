@@ -37,7 +37,9 @@ export function themePath(id: string): string {
 }
 
 export class ThemeStore {
-  constructor(private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write" | "list">) {}
+  constructor(
+    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write" | "list">,
+  ) {}
 
   async get(id: string): Promise<CanonicalTheme | undefined> {
     const ref = await this.artifacts.lookup(themePath(id));
@@ -68,8 +70,35 @@ export class ThemeStore {
     }
   }
 
+  /** One page of canonical theme paths in stable order, resumable after a path. */
+  async listPage(limit: number, after?: string): Promise<string[]> {
+    return this.artifacts.list("canonical-themes", limit, after);
+  }
+
   /** Themes in stable ID order, bounded. */
   async list(limit = 500): Promise<string[]> {
     return this.artifacts.list("canonical-themes", limit);
   }
+}
+
+/**
+ * Every readable canonical theme, paged to the end. Unreadable records are
+ * skipped here; `ThemeStore.get` keeps reporting them as absent.
+ */
+export async function listCanonicalThemes(store: ThemeStore): Promise<CanonicalTheme[]> {
+  const ids: string[] = [];
+  for (let after: string | undefined; ;) {
+    const page = await store.listPage(1000, after);
+    ids.push(...page);
+    if (page.length < 1000) break;
+    after = page[page.length - 1];
+  }
+  const themes: CanonicalTheme[] = [];
+  for (const path of ids) {
+    const id = /^canonical-themes\/([^/]+)\.json$/.exec(path)?.[1];
+    if (!id) continue;
+    const theme = await store.get(id).catch(() => undefined);
+    if (theme) themes.push(theme);
+  }
+  return themes;
 }
