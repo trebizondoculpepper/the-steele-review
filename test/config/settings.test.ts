@@ -56,6 +56,27 @@ describe("settings registry (#542)", () => {
     expect(shown).not.toContain("not a url");
   });
 
+  it("validates provider endpoints and the console origin as their consumers do", () => {
+    const bad = resolveSettings({
+      OPENROUTER_BASE_URL: "http://provider.example/api",
+      STEELE_DASHBOARD_ORIGIN: "http://console.example/path",
+    });
+    expect(value(bad, "OPENROUTER_BASE_URL")?.error).toBe("invalid");
+    expect(value(bad, "STEELE_DASHBOARD_ORIGIN")?.error).toBe("invalid");
+    expect(
+      value(
+        resolveSettings({ OPENROUTER_BASE_URL: "https://u:p@provider.example/api" }),
+        "OPENROUTER_BASE_URL",
+      )?.error,
+    ).toBe("invalid");
+    const good = resolveSettings({
+      OPENROUTER_BASE_URL: "https://provider.example/api/v1",
+      STEELE_DASHBOARD_ORIGIN: "http://console.example:8090",
+    });
+    expect(value(good, "OPENROUTER_BASE_URL")?.error).toBeUndefined();
+    expect(value(good, "STEELE_DASHBOARD_ORIGIN")?.error).toBeUndefined();
+  });
+
   it("shows only allowlisted public values; private and secret are presence-only", () => {
     const resolved = resolveSettings({
       OPENROUTER_API_KEY: SECRET,

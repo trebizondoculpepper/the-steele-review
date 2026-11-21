@@ -127,7 +127,11 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "OPENROUTER_BASE_URL",
     domain: "providers",
     description: "Model provider endpoint.",
-    schema: z.url({ protocol: /^https?$/ }),
+    // Same constraints as the OpenRouter adapters: HTTPS, no user information.
+    schema: z.url().refine((v) => {
+      const u = new URL(v);
+      return u.protocol === "https:" && !u.username && !u.password;
+    }),
     sensitivity: "private",
     activation: "restart",
   },
@@ -143,7 +147,11 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "STEELE_DASHBOARD_ORIGIN",
     domain: "dashboard",
     description: "Canonical origin the console's actions accept.",
-    schema: z.url(),
+    // Same as the dashboard entry point: an exact HTTP(S) origin, nothing more.
+    schema: z.url().refine((v) => {
+      const u = new URL(v);
+      return (u.protocol === "http:" || u.protocol === "https:") && v === u.origin;
+    }),
     sensitivity: "private",
     activation: "restart",
   },
