@@ -79,6 +79,29 @@ export interface ClaimListing {
   unreadable: number;
 }
 
+/** One saved claim occurrence for an article page (#497). */
+export interface ArticleClaimLink {
+  result: string;
+  category: ClaimCategory;
+  /** Position within its category in the saved extraction (link identity). */
+  index: number;
+  statement?: string;
+  kind?: string;
+  claimRecordId?: string;
+  occurrenceId?: string;
+  reasons?: string[];
+  rejectionReason?: string;
+}
+
+export interface ArticleClaims {
+  state: "ok" | "not-analysed" | "partial" | "unavailable";
+  accepted: ArticleClaimLink[];
+  /** Schema-version-1 claims: readable, never certified as accepted. */
+  legacy: ArticleClaimLink[];
+  candidates: ArticleClaimLink[];
+  rejected: ArticleClaimLink[];
+}
+
 export interface ClaimsPort {
   list(filter: ClaimFilter & { after?: string }): Promise<ClaimListing>;
   detail(result: string, category: ClaimCategory, index: number): Promise<ClaimRow | undefined>;
@@ -87,6 +110,11 @@ export interface ClaimsPort {
    * its recorded hash and source version; undefined when it cannot be proved.
    */
   sourceText(row: ClaimRow): Promise<string | undefined>;
+  /** Saved claim occurrences for exactly this post revision; never another. */
+  forPost(
+    post: { publicationId: string; postId: string },
+    sourceVersion: string,
+  ): Promise<ArticleClaims>;
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read" | "lookupAt">;
@@ -233,6 +261,91 @@ export function savedClaims(content: Store, archive?: Archive): ClaimsPort {
   };
 
   return {
+    async forPost(post, sourceVersion) {
+      const prefix = `claim-extractions/${post.publicationId}/${post.postId}`;
+      let paths: string[];
+      try {
+        paths = await content.list(prefix, LIST_PAGE);
+      } catch {
+        return { state: "unavailable", accepted: [], legacy: [], candidates: [], rejected: [] };
+      }
+      const partial = paths.length >= LIST_PAGE;
+      const empty = (): Omit<ArticleClaims, "state"> => ({
+        accepted: [],
+        legacy: [],
+        candidates: [],
+        rejected: [],
+      });
+      const result = empty();
+      let matched = false;
+      let unreadable = 0;
+      for (const path of paths) {
+        if (!RESULT_PATH.test(path)) continue;
+        let record;
+        try {
+          const ref = await content.lookup(path);
+          if (!ref) continue;
+          record = ClaimExtractionRecordSchema.parse(JSON.parse(await content.read(ref)));
+        } catch {
+          unreadable++;
+          continue;
+        }
+        // The saved record's own version is authoritative: a newer rerun must
+        // not be substituted for the selected revision.
+        if (record.sourceVersion !== sourceVersion) continue;
+        matched = true;
+        const link = (
+          category: ClaimCategory,
+          index: number,
+          item: {
+            claim: unknown;
+            occurrence: unknown;
+            kind: string;
+            claimRecordId?: string;
+            reasons?: string[];
+          },
+        ): ArticleClaimLink => {
+          const statement = str((item.claim as { statement?: unknown } | undefined)?.statement);
+          const occurrenceId = str(
+            (item.occurrence as { occurrenceId?: unknown } | undefined)?.occurrenceId,
+          );
+          return {
+            result: path,
+            category,
+            index,
+            ...(statement ? { statement } : {}),
+            ...(item.kind ? { kind: item.kind } : {}),
+            ...("claimRecordId" in item && item.claimRecordId
+              ? { claimRecordId: item.claimRecordId }
+              : {}),
+            ...(occurrenceId ? { occurrenceId } : {}),
+            ...("reasons" in item && item.reasons ? { reasons: item.reasons } : {}),
+          };
+        };
+        if (record.schemaVersion === 1) {
+          result.legacy.push(
+            ...record.claims.map((c, i) => link("legacy", i, c)),
+          );
+        } else {
+          result.accepted.push(...record.claims.map((c, i) => link("accepted", i, c)));
+          result.candidates.push(
+            ...(record.candidates ?? []).map((c, i) => link("candidate", i, c)),
+          );
+        }
+        result.rejected.push(
+          ...record.rejected.map((r, i) => ({
+            result: path,
+            category: "rejected" as const,
+            index: i,
+            rejectionReason: r.reason,
+          })),
+        );
+      }
+      if (unreadable > 0) return { ...result, state: "partial" };
+      if (!matched) return { ...empty(), state: partial ? "partial" : "not-analysed" };
+      return { ...result, state: partial ? "partial" : "ok" };
+    },
+
     async list(filter) {
       const keep = matches(filter);
       const rows: ClaimRow[] = [];

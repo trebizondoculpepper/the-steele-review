@@ -12,6 +12,7 @@ import {
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
+import type { ArticleClaims, ArticleClaimLink, ClaimsPort } from "./claims.js";
 
 /** Article list and per-revision trace pages (#377). */
 
@@ -21,6 +22,8 @@ const ID = /^[a-z0-9][a-z0-9-]{0,299}$/;
 export interface ArticleViewDeps {
   /** Saved theme proposals for the trace page (#496). */
   themes?: ThemesPort;
+  /** Saved claims for the trace page (#497). */
+  claims?: ClaimsPort;
   articles?: RecentArticlesPort;
   runs?: RunStatusPort;
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
@@ -122,6 +125,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.receipts ? { receipts: deps.receipts } : {}),
         ...(deps.source ? { source: deps.source } : {}),
         ...(deps.themes ? { themes: deps.themes } : {}),
+        ...(deps.claims ? { claims: deps.claims } : {}),
       });
       const trigger =
         deps.canTrigger && t.sourceVersion
@@ -187,6 +191,54 @@ export function editorialText(
     default:
       return outCome === "failed" ? "not evaluated — the workflow failed" : "not evaluated";
   }
+}
+
+/** Grouped claim occurrences for one article revision (#497). */
+function renderClaims(claims: ArticleClaims | undefined): string {
+  if (!claims) return "";
+  const link = (c: ArticleClaimLink) =>
+    `/claims/view?result=${encodeURIComponent(c.result)}&category=${c.category}&index=${c.index}`;
+  const list = (rows: ArticleClaimLink[], describe: (c: ArticleClaimLink) => string) =>
+    rows.length === 0
+      ? ""
+      : `<ul>${rows
+          .map(
+            (c) =>
+              `<li><a href="${escapeHtml(link(c))}">${escapeHtml(describe(c))}</a>${c.kind ? ` <span class="empty">(${escapeHtml(c.kind)})</span>` : ""}</li>`,
+          )
+          .join("")}</ul>`;
+  const sections = [
+    ["Accepted (theme-linked)", list(claims.accepted, (c) => c.statement ?? "claim")],
+    [
+      "Legacy extractions",
+      list(claims.legacy, (c) => c.statement ?? "claim") +
+        (claims.legacy.length
+          ? '<p class="empty">Saved under an earlier extraction schema; shown as recorded, not re-certified.</p>'
+          : ""),
+    ],
+    [
+      "Refinement candidates",
+      list(claims.candidates, (c) =>
+        `${c.statement ?? "candidate"}${c.reasons?.length ? ` — ${c.reasons.join(", ")}` : ""}`,
+      ),
+    ],
+    [
+      "Rejected passages (diagnostics)",
+      list(claims.rejected, (c) => c.rejectionReason ?? "rejected"),
+    ],
+  ]
+    .filter(([, body]) => body !== "")
+    .map(([title, body]) => `<h3>${title}</h3>${body}`)
+    .join("");
+  const state =
+    claims.state === "not-analysed"
+      ? '<p class="empty">No claims are saved for this exact revision.</p>'
+      : claims.state === "unavailable"
+        ? '<p class="empty">Saved claims are unavailable.</p>'
+        : claims.state === "partial"
+          ? '<p class="empty">The claim scan was incomplete; some saved results could not be read.</p>'
+          : "";
+  return `<h2>Claims</h2><p class="empty">Extraction output only: these are not truth or research verdicts.</p>${sections}${state}`;
 }
 
 export function renderTrace(t: ArticleTrace): string {
@@ -259,6 +311,7 @@ export function renderTrace(t: ArticleTrace): string {
         return `<h2>Themes</h2>${list}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
       })()
     : "";
+  const claims = renderClaims(t.claims);
   const recovery = t.recovery
     ? `<h2>Recovery</h2><p>${badge(t.recovery.summary)}${t.recovery.outcome ? ` ${escapeHtml(t.recovery.outcome)}` : ""}${t.recovery.reason ? ` · ${escapeHtml(t.recovery.reason)}` : ""}</p>${
         t.recovery.workflowKey
@@ -319,5 +372,5 @@ export function renderTrace(t: ArticleTrace): string {
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
-${source}${themes}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
+${source}${themes}${claims}${recovery}${research}${draft}${verification}${receipts}${diagnostics}`;
 }
