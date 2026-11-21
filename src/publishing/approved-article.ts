@@ -326,8 +326,28 @@ async function deliverApprovedArticle(
   if (claim.kind !== "claimed")
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
-  const preview = destination.render({ markdown, data: event });
-  await writeOnce(input.content, `${dir}/preview.json`, preview);
+  // The preview (including any pinned byline, #459) is durable before the
+  // external attempt. A retry must reuse the stored one: re-rendering after a
+  // configuration change could otherwise alter or lose the pinned attribution.
+  const storedPreview = await input.content.lookup(`${dir}/preview.json`);
+  let preview: DestinationPreview;
+  if (storedPreview) {
+    try {
+      preview = JSON.parse(await input.content.read(storedPreview)) as DestinationPreview;
+    } catch (error) {
+      // A repository read failure is operational: retry rather than abandon an
+      // approval that may still reconcile to an existing draft.
+      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
+        input.operations.yieldClaim(claim.claim);
+        return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
+      }
+      input.operations.fail(claim.claim, "invalid-preview", false);
+      return { action: "term", reason: "approval-mismatch" };
+    }
+  } else {
+    preview = destination.render({ markdown, data: event });
+    await writeOnce(input.content, `${dir}/preview.json`, preview);
+  }
   try {
     let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
     // An earlier uncertain attempt must be reconciled before any retry.

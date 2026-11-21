@@ -28,12 +28,16 @@ export const SUBSTACK_CONTENT_TYPE = "application/vnd.substack.draft+json";
 export const MAX_RECONCILE_PAGES = 4;
 export const RECONCILE_PAGE_SIZE = 25;
 
+const BylineId = z.string().regex(/^[0-9]+$/);
+
 const PreviewBodySchema = z
   .object({
     title: z.string().min(1),
     subtitle: z.string(),
     body: z.unknown(),
     fingerprint: z.string(),
+    /** The explicit byline pinned when the intent was rendered, if any. */
+    bylineId: BylineId.optional(),
   })
   .strict();
 
@@ -44,6 +48,12 @@ export interface SubstackDestinationOptions {
   authRetryMs?: number;
   rateLimitRetryMs?: number;
   unavailableRetryMs?: number;
+  /**
+   * Explicit destination byline ID (#459). Omitted means no explicit byline:
+   * the platform keeps its own default. A changed configuration never alters
+   * an already-rendered intent, because the preview pins the chosen ID.
+   */
+  bylineId?: string;
 }
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
@@ -62,13 +72,18 @@ function receiptFor(draft: SubstackDraft): Omit<DeliveryReceipt, "destination" |
 export class SubstackDraftDestination implements DestinationAdapter {
   readonly name: string;
   readonly action = "draft";
-  private readonly options: Required<Omit<SubstackDestinationOptions, "name">>;
+  private readonly options: Required<Omit<SubstackDestinationOptions, "name" | "bylineId">>;
+  private readonly bylineId: string | undefined;
 
   constructor(
     private readonly client: Pick<SubstackClient, "createDraft" | "getDraft" | "listDrafts">,
     options: SubstackDestinationOptions = {},
   ) {
     this.name = options.name ?? "substack";
+    if (options.bylineId !== undefined && !BylineId.safeParse(options.bylineId).success) {
+      throw new Error("substack: invalid byline id");
+    }
+    this.bylineId = options.bylineId;
     this.options = {
       authRetryMs: options.authRetryMs ?? 15 * 60_000,
       rateLimitRetryMs: options.rateLimitRetryMs ?? 5 * 60_000,
@@ -85,6 +100,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       subtitle: "",
       body,
       fingerprint: bodyFingerprint(body),
+      ...(this.bylineId === undefined ? {} : { bylineId: this.bylineId }),
     };
     return { body: JSON.stringify(preview), contentType: SUBSTACK_CONTENT_TYPE };
   }
@@ -108,6 +124,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
 
   private matches(draft: SubstackDraft, preview: z.infer<typeof PreviewBodySchema>): boolean {
     if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body) return false;
+    // A requested byline must be evidenced by the read-back. A draft that
+    // dropped it is never claimed as delivered with attribution.
+    if (preview.bylineId !== undefined) {
+      const ids = (draft.draft_bylines ?? []).map((b) => b.id).filter((id) => id !== undefined);
+      if (!ids.includes(preview.bylineId)) return false;
+    }
     try {
       return bodyFingerprint(JSON.parse(draft.draft_body)) === preview.fingerprint;
     } catch {
@@ -131,6 +153,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
         title: p.title,
         subtitle: p.subtitle,
         body: p.body,
+        ...(p.bylineId === undefined ? {} : { bylines: [p.bylineId] }),
       }));
     } catch (error) {
       if (error instanceof SubstackError && error.code === "uncertain") {
