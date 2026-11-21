@@ -1233,6 +1233,10 @@ export class OperationInspector {
       // checkpointing, deleting WAL or mutating anything; an unreadable or
       // locked WAL state is reported unavailable.
       const hasWal = existsSync(`${resolved}-wal`);
+      // A read-only connection needs the shared-memory sidecar whenever WAL
+      // content exists, and SQLite would create one if missing. Inspection
+      // must not create files, so an orphaned WAL is reported unavailable.
+      if (hasWal && !existsSync(`${resolved}-shm`)) return { status: "unavailable" };
       const identity = hasWal ? undefined : storeIdentity(resolved);
       if (!hasWal && !identity) return { status: "unavailable" };
       const fileUrl = pathToFileURL(resolved);

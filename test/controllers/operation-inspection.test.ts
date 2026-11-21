@@ -190,18 +190,19 @@ describe("read-only open", () => {
     store.close();
   });
 
-  it("never modifies or removes a WAL sidecar while inspecting", () => {
+  it("returns unavailable for an orphaned WAL instead of creating -shm", () => {
     const dir = directory();
     const path = join(dir, "operations.db");
     const store = storeAt(path);
     store.claim("op-wal", "worker", 60_000);
     store.close();
     writeFileSync(`${path}-wal`, "");
-    const before = readFileSync(`${path}-wal`);
+    const before = readdirSync(dir).sort();
     const opened = OperationInspector.open(path);
-    expect(opened.status).toBe("available");
-    if (opened.status === "available") opened.inspector.close();
-    expect(readFileSync(`${path}-wal`)).toEqual(before);
+    expect(opened.status).toBe("unavailable");
+    // Opening must not create a shared-memory file next to the database.
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(existsSync(`${path}-shm`)).toBe(false);
   });
 
   it("handles '?' and '#' in the database path without ambiguity", () => {
@@ -230,10 +231,9 @@ describe("read-only open", () => {
     expect(info?.key).toBe("op-link");
 
     writeFileSync(`${target}-wal`, "");
-    // With a sidecar the read-only snapshot path must still resolve the link.
-    const opened = OperationInspector.open(link);
-    expect(opened.status).toBe("available");
-    if (opened.status === "available") opened.inspector.close();
+    // An orphaned WAL (no shared-memory partner) is unavailable, and the
+    // symlink resolution must not be bypassed into creating sidecars.
+    expect(OperationInspector.open(link)).toEqual({ status: "unavailable" });
   });
 
   it("refuses a database whose schema is newer than this build", () => {
