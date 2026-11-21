@@ -43,6 +43,14 @@ export interface SettingSpec<T = unknown> {
 }
 
 const int = (min: number, max: number) => z.coerce.number().int().min(min).max(max);
+/** `new URL`, or undefined for a value that is not a URL at all. */
+const parseUrl = (v: string) => {
+  try {
+    return new URL(v);
+  } catch {
+    return undefined;
+  }
+};
 const modelId = z
   .string()
   .trim()
@@ -129,8 +137,8 @@ export const SETTINGS: readonly SettingSpec[] = [
     description: "Model provider endpoint.",
     // Same constraints as the OpenRouter adapters: HTTPS, no user information.
     schema: z.url().refine((v) => {
-      const u = new URL(v);
-      return u.protocol === "https:" && !u.username && !u.password;
+      const u = parseUrl(v);
+      return !!u && u.protocol === "https:" && !u.username && !u.password;
     }),
     sensitivity: "private",
     activation: "restart",
@@ -149,8 +157,8 @@ export const SETTINGS: readonly SettingSpec[] = [
     description: "Canonical origin the console's actions accept.",
     // Same as the dashboard entry point: an exact HTTP(S) origin, nothing more.
     schema: z.url().refine((v) => {
-      const u = new URL(v);
-      return (u.protocol === "http:" || u.protocol === "https:") && v === u.origin;
+      const u = parseUrl(v);
+      return !!u && (u.protocol === "http:" || u.protocol === "https:") && v === u.origin;
     }),
     sensitivity: "private",
     activation: "restart",
