@@ -334,7 +334,13 @@ async function deliverApprovedArticle(
   if (storedPreview) {
     try {
       preview = JSON.parse(await input.content.read(storedPreview)) as DestinationPreview;
-    } catch {
+    } catch (error) {
+      // A repository read failure is operational: retry rather than abandon an
+      // approval that may still reconcile to an existing draft.
+      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
+        input.operations.yieldClaim(claim.claim);
+        return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
+      }
       input.operations.fail(claim.claim, "invalid-preview", false);
       return { action: "term", reason: "approval-mismatch" };
     }

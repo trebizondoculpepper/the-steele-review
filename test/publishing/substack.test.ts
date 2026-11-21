@@ -17,6 +17,7 @@ import {
   type SubstackDraft,
 } from "../../src/publishing/substack/client.js";
 import { SubstackDraftDestination } from "../../src/publishing/substack/destination.js";
+import { ArtifactStoreError } from "../../src/controllers/artifact-store.js";
 import {
   UnsupportedMarkdownError,
   bodyFingerprint,
@@ -437,6 +438,43 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
     expect(s.drafts).toHaveLength(1);
     // The durable preview's byline wins, not the new configuration.
     expect(s.drafts[0]!.draft_bylines).toEqual([{ id: "42" }]);
+  });
+
+  it("retries a transient read failure instead of abandoning the approval (#459)", async () => {
+    const payload = await approvedPayload();
+    const s = fakeSubstack();
+    s.faults.list = [new SubstackError("auth-expired", 401)];
+    const d = new SubstackDraftDestination(s, { bylineId: "42", authRetryMs: 900_000 });
+    expect(await handle(payload, d)).toMatchObject({ action: "nak", reason: "auth-expired" });
+
+    // The stored preview becomes temporarily unreadable (Git/I/O failure).
+    const failing = new Proxy(content, {
+      get(target, prop, receiver) {
+        if (prop === "read") {
+          return async (ref: { path: string }) => {
+            if (ref.path.endsWith("preview.json")) throw new ArtifactStoreError("git-failed");
+            return target.read(ref as never);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const out = await handleApprovedArticle({
+      payload,
+      destination: new SubstackDraftDestination(s, { bylineId: "42" }),
+      schedule: { delayMs: 0 },
+      content: failing as never,
+      operations,
+      owner: "t",
+      retryDelayMs: 1,
+    });
+    expect(out).toMatchObject({ action: "nak", reason: "retry" });
+    expect(s.drafts).toHaveLength(0);
+    // The approval is still deliverable once storage recovers.
+    expect(await handle(payload, new SubstackDraftDestination(s, { bylineId: "42" }))).toMatchObject({
+      action: "ack",
+      outcome: "delivered",
+    });
   });
 
   it("reconciles an attempt that stopped before its receipt instead of creating again", async () => {
