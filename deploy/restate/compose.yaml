@@ -40,6 +40,7 @@ services:
       STEELE_CONTENT_REPOSITORY: ${STEELE_CONTENT_REPOSITORY}
       STEELE_STATE_PATH: /data/state/article-worker.sqlite
       STEELE_MODEL: ${STEELE_MODEL}
+      STEELE_MODEL_WRITER: ${STEELE_MODEL_WRITER:-}
       OPENROUTER_API_KEY_FILE: /run/secrets/openrouter
       STEELE_MONITORED_HOSTS: ${STEELE_MONITORED_HOSTS:-}
       # Unattended research (#317). Empty values use the code defaults; the

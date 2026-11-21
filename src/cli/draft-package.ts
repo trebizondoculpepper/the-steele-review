@@ -3,7 +3,7 @@
  *
  *   draft-package --package <writer-packages/... path> [--source-url <https url>] [--model <openrouter model id>] [--single-attempt] [--json]
  *
- * Uses the configured model (STEELE_MODEL via OpenRouter). Reads the pinned
+ * Uses the writer default or STEELE_MODEL_WRITER via OpenRouter. Reads the pinned
  * source text from the archive, validates the model's draft against the
  * package, and saves it write-once under articles/. Rerunning with the same
  * package, model and prompt reuses the saved draft without a model call.
@@ -17,6 +17,7 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { writerModel } from "../config/writer-model.js";
 import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { draftFromPackage } from "../drafting/package-draft.js";
 
@@ -86,7 +87,7 @@ async function main(): Promise<number> {
   let provider;
   try {
     provider = openRouterFromEnv(
-      requested?.success ? { env: { ...process.env, STEELE_MODEL: requested.data } } : {},
+      { env: { ...process.env, STEELE_MODEL: writerModel(process.env, requested?.data) } },
       { onUsage: (u) => (resolved = u.model) },
     );
   } catch {

@@ -23,6 +23,7 @@ import * as restate from "@restatedev/restate-sdk";
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { OperationStore } from "../controllers/operation-store.js";
+import { writerModel } from "../config/writer-model.js";
 import { openRouterFromEnv } from "../controllers/openrouter.js";
 import { PublicPageFetcher } from "../controllers/research-web.js";
 import { LexicalShortlister } from "../research/librarian.js";
@@ -63,7 +64,7 @@ function main(): number {
   let writer;
   try {
     sonar = sonarFromEnv();
-    writer = model("STEELE_MODEL_WRITER");
+    writer = openRouterFromEnv({ env: { ...process.env, STEELE_MODEL: writerModel(process.env) } });
     stages = articleStages({
       archive: new GitArtifactStore({
         repoPath: c.STEELE_ARCHIVE_PATH,
