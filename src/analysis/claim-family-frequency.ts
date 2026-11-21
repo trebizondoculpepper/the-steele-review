@@ -35,9 +35,9 @@ export type FrequencyPeriod = z.infer<typeof FrequencyPeriodSchema>;
 export const FrequencyInputSchema = z
   .object({
     /** Declared scope, e.g. "collected posts from this publication". */
-    scope: z.string().min(1).max(400),
+    scope: z.string().min(1).max(1000),
     window: z.object({ from: z.string().min(1), to: z.string().min(1) }).strict(),
-    periods: z.array(FrequencyPeriodSchema).min(1).max(60),
+    periods: z.array(FrequencyPeriodSchema).min(1).max(120),
     /** Whether extraction coverage over the whole window is known to be complete. */
     coverage: z.enum(["known", "unknown"]),
     /** True when the underlying result was truncated by a read or result bound. */

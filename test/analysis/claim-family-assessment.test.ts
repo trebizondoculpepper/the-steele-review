@@ -73,6 +73,40 @@ describe("pinned corpus period assessment (#404)", () => {
     expect(report).toMatch(/not prevalence/);
   });
 
+  it("treats unavailable or invalid sources as coverage gaps", async () => {
+    const a = await assessPinnedCorpusPeriods({
+      artifacts: reader(
+        result({
+          diagnostics: {
+            duplicateEntries: 0,
+            unavailableSources: 3,
+            invalidSources: 1,
+            unknownDates: 0,
+            outsideWindow: 0,
+            incompleteCaptures: 0,
+          },
+        }),
+      ),
+      result: ref,
+    });
+    expect(a.assessment.kind).toBe("no-assessment");
+    expect(a.limitations.join(" ")).toMatch(/4 archived posts have no usable extraction/);
+  });
+
+  it("assesses a result spanning more than 60 months", async () => {
+    const months = Array.from({ length: 72 }, (_, i) => {
+      const year = 2020 + Math.floor(i / 12);
+      const month = String((i % 12) + 1).padStart(2, "0");
+      return period({ month: `${year}-${month}`, archivedPosts: 30, analysedPosts: 30, matchedPosts: 3, occurrences: 3 });
+    });
+    const a = await assessPinnedCorpusPeriods({
+      artifacts: reader(result({ periods: months, window: { start: months[0]!.month, end: months.at(-1)!.month } })),
+      result: ref,
+    });
+    expect(a.periods).toHaveLength(72);
+    expect(a.assessment.kind).toBe("observed");
+  });
+
   it("maps every period, preserving a zero-count month instead of dropping it", async () => {
     const a = await assessPinnedCorpusPeriods({
       artifacts: reader(

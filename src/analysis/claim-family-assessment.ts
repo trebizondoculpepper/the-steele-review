@@ -85,10 +85,12 @@ export async function assessPinnedCorpusPeriods(
   const limitations: string[] = [];
   const exclusions: string[] = [];
   // Extraction gaps are per period, not diagnostics: sum them without dropping any.
-  const missingCoverage = result.periods.reduce(
-    (n, p) => n + p.missingExtractions + p.invalidExtractions,
-    0,
-  );
+  // Per-period extraction gaps plus sources the projector could not read or
+  // validate: all of them mean part of the archive contributed no counts.
+  const missingCoverage =
+    result.periods.reduce((n, p) => n + p.missingExtractions + p.invalidExtractions, 0) +
+    result.diagnostics.unavailableSources +
+    result.diagnostics.invalidSources;
 
   if (result.scope.complete)
     exclusions.push("the declared publication sample is complete for this scope");
