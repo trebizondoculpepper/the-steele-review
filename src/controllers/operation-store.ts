@@ -21,7 +21,7 @@ import { ArtifactReferenceSchema, type ArtifactReference } from "../content/arti
  * proceed during writes. Errors carry codes only: no paths or payloads.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export interface OperationStoreConfig {
   /** Absolute path of the SQLite file on a local persistent volume (runtime configuration). */
@@ -174,6 +174,21 @@ const MIGRATION_V3 = `
 CREATE INDEX IF NOT EXISTS pending_events_by_operation ON pending_events (operation_key, status);
 `;
 
+/**
+ * #447: the current manual editorial disposition for one exact draft identity.
+ * A small ordered register, separate from immutable operation completion: the
+ * newest decision by `decided_at` wins, and an older late arrival never
+ * overwrites it.
+ */
+const MIGRATION_V4 = `
+CREATE TABLE IF NOT EXISTS editorial_dispositions (
+  key TEXT PRIMARY KEY,
+  decision TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  order_key TEXT NOT NULL
+);
+`;
+
 interface OperationRow {
   status: string;
   owner: string | null;
@@ -247,6 +262,12 @@ export class OperationStore {
       this.transaction(() => {
         this.db.exec(MIGRATION_V3);
         this.db.exec("PRAGMA user_version = 3");
+      });
+    }
+    if (version < 4) {
+      this.transaction(() => {
+        this.db.exec(MIGRATION_V4);
+        this.db.exec("PRAGMA user_version = 4");
       });
     }
   }
@@ -720,6 +741,64 @@ export class OperationStore {
       subject: row.subject,
       payload: row.payload,
       attempts: row.attempts,
+    };
+  }
+
+  /**
+   * Record the current manual editorial disposition for one exact draft
+   * identity (#447). Ordered by the decision timestamp: an equal or newer
+   * decision replaces the previous one atomically; an older one is ignored so
+   * a late delivery cannot regress the disposition.
+   */
+  recordEditorialDisposition(input: {
+    key: string;
+    decision: unknown;
+    decidedAt: string;
+    /** Total-order tiebreak (for example the request ID) for equal timestamps. */
+    order: string;
+  }): { applied: boolean } {
+    if (
+      !Key.safeParse(input.key).success ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(input.decidedAt) ||
+      !Key.safeParse(input.order).success
+    ) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+        .get(input.key) as { decided_at: string; order_key: string } | undefined;
+      // Compare the (decided_at, order) pair as a total order: equal timestamps
+      // still have a deterministic winner, so replaying an earlier decision
+      // cannot overwrite a later one.
+      if (
+        existing &&
+        (existing.decided_at > input.decidedAt ||
+          (existing.decided_at === input.decidedAt && existing.order_key >= input.order))
+      ) {
+        return { applied: false };
+      }
+      this.db
+        .prepare(
+          "INSERT INTO editorial_dispositions (key, decision, decided_at, order_key) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, order_key = excluded.order_key",
+        )
+        .run(input.key, JSON.stringify(input.decision), input.decidedAt, input.order);
+      return { applied: true };
+    });
+  }
+
+  /** Current editorial disposition for one exact draft identity, if any. */
+  editorialDisposition(
+    key: string,
+  ): { decision: unknown; decidedAt: string; order: string } | undefined {
+    const row = this.db
+      .prepare("SELECT decision, decided_at, order_key FROM editorial_dispositions WHERE key = ?")
+      .get(key) as { decision: string; decided_at: string; order_key: string } | undefined;
+    if (!row) return undefined;
+    return {
+      decision: JSON.parse(row.decision) as unknown,
+      decidedAt: row.decided_at,
+      order: row.order_key,
     };
   }
 
