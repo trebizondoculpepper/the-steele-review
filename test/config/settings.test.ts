@@ -38,6 +38,8 @@ describe("settings registry (#542)", () => {
     const r = resolveSettings({});
     expect(value(r, "STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT")?.value).toBe(5);
     expect(value(r, "STEELE_DASHBOARD_RESEARCH_DEADLINE_MS")?.value).toBe(1_800_000);
+    expect(value(r, "STEELE_WRITER_TURN_LIMIT")?.value).toBe(3);
+    expect(value(r, "STEELE_WRITER_DEADLINE_MS")?.value).toBe(300000);
     expect(value(r, "STEELE_MODEL_WRITER")?.value).toBe("anthropic/claude-opus-5.5");
     expect(value(r, "OPENROUTER_BASE_URL")).toMatchObject({ source: "default" });
   });

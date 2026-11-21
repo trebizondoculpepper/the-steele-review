@@ -1,3 +1,4 @@
+import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult, proposeThemes } from "../analysis/theme-proposals.js";
@@ -52,6 +53,7 @@ const plain = (r: ArtifactRef): Ref => ({
 });
 
 export function articleStages(deps: {
+  mechanicalPolicy?: MechanicalPolicy;
   archive: GitArtifactStore;
   content: GitArtifactStore;
   operations: OperationStore;
@@ -279,6 +281,7 @@ export function articleStages(deps: {
     async draft(pkg, sourceUrl) {
       const out = await draftFromPackage({
         operations: deps.operations,
+        mechanicalPolicy: deps.mechanicalPolicy,
         content: deps.content,
         archive: deps.archive,
         package: pkg,
@@ -286,7 +289,9 @@ export function articleStages(deps: {
         sourceUrl,
       });
       const diagnostics = "diagnostics" in out ? out.diagnostics?.map(plain) : undefined;
-      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics };
+      const mechanicalRun =
+        "mechanicalRun" in out && out.mechanicalRun ? plain(out.mechanicalRun) : undefined;
+      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics, mechanicalRun };
       return {
         failure:
           out.status === "failed"
@@ -295,6 +300,7 @@ export function articleStages(deps: {
               : out.reason
             : out.status,
         ...(diagnostics?.length ? { diagnostics } : {}),
+        ...(mechanicalRun ? { mechanicalRun } : {}),
       };
     },
 
@@ -305,6 +311,7 @@ export function articleStages(deps: {
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
       const out = await verifyWithRevisions({
         operations: deps.operations,
+        mechanicalPolicy: deps.mechanicalPolicy,
         content: deps.content,
         archive: deps.archive,
         package: pkg,
@@ -323,6 +330,14 @@ export function articleStages(deps: {
           reason: `unresolved after ${out.revisions} redrafts`,
         };
       }
+      if (out.mechanicalRun)
+        return {
+          approved: false,
+          failure: `verify: ${out.reason}`,
+          ...(out.draft ? { draft: plain(out.draft) } : {}),
+          ...(out.report ? { ref: plain(out.report) } : {}),
+          mechanicalRun: plain(out.mechanicalRun),
+        };
       throw new Error(`verify: ${out.reason}`);
     },
 

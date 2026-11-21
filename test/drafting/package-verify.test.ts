@@ -13,10 +13,7 @@ import {
   DEFAULT_PACKAGE_DRAFT_PROMPT,
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
-import {
-  renderPackageDraft,
-  modelCitationProblems,
-} from "../../src/drafting/package-draft.js";
+import { renderPackageDraft, modelCitationProblems } from "../../src/drafting/package-draft.js";
 import {
   DEFAULT_PACKAGE_VERIFY_PROMPT,
   PackageVerificationReportSchema,
@@ -530,7 +527,11 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     );
     expect(markdown).toContain("A supported statement. [1][1]");
     expect(markdown).toContain("Its own index zero is a different source. [2]");
-    const sources = markdown.split("## Sources")[1]!.trim().split("\n").filter((l) => /^\d+\./.test(l));
+    const sources = markdown
+      .split("## Sources")[1]!
+      .trim()
+      .split("\n")
+      .filter((l) => /^\d+\./.test(l));
     expect(sources).toHaveLength(2);
     // References are one-based, deduplicated and in first-use order.
     expect(sources[0]).toContain(raw.claims[0].evidence[0].url);
@@ -544,7 +545,9 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       excerpt: "E",
       summary: "Summary.",
       themes: ["t"],
-      responses: [{ claimRecordId: "c", verdict: "supported" as const, text: "Fine.", evidence: [0] }],
+      responses: [
+        { claimRecordId: "c", verdict: "supported" as const, text: "Fine.", evidence: [0] },
+      ],
       limitations: [],
       narrative: { status: "limited" as const, limitation: "none" },
       widerContext: { status: "limited" as const, limitation: "none" },
@@ -576,6 +579,7 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       writerResponse("The treaty bans weapons."),
     );
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: (await drafted()).pkg.ref,
@@ -600,6 +604,7 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       writerResponse("Revised without a reference."),
     );
     const out = await draftFromPackage({
+      operations,
       content,
       archive,
       package: pkg.ref,
@@ -611,5 +616,29 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     if (out.status !== "drafted") throw new Error(out.status);
     expect(writer.calls).toBe(2);
     expect(await content.read(out.draft)).not.toContain("fake reference [1]");
+  });
+  it("retains the last valid draft and verifier report when mechanical redraft repair fails", async () => {
+    const { pkg, metadata, draft } = await drafted();
+    const out = await verifyWithRevisions({
+      operations,
+      content,
+      archive,
+      package: pkg.ref,
+      metadata,
+      writer: model("fake/bad-redraft", "{broken"),
+      verifier: model("fake/independent-verifier", OVERSTATED),
+      sourceUrl: "https://pub.example.com/p/p1",
+      mechanicalPolicy: { maxTurns: 1 },
+    });
+    expect(out).toMatchObject({
+      outcome: "failed",
+      reason: "malformed-output",
+      revisions: 0,
+      draft,
+    });
+    if (out.outcome !== "failed" || !out.report || !out.mechanicalRun)
+      throw new Error("missing retained refs");
+    expect(JSON.parse(await content.read(out.report)).outcome).toBe("redraft");
+    expect(JSON.parse(await content.read(out.mechanicalRun)).outcome).toBe("turns-exhausted");
   });
 });
