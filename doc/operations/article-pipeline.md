@@ -78,6 +78,16 @@ The monetary control is the model provider's own per-key budget (OpenRouter), ma
 
 **Recovery.** Add credit or raise the key's limit with the provider first. Then recover each affected revision with the explicit operator recovery above ("Recovering a completed extraction failure"): resubmit the same validated input under one recorded recovery key. Content-addressed stage results (themes, claims, research jobs, packages) are reused, so completed work is not paid for twice. Do not resubmit under a new key per attempt.
 
+### Upgrading the article worker: drain first (#439)
+
+Restate replays each in-flight workflow against its recorded journal. A worker version that adds, removes or reorders journaled operations (for example #439's progress updates) cannot safely replay runs started by the previous version: they fail with journal-mismatch errors. The deployment updates the single worker endpoint in place, so before such an upgrade:
+
+1. Stop new submissions (the capture bridge and dashboard trigger), or wait for a quiet period.
+2. Confirm no `ArticleRun` invocation is still running (for example the admin SQL query `SELECT target_service_key, status FROM sys_invocation WHERE target_service_name = 'ArticleRun' AND status <> 'completed'` returns no rows).
+3. Deploy the new worker image and re-run `register.sh`, then resume submissions.
+
+If a run cannot be drained, keep the old worker version registered until it completes rather than replacing it in place.
+
 ### Stage model selection
 
 `STEELE_MODEL` is the default for model-backed stages; `STEELE_MODEL_THEMES`, `STEELE_MODEL_CLAIMS`, `STEELE_MODEL_WRITER` and `STEELE_MODEL_SUPPORT` override per stage. Research uses `STEELE_RESEARCH_MODEL` (Sonar) with its configured timeout and token limits.

@@ -156,6 +156,21 @@ describe("in-progress stage state (#439)", () => {
     expect(stalled.stages[2]!.detail).toMatch(/^stalled: no update since/);
   });
 
+  it("keeps a grouped stage pending until its last step completes", () => {
+    const state = (stage: string, status: "running" | "completed") =>
+      summariseRun({ state: "running", progress: { stage, status, at } }, now).stages.map(
+        (x) => `${x.stage}:${x.state}`,
+      );
+    // plan-research, research and coverage are all "research".
+    expect(state("plan-research", "completed")).toContain("research:pending");
+    expect(state("research", "completed")).toContain("research:pending");
+    expect(state("coverage", "completed")).toContain("drafting:pending");
+    // package and draft are both "drafting".
+    expect(state("package", "completed")).toContain("drafting:pending");
+    expect(state("package", "completed")).toContain("verification:not-reached");
+    expect(state("draft", "completed")).toContain("verification:pending");
+  });
+
   it("never treats missing progress as success", () => {
     expect(summariseRun({ state: "running", progress: null }).stages[1]).toMatchObject({
       state: "pending",

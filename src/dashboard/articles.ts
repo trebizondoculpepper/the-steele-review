@@ -190,6 +190,16 @@ function rows(upTo: number, mark?: { state: "failed" | "pending"; detail?: strin
 }
 
 /** Stage table and summary from the workflow's result for this revision. */
+/** The workflow step that completes each dashboard stage (#439). */
+const LAST_STEP: Partial<Record<StageName, string>> = {
+  themes: "themes",
+  claims: "claims",
+  research: "coverage",
+  drafting: "draft",
+  verification: "verify",
+  delivery: "record-approval",
+};
+
 /** A running stage with no progress update for this long is shown as stalled. */
 export const STALL_MS = 30 * 60_000;
 
@@ -230,7 +240,10 @@ export function summariseRun(
           research: [],
         };
       }
-      const at = idx(named) + (p.status === "completed" ? 1 : 0);
+      // A dashboard stage groups several workflow steps; it is done only when
+      // its last step completes (coverage for research, draft for drafting).
+      const finishesGroup = p.status === "completed" && LAST_STEP[named] === p.stage;
+      const at = idx(named) + (finishesGroup ? 1 : 0);
       const current = Math.min(at, STAGES.length - 1);
       const age = now - Date.parse(p.at);
       const when = p.at.slice(0, 19).replace("T", " ");
