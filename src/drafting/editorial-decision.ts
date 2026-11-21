@@ -197,12 +197,10 @@ export async function recordEditorialDecision(input: {
   if (claimed.kind === "completed") {
     const existing = await readDecision(input.content, path);
     if (!existing) return { status: "conflict" };
-    // A repeated submission may only confirm the same decision.
-    const same =
-      existing.action === decision.action &&
-      existing.draft.hash === decision.draft.hash &&
-      (existing.comment ?? "") === (decision.comment ?? "");
-    return same
+    // A repeated submission may only confirm the same semantic decision,
+    // including the full pinned draft identity (repository, commit, path and
+    // hash): identical bytes at another path are a different artifact.
+    return sameDecision(existing, decision)
       ? { status: "recorded", decision: existing, duplicate: true }
       : { status: "conflict" };
   }

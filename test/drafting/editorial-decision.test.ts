@@ -92,6 +92,21 @@ describe("manual editorial decisions (#447)", () => {
     expect(await decide({ draft: ref, action: "reject" })).toEqual({ status: "conflict" });
   });
 
+  it("refuses a completed request replayed for a different artifact path", async () => {
+    const first = await draft("identical bytes");
+    // Same bytes stored at another path: a different artifact identity.
+    const secondRef = await content.write("articles/pub/p1/copy.md", "identical bytes");
+    const second = {
+      repository: secondRef.repository,
+      commit: secondRef.commit,
+      path: secondRef.path,
+      hash: `sha256:${secondRef.sha256}`,
+    };
+    expect(second.hash).toBe(first.hash);
+    expect(await decide({ draft: first })).toMatchObject({ status: "recorded" });
+    expect(await decide({ draft: second })).toEqual({ status: "conflict" });
+  });
+
   it("refuses a stale or different draft version", async () => {
     const ref = await draft();
     const newer = await draft("# Draft\n\nChanged.");
