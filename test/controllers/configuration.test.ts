@@ -29,7 +29,9 @@ describe("configuration controller (#543)", () => {
   it("loads a valid snapshot through role-scoped views", async () => {
     await writeFile(file, JSON.stringify({ STEELE_RESEARCH_REQUEST_LIMIT: "3" }));
     const c = controller({ OPENROUTER_API_KEY: SECRET });
-    const { version, file: state } = await c.load();
+    const loaded = await c.load();
+    if (loaded.status !== "loaded") throw new Error("expected a load");
+    const { version, file: state } = loaded;
     expect(state).toBe("ok");
     const worker = c.runtime("model-worker");
     expect(worker.version).toBe(version);
@@ -70,6 +72,7 @@ describe("configuration controller (#543)", () => {
     await writeFile(file, JSON.stringify({ STEELE_RESEARCH_REQUEST_LIMIT: "2" }));
     const c = controller();
     const first = await c.load();
+    if (first.status !== "loaded") throw new Error("expected a load");
     await writeFile(file, JSON.stringify({ STEELE_RESEARCH_REQUEST_LIMIT: "4" }));
     const saved = await c.savedState();
     expect(saved.version).not.toBe(first.version);
@@ -111,6 +114,48 @@ describe("configuration controller (#543)", () => {
     await c.load();
     c.runtime("bridge").get<string[]>("STEELE_ARTICLE_SOURCES")!.push("substack/injected");
     expect(c.runtime("bridge").get("STEELE_ARTICLE_SOURCES")).toEqual(["substack/a"]);
+  });
+
+  it("keeps the previous snapshot when a reload fails", async () => {
+    await writeFile(file, JSON.stringify({ STEELE_RESEARCH_REQUEST_LIMIT: "2" }));
+    let fail: string | undefined;
+    const c = new ConfigurationController({
+      settingsFile: file,
+      env: {},
+      salt: "s",
+      roles,
+      read: async (p) => {
+        if (fail === "unavailable") throw Object.assign(new Error("x"), { code: "EACCES" });
+        const { readFile } = await import("node:fs/promises");
+        return readFile(p, "utf8");
+      },
+    });
+    const good = await c.load();
+    if (good.status !== "loaded") throw new Error("expected a load");
+    const still = () => {
+      expect(c.activeVersion()).toBe(good.version);
+      expect(c.runtime("model-worker").get("STEELE_RESEARCH_REQUEST_LIMIT")).toBe(2);
+    };
+    await writeFile(file, "{malformed");
+    expect(await c.load()).toEqual({
+      status: "rejected",
+      reason: "file-invalid",
+      version: good.version,
+    });
+    still();
+    fail = "unavailable";
+    expect(await c.load()).toMatchObject({ status: "rejected", reason: "file-unavailable" });
+    still();
+    fail = undefined;
+    await writeFile(file, JSON.stringify({ STEELE_RESEARCH_REQUEST_LIMIT: "999" }));
+    expect(await c.load()).toMatchObject({ status: "rejected", reason: "invalid-settings" });
+    still();
+    await rm(file);
+    expect(await c.load()).toMatchObject({ status: "rejected", reason: "file-missing" });
+    still();
+    // With no file configured, environment and defaults alone are a supported startup.
+    const envOnly = new ConfigurationController({ env: {}, salt: "s", roles });
+    expect((await envOnly.load()).status).toBe("loaded");
   });
 
   it("refuses runtime access before a snapshot is loaded", () => {

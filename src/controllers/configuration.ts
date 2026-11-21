@@ -119,15 +119,44 @@ export class ConfigurationController {
   }
 
   /** Explicitly (re)load the active snapshot from the current saved state. */
-  async load(): Promise<{ version: string; file: FileState }> {
+  /**
+   * Explicitly (re)load the active snapshot. A candidate that is not fully
+   * valid is rejected and the previous snapshot stays active: a failed load is
+   * never an activation. A configured file that is missing, unreadable or
+   * malformed, or any invalid or missing-required setting, rejects the load.
+   * With no settings file configured, environment and defaults alone are a
+   * supported startup.
+   */
+  async load(): Promise<
+    | { status: "loaded"; version: string; file: FileState }
+    | {
+        status: "rejected";
+        reason: "file-missing" | "file-unavailable" | "file-invalid" | "invalid-settings";
+        /** The version still active, if any. */
+        version?: string;
+      }
+  > {
     const { file, resolved } = await this.resolve();
+    const keep = (
+      reason: "file-missing" | "file-unavailable" | "file-invalid" | "invalid-settings",
+    ) => ({
+      status: "rejected" as const,
+      reason,
+      ...(this.active ? { version: this.active.version } : {}),
+    });
+    if (this.config.settingsFile) {
+      if (file === "missing") return keep("file-missing");
+      if (file === "unavailable") return keep("file-unavailable");
+      if (file === "invalid") return keep("file-invalid");
+    }
+    if (resolved.some((r) => r.error)) return keep("invalid-settings");
     this.active = {
       version: configurationVersion(resolved, this.config.salt, this.registry),
       loadedAt: (this.config.now ?? (() => new Date()))().toISOString(),
       resolved,
       file,
     };
-    return { version: this.active.version, file };
+    return { status: "loaded", version: this.active.version, file };
   }
 
   /** The version this process loaded, if any; not the saved version. */
