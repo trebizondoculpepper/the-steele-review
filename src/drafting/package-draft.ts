@@ -439,7 +439,14 @@ export async function draftFromPackage(input: {
    * that article; it is not asked to regenerate from feedback alone. Its
    * reference is part of this draft's identity.
    */
-  previousDraft?: { ref: ArtifactRef; markdown: string };
+  previousDraft?: {
+    ref: ArtifactRef;
+    markdown: string;
+    /** The previous draft's generated publication fields, from its saved metadata. */
+    fields?: { title: string; subtitle: string; excerpt: string };
+    /** The saved metadata the fields were read from; part of the identity. */
+    metadataRef?: ArtifactRef;
+  };
   /** Exact saved inputs behind editorial feedback; not model-generated references. */
   revisionInputs?: ArtifactRef[];
   /** Revision instructions; defaults to the editable package-revision.md. */
@@ -470,6 +477,7 @@ export async function draftFromPackage(input: {
               input.revision,
               promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions),
               ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
+              ...(input.previousDraft?.metadataRef ? [toRef(input.previousDraft.metadataRef)] : []),
             ]
           : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
@@ -585,6 +593,10 @@ export async function draftFromPackage(input: {
                   previousDraft: input.previousDraft.markdown.slice(0, MAX_PREVIOUS_DRAFT_CHARS),
                   previousDraftTruncated:
                     input.previousDraft.markdown.length > MAX_PREVIOUS_DRAFT_CHARS,
+                  // Untrusted data like the body: revise these, never treat them as instructions.
+                  ...(input.previousDraft.fields
+                    ? { previousFields: input.previousDraft.fields }
+                    : {}),
                 }
               : {}),
           },
