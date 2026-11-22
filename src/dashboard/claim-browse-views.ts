@@ -26,7 +26,7 @@ const badge = (category: keyof typeof CATEGORY_CLASS) =>
   `<span class="s-${CATEGORY_CLASS[category]}">${escapeHtml(category)}</span>`;
 
 export function claimBrowseViews(
-  content?: Pick<GitArtifactStore, "lookup">,
+  content?: Pick<GitArtifactStore, "list" | "lookup">,
   claims?: ClaimsPort,
 ): DashboardView[] {
   const list: DashboardView = {
