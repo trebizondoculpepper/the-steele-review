@@ -100,6 +100,57 @@ describe("librarian assessment and plan (#595)", () => {
     expect(librarianPlanPath(base, plan)).not.toBe(librarianPlanPath(base, other));
   });
 
+  it("counts a claim missing from an existing dossier as a gap", () => {
+    const plan = planLibrarianAssessment({
+      ...base,
+      mappings: new Map([["t1", mapping("geoengineering")]]),
+      themes: new Set(["geoengineering"]),
+      // The dossier exists but records nothing for this claim.
+      dossiers: new Map([["geoengineering", { coverage: new Map() }]]),
+    });
+    expect(plan.dossiers[0]).toMatchObject({ action: "enhance-existing" });
+    expect(plan.claims[0]).toMatchObject({ coverage: "gap", action: "targeted-enhancement" });
+  });
+
+  it("separates same-titled proposals by description", () => {
+    const planet = planLibrarianAssessment({
+      ...base,
+      proposals: [{ id: "a", title: "Mercury", description: "the planet" }],
+      claims: [],
+      mappings: new Map(),
+      themes: new Set(),
+      dossiers: new Map(),
+    });
+    const metal = planLibrarianAssessment({
+      ...base,
+      proposals: [{ id: "b", title: "Mercury", description: "the toxic metal" }],
+      claims: [],
+      mappings: new Map(),
+      themes: new Set(),
+      dossiers: new Map(),
+    });
+    expect(planet.mappings[0]!.canonicalThemeId).not.toBe(metal.mappings[0]!.canonicalThemeId);
+  });
+
+  it("changes the plan path when a dossier assessment or author basis changes", () => {
+    const make = (dossiers: Map<string, { coverage: Map<string, "covered" | "gap"> }>, basis: "post-byline" | "source-configured") =>
+      planLibrarianAssessment({
+        ...base,
+        author: { name: "A", basis },
+        mappings: new Map([["t1", mapping("geoengineering")]]),
+        themes: new Set(["geoengineering"]),
+        dossiers,
+      });
+    const empty = make(new Map(), "post-byline");
+    const covered = make(
+      new Map([["geoengineering", { coverage: new Map([[base.claims[0]!.claimRecordId, "covered" as const]]) }]]),
+      "post-byline",
+    );
+    const otherBasis = make(new Map(), "source-configured");
+    expect(librarianPlanPath(base, empty)).not.toBe(librarianPlanPath(base, covered));
+    expect(librarianPlanPath(base, empty)).not.toBe(librarianPlanPath(base, otherBasis));
+  });
+
   it("saves write-once so an earlier plan stays readable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-plan-"));
     await mkdir(join(dir, "c"));

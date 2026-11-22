@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
 import type { ThemeMapping } from "./theme-mappings.js";
 
 /**
@@ -110,14 +110,18 @@ export interface PlanInputs {
 }
 
 /** Deterministic fallback identity for a proposal with no saved mapping. */
-export function proposedThemeId(title: string): string {
+export function proposedThemeId(title: string, description?: string): string {
   const slug = title
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
-  const digest = createHash("sha256").update(title).digest("hex").slice(0, 8);
+  // The description separates same-titled proposals with different meanings.
+  const digest = createHash("sha256")
+    .update(JSON.stringify([title, description ?? ""]))
+    .digest("hex")
+    .slice(0, 8);
   return `${slug || "theme"}-${digest}`;
 }
 
@@ -132,7 +136,8 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
 
   for (const proposal of input.proposals) {
     const saved = input.mappings.get(proposal.id);
-    const canonicalThemeId = saved?.canonicalThemeId ?? proposedThemeId(proposal.title);
+    const canonicalThemeId =
+      saved?.canonicalThemeId ?? proposedThemeId(proposal.title, proposal.description);
     mappings.push({
       proposalId: proposal.id,
       canonicalThemeId,
@@ -161,7 +166,14 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       });
       continue;
     }
-    const uncovered = [...dossier.coverage.values()].filter((c) => c === "gap").length;
+    // A claim absent from the dossier's coverage is not covered by omission.
+    const uncovered = [
+      ...dossier.coverage.values(),
+      ...input.claims
+        .filter((c) => c.canonicalThemeId === mapping.canonicalThemeId)
+        .filter((c) => !dossier.coverage.has(c.claimRecordId))
+        .map(() => "gap" as const),
+    ].filter((c) => c === "gap").length;
     dossiers.push({
       canonicalThemeId: mapping.canonicalThemeId,
       action: uncovered > 0 ? "enhance-existing" : "reuse-existing",
@@ -215,7 +227,8 @@ export function librarianPlanPath(
 ): string {
   const identity = JSON.stringify([
     plan.inputs.sourceVersion,
-    plan.inputs.author?.name ?? null,
+    plan.inputs.author ? [plan.inputs.author.name, plan.inputs.author.basis] : null,
+    plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps]),
     plan.mappings.map((m) => [m.proposalId, m.canonicalThemeId, m.source]).sort(),
     plan.claims.map((c) => [c.claimRecordId, c.coverage, c.action]).sort(),
   ]);
@@ -233,6 +246,15 @@ export async function saveLibrarianPlan(
     plan,
   );
   if (await artifacts.lookup(path)) return { path, reused: true };
-  await artifacts.write(path, `${JSON.stringify(plan, null, 2)}\n`);
-  return { path, reused: false };
+  try {
+    await artifacts.write(path, `${JSON.stringify(plan, null, 2)}\n`);
+    return { path, reused: false };
+  } catch (error) {
+    // A concurrent assessment of the same inputs may have written first; the
+    // stored plan is equivalent, so report reuse rather than failing.
+    if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+      return { path, reused: true };
+    }
+    throw error;
+  }
 }
