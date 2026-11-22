@@ -62,6 +62,8 @@ import { savedClaims } from "../dashboard/claims.js";
 import { savedReviews } from "../dashboard/reviews.js";
 import { reviewViews } from "../dashboard/review-views.js";
 import { dossierViews } from "../dashboard/dossier-views.js";
+import { savedEquivalence } from "../dashboard/equivalence.js";
+import { equivalenceViews } from "../dashboard/equivalence-views.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { collectActivity, renderActivity } from "../dashboard/activity.js";
 import { renderConfig } from "../dashboard/config-view.js";
@@ -298,6 +300,7 @@ const views = [
   ...claimViews(content ? savedClaims(content, archive) : undefined),
   ...(content ? reviewViews(savedReviews(content)) : []),
   ...(content ? dossierViews(savedThemes(content), savedResearch(content)) : []),
+  ...(content ? equivalenceViews(savedEquivalence(content)) : []),
   // Saved research reports and dossiers, read-only (#507).
   ...researchViews(content ? savedResearch(content) : undefined),
   // Preserve old bookmarks without a second navigation entry or placeholder.
