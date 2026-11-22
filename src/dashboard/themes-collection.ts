@@ -24,7 +24,8 @@ import type { ThemesPort } from "./themes.js";
 type Store = Pick<GitArtifactStore, "lookup" | "read">;
 
 export type ThemeCategory = "canonical" | "proposal";
-export type ProposalMapping = "mapped" | "unresolved" | "unmapped";
+/** `unreadable`: a saved mapping exists but could not be interpreted; never "unmapped". */
+export type ProposalMapping = "mapped" | "unresolved" | "unmapped" | "unreadable";
 
 export type ThemeBrowseRow = CollectionRow & {
   category: ThemeCategory;
@@ -80,9 +81,15 @@ export function themesCollection(
     const r = await content.lookup(
       themeMappingPath({ key: proposalMappingKey(title, description) }),
     );
+    // Only a truly absent file is "unmapped".
     if (!r) return { status: "unmapped" };
-    const parsed = ThemeMappingSchema.safeParse(JSON.parse(await content.read(r)));
-    if (!parsed.success) return { status: "unmapped" };
+    let parsed;
+    try {
+      parsed = ThemeMappingSchema.safeParse(JSON.parse(await content.read(r)));
+    } catch {
+      return { status: "unreadable" };
+    }
+    if (!parsed.success) return { status: "unreadable" };
     return parsed.data.status === "unresolved"
       ? { status: "unresolved" }
       : { status: "mapped", theme: parsed.data.canonicalThemeId };
@@ -175,11 +182,13 @@ export function themesCollection(
       if (page.unreadable)
         limitations.push(`${page.unreadable} saved extraction(s) could not be read.`);
       const rows: ThemeBrowseRow[] = [];
+      let unreadableMappings = 0;
       let consumed = skip;
       for (const p of page.rows.slice(skip)) {
         if (rows.length >= query.limit) break;
         consumed++;
         const m = await mappingOf(p.title, p.description);
+        if (m.status === "unreadable") unreadableMappings++;
         if (f.mapping && m.status !== f.mapping) continue;
         const r = await content.lookup(p.result);
         if (!r) continue;
@@ -195,6 +204,10 @@ export function themesCollection(
           result: p.result,
         });
       }
+      if (unreadableMappings > 0)
+        limitations.push(
+          `${unreadableMappings} proposal(s) have a saved mapping that could not be read; they match no mapping filter.`,
+        );
       const more = consumed < page.rows.length;
       const next = more
         ? encode({ c: category, ...(after ? { after } : {}), skip: consumed })

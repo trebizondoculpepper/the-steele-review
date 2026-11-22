@@ -145,4 +145,29 @@ describe("theme search (#618)", { timeout: 60_000 }, () => {
     });
     expect(page.limitations.join(" ")).toMatch(/not valid for this list/);
   });
+
+  it("reports an invalid saved mapping as unreadable, never as unmapped", async () => {
+    const { proposalMappingKey, themeMappingPath } =
+      await import("../../src/research/theme-mappings.js");
+    const fx = librarianFixtures(content);
+    await fx.analysis(
+      "p1",
+      [{ id: "c1", statement: "A treaty bans weather weapons" }],
+      "Weather warfare",
+    );
+    await content.revise(
+      themeMappingPath({
+        key: proposalMappingKey("Weather warfare", "Claims of weather modification as a weapon"),
+      }),
+      JSON.stringify({ not: "a mapping" }),
+      null,
+    );
+    const unmapped = await queryCollection(adapter(), {
+      filters: { category: "proposal", mapping: "unmapped" },
+    });
+    expect(unmapped.rows).toHaveLength(0);
+    expect(unmapped.limitations.join(" ")).toMatch(/could not be read/);
+    const all = await queryCollection(adapter(), { filters: { category: "proposal" } });
+    expect(all.rows.map((r) => (r as { mapping?: string }).mapping)).toEqual(["unreadable"]);
+  });
 });
