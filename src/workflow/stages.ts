@@ -192,6 +192,7 @@ export function articleStages(deps: {
     const requests: ResearchRequest[] = [];
     await assessPostCoverage({
       artifacts: deps.content,
+      discoveryAcceptance: deps.operations,
       themeResult: themes,
       claimResult: claims,
       shortlister: deps.shortlister,
@@ -490,6 +491,7 @@ export function articleStages(deps: {
       const byJob = new Map(pinned.map((p) => [p.jobId, p]));
       const out = await assessPostCoverage({
         artifacts: deps.content,
+        discoveryAcceptance: deps.operations,
         themeResult: themes,
         claimResult: claims,
         shortlister: deps.shortlister,

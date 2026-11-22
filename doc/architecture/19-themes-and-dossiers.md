@@ -46,7 +46,11 @@ Full seed jobs and targeted enhancements retain exact request, result, manifest,
 raw report and occurrence-binding references. Reuse validates that chain and the
 archived independent supporting passage, then projects it onto current claim IDs.
 Coverage retains the supporting job references so the writer receives the same
-archived evidence snapshot. A grouped ID with conflicting occurrence scopes cannot
+archived evidence snapshot. Staged results additionally bind the accepted discovery,
+its exact inventory and assembly result, and immutable per-URL retrieval outcomes
+and citation snapshots. They retain the original Markdown report rather than
+pretending it is the whole-job runner's JSON snapshot. Discovery acceptance is
+queried through the state controller before staged evidence can be reused. A grouped ID with conflicting occurrence scopes cannot
 select one passage silently.
 
 Existing version 1/2 request plans and their request identities remain immutable.

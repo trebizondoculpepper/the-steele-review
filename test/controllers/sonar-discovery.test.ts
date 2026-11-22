@@ -54,3 +54,67 @@ describe("manual Sonar per-call returned-body capture", () => {
     expect(capture).not.toHaveBeenCalled();
   });
 });
+
+it("serializes canonical semantic scope without changing legacy subject request bytes", async () => {
+  vi.stubEnv("OPENROUTER_API_KEY", "SYNTHETIC-REQUEST-KEY");
+  vi.stubEnv("OPENROUTER_API_KEY_FILE", "");
+  const sent: { messages: { content: string }[] }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)));
+      return new Response(
+        JSON.stringify({
+          model: "fixture/research",
+          choices: [{ finish_reason: "stop", message: { content: "# Synthetic report" } }],
+          citations: [],
+        }),
+      );
+    }),
+  );
+  const { CanonicalNeedSchema, canonicalNeedId } =
+    await import("../../src/research/canonical-need.js");
+  const { ResearchRequestSchema } = await import("../../src/research/job.js");
+  const need = CanonicalNeedSchema.parse({
+    version: "canonical-theme-need-v1",
+    themeId: "enmod",
+    proposition: {
+      statement: "The ENMOD Convention was adopted in 1976.",
+      kind: "quotation",
+      claimType: "factual",
+      qualifiers: ["allegedly"],
+      entities: ["ENMOD Convention"],
+      dates: [{ text: "1976" }],
+      attribution: { name: "Synthetic Witness" },
+    },
+  });
+  const canonical = ResearchRequestSchema.parse({
+    schemaVersion: 1,
+    origin: "theme",
+    pass: 1,
+    claims: [
+      {
+        claimRecordId: canonicalNeedId(need),
+        statement: need.proposition.statement,
+        themeIds: ["enmod"],
+      },
+    ],
+    question: "Check the scoped assertion.",
+    corpusRefs: [],
+    canonicalNeeds: { version: "canonical-theme-needs-v1", needs: [need] },
+  });
+  const provider = sonarFromEnv({ model: "fixture/research", timeoutMs: 1000, maxTokens: 4000 });
+  await provider(canonical);
+  expect(JSON.parse(sent[0]!.messages[1]!.content).canonicalNeeds).toEqual(
+    canonical.canonicalNeeds,
+  );
+  await provider(request);
+  expect(sent[1]!.messages[1]!.content).toBe(
+    JSON.stringify({
+      subject: request.subject,
+      brief: undefined,
+      question: undefined,
+      claims: request.claims,
+    }),
+  );
+});

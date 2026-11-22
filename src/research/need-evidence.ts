@@ -1,3 +1,10 @@
+import {
+  StagedNeedEvidenceSchema,
+  stagedNeedEvidence,
+  readStagedNeedEvidence,
+  type DiscoveryAcceptance,
+} from "./staged-need-evidence.js";
+import { CitationSnapshotSchema } from "./citation-inventory.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
 import { canonicalNeed } from "./canonical-need.js";
@@ -21,6 +28,7 @@ export const ResearchNeedEvidenceSchema = z
     version: z.literal("research-need-evidence-v1"),
     need: CanonicalNeedSchema,
     bindings: Ref.optional(),
+    staged: StagedNeedEvidenceSchema.optional(),
     request: Ref,
     result: Ref,
     manifest: Ref,
@@ -46,6 +54,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 export async function readResearchNeedEvidence(
   artifacts: EvidenceStore,
   input: ResearchNeedEvidence,
+  acceptance?: DiscoveryAcceptance,
 ) {
   const proof = ResearchNeedEvidenceSchema.parse(input);
   const request = ResearchRequestSchema.parse(
@@ -84,15 +93,30 @@ export async function readResearchNeedEvidence(
   const manifest = ResearchManifestSchema.parse(
     JSON.parse(await artifacts.read(artifact(proof.manifest))),
   );
-  if (
-    manifest.jobId !== jobId ||
-    proof.manifest.path !== researchJobPath(jobId, "manifest") ||
-    !same(manifest.report, proof.report)
-  )
+  if (manifest.jobId !== jobId || !same(manifest.report, proof.report))
     throw new Error("research-need-manifest-mismatch");
-  const report = SavedReportSchema.parse(JSON.parse(await artifacts.read(artifact(proof.report))));
-  if (report.jobId !== jobId || proof.report.path !== `research-jobs/${jobId}/report.json`)
-    throw new Error("research-need-report-mismatch");
+  let stagedKeys: Map<string, string> | undefined;
+  if (proof.staged) {
+    if (!acceptance) throw new Error("research-need-discovery-acceptance-required");
+    stagedKeys = await readStagedNeedEvidence({
+      artifacts,
+      acceptance,
+      staged: proof.staged,
+      request,
+      result,
+      manifest,
+      manifestRef: proof.manifest,
+      report: proof.report,
+    });
+  } else {
+    if (proof.manifest.path !== researchJobPath(jobId, "manifest"))
+      throw new Error("research-need-manifest-mismatch");
+    const report = SavedReportSchema.parse(
+      JSON.parse(await artifacts.read(artifact(proof.report))),
+    );
+    if (report.jobId !== jobId || proof.report.path !== `research-jobs/${jobId}/report.json`)
+      throw new Error("research-need-report-mismatch");
+  }
   const allowed = new Set(request.claims.map((c) => c.claimRecordId));
   if (manifest.citations.some((c) => c.passages.some((p) => !allowed.has(p.claimRecordId))))
     throw new Error("research-need-passage-mismatch");
@@ -109,11 +133,16 @@ export async function readResearchNeedEvidence(
       continue;
     const matching = citation.passages.filter((p) => p.claimRecordId === passageId);
     if (!matching.length) continue;
-    const source = savedSourceSchema(MAX_SAVED_REPORT_CHARS).parse(
-      JSON.parse(await artifacts.read(artifact(citation.archivedArtifact))),
-    );
+    const rawSource = JSON.parse(await artifacts.read(artifact(citation.archivedArtifact)));
+    const source = stagedKeys
+      ? CitationSnapshotSchema.parse(rawSource)
+      : savedSourceSchema(MAX_SAVED_REPORT_CHARS).parse(rawSource);
+    const sourceMatches = stagedKeys
+      ? "retrievalKey" in source &&
+        source.retrievalKey === stagedKeys.get(JSON.stringify(citation.archivedArtifact))
+      : source.url === citation.url;
     if (
-      source.url !== citation.url ||
+      !sourceMatches ||
       matching.some((p) => !normalise(source.text).includes(normalise(p.passage)))
     )
       throw new Error("research-need-source-passage-mismatch");
@@ -128,6 +157,7 @@ export async function researchNeedEvidence(
   resultRef: ArtifactRef,
   need: z.infer<typeof CanonicalNeedSchema>,
   bindingsRef?: ArtifactRef,
+  acceptance?: DiscoveryAcceptance,
 ): Promise<ResearchNeedEvidence> {
   const result = ResearchResultSchema.parse(JSON.parse(await artifacts.read(resultRef)));
   if (!result.manifest) throw new Error("research-need-result-mismatch");
@@ -147,8 +177,11 @@ export async function researchNeedEvidence(
     result: reference(resultRef),
     manifest: result.manifest,
     report: manifest.report,
+    ...(result.manifest.path === researchJobPath(result.jobId, "manifest")
+      ? {}
+      : { staged: await stagedNeedEvidence(artifacts, resultRef, artifact(result.manifest)) }),
   });
-  await readResearchNeedEvidence(artifacts, proof);
+  await readResearchNeedEvidence(artifacts, proof, acceptance);
   return proof;
 }
 
@@ -260,6 +293,7 @@ export function cachedResearchEvidenceStore(artifacts: EvidenceStore): EvidenceS
 /** One bounded index per assessment, not a complete corpus scan for every claim. */
 export function createLegacyResearchNeedLookup(
   artifacts: EvidenceStore,
+  acceptance?: DiscoveryAcceptance,
 ): (need: z.infer<typeof CanonicalNeedSchema>) => Promise<LegacyNeedLookup> {
   const reads = new Map<string, Promise<string>>();
   const cached: EvidenceStore = {
@@ -333,8 +367,8 @@ export function createLegacyResearchNeedLookup(
           if (!resultRef) continue;
           const saved = ResearchResultSchema.parse(JSON.parse(await cached.read(resultRef)));
           if (saved.outcome === "failed") continue;
-          const proof = await researchNeedEvidence(cached, resultRef, need);
-          const checked = await readResearchNeedEvidence(cached, proof);
+          const proof = await researchNeedEvidence(cached, resultRef, need, undefined, acceptance);
+          const checked = await readResearchNeedEvidence(cached, proof, acceptance);
           if (checked.citations.length) return { status: "found", proof };
         }
         return {

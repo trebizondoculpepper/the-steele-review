@@ -84,6 +84,7 @@ export function sonarFromEnv(config: {
                 brief: request.brief,
                 question: request.question,
                 claims: request.claims,
+                ...(request.canonicalNeeds ? { canonicalNeeds: request.canonicalNeeds } : {}),
               }),
             },
           ],
