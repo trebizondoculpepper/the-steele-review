@@ -16,6 +16,8 @@ Registered in `src/events/registry.ts` under the messaging standard (`doc/archit
 | `postId` | slug | Source post within that publication. |
 | `draft` | artifact reference | The exact approved Markdown draft revision (repository, commit, path, `sha256:` hash). |
 | `approval` | artifact reference | The package verification report that approved exactly that draft. |
+| `approvalKind` | optional enum: `combined-verification` or `editorial-judgment` | Which boundary approved the draft. Absent only on legacy combined-verifier events. |
+| `assessment` | optional artifact reference | The saved assessor record when approval came from an editorial judgment; never a fabricated combined-verification report. |
 | `publication` | optional artifact reference | Exact versioned metadata/body payload for v2 verification; absent only on legacy body-only approvals. |
 | `package` | artifact reference | The evidence (writer) package the draft was written from. |
 | `approvedAt` | ISO 8601 date-time | The verifier's `verifiedAt`: when the approving verification ran, not when the event was recorded. It is fixed by the report, so re-recording the same approval yields the same event. Destination schedules count from it. |
