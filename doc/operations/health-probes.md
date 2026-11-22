@@ -14,6 +14,7 @@ Probes are read-only. They never provision, consume, acknowledge, publish, repai
 | Role | Command | Checks |
 | --- | --- | --- |
 | Collector (#324) | `node dist/cli/probe-collector.js` | `broker`: NATS answers. `consumer`: the collector's own durable consumer exists on its stream (read-only info, never recreated). `archive`: the archive is a readable Git repository (never initialised). `state`: the operation store opens read-only (never created or migrated). |
+| Discovery poller (#327) | `node dist/cli/probe-discovery.js` | `status`: the runner's sanitised status file is present and valid. `poll`: the last completed poll is no older than `STEELE_PROBE_STALE_AFTER_MS` (default three `STEELE_POLL_INTERVAL_MS` intervals); an unchanged feed is a completed poll, so it counts as healthy. `failures`: consecutive failed polls are below `STEELE_PROBE_MAX_FAILURES` (default 3). `details` carries `runs`, `consecutiveFailures` and `lastPollAt`. The feed and broker are never contacted. Needs `STEELE_DISCOVERY_STATUS_PATH`. |
 
 The collector probe reads the collector's own configuration: `NATS_URL`, `NATS_TOKEN`, `STEELE_COLLECT_STREAM`, `STEELE_COLLECT_CONSUMER`, `STEELE_ARCHIVE_PATH`, `STEELE_ARCHIVE_REPOSITORY` and `STEELE_STATE_PATH`. A missing variable makes that check `not-configured`.
 
