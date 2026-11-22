@@ -131,6 +131,10 @@ const TRANSCRIPT_FIELDS = [
   "mediaKind",
   "transcriptionConfidence",
   "transcriptionComplete",
+  // The transcript's own upload identity and variant (supplied transcripts).
+  "mediaUploadId",
+  "mediaUploadKind",
+  "transcriptVariant",
 ] as const;
 function transcriptProvenance(p: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(TRANSCRIPT_FIELDS.filter((k) => k in p).map((k) => [k, p[k]]));

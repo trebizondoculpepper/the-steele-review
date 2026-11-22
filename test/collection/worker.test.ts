@@ -889,7 +889,13 @@ describe("single-item reingestion (#558)", () => {
     const first = setup({
       collect: () => ({
         ...textResult("Spoken words."),
-        provenance: { ...provenance, originalMediaUploadId: uploadId },
+        provenance: {
+          ...provenance,
+          originalMediaUploadId: uploadId,
+          mediaUploadId: uploadId,
+          mediaUploadKind: "audio" as const,
+          transcriptVariant: "aligned" as const,
+        },
       }),
     });
     await first.worker.handle(message());
@@ -925,6 +931,10 @@ describe("single-item reingestion (#558)", () => {
       acquiredAt: "2026-11-22T10:00:00.000Z",
       originalMedium: "audio",
       method: "supplied-transcript",
+      // The retained transcript keeps its own upload identity.
+      mediaUploadId: "upload-1",
+      mediaUploadKind: "audio",
+      transcriptVariant: "aligned",
     });
   });
 
