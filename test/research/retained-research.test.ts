@@ -24,6 +24,7 @@ import { recoverRetainedResearch } from "../../src/research/retained-research.js
 import { RESEARCH_PROMPT_VERSION, runResearchJob } from "../../src/research/runner.js";
 import { researchJobId, finishResearchJob, openResearchJob } from "../../src/research/job.js";
 import { assessPostCoverage, LexicalShortlister } from "../../src/research/librarian.js";
+import { draftFromPackage } from "../../src/drafting/package-draft.js";
 import { savedResearch } from "../../src/dashboard/research.js";
 import { researchViews } from "../../src/dashboard/research-views.js";
 import { saveWriterPackage } from "../../src/drafting/writer-package.js";
@@ -236,6 +237,45 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
       ),
     );
     expect(result.warnings).toEqual(pkg.package.researchWarnings);
+    let writerCalls = 0;
+    await expect(
+      draftFromPackage({
+        content: artifacts,
+        operations,
+        package: pkg.ref,
+        archive: {
+          read: async () =>
+            JSON.stringify({
+              item: {
+                publicationId: "pub",
+                postId: "post",
+                url: "https://pub.example/p/post",
+                title: "A post",
+              },
+              ingestionReason: "backfill",
+              text: TEXT,
+              complete: true,
+              supplied: { transcriptDocument: "spoken" },
+              provenance: {
+                sourceUrl: "https://pub.example/p/post",
+                acquiredAt: "2026-01-01T00:00:00Z",
+                method: "supplied-transcript",
+                originalMedium: "video",
+              },
+            }),
+        },
+        provider: {
+          modelVersion: "fixture/writer",
+          complete: async (request) => {
+            writerCalls++;
+            expect(JSON.parse(request.user).researchWarnings).toEqual(result.warnings);
+            throw new ModelProviderError("credit-exhausted");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "credit-exhausted" });
+    expect(writerCalls).toBe(1);
+
     const reportRef = (await artifacts.lookup(
       `research-jobs/${researchJobId(f.request)}/report.json`,
     ))!;
