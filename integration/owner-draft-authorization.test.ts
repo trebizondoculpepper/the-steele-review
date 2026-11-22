@@ -2,29 +2,29 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { GitArtifactStore, ArtifactStoreError } from "../../src/controllers/artifact-store.js";
-import { OperationStore } from "../../src/controllers/operation-store.js";
+import { GitArtifactStore, ArtifactStoreError } from "../src/controllers/artifact-store.js";
+import { OperationStore } from "../src/controllers/operation-store.js";
 import {
   OwnerDraftAuthorizationSchema,
   OwnerDraftRequestSchema,
   ownerDraftRequestHash,
   ownerDraftVersionIdentity,
-} from "../../src/content/owner-draft-authorization.js";
-import { authorizeOwnerDraftRehearsal } from "../../src/publishing/owner-draft-rehearsal.js";
+} from "../src/content/owner-draft-authorization.js";
+import { authorizeOwnerDraftRehearsal } from "../src/publishing/owner-draft-rehearsal.js";
 import {
   approvalEventFor,
   handleApprovedArticle,
   SimulatedDestination,
   readDummyDeliveryProof,
   readDestinationDeliveryProof,
-} from "../../src/publishing/approved-article.js";
-import { SubstackDraftDestination } from "../../src/publishing/substack/destination.js";
-import { artifactReference } from "../../src/drafting/publication-payload.js";
-import { readRetainedDraftRehearsal } from "../../src/drafting/draft-rehearsal.js";
-import { writeOnce } from "../../src/research/job.js";
-import { ARTICLE_APPROVED_SUBJECT } from "../../src/events/article-approved-event.js";
+} from "../src/publishing/approved-article.js";
+import { SubstackDraftDestination } from "../src/publishing/substack/destination.js";
+import { artifactReference } from "../src/drafting/publication-payload.js";
+import { readRetainedDraftRehearsal } from "../src/drafting/draft-rehearsal.js";
+import { writeOnce } from "../src/research/job.js";
+import { ARTICLE_APPROVED_SUBJECT } from "../src/events/article-approved-event.js";
 import { retainedRehearsalFixture } from "./draft-rehearsal-fixtures.js";
-import { localDraftDestination } from "./draft-destination-fixture.js";
+import { localDraftDestination } from "../test/publishing/draft-destination-fixture.js";
 
 let dir: string, content: GitArtifactStore, operations: OperationStore;
 beforeEach(async () => {

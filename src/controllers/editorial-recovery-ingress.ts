@@ -78,17 +78,22 @@ export interface JudgeRecoveryCompletionPort {
   ): Promise<{ state: "not-complete" } | { state: "completed"; result: JudgeRecoveryResult }>;
 }
 /** Status only: never invokes run or submits an absent workflow. */
-export function restateJudgeRecoveryCompletion(url: string): JudgeRecoveryCompletionPort {
+export function restateJudgeRecoveryCompletion(
+  url: string,
+  connect: typeof clients.connect = clients.connect,
+  timeoutMs = 10000,
+): JudgeRecoveryCompletionPort {
   let ingress: ReturnType<typeof clients.connect>;
   try {
     urlValid(url);
-    ingress = clients.connect({ url });
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error();
+    ingress = connect({ url });
   } catch {
     throw new EditorialIngressError("unconfigured");
   }
   return {
     async read(key) {
-      const signal = AbortSignal.timeout(10000);
+      const signal = AbortSignal.timeout(timeoutMs);
       try {
         const output = await ingress
           .workflowClient<EditorialJudgeRecoveryApi>(

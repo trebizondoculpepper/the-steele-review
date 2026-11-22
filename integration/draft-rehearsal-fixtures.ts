@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
-import type { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import type { OperationStore } from "../../src/controllers/operation-store.js";
-import { OwnerDraftRequestSchema } from "../../src/content/owner-draft-authorization.js";
-import { artifactRef, artifactReference } from "../../src/drafting/publication-payload.js";
-import { prepareJudgeRecovery } from "../../src/workflow/editorial-judge-recovery-submission.js";
-import { runEditorialLoop } from "../../src/workflow/editorial-loop.js";
-import { editorialStages } from "../../src/workflow/editorial-stages.js";
-import { writeOnce } from "../../src/research/job.js";
-import { deniedContinuationFixture } from "../workflow/editorial-recovery-fixtures.js";
-import { REVISE } from "../workflow/editorial-continuation-fixtures.js";
-import { WRITER } from "./approval-fixtures.js";
+import type { GitArtifactStore } from "../src/controllers/artifact-store.js";
+import type { OperationStore } from "../src/controllers/operation-store.js";
+import { OwnerDraftRequestSchema } from "../src/content/owner-draft-authorization.js";
+import { artifactRef, artifactReference } from "../src/drafting/publication-payload.js";
+import { prepareJudgeRecovery } from "../src/workflow/editorial-judge-recovery-submission.js";
+import { runEditorialLoop } from "../src/workflow/editorial-loop.js";
+import { editorialStages } from "../src/workflow/editorial-stages.js";
+import { writeOnce } from "../src/research/job.js";
+import { deniedContinuationFixture } from "../test/workflow/editorial-recovery-fixtures.js";
+import { REVISE } from "../test/workflow/editorial-continuation-fixtures.js";
+import { WRITER } from "../test/publishing/approval-fixtures.js";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Real retained writer/role/mechanical records and typed state; all models are local fakes. */

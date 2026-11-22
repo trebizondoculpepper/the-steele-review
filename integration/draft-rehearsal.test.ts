@@ -2,10 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import { OperationStore } from "../../src/controllers/operation-store.js";
-import { readRetainedDraftRehearsal } from "../../src/drafting/draft-rehearsal.js";
-import { OwnerDraftRequestSchema } from "../../src/content/owner-draft-authorization.js";
+import { GitArtifactStore } from "../src/controllers/artifact-store.js";
+import { OperationStore } from "../src/controllers/operation-store.js";
+import { readRetainedDraftRehearsal } from "../src/drafting/draft-rehearsal.js";
+import { OwnerDraftRequestSchema } from "../src/content/owner-draft-authorization.js";
 import { retainedRehearsalFixture } from "./draft-rehearsal-fixtures.js";
 
 let dir: string, content: GitArtifactStore, operations: OperationStore;
