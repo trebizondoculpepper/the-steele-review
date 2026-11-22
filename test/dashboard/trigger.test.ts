@@ -100,15 +100,20 @@ describe("confirmed article trigger", () => {
   it("records new normal attempts with live policy and reconnects the same form without copying settings", async () => {
     const dir = await mkdtemp(join(tmpdir(), "trigger-live-policy-"));
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    let accepted = false;
     const submissions: { input: ArticleRunInput; key?: string }[] = [];
     try {
       const trigger = articleTrigger({
         archive: { lookup: async () => artifact, read: async () => JSON.stringify(record) },
         attempts: operations,
-        runs: { status: async () => ({ state: "not-started" as const }) },
+        runs: {
+          status: async () =>
+            accepted ? { state: "running" as const } : { state: "not-started" as const },
+        },
         submitter: {
           submit: async (input, key) => {
             submissions.push({ input, key });
+            accepted = true;
           },
         },
         researchDeadlineMs: 60000,

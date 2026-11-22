@@ -147,6 +147,54 @@ it(
         normal.input.operatorRequestId!,
       ),
     ).toBeUndefined();
+    const technicalJudgment = JSON.parse(
+      await content.read({ ...checkpoint.judgment, sha256: checkpoint.judgment.hash.slice(7) }),
+    );
+    technicalJudgment.gates = ["assessment-findings-incomplete"];
+    const technicalRef = artifactReference(
+      await writeOnce(content, "judgments/pub/p1/synthetic-technical-gate.json", technicalJudgment),
+    );
+    await expect(
+      authorizeConfiguredDraft({
+        ...args,
+        checkpoint: {
+          ...checkpoint,
+          judgment: technicalRef,
+          judgments: [...checkpoint.judgments.slice(0, -1), technicalRef],
+        },
+      }),
+    ).rejects.toThrow("configured draft evidence mismatch");
+    expect(
+      operations.ownerDraftIntent(
+        normal.input.publicationId,
+        normal.input.postId,
+        normal.input.operatorRequestId!,
+      ),
+    ).toBeUndefined();
+    const wrongSource = new Proxy(content, {
+      get(target, key) {
+        if (key === "read")
+          return async (ref: Parameters<GitArtifactStore["read"]>[0]) => {
+            const text = await target.read(ref);
+            if (ref.path !== checkpoint.sourceContext.path) return text;
+            const decoded = JSON.parse(text);
+            decoded.source.id = "other-publication";
+            return JSON.stringify(decoded);
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    await expect(authorizeConfiguredDraft({ ...args, content: wrongSource })).rejects.toThrow(
+      "configured draft evidence mismatch",
+    );
+    expect(
+      operations.ownerDraftIntent(
+        normal.input.publicationId,
+        normal.input.postId,
+        normal.input.operatorRequestId!,
+      ),
+    ).toBeUndefined();
     const unavailable = new Proxy(content, {
       get(target, key) {
         if (key === "read")

@@ -3,7 +3,9 @@
 New normal operator attempts use the serialized `editorialExecution: live-policy-v1`
 contract. The dashboard records a new normal attempt; the CLI uses its stable
 `--request-id` for the same explicit contract. Per-run editorial override flags
-are refused for these attempts: edit the canonical handler settings instead.
+are refused for new live attempts: edit the canonical handler settings instead.
+A historical request reconnects only when its original contract matches the recorded
+input hash; it is never silently upgraded to the live selector.
 An absent selector retains the historical journal sequence and policy.
 The existing configuration handler reads these public settings together at each
 new editorial decision:

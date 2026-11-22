@@ -8,11 +8,18 @@ import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { ArticleRunInputSchema, type ArticleRunInput } from "../workflow/article-run.js";
+import {
+  ArticleRunInputSchema,
+  articleRunKey,
+  type ArticleRunInput,
+} from "../workflow/article-run.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import { randomUUID } from "node:crypto";
 import type { OperationStore } from "../controllers/operation-store.js";
-import { recordArticleAttempt, liveEditorialInput } from "../workflow/article-attempt.js";
+import {
+  recordNormalArticleAttempt,
+  NormalArticleAttemptError,
+} from "../workflow/article-attempt.js";
 import type { RunStatusPort } from "./articles.js";
 
 /** A one-time submission token carried by the confirm form (#749). */
@@ -118,7 +125,7 @@ export function articleTrigger(deps: {
   runs?: RunStatusPort;
   attempts?: Pick<
     OperationStore,
-    "recordArticleAttempt" | "claim" | "complete" | "operationStatus"
+    "recordArticleAttempt" | "articleAttempt" | "claim" | "complete" | "operationStatus"
   >;
 }) {
   const prepare = (selection: unknown) => prepareArticleInput(deps, selection);
@@ -166,7 +173,7 @@ export function articleTrigger(deps: {
       const token = typeof request === "string" && REQUEST.test(request) ? request : undefined;
       // A token that already started a run only attaches to it, whatever
       // state that run has reached since: one confirmation, one run.
-      if (token && deps.attempts && boundRun(deps.attempts, token)) return done;
+      const bound = token && deps.attempts ? boundRun(deps.attempts, token) : undefined;
       let state;
       try {
         state = await deps.runs.status(input);
@@ -176,6 +183,25 @@ export function articleTrigger(deps: {
       // Unknown state: never guess, so a running or finished run is not
       // duplicated and a stale failure is not reported as current.
       if (state.state === "unavailable") return { status: 503 };
+      if (bound && token && deps.attempts) {
+        // A binding is intent, not an acceptance receipt. A lost submit may
+        // safely retry its SAME key only while the engine reports no run.
+        if (state.state !== "not-started") return done;
+        try {
+          const recorded = deps.attempts.articleAttempt(input.publicationId, input.postId, token);
+          if (recorded) {
+            const again = recordNormalArticleAttempt(deps.attempts, input, token);
+            if (again.identity.workflowKey !== bound) return { status: 409 };
+            await deps.submitter.submit(again.input, bound);
+          } else if (bound === articleRunKey(input)) {
+            // A pre-versioned first-run form has no operator attempt row.
+            await deps.submitter.submit(input, bound);
+          } else return { status: 409 };
+        } catch (error) {
+          return { status: error instanceof NormalArticleAttemptError ? 409 : 503 };
+        }
+        return done;
+      }
       if (state.state === "finished" && state.recovery) {
         // An explicit recovery of this run is active or unknown (#480):
         // never start another paid attempt beside it.
@@ -189,7 +215,7 @@ export function articleTrigger(deps: {
         if (!deps.attempts || !token) return { status: 409 };
         let recorded;
         try {
-          recorded = recordArticleAttempt(deps.attempts, liveEditorialInput(input), token);
+          recorded = recordNormalArticleAttempt(deps.attempts, input, token);
         } catch {
           return { status: 409 };
         }
@@ -204,7 +230,7 @@ export function articleTrigger(deps: {
           // bound to this token first when attempts are recorded.
           if (deps.attempts) {
             if (!token) return { status: 409 };
-            const recorded = recordArticleAttempt(deps.attempts, liveEditorialInput(input), token);
+            const recorded = recordNormalArticleAttempt(deps.attempts, input, token);
             if (!bindRun(deps.attempts, token, recorded.identity.workflowKey)) return done;
             await deps.submitter.submit(recorded.input, recorded.identity.workflowKey);
           } else {
@@ -214,7 +240,7 @@ export function articleTrigger(deps: {
           // A recorded attempt whose submission never reached the engine:
           // submit that same attempt again (its recorded input must match).
           try {
-            const again = recordArticleAttempt(deps.attempts, input, latest.requestId);
+            const again = recordNormalArticleAttempt(deps.attempts, input, latest.requestId);
             await deps.submitter.submit(again.input, again.identity.workflowKey);
           } catch {
             return { status: 409 };

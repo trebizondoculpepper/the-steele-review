@@ -12,8 +12,6 @@ it("rejects malformed recovery flags and job selections before state writes or n
   await writeFile(file, JSON.stringify(["not-a-research-id"]));
   try {
     const cases = [
-      ["--request-id", "request", "--editorial-revisions", "1"],
-      ["--request-id", "request", "--editorial-deadline-ms", "120000"],
       ["--recovery-generation", "0", "--request-id", "request"],
       ["--recovery-generation", "101", "--request-id", "request"],
       ["--recovery-generation", "invalid", "--request-id", "request"],

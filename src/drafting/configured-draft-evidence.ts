@@ -91,6 +91,7 @@ export async function readConfiguredDraftEvidence(input: {
   requireEvidence(
     sameArtifact(sourceContext.source.archive, pkg.source.artifact) &&
       sourceContext.source.sourceVersion === run.sourceVersion &&
+      sourceContext.source.id === run.publicationId &&
       sourceContext.source.postId === run.postId &&
       sourceContext.source.url === run.sourceUrl,
   );
@@ -176,6 +177,12 @@ export async function readConfiguredDraftEvidence(input: {
     requireEvidence(
       previousFindings.state === priorAssessment.state &&
         previousFindings.findings === priorAssessment.findings,
+    );
+    requireEvidence(
+      priorJudgment.gates.every((gate) => gate === "deterministic-fault-blocks-approval") &&
+        (!priorJudgment.gates.length ||
+          (priorJudgment.decision === "revise" &&
+            priorAssessment.deterministicFindings.length > 0)),
     );
     const previousGuidance = parseJudgmentDocument(
       await input.content.read(artifactRef(priorJudgment.document!)),

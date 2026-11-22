@@ -52,3 +52,30 @@ export function liveEditorialInput(input: ArticleRunInput): ArticleRunInput {
   const { editorial: _historicalPolicy, ...rest } = input;
   return ArticleRunInputSchema.parse({ ...rest, editorialExecution: "live-policy-v1" });
 }
+
+export class NormalArticleAttemptError extends Error {
+  constructor(readonly code: "input-mismatch" | "live-overrides") {
+    super(`normal article attempt: ${code}`);
+  }
+}
+/** An existing request keeps whichever versioned contract its recorded hash actually names. */
+export function recordNormalArticleAttempt(
+  operations: Pick<OperationStore, "recordArticleAttempt" | "articleAttempt">,
+  input: ArticleRunInput,
+  requestId: string,
+  options: { legacyOverrides?: boolean } = {},
+) {
+  const existing = operations.articleAttempt(input.publicationId, input.postId, requestId);
+  if (existing) {
+    const candidates = [input, liveEditorialInput(input)].map((candidate) =>
+      ArticleRunInputSchema.parse({ ...candidate, operatorRequestId: requestId }),
+    );
+    const selected = candidates.find(
+      (candidate) => articleAttemptHash(candidate) === existing.inputHash,
+    );
+    if (!selected) throw new NormalArticleAttemptError("input-mismatch");
+    return recordArticleAttempt(operations, selected, requestId);
+  }
+  if (options.legacyOverrides) throw new NormalArticleAttemptError("live-overrides");
+  return recordArticleAttempt(operations, liveEditorialInput(input), requestId);
+}
