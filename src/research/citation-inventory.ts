@@ -278,6 +278,9 @@ export interface RetrievalLimits {
   maxAttempts: number;
   timeoutMs: number;
   maxSourceChars: number;
+  /** First retry delay; doubles per attempt with jitter, capped (defaults 1 s, 30 s). */
+  backoffMs?: number;
+  maxBackoffMs?: number;
 }
 
 export interface RetrievalSummary {
@@ -313,7 +316,20 @@ export async function retrieveCitations(input: {
   inventory: ArtifactRef;
   fetcher: PageFetcher;
   limits: RetrievalLimits;
+  /** Injectable for tests; real delays between retryable attempts otherwise. */
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
 }): Promise<RetrievalSummary> {
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const random = input.random ?? Math.random;
+  // Capped exponential backoff with jitter between retryable attempts
+  // (doc/architecture/12-failure-handling.md): never an immediate retry.
+  const backoff = (attempt: number) => {
+    const base = input.limits.backoffMs ?? 1_000;
+    const cap = input.limits.maxBackoffMs ?? 30_000;
+    const exp = Math.min(cap, base * 2 ** (attempt - 1));
+    return Math.round(exp / 2 + random() * (exp / 2));
+  };
   const inventory = CitationInventorySchema.parse(
     JSON.parse(await input.artifacts.read(input.inventory)),
   );
@@ -387,6 +403,7 @@ export async function retrieveCitations(input: {
       last = out.error;
       if (last.code === "credit-exhausted") throw last; // not a verdict on the source
       if (!last.retryable) break;
+      if (attempts < input.limits.maxAttempts) await sleep(backoff(attempts));
     }
     // Storage happens outside the fetch: its failures propagate, never retried as fetches.
     if (page) {

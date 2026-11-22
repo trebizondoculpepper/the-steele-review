@@ -403,3 +403,32 @@ describe("citation inventory robustness (#591)", { timeout: 60_000 }, () => {
     ).toBeUndefined();
   });
 });
+
+describe("retry backoff (#591)", { timeout: 60_000 }, () => {
+  it("waits with capped exponential backoff between transient attempts, never immediately", async () => {
+    const discovery = await discoveryRef();
+    const { ref } = await saveCitationInventory({
+      artifacts,
+      discovery,
+      readDiscovery: async () => data(),
+    });
+    const slept: number[] = [];
+    await retrieveCitations({
+      artifacts,
+      inventory: ref,
+      fetcher: fetcher({
+        "https://ok.example/a": [
+          new WebAdapterError("rate-limited", 429),
+          new WebAdapterError("unavailable", 503),
+          new WebAdapterError("unavailable", 503),
+        ],
+      }),
+      limits: { ...limits, maxSources: 1, maxAttempts: 4, backoffMs: 100, maxBackoffMs: 300 },
+      sleep: async (ms) => void slept.push(ms),
+      random: () => 1,
+    });
+    // One delay between each pair of attempts, doubling and capped.
+    expect(slept).toEqual([100, 200, 300]);
+    expect(slept.every((ms) => ms > 0)).toBe(true);
+  });
+});
