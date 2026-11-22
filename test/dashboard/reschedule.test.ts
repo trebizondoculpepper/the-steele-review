@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { restateRuns } from "../../src/dashboard/adapters.js";
 import { articleTrigger } from "../../src/dashboard/trigger.js";
+import { recoveryWorkflowKey } from "../../src/dashboard/recovery.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { articleRunKey, type ArticleRunInput } from "../../src/workflow/article-run.js";
 
@@ -174,5 +175,53 @@ describe("rescheduling a failed article (#749)", () => {
     form.set("request", "../forged");
     expect(await trigger.submit(form)).toEqual({ status: 409 });
     expect(submitted).toHaveLength(0);
+  });
+
+  it("never lets one confirmation start a second run after its first one finished", async () => {
+    const { trigger, submitted } = setup();
+    const form = await confirmForm(trigger);
+    // A never-run revision starts under its stable key...
+    expect(await trigger.submit(form)).toMatchObject({ status: 303 });
+    expect(submitted.map((s) => s.key)).toEqual([articleRunKey(post)]);
+    // ...and finishes. Reposting the same form must not start an attempt.
+    engine.set(articleRunKey(post), {
+      state: "finished",
+      result: { outcome: "failed", research: [] },
+    });
+    expect(await trigger.submit(form)).toMatchObject({ status: 303 });
+    expect(submitted).toHaveLength(1);
+    // A fresh confirmation does start one.
+    expect(await trigger.submit(await confirmForm(trigger))).toMatchObject({ status: 303 });
+    expect(submitted).toHaveLength(2);
+  });
+
+  it("does not start an attempt beside an active or unknown recovery", async () => {
+    const { trigger, submitted } = setup();
+    engine.set(articleRunKey(post), {
+      state: "finished",
+      result: { outcome: "failed", reason: "research: credit-exhausted", research: [] },
+    });
+    engine.set(recoveryWorkflowKey(articleRunKey(post)), { state: "running" });
+    expect(await trigger.submit(await confirmForm(trigger))).toMatchObject({ status: 303 });
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("reports status as unavailable when attempts cannot be read", async () => {
+    engine.set(articleRunKey(post), {
+      state: "finished",
+      result: { outcome: "failed", research: [] },
+    });
+    const runs = restateRuns(
+      "http://ingress.invalid",
+      1_000,
+      {
+        articleAttempts: () => {
+          throw new Error("store unavailable");
+        },
+      },
+      fakeConnect,
+    );
+    // The stable run's old failure is not presented as current.
+    expect(await runs.status(post)).toEqual({ state: "unavailable" });
   });
 });

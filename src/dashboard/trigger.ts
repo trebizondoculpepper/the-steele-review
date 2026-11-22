@@ -8,7 +8,11 @@ import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { ArticleRunInputSchema, type ArticleRunInput } from "../workflow/article-run.js";
+import {
+  ArticleRunInputSchema,
+  articleRunKey,
+  type ArticleRunInput,
+} from "../workflow/article-run.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import { randomUUID } from "node:crypto";
 import type { OperationStore } from "../controllers/operation-store.js";
@@ -17,6 +21,35 @@ import type { RunStatusPort } from "./articles.js";
 
 /** A one-time submission token carried by the confirm form (#749). */
 const REQUEST = /^console-[0-9a-f-]{36}$/;
+const requestKey = (token: string) => `console-run-request:${token}`;
+
+/** The run a confirm token already started, if any (#749). */
+function boundRun(ops: Pick<OperationStore, "operationStatus">, token: string): string | undefined {
+  const status = ops.operationStatus(requestKey(token));
+  if (status?.status !== "completed") return undefined;
+  const key = (status.artifact as { workflowKey?: unknown } | undefined)?.workflowKey;
+  return typeof key === "string" ? key : undefined;
+}
+
+/**
+ * Bind a confirm token to the run it starts, before submitting, so one
+ * confirmation can never start two runs. False when another submission of
+ * the same token holds or already completed the binding.
+ */
+function bindRun(
+  ops: Pick<OperationStore, "claim" | "complete">,
+  token: string,
+  workflowKey: string,
+): boolean {
+  const claim = ops.claim(requestKey(token), "dashboard-run", 60_000, 3);
+  if (claim.kind !== "claimed") return false;
+  try {
+    ops.complete(claim.claim, { workflowKey }, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const Selection = z
   .object({
@@ -87,7 +120,10 @@ export function articleTrigger(deps: {
    * Without them a finished revision is never rerun from the console.
    */
   runs?: RunStatusPort;
-  attempts?: Pick<OperationStore, "recordArticleAttempt">;
+  attempts?: Pick<
+    OperationStore,
+    "recordArticleAttempt" | "claim" | "complete" | "operationStatus"
+  >;
 }) {
   const prepare = (selection: unknown) => prepareArticleInput(deps, selection);
   const view: DashboardView = {
@@ -131,6 +167,10 @@ export function articleTrigger(deps: {
         await deps.submitter.submit(input);
         return done;
       }
+      const token = typeof request === "string" && REQUEST.test(request) ? request : undefined;
+      // A token that already started a run only attaches to it, whatever
+      // state that run has reached since: one confirmation, one run.
+      if (token && deps.attempts && boundRun(deps.attempts, token)) return done;
       let state;
       try {
         state = await deps.runs.status(input);
@@ -140,25 +180,36 @@ export function articleTrigger(deps: {
       // Unknown state: never guess, so a running or finished run is not
       // duplicated and a stale failure is not reported as current.
       if (state.state === "unavailable") return { status: 503 };
+      if (state.state === "finished" && state.recovery) {
+        // An explicit recovery of this run is active or unknown (#480):
+        // never start another paid attempt beside it.
+        if (state.recovery.state === "unavailable") return { status: 503 };
+        if (state.recovery.state !== "finished") return done;
+      }
       if (state.state === "finished") {
         // A finished run cannot be restarted under its own key: record an
         // explicit new attempt and submit under its identity (#749). The
         // earlier result stays readable as history.
-        if (!deps.attempts || typeof request !== "string" || !REQUEST.test(request))
-          return { status: 409 };
+        if (!deps.attempts || !token) return { status: 409 };
         let recorded;
         try {
-          recorded = recordArticleAttempt(deps.attempts, input, request);
+          recorded = recordArticleAttempt(deps.attempts, input, token);
         } catch {
           return { status: 409 };
         }
+        if (!bindRun(deps.attempts, token, recorded.identity.workflowKey)) return done;
         await deps.submitter.submit(recorded.input, recorded.identity.workflowKey);
         return done;
       }
       if (state.state === "not-started") {
         const latest = state.workflowKey ? state.attempts?.[0] : undefined;
         if (!latest) {
-          // Never run: the stable identity shared with the CLI and ingress.
+          // Never run: the stable identity shared with the CLI and ingress,
+          // bound to this token first when attempts are recorded.
+          if (deps.attempts) {
+            if (!token) return { status: 409 };
+            if (!bindRun(deps.attempts, token, articleRunKey(input))) return done;
+          }
           await deps.submitter.submit(input);
         } else if (deps.attempts) {
           // A recorded attempt whose submission never reached the engine:
