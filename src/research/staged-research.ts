@@ -5,6 +5,7 @@ import { isCreditExhausted } from "../observability/provider-condition.js";
 import { acceptedAssemblyReader, assembleResearch } from "./assemble-research.js";
 import {
   acceptedDiscoveryReader,
+  CitationInventorySchema,
   retrieveCitations,
   saveCitationInventory,
   type RetrievalLimits,
@@ -164,6 +165,43 @@ export async function retrieveStage(
   }
 }
 
+/** The fetch keys of an inventory, deduplicated, in inventory order. */
+export async function retrievalIds(
+  deps: Pick<StagedResearchDeps, "artifacts">,
+  inventory: StageRef,
+): Promise<string[]> {
+  const parsed = CitationInventorySchema.parse(JSON.parse(await deps.artifacts.read(inventory)));
+  const ids: string[] = [];
+  for (const e of parsed.entries)
+    if (e.retrievalId && !ids.includes(e.retrievalId)) ids.push(e.retrievalId);
+  return ids;
+}
+
+/** Stage 3, per URL: retrieve one fetch key as its own durable step. */
+export async function retrieveOneStage(
+  deps: StagedResearchDeps,
+  inventory: StageRef,
+  retrievalId: string,
+): Promise<{ retryable: boolean; creditExhausted?: true }> {
+  try {
+    const out = await retrieveCitations({
+      artifacts: deps.artifacts,
+      inventory,
+      fetcher: deps.fetcher,
+      limits: deps.limits,
+      only: new Set([retrievalId]),
+    });
+    return { retryable: out.retryable.length > 0 };
+  } catch (error) {
+    if (
+      isCreditExhausted(error) ||
+      (error instanceof WebAdapterError && error.code === "credit-exhausted")
+    )
+      return { retryable: false, creditExhausted: true };
+    throw error;
+  }
+}
+
 /** Stage 4: assemble and record completion; the job the librarian pins. */
 export async function assembleStage(
   deps: StagedResearchDeps,
@@ -226,7 +264,18 @@ export async function finishFailedStage(
   request: ResearchRequest,
   failure: NonNullable<ResearchResult["failure"]>,
 ): Promise<CommissionedJob> {
-  if (failure === "budget-exceeded") return failedJob(request, failure, deps.now);
+  if (failure === "budget-exceeded") {
+    // Not final, but inspectable: a write-once record of this stopped attempt,
+    // beside (never in place of) the job's terminal result.
+    const job = failedJob(request, failure, deps.now);
+    const at = job.result!.finishedAt;
+    await writeOnce(
+      deps.artifacts,
+      `research-jobs/${job.jobId}/attempts/${at.replace(/[:.]/g, "-")}.json`,
+      { schemaVersion: 1, jobId: job.jobId, stopped: "budget-exceeded", at, final: false },
+    );
+    return job;
+  }
   const jobId = researchJobId(request);
   const out = await finishResearchJob({
     artifacts: deps.artifacts,

@@ -7,6 +7,8 @@ import {
   inventoryStage,
   MAX_RETRIEVAL_ROUNDS,
   retrieveStage,
+  retrievalIds,
+  retrieveOneStage,
   type StagedResearchDeps,
   type StageRef,
 } from "../research/staged-research.js";
@@ -252,6 +254,8 @@ export function articleStages(deps: {
               discover: (request: ResearchRequest) => discoverStage(staged, request),
               inventory: (d: StageRef) => inventoryStage(staged, d),
               retrieve: (i: StageRef) => retrieveStage(staged, i),
+              ids: (i: StageRef) => retrievalIds(staged, i),
+              retrieveOne: (i: StageRef, id: string) => retrieveOneStage(staged, i, id),
               assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
               failed: (request: ResearchRequest, failure: string) =>
                 finishFailedStage(staged, request, failure as Parameters<typeof failedJob>[1]),
