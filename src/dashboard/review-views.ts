@@ -21,8 +21,7 @@ const tone = (outcome: string) =>
       ? "failed"
       : "pending";
 
-const badge = (outcome: string) =>
-  `<span class="s-${tone(outcome)}">${escapeHtml(outcome)}</span>`;
+const badge = (outcome: string) => `<span class="s-${tone(outcome)}">${escapeHtml(outcome)}</span>`;
 
 export function reviewViews(reviews: ReviewHistoryPort): DashboardView[] {
   const view: DashboardView = {
@@ -36,9 +35,14 @@ export function reviewViews(reviews: ReviewHistoryPort): DashboardView[] {
         return '<p class="empty">Choose an article or draft to see its review history.</p>';
       }
       const page = Number.parseInt(url.searchParams.get("page") ?? "0", 10);
+      const after = url.searchParams.get("after") ?? undefined;
       let history;
       try {
-        history = await reviews.forPost({ publicationId, postId }, Number.isFinite(page) ? page : 0);
+        history = await reviews.forPost(
+          { publicationId, postId },
+          Number.isFinite(page) ? page : 0,
+          after,
+        );
       } catch {
         return '<p class="empty">Review history is unavailable.</p>';
       }
@@ -61,11 +65,22 @@ export function reviewViews(reviews: ReviewHistoryPort): DashboardView[] {
             )
             .join("")}</tbody></table></div>`
         : "";
-      const pager =
+      const base = `${REVIEW_PATH}?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}`;
+      const keepWindow = after ? `&after=${encodeURIComponent(after)}` : "";
+      const pager = [
         history.next === undefined
           ? ""
-          : `<p><a href="${REVIEW_PATH}?publication=${encodeURIComponent(publicationId)}&post=${encodeURIComponent(postId)}&page=${history.next}">Older passes</a></p>`;
-      return `${back}<h1>Review history</h1><p>${escapeHtml(publicationId)}/${escapeHtml(postId)}</p>${stateNote}${passRows}${editorial}${pager}`;
+          : `<a href="${escapeHtml(`${base}${keepWindow}&page=${history.next}`)}">Older passes in this set</a>`,
+        history.nextWindow
+          ? `<a href="${escapeHtml(`${base}&after=${encodeURIComponent(history.nextWindow)}`)}">Next set of saved reports</a>`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const pagerHtml = pager
+        ? `<p>${pager}</p><p class="empty">Reports are read in bounded sets in storage order; each set is shown newest first.</p>`
+        : "";
+      return `${back}<h1>Review history</h1><p>${escapeHtml(publicationId)}/${escapeHtml(postId)}</p>${stateNote}${passRows}${editorial}${pagerHtml}`;
     },
   };
   return [view];

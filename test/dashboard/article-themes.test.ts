@@ -50,7 +50,9 @@ describe("article theme links (#496)", { timeout: 60_000 }, () => {
     });
     const html = renderTrace(trace);
     expect(html).toContain("Themes");
-    expect(html).toContain(`/themes/view?result=${encodeURIComponent(row.result)}&amp;id=${encodeURIComponent(row.id)}`);
+    expect(html).toContain(
+      `/themes/view?result=${encodeURIComponent(row.result)}&amp;id=${encodeURIComponent(row.id)}`,
+    );
     expect(html).toContain("Weather warfare");
     expect(html).toContain("extractor proposal, not canonical");
   });
@@ -69,7 +71,10 @@ describe("article theme links (#496)", { timeout: 60_000 }, () => {
     const themes = savedThemes(content);
     const row = (await themes.list({})).rows.find((r) => r.postId === "p1")!;
     // A post that was never analysed at this revision.
-    const missing = await themes.forPost({ publicationId: "pub", postId: "never" }, row.sourceVersion);
+    const missing = await themes.forPost(
+      { publicationId: "pub", postId: "never" },
+      row.sourceVersion,
+    );
     expect(missing).toEqual({ state: "not-analysed", themes: [] });
 
     const trace = await traceArticle({
@@ -81,6 +86,8 @@ describe("article theme links (#496)", { timeout: 60_000 }, () => {
       themes,
     });
     expect(renderTrace(trace)).toContain("Weather warfare");
+    // The trace links its verifier history (#499).
+    expect(renderTrace(trace)).toContain(">Verifier history</a>");
   });
 
   it("escapes hostile proposal text", async () => {

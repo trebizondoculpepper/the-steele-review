@@ -189,9 +189,7 @@ describe("review history (#499)", { timeout: 60_000 }, () => {
   it("escapes feedback and links the article and drafts", async () => {
     await writeReport("pass-1", report({}));
     const [view] = reviewViews(savedReviews(content));
-    const html = await view!.render(
-      new URL("http://x/reviews?publication=pub&post=p1"),
-    );
+    const html = await view!.render(new URL("http://x/reviews?publication=pub&post=p1"));
     expect(html).toContain("Review history");
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>");
@@ -261,16 +259,17 @@ describe("review history edge cases (#499)", { timeout: 60_000 }, () => {
   });
 
   it("orders a terminal wrapper by its referenced report's time", async () => {
-    await writeReport("a-report", report({ verifiedAt: "2026-01-03T00:00:00Z" }));
+    const pinned = await writeReport("a-report", report({ verifiedAt: "2026-01-03T00:00:00Z" }));
     await writeReport("z-report", report({ verifiedAt: "2026-01-01T00:00:00Z" }));
+    // The wrapper names the exact pinned report: commit, path and hash.
     await writeReport("m.unresolved", {
       outcome: "unresolved",
       revisions: 2,
       report: {
-        repository: "content",
-        commit: "a".repeat(40),
-        path: "verifications/pub/p1/a-report.json",
-        hash: `sha256:${"8".repeat(64)}`,
+        repository: pinned.repository,
+        commit: pinned.commit,
+        path: pinned.path,
+        hash: `sha256:${pinned.sha256}`,
       },
       issues: [],
     });
@@ -348,6 +347,48 @@ describe("review history legacy and unknown scope (#499)", { timeout: 60_000 }, 
     );
     const history = await savedReviews(content).forPost(post);
     expect(history.reviews[0]).toMatchObject({ kind: "review", scope: "unknown" });
+    expect(history.state).toBe("partial");
+  });
+});
+
+describe("review history reachability and exactness (#499 audit)", { timeout: 120_000 }, () => {
+  it("reaches a report beyond the first scan window by following the next-set cursor", async () => {
+    for (let i = 0; i < 205; i++) {
+      await writeReport(
+        `h-${String(i).padStart(3, "0")}`,
+        report({
+          verifiedAt: `2026-01-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`,
+        }),
+      );
+    }
+    const reviews = savedReviews(content);
+    const first = await reviews.forPost(post);
+    expect(first.nextWindow).toBeDefined();
+    const second = await reviews.forPost(post, 0, first.nextWindow);
+    const seen = second.reviews.map((r) => r.path.split("/").pop());
+    expect(seen).toContain("h-204.json");
+    expect(second.nextWindow).toBeUndefined();
+    // The page offers the next set.
+    const [view] = reviewViews(reviews);
+    const html = await view!.render(new URL("http://x/reviews?publication=pub&post=p1"));
+    expect(html).toContain("Next set of saved reports");
+  });
+
+  it("marks the history partial when the first editorial listing fails", async () => {
+    await writeReport("pass-1", report({}));
+    const failing = new Proxy(content, {
+      get(target, prop, receiver) {
+        if (prop === "list") {
+          return async (prefix: string, limit: number, after?: string) => {
+            if (prefix.startsWith("editorial-decisions/")) throw new Error("storage down");
+            return target.list(prefix, limit, after);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const history = await savedReviews(failing).forPost(post);
+    expect(history.reviews).toHaveLength(1);
     expect(history.state).toBe("partial");
   });
 });
