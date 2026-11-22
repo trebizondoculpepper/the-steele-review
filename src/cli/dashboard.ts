@@ -65,6 +65,7 @@ import { dossierViews } from "../dashboard/dossier-views.js";
 import { savedEquivalence } from "../dashboard/equivalence.js";
 import { equivalenceViews } from "../dashboard/equivalence-views.js";
 import { mappingViews } from "../dashboard/mapping-views.js";
+import { articlesBrowseViews } from "../dashboard/articles-browse-views.js";
 import { themesBrowseViews } from "../dashboard/themes-browse-views.js";
 import { savedAssessments } from "../dashboard/assessments.js";
 import { assessmentViews } from "../dashboard/assessment-views.js";
@@ -311,6 +312,11 @@ const views = [
   ...(content ? dossierViews(savedThemes(content), savedResearch(content)) : []),
   ...(content ? equivalenceViews(savedEquivalence(content)) : []),
   ...mappingViews(content),
+  // Search respects saved delete/restore markers (#478); reading them needs no write access.
+  ...articlesBrowseViews(
+    content ? draftInventory(content, undefined, new DraftTrashStore(content)) : undefined,
+    content,
+  ),
   ...themesBrowseViews(content ? savedThemes(content) : undefined, content),
   ...(content ? assessmentViews(savedAssessments(content)) : []),
   ...(content ? judgmentViews(savedJudgments(content)) : []),
