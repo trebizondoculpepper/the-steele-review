@@ -8,6 +8,7 @@ import { themeViews } from "../../src/dashboard/theme-views.js";
 import { DossierStore, type Dossier } from "../../src/research/dossier.js";
 import { ThemeStore } from "../../src/research/theme-store.js";
 import { ThemeMappingCatalogue } from "../../src/research/theme-mappings.js";
+import { savedResearch } from "../../src/dashboard/research.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -21,6 +22,7 @@ afterEach(async () => {
 });
 
 const decideBy = { publicationId: "pub", postId: "p1" };
+const savedResearchPort = () => savedResearch(content);
 
 async function theme(id: string, title: string, description?: string, createdAt = "2026-01-01T00:00:00Z") {
   const store = new ThemeStore(content);
@@ -66,8 +68,11 @@ async function dossier(themeId: string, mode: "researched" | "partial" | "gap" =
   await new DossierStore(content).save(body, undefined);
 }
 
-const render = async (path: string) => {
-  const views = themeViews(savedThemes(content));
+const render = async (path: string, research?: boolean) => {
+  const views = themeViews(
+    savedThemes(content),
+    research === false ? undefined : savedResearchPort(),
+  );
   const route = path.split("?")[0]!;
   const view = views.find((v) => v.path === route)!;
   return view.render(new URL(`http://x${path}`));
@@ -383,5 +388,105 @@ describe("canonical supersession fidelity (#517)", { timeout: 60_000 }, () => {
     expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Tied wording"]);
     const other = expected === "b" ? "c" : "b";
     expect((await savedThemes(content).canonicalDetail(other))?.proposals ?? []).toEqual([]);
+  });
+});
+
+describe("theme research documents (#516)", { timeout: 60_000 }, () => {
+  const job = (hex: string, themeIds: string[], report?: string) => ({
+    requestPath: `research-jobs/research-${hex}/request.json`,
+    reportPath: `research-jobs/research-${hex}/report.md`,
+    themeIds,
+    report,
+  });
+
+  async function writeJob(
+    j: ReturnType<typeof job>,
+  ) {
+    await content.write(
+      j.requestPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        origin: "manual",
+        subject: "Synthetic subject",
+        question: "Does this theme hold up?",
+        pass: 1,
+        claims: j.themeIds.map((id, i) => ({
+          claimRecordId: `claim-${i}`,
+          statement: "Synthetic claim",
+          themeIds: [id],
+        })),
+        corpusRefs: [],
+      }),
+    );
+    if (j.report !== undefined) await content.write(j.reportPath, j.report);
+  }
+
+  it("lists the dossier and every associated saved report with exact versions", async () => {
+    await theme("masts", "Phone masts");
+    await dossier("masts");
+    await writeJob(job("a".repeat(32), ["masts"], "# Report one\n\nSummary of one."));
+    await writeJob(job("b".repeat(32), ["other"], "# Unrelated\n\nNot this theme."));
+    await writeJob(job("c".repeat(32), ["masts"], "# Report two\n\nSummary of two."));
+
+    const html = await render("/themes/canonical/view?id=masts");
+    expect(html).toContain("Dossier masts");
+    expect(html).toContain("Report one");
+    expect(html).toContain("Report two");
+    expect(html).not.toContain("Unrelated");
+    // Each document opens the exact pinned revision through the #507 reader.
+    const report = await content.lookup(`research-jobs/research-${"c".repeat(32)}/report.md`);
+    expect(html).toContain(encodeURIComponent(`research-jobs/research-${"c".repeat(32)}/report.md`));
+    expect(html).toContain(`at=${report!.commit}`);
+    expect(html).toContain("no date recorded");
+    expect(html).toContain("Only saved librarian/theme/dossier associations are listed");
+    expect(html).toContain("Does this theme hold up?");
+  });
+
+  it("distinguishes no linked documents from unavailable research", async () => {
+    await theme("lonely", "Lonely theme");
+    const none = await render("/themes/canonical/view?id=lonely");
+    expect(none).toContain("No saved research documents are linked to this theme yet");
+    expect(none).toContain("/research");
+
+    const unavailable = await render("/themes/canonical/view?id=lonely", false);
+    expect(unavailable).toContain("Saved research documents are unavailable");
+    expect(unavailable).not.toContain("No saved research documents");
+  });
+
+  it("paginates a long document list and escapes untrusted report text", async () => {
+    await theme("masts", "Phone masts");
+    await dossier("masts");
+    for (let i = 0; i < 22; i++) {
+      await writeJob(
+        job(
+          String(i).padStart(2, "0").repeat(16),
+          ["masts"],
+          `# <script>Report ${i}</script>\n\nBody ${i}`,
+        ),
+      );
+    }
+    const first = await render("/themes/canonical/view?id=masts");
+    expect(first).toContain("More documents");
+    expect(first).toContain("&lt;script&gt;Report");
+    expect(first).not.toContain("<script>Report");
+    const next = /after=([^"&]+)/.exec(first)?.[1];
+    expect(next).toBeDefined();
+    const second = await render(`/themes/canonical/view?id=masts&after=${next}`);
+    expect(second).toContain("Report 21");
+    expect(second).not.toContain("More documents");
+    // The dossier is listed once, not repeated on continuation pages.
+    expect(first).toContain("Dossier masts");
+    expect(second).not.toContain("Dossier masts");
+  });
+
+  it("pins the document version rather than substituting current text", async () => {
+    await theme("masts", "Phone masts");
+    await writeJob(job("d".repeat(32), ["masts"], "# Old title\n\nOld body."));
+    // A later revision of the same report path does not change the listed ref
+    // in an already-rendered page; the link carries the exact commit.
+    const listing = await savedResearchPort().forTheme("masts");
+    const doc = listing.docs.find((d) => d.path.endsWith("report.md"))!;
+    expect(doc.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(doc.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 });

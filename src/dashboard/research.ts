@@ -106,13 +106,41 @@ export interface ResearchListing {
   unreadable: number;
 }
 
+/** One saved research document associated with a canonical theme (#516). */
+export interface ThemeResearchDoc {
+  path: string;
+  commit: string;
+  hash: string;
+  kind: ResearchKind;
+  title: string;
+  summary?: string;
+  date?: string;
+  jobId?: string;
+}
+
+export interface ThemeResearchListing {
+  state: "ok" | "none" | "partial" | "unavailable";
+  docs: ThemeResearchDoc[];
+  next?: string;
+  truncated: boolean;
+}
+
 export interface ResearchPort {
   list(filter: ResearchFilter & { after?: string }): Promise<ResearchListing>;
   /** A document at an exact commit; undefined when missing or unreadable. */
   detail(path: string, commit: string): Promise<ResearchDocument | undefined>;
+  /**
+   * Documents explicitly associated with a canonical theme: its dossier and
+   * research jobs whose saved request names the theme. Never matched by title.
+   */
+  forTheme(themeId: string, after?: string): Promise<ThemeResearchListing>;
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read" | "lookupAt">;
+
+const JOB_LIST_PAGE = 50;
+const THEME_JOB_SCAN = 200;
+const THEME_DOC_PAGE = 20;
 
 const heading = (text: string) => /^#\s+(.+)$/m.exec(text)?.[1]?.trim();
 const json = (raw: string): unknown => {
@@ -300,7 +328,106 @@ export function savedResearch(content: Store): ResearchPort {
     );
   };
 
+  const readAtHead = async (path: string) => {
+    const ref = await content.lookup(path);
+    return ref ? { ref, content: await content.read(ref) } : undefined;
+  };
+
   return {
+    async forTheme(themeId, after) {
+      const docs: ThemeResearchDoc[] = [];
+      let unreadable = 0;
+      // A continuation cursor starts after this page's last job; the dossier is
+      // listed once, on the first page.
+      const dossier = after === undefined ? await readAtHead("dossier/" + themeId + ".md") : undefined;
+      if (dossier) {
+        const d = parseDossier(dossier.content);
+        docs.push({
+          path: "dossier/" + themeId + ".md",
+          commit: dossier.ref.commit,
+          hash: dossier.ref.sha256,
+          kind: "dossier",
+          title: d.metadata.title,
+          summary: d.metadata.scope,
+          date: d.metadata.updatedAt,
+        });
+      }
+      const jobs: string[] = [];
+      let cursor = after;
+      try {
+        for (let page = 0; page < 4; page++) {
+          const batch = await content.list("research-jobs", JOB_LIST_PAGE, cursor);
+          jobs.push(...batch);
+          if (batch.length < JOB_LIST_PAGE) break;
+          cursor = batch.at(-1);
+        }
+      } catch {
+        return { state: "unavailable", docs: [], truncated: false };
+      }
+      // Four full listing pages is the scan bound: more jobs exist unexamined.
+      const truncated = jobs.length >= THEME_JOB_SCAN;
+      let scanned = 0;
+      let next: string | undefined;
+      for (const path of jobs) {
+        if (next !== undefined) break;
+        if (!/^research-jobs\/research-[0-9a-f]{32}\/request\.json$/.test(path)) continue;
+        if (scanned >= THEME_JOB_SCAN) break;
+        if (docs.length >= THEME_DOC_PAGE) {
+          next = path;
+          break;
+        }
+        scanned++;
+        let request: { claims?: { themeIds?: string[] }[]; question?: string; subject?: string };
+        try {
+          const ref = await content.lookup(path);
+          if (!ref) continue;
+          request = JSON.parse(await content.read(ref));
+        } catch {
+          unreadable++;
+          continue;
+        }
+        const associated = (request.claims ?? []).some((c) => (c.themeIds ?? []).includes(themeId));
+        if (!associated) continue;
+        const jobId = /research-jobs\/(research-[0-9a-f]{32})\//.exec(path)?.[1];
+        if (!jobId) continue;
+        const reportPath = "research-jobs/" + jobId + "/report.md";
+        let report;
+        try {
+          report = await content.lookup(reportPath);
+        } catch {
+          unreadable++;
+          continue;
+        }
+        if (!report) continue;
+        let text = "";
+        try {
+          text = await content.read(report);
+        } catch {
+          unreadable++;
+          continue;
+        }
+        const summary = (request.question ?? request.subject ?? text).trim().slice(0, 500);
+        docs.push({
+          path: reportPath,
+          commit: report.commit,
+          hash: report.sha256,
+          kind: "generated-report",
+          title: /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? jobId,
+          ...(summary ? { summary } : {}),
+          jobId,
+        });
+      }
+      const state =
+        docs.length > 0
+          ? truncated || unreadable > 0
+            ? "partial"
+            : "ok"
+          : truncated || unreadable > 0
+            ? "partial"
+            : "none";
+      return { state, docs, ...(next !== undefined ? { next } : {}), truncated };
+    },
+
     async list(filter) {
       const keep = matches(filter);
       const rows: ResearchRow[] = [];
