@@ -1,3 +1,5 @@
+import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
+import { postAttribution, sourceMetadataFromEnv } from "../content/source-metadata.js";
 /**
  * Manual command (#143, revised by #181): propose themes for one captured post
  * and save the per-post proposal result in the private content repository.
@@ -82,7 +84,13 @@ async function main(argv: string[]): Promise<number> {
     }
     // Optional read-only context; never written by extraction.
     const known = await new ThemeCatalogueStore(content).load();
+    const attribution = postAttribution(sourceMetadataFromEnv(process.env), record.item);
+    const sourceContext = await saveSourceContext(
+      content,
+      sourceContextFor(record, ref, attribution),
+    );
     const outcome = await proposeThemes({
+      sourceContext,
       provider,
       artifacts: content,
       post,

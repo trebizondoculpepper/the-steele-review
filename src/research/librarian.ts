@@ -233,6 +233,7 @@ export const CoverageRecordSchema = z
     schemaVersion: z.literal(COVERAGE_SCHEMA_VERSION),
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     source: Ref,
+    sourceContext: Ref.optional(),
     themeResult: Ref,
     claimResult: Ref,
     mappings: z.array(
@@ -826,6 +827,9 @@ export async function assessPostCoverage(input: {
     publicationId: post.publicationId,
     postId: post.postId,
     sourceArtifact: themes.artifact,
+    ...((claimRecord.sourceContext ?? themes.sourceContext)
+      ? { sourceContext: claimRecord.sourceContext ?? themes.sourceContext }
+      : {}),
     themeResult: toRef(input.themeResult),
     claimResult: toRef(input.claimResult),
   };
@@ -989,6 +993,9 @@ export async function assessPostCoverage(input: {
     schemaVersion: COVERAGE_SCHEMA_VERSION,
     post,
     source: themes.artifact,
+    ...((claimRecord.sourceContext ?? themes.sourceContext)
+      ? { sourceContext: claimRecord.sourceContext ?? themes.sourceContext }
+      : {}),
     themeResult: toRef(input.themeResult),
     claimResult: toRef(input.claimResult),
     mappings,

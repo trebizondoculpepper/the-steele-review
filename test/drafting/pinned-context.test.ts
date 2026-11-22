@@ -1,3 +1,4 @@
+import { saveSourceContext } from "../../src/content/source-context.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -363,5 +364,26 @@ describe("pinned source and theme context", () => {
     });
     if (b.kind !== "loaded") throw new Error();
     expect(b.context.contextRef).not.toBe(a.contextRef);
+  });
+  it("rejects a context bound to another source identity despite matching archive bytes", async () => {
+    const context = await loaded();
+    for (const change of [
+      { id: "other" },
+      { postId: "other" },
+      { url: "https://other.example/p/p" },
+    ]) {
+      const snapshot = await saveSourceContext(content, {
+        ...context.source.provenance,
+        source: { ...context.source.provenance.source, ...change },
+      });
+      const out = await loadPinnedContext({
+        archive,
+        content,
+        brief: briefFor(sourceRef),
+        themes: themesRef,
+        sourceContext: snapshot,
+      });
+      expect(out.kind).toBe("source-context-mismatch");
+    }
   });
 });

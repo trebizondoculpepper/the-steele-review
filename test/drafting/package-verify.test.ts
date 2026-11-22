@@ -141,6 +141,128 @@ async function drafted(writer = model("fake/writer", writerResponse())) {
 }
 
 describe("package draft verification (#150)", { timeout: 60_000 }, () => {
+  it.each([
+    ["written", "article-html", {}, "article-text"],
+    ["video", "supplied-transcript", { transcriptDocument: "Spoken source" }, "transcript"],
+    ["audio", "supplied-transcript", { transcriptDocument: "Spoken source" }, "transcript"],
+    ["image", "article-html", { articleHtml: "<p>Caption</p>" }, "article-text"],
+    [
+      "mixed",
+      "supplied-transcript+article-html",
+      { transcriptDocument: "Spoken source", articleHtml: "<p>Intro</p>" },
+      "article-and-transcript",
+    ],
+    ["unknown", "supplied-transcript", { transcriptDocument: "Legacy source" }, "transcript"],
+  ] as const)(
+    "pins %s provenance into actual writer, revision and verifier requests",
+    async (medium, method, supplied, representation) => {
+      const record = JSON.parse(await archive.read({} as never));
+      record.item.publishedAt = "2026-01-02T12:34:56+02:00";
+      record.supplied = supplied;
+      record.provenance.method = method;
+      if (medium !== "unknown") record.provenance.originalMedium = medium;
+      else record.provenance.postType = "podcast";
+      const captured = { read: async () => JSON.stringify(record) } as unknown as GitArtifactStore;
+      const analysis = await fx.analysis("p1", CLAIMS);
+      const coverage = await assessPostCoverage({
+        artifacts: content,
+        ...analysis,
+        commission: fx.researcher(() => ({
+          passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+        })).commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const pkg = await saveWriterPackage({
+        content,
+        archive: captured,
+        coverage: coverage.ref,
+        resolveAuthor: () => ({
+          status: "resolved",
+          author: "Configured Author",
+          basis: "source-configured",
+          sourceMetadataVersion: "synthetic-registry-v1",
+        }),
+      });
+      const users: Record<string, any>[] = [];
+      const writer = {
+        modelVersion: "fake/provenance-writer",
+        complete: async (r: { user: string }) => {
+          users.push(JSON.parse(r.user));
+          return writerResponse();
+        },
+      };
+      const initial = await draftFromPackage({
+        content,
+        archive: captured,
+        operations,
+        package: pkg.ref,
+        provider: writer,
+      });
+      if (initial.status !== "drafted") throw new Error(initial.status);
+      const metadata = JSON.parse(await content.read(initial.metadata));
+      const revision = await draftFromPackage({
+        content,
+        archive: captured,
+        operations,
+        package: pkg.ref,
+        provider: writer,
+        previousDraft: {
+          ref: initial.draft,
+          markdown: await content.read(initial.draft),
+          fields: metadata.fields,
+        },
+        revision: { number: 1, feedback: [{ passage: "test", reason: "make clearer" }] },
+      });
+      if (revision.status !== "drafted") throw new Error(revision.status);
+      let verification: any;
+      const verified = await verifyPackageDraft({
+        content,
+        archive: captured,
+        metadata: revision.metadata,
+        verifier: {
+          modelVersion: "fake/provenance-verifier",
+          complete: async (r: { user: string }) => {
+            verification = JSON.parse(r.user);
+            return APPROVE;
+          },
+        },
+      });
+      expect(verified.status).toBe("verified");
+      for (const actual of [
+        users[0].post.sourceContext,
+        users[1].post.sourceContext,
+        verification.sourceContext,
+      ]) {
+        expect(actual).toMatchObject({
+          originalMedium: medium,
+          representation,
+          source: {
+            type: "substack",
+            id: "pub",
+            postId: "p1",
+            url: "https://pub.example.com/p/p1",
+          },
+          author: {
+            status: "resolved",
+            author: "Configured Author",
+            basis: "source-configured",
+            sourceMetadataVersion: "synthetic-registry-v1",
+          },
+          publishedAt: {
+            kind: "timestamp",
+            original: "2026-01-02T12:34:56+02:00",
+            utc: "2026-01-02T10:34:56Z",
+          },
+          inspected: { video: false, audio: false, images: false },
+        });
+        expect(actual.capturedAt.original).not.toBe(actual.publishedAt.original);
+      }
+      expect(users[1].revision.previousFields).toEqual(metadata.fields);
+      expect(users[0].post.sourceContextRef).toEqual(users[1].post.sourceContextRef);
+      expect(verification.sourceContextRef).toEqual(users[0].post.sourceContextRef);
+    },
+  );
+
   it("binds draft, redraft and verification reuse to the exact prompt wording (#430)", async () => {
     const { pkg, metadata, draft } = await drafted();
     const base = { content, archive, package: pkg.ref, sourceUrl: "https://pub.example.com/p/p1" };

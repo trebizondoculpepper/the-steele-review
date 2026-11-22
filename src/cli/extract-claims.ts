@@ -1,3 +1,4 @@
+import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 /**
  * Manual command (#144): extract source-grounded claims for one post, link
  * them to the themes detected for it (#143), save the extraction and the
@@ -117,25 +118,6 @@ async function main(argv: string[]): Promise<number> {
       return 1;
     }
     const sourceVersion = sourceVersionFor(record.text);
-    // Claims link to the exact saved theme-proposal result (#181).
-    const themeRef = await content.lookup(
-      themeProposalPath(
-        post,
-        sourceVersion,
-        provider.modelVersion,
-        DEFAULT_THEME_PROPOSAL_PROMPT.version,
-      ),
-    );
-    if (!themeRef) {
-      report({ outcome: "themes-not-proposed" });
-      return 1;
-    }
-    const themeResult = parseThemeProposalResult(JSON.parse(await content.read(themeRef)));
-    const themes = themeResult.proposals.map((p) => ({
-      id: p.id,
-      name: p.title,
-      definition: p.description ?? p.title,
-    }));
     let sourceMetadata;
     try {
       sourceMetadata = sourceMetadataFromEnv(process.env);
@@ -152,7 +134,32 @@ async function main(argv: string[]): Promise<number> {
       publicationId: post.publicationId,
       ...(record.item.author ? { author: record.item.author } : {}),
     });
+    const sourceContext = await saveSourceContext(
+      content,
+      sourceContextFor(record, ref, attribution),
+    );
+    // Claims link to the exact saved theme-proposal result (#181).
+    const themeRef = await content.lookup(
+      themeProposalPath(
+        post,
+        sourceVersion,
+        provider.modelVersion,
+        DEFAULT_THEME_PROPOSAL_PROMPT.version,
+        sourceContext,
+      ),
+    );
+    if (!themeRef) {
+      report({ outcome: "themes-not-proposed" });
+      return 1;
+    }
+    const themeResult = parseThemeProposalResult(JSON.parse(await content.read(themeRef)));
+    const themes = themeResult.proposals.map((p) => ({
+      id: p.id,
+      name: p.title,
+      definition: p.description ?? p.title,
+    }));
     const outcome = await extractGroundedClaims({
+      sourceContext,
       provider,
       ...(attribution ? { attribution } : {}),
       artifacts: content,

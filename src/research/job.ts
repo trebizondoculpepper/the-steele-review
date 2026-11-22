@@ -50,6 +50,7 @@ export const ResearchRequestSchema = z
         publicationId: z.string().min(1),
         postId: z.string().min(1),
         sourceArtifact: Ref,
+        sourceContext: Ref.optional(),
         themeResult: Ref,
         claimResult: Ref,
       })

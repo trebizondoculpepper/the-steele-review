@@ -1,3 +1,4 @@
+import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
 import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
@@ -109,7 +110,12 @@ export function articleStages(deps: {
     if (record.item.publicationId !== post.publicationId || record.item.postId !== post.postId)
       throw new StageError("source", "capture-identity-mismatch");
     if (!record.complete) throw new StageError("source", "incomplete-capture");
-    return { ref, record, sourceVersion: sourceVersionFor(record.text) };
+    const attribution = postAttribution(deps.sourceMetadata, record.item);
+    const sourceContext = await saveSourceContext(
+      deps.content,
+      sourceContextFor(record, ref, attribution),
+    );
+    return { ref, record, sourceVersion: sourceVersionFor(record.text), sourceContext };
   };
 
   // Planning captures the librarian's requests without commissioning research.
@@ -130,10 +136,11 @@ export function articleStages(deps: {
 
   return {
     async themes(post) {
-      const { ref, record, sourceVersion } = await loadSource(post);
+      const { ref, record, sourceVersion, sourceContext } = await loadSource(post);
       if (sourceVersion !== post.sourceVersion)
         throw new StageError("themes", "source-version-changed");
       const out = await proposeThemes({
+        sourceContext,
         provider: deps.models.themes,
         artifacts: deps.content,
         post: { publicationId: post.publicationId, postId: post.postId },
@@ -157,13 +164,14 @@ export function articleStages(deps: {
     },
 
     async claims(post, themes) {
-      const { ref, record, sourceVersion } = await loadSource(post);
+      const { ref, record, sourceVersion, sourceContext } = await loadSource(post);
       const themeResult = parseThemeProposalResult(JSON.parse(await deps.content.read(themes)));
       const attribution = postAttribution(deps.sourceMetadata, {
         publicationId: post.publicationId,
         ...(record.item.author ? { author: record.item.author } : {}),
       });
       const out = await extractGroundedClaims({
+        sourceContext,
         provider: deps.models.claims,
         ...(attribution ? { attribution } : {}),
         artifacts: deps.content,
@@ -277,6 +285,7 @@ export function articleStages(deps: {
         }
       }
       const { package: pkg, ref } = await saveWriterPackage({
+        resolveAuthor: (item) => postAttribution(deps.sourceMetadata, item),
         content: deps.content,
         archive: deps.archive,
         coverage,

@@ -123,6 +123,31 @@ describe("SubstackContentCollector", () => {
     expect(JSON.stringify(result)).not.toContain("SECRET");
   });
 
+  it("retains observed video origin independently of its supplied audio transcript and dates", async () => {
+    const { c } = collector({
+      [POST_PATH]: {
+        ...basePost,
+        type: "podcast",
+        videoUpload: { id: "video-primary" },
+        podcastUpload: transcribed,
+        post_date: "2026-01-02T10:15:30.123456+02:00",
+        updated_at: "2026-01-03",
+      },
+      cdn: segments,
+    });
+    const result = await c.collect(item);
+    expect(result.provenance).toMatchObject({
+      originalMedium: "video",
+      originalMediaUploadId: "video-primary",
+      mediaUploadKind: "audio",
+      mediaUploadId: "u1",
+      observedPublishedAt: "2026-01-02T10:15:30.123456+02:00",
+      observedUpdatedAt: "2026-01-03",
+    });
+    expect(JSON.stringify(result)).not.toContain("SECRET");
+    expect(result.item.author).toBeUndefined();
+  });
+
   it("asks for audio transcription when no transcript is supplied", async () => {
     const { c } = collector({
       [POST_PATH]: {

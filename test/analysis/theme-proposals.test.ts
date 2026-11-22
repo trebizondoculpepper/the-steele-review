@@ -10,7 +10,9 @@ import {
   parseThemeProposalResult,
   proposalId,
   proposeThemes,
+  themeProposalPath,
 } from "../../src/analysis/theme-proposals.js";
+import { saveSourceContext, sourceContextFor } from "../../src/content/source-context.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 
@@ -91,6 +93,87 @@ describe("broad-topic prompt (#168)", () => {
 });
 
 describe("proposeThemes", () => {
+  it("pins provenance in model input and invalidates reuse when metadata changes", async () => {
+    const captured = {
+      item: { ...post, url: "https://source.example/p/post", title: "Source title" },
+      ingestionReason: "backfill" as const,
+      text: TEXT,
+      complete: true,
+      supplied: {},
+      provenance: {
+        sourceUrl: "https://source.example/p/post",
+        acquiredAt: "2026-01-01T00:00:00Z",
+        method: "article-html",
+        postType: "newsletter",
+      },
+    };
+    const archive = { ...source.artifact, sha256: source.artifact.hash.slice(7) };
+    const first = await saveSourceContext(content, sourceContextFor(captured, archive));
+    const second = await saveSourceContext(
+      content,
+      sourceContextFor(captured, archive, {
+        status: "resolved",
+        author: "Configured Author",
+        basis: "source-configured",
+        sourceMetadataVersion: "registry-v2",
+      }),
+    );
+    const provider = model(
+      "fake/context",
+      '{"themes":[{"title":"Geoengineering"}]}',
+      '{"themes":[{"title":"Geoengineering"}]}',
+    );
+    const a = await proposeThemes({
+      provider,
+      artifacts: content,
+      post,
+      source,
+      sourceContext: first,
+    });
+    const rediscovered = await saveSourceContext(content, sourceContextFor(captured, archive));
+    expect(rediscovered).toEqual(first);
+    const b = await proposeThemes({
+      provider,
+      artifacts: content,
+      post,
+      source,
+      sourceContext: second,
+    });
+    const again = await proposeThemes({
+      provider,
+      artifacts: content,
+      post,
+      source,
+      sourceContext: second,
+    });
+    expect(a.status).toBe("proposed");
+    if (a.status !== "proposed") throw new Error(a.status);
+    expect(
+      await content.lookup(
+        themeProposalPath(
+          post,
+          source.sourceVersion,
+          provider.modelVersion,
+          DEFAULT_THEME_PROPOSAL_PROMPT.version,
+          first,
+        ),
+      ),
+    ).toEqual(a.ref);
+    expect(b.status).toBe("proposed");
+    expect(again).toMatchObject({ status: "proposed", reused: true });
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]).toContain('"originalMedium":"written"');
+    expect(provider.calls[1]).toContain('"author":"Configured Author"');
+    const wrong = await saveSourceContext(content, {
+      ...sourceContextFor(captured, archive),
+      source: { ...sourceContextFor(captured, archive).source, postId: "other" },
+    });
+    expect(
+      await proposeThemes({ provider, artifacts: content, post, source, sourceContext: wrong }),
+    ).toMatchObject({ status: "failed", reason: "source-context-mismatch" });
+    expect(provider.calls).toHaveLength(2);
+  });
+
   it("accepts title-only and described proposals with no quotation, ignoring legacy quote fields", async () => {
     const out = await proposeThemes({
       provider: model(

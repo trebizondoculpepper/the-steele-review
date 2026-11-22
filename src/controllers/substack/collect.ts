@@ -1,3 +1,4 @@
+import { ObservedDateSchema } from "../../content/source-context.js";
 import { convert } from "html-to-text";
 import { z } from "zod";
 import { postByline } from "./byline.js";
@@ -42,6 +43,11 @@ export interface CollectionProvenance {
   /** "aligned" segments carry timestamps from Substack's aligned transcript. */
   transcriptVariant?: "aligned";
   postType?: string;
+  originalMedium?: "written" | "video" | "audio" | "image" | "mixed" | "unknown";
+  mediaUploadKind?: "audio" | "video";
+  originalMediaUploadId?: string;
+  observedPublishedAt?: string;
+  observedUpdatedAt?: string;
   audience?: string;
 }
 
@@ -117,6 +123,8 @@ const PostSchema = z.looseObject({
   slug: z.string(),
   canonical_url: z.string().optional(),
   type: z.string().optional(),
+  post_date: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
   audience: z.string().optional(),
   body_html: z.string().nullable().optional(),
   truncated_body_text: z.string().nullable().optional(),
@@ -254,10 +262,28 @@ export class SubstackContentCollector {
       return this.failure(item, error);
     }
 
+    const published = ObservedDateSchema.safeParse(post.post_date);
+    const updated = ObservedDateSchema.safeParse(post.updated_at);
+    const originalMedium: NonNullable<CollectionProvenance["originalMedium"]> =
+      post.videoUpload?.id || post.type === "video"
+        ? "video"
+        : post.podcastUpload?.id || post.type === "audio"
+          ? "audio"
+          : post.type === "image"
+            ? "image"
+            : (post.type === "newsletter" || post.type === "text") && !post.podcast_url
+              ? "written"
+              : "unknown";
     const baseProvenance = {
       sourceUrl: item.url,
       acquiredAt: this.now().toISOString(),
       postType: post.type,
+      originalMedium,
+      ...(/^[A-Za-z0-9_-]{1,200}$/.test(post.videoUpload?.id ?? post.podcastUpload?.id ?? "")
+        ? { originalMediaUploadId: post.videoUpload?.id ?? post.podcastUpload?.id }
+        : {}),
+      ...(published.success ? { observedPublishedAt: published.data } : {}),
+      ...(updated.success ? { observedUpdatedAt: updated.data } : {}),
       audience: post.audience,
     };
     // Only posts that carry a cover need the publication's branding to compare.
@@ -298,6 +324,7 @@ export class SubstackContentCollector {
             ...baseProvenance,
             method: articleHtml ? "supplied-transcript+article-html" : "supplied-transcript",
             mediaUploadId: upload.transcription.media_upload_id ?? upload.id,
+            mediaUploadKind: upload === post.videoUpload ? "video" : "audio",
             transcriptLanguage: upload.transcription.language ?? undefined,
             transcriptVariant: "aligned",
           },
