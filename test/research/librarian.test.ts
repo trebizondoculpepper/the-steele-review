@@ -770,3 +770,279 @@ describe("librarian coverage across extraction schema versions", () => {
     ]);
   });
 });
+
+describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => {
+  const extra = { id: "claim-new", statement: "A new aircraft sprayed the region" };
+  const supportTreatyOnly = (req: ResearchRequest) => ({
+    passages: req.claims
+      .filter((c) => c.claimRecordId === "claim-treaty")
+      .map((c) => ({ claimRecordId: c.claimRecordId, url: "https://un.example/enmod" })),
+  });
+
+  async function firstPost() {
+    const r = researcher(supportTreatyOnly);
+    const first = await analysis("p1", claims, "Weather warfare");
+    const created = await assessPostCoverage({
+      artifacts,
+      ...first,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    return created.record.mappings[0]!.dossierId;
+  }
+
+  it("does not repurchase a researched theme when byline, post and claim order change", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    // Another post: different post identity (byline/context), claims reordered, one new.
+    const r = researcher(supportTreatyOnly);
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const out = await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    // No new full discovery: one targeted theme request for only what still needs evidence.
+    expect(r.requests).toHaveLength(1);
+    const req = r.requests[0]!;
+    expect(req).toMatchObject({ origin: "theme", pass: 1 });
+    expect(req.post).toBeUndefined();
+    expect(req.claims.map((c) => c.claimRecordId).sort()).toEqual(["claim-new", "claim-payment"]);
+    expect(req.claims.every((c) => c.themeIds.length === 1 && c.themeIds[0] === dossierId)).toBe(
+      true,
+    );
+    // Covered evidence is reused with its exact dossier version; nothing is
+    // presented as covering the new claim unless the targeted work supports it.
+    const byId = new Map(out.record.claims.map((c) => [c.claimRecordId, c]));
+    expect(byId.get("claim-treaty")).toMatchObject({ reused: true, status: "evidence-found" });
+    expect(byId.get("claim-treaty")!.evidenceFrom?.dossier.path).toMatch(/^dossier\//);
+    expect(byId.get("claim-new")).toMatchObject({ reused: false });
+    expect(byId.get("claim-new")!.status).not.toBe("evidence-found");
+    // The precise post request context stays as audit provenance in the coverage record.
+    expect(out.record.post).toMatchObject({ publicationId: "pub", postId: "p2" });
+  });
+
+  it("gives a third post with the same needs the same targeted job, whatever its byline", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const jobs: string[] = [];
+    for (const postId of ["p2", "p3"]) {
+      const r = researcher(() => "busy");
+      const a = await analysis(postId, [claims[1]!, extra, claims[0]!], "Weather warfare");
+      await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+      });
+      jobs.push(...r.requests.map((q) => researchJobId(q)));
+    }
+    expect(jobs).toHaveLength(2);
+    expect(jobs[0]).toBe(jobs[1]);
+  });
+
+  it("replays the same targeted job when the same analysis is reassessed", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    // The targeted job supports the new claim but not the old gap.
+    const supportNew = (req: ResearchRequest) => ({
+      passages: req.claims
+        .filter((c) => c.claimRecordId === "claim-new")
+        .map((c) => ({ claimRecordId: c.claimRecordId, url: "https://source.example/new" })),
+    });
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const jobs: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = researcher(supportNew);
+      await assessPostCoverage({
+        artifacts,
+        ...second,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+      });
+      jobs.push(...r.requests.map((q) => researchJobId(q)));
+    }
+    // The dossier now covers claim-new, yet the reassessment sends the identical request.
+    expect(jobs).toHaveLength(2);
+    expect(jobs[1]).toBe(jobs[0]);
+  });
+
+  it("keeps the same request after a crash between the dossier save and the coverage record", async () => {
+    const r = researcher(supportTreatyOnly);
+    const a = await analysis("p1", claims, "Weather warfare");
+    let crash = true;
+    const crashing = new Proxy(artifacts, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== "write" || typeof v !== "function") return v;
+        return (path: string, ...rest: unknown[]) => {
+          if (crash && path.startsWith("librarian/coverage/")) {
+            crash = false;
+            throw new Error("crash before coverage");
+          }
+          return (v as (...x: unknown[]) => unknown).apply(target, [path, ...rest]);
+        };
+      },
+    });
+    await expect(
+      assessPostCoverage({
+        artifacts: crashing as never,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      }),
+    ).rejects.toThrow("crash before coverage");
+    // The dossier was revised, but the retry follows the retained plan.
+    const retry = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const ids = r.requests.map((q) => researchJobId(q));
+    expect(new Set(ids).size).toBe(1);
+    expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
+    expect(retry.record.jobs.map((j) => j.jobId)).toEqual([ids[0]]);
+  });
+
+  it("spends no request allowance on a group covered since the plan was made", async () => {
+    const both = (req: ResearchRequest) => ({
+      passages: req.claims.map((c) => ({
+        claimRecordId: c.claimRecordId,
+        url: "https://un.example/x",
+      })),
+    });
+    const a = await analysis("p1", claims, "Weather warfare");
+    const first = researcher(both);
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: first.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(first.requests).toHaveLength(1);
+    // Everything is covered now: replaying the retained plan commissions nothing.
+    const again = researcher(both);
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: again.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(again.requests).toHaveLength(0);
+  });
+
+  it("refuses recovery of a theme job that no coverage record binds to this article", async () => {
+    const { validateRetainedArticleResearch } =
+      await import("../../src/research/retained-research-source.js");
+    const request: ResearchRequest = {
+      schemaVersion: 1,
+      origin: "theme",
+      pass: 1,
+      claims: [
+        {
+          claimRecordId: "claim-new",
+          statement: "A new aircraft sprayed the region",
+          themeIds: ["weather"],
+        },
+      ],
+      question: "Targeted enhancement",
+      corpusRefs: [],
+    };
+    const id = researchJobId(request);
+    await artifacts.write(`research-jobs/${id}/request.json`, JSON.stringify(request));
+    const capture = await artifacts.write("substack/pub/p9/collected.json", "{}");
+    await expect(
+      validateRetainedArticleResearch({
+        artifacts,
+        operations: {
+          researchRecovery: () => undefined,
+          researchDiscoveryAccepted: () => false,
+        } as never,
+        jobIds: [id],
+        capture,
+        post: { publicationId: "pub", postId: "p9" },
+        sourceContext: { schemaVersion: 1 } as never,
+      }),
+    ).rejects.toThrow("retained-research-capture-mismatch");
+  });
+
+  it("keeps a pre-upgrade workflow's journaled full request for a researched theme", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    // What the pre-upgrade planner would have pinned: the full extraction request.
+    const probe = researcher(() => "busy");
+    const { assessPostCoverage: assess } = await import("../../src/research/librarian.js");
+    // Derive the full request's ID by planning without prior research context.
+    const fresh = await mkdtemp(join(tmpdir(), "steele-pre-"));
+    const old = artifacts;
+    try {
+      artifacts = new GitArtifactStore({ repoPath: fresh, repository: "content" });
+      await artifacts.initialise();
+      const a = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+      await assess({
+        artifacts,
+        ...a,
+        commission: probe.commission,
+        shortlister: new LexicalShortlister(),
+      });
+    } finally {
+      await rm(fresh, { recursive: true, force: true });
+      artifacts = old;
+    }
+    const fullIds = new Set(
+      probe.requests.map((q) =>
+        researchJobId({
+          ...q,
+          post: {
+            ...q.post!,
+            themeResult: ref(second.themeResult),
+            claimResult: ref(second.claimResult),
+          },
+        }),
+      ),
+    );
+    const r = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+      pinnedJobIds: fullIds,
+    });
+    expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
+  });
+
+  it("replays the planned question even if the prompt file changes", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const first = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: first.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    // Simulate a prompt edit after planning: the retained plan's question wins.
+    const [planPath] = await artifacts.list(`librarian/request-plans/pub/p2`, 10);
+    const plan = JSON.parse(await artifacts.read((await artifacts.lookup(planPath!))!));
+    expect(plan.dossiers[dossierId].question).toBe(first.requests[0]!.question);
+    const again = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: again.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    expect(researchJobId(again.requests[0]!)).toBe(researchJobId(first.requests[0]!));
+  });
+});

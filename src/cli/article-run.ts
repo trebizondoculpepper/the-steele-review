@@ -187,6 +187,7 @@ async function main(): Promise<number> {
           operations,
           jobIds: retainedResearchJobIds,
           capture: ref,
+          post,
           sourceContext: sourceContextFor(record, ref, postAttribution(metadata, record.item), {
             namespace: `substack/${post.publicationId}`,
           }),

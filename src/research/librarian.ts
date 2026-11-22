@@ -1,3 +1,4 @@
+import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
@@ -17,6 +18,7 @@ import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
   ResearchResultSchema,
+  researchJobId,
   type ResearchManifest,
   type ResearchRequest,
   type ResearchResult,
@@ -281,6 +283,12 @@ export const CoverageRecordSchema = z
           outcome: z.string(),
           result: Ref.optional(),
           manifest: Ref.optional(),
+          /**
+           * The exact claim batch of a targeted theme request (#658), so a
+           * reassessment replays the same request instead of rebuilding it
+           * from dossier coverage that this run may itself have changed.
+           */
+          targetedClaims: z.array(z.string()).max(100).optional(),
         })
         .strict(),
     ),
@@ -303,6 +311,8 @@ export interface CommissionedJob {
 /** Runs (or reuses) a research job for a request; the researcher owns provider calls. */
 export type Commission = (request: ResearchRequest) => Promise<CommissionedJob>;
 
+/** Question template for targeted enhancement of a researched theme (#658). */
+const THEME_ENHANCEMENT = loadPromptFile("research", "theme-enhancement-v1");
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
   commit: r.commit,
@@ -516,11 +526,63 @@ export function mergeCoverage(
 }
 
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
+type RequestPlanEntry =
+  | { mode: "full" }
+  | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
+const RequestPlanSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    dossiers: z.record(
+      z.string(),
+      z.union([
+        z.object({ mode: z.literal("full") }).strict(),
+        z
+          .object({
+            mode: z.literal("targeted"),
+            batches: z.array(z.array(z.string()).max(100)).max(100),
+            /** The rendered question, so a later prompt edit never changes this plan's requests. */
+            question: z.string().min(1).max(4000).optional(),
+            /** Identity of the prompt file the question was rendered from. */
+            promptVersion: z.string().min(1).max(200).optional(),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
+type RequestPlan = z.infer<typeof RequestPlanSchema>;
+
+/**
+ * The request plan of one analysis, saved write-once: the first plan saved
+ * is the one every retry follows. A plan that does not name a dossier (a
+ * group that was fully reused when it was made) leaves that group alone.
+ */
+async function retainedPlan(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  proposed: RequestPlan,
+): Promise<RequestPlan> {
+  const key = createHash("sha256")
+    .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  const ref = await writeOnce(
+    artifacts,
+    `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`,
+    RequestPlanSchema.parse(proposed),
+  );
+  return RequestPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
+}
+
 async function priorMappings(
   artifacts: GitArtifactStore,
   post: { publicationId: string; postId: string },
   themeResult: ArtifactRef,
   claimResult: ArtifactRef,
+  jobIds?: Set<string>,
+  targetedBatches?: Map<string, string[][]>,
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -537,6 +599,15 @@ async function priorMappings(
       a.commit === b.commit && a.path === b.path;
     if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
     for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    for (const j of r.jobs) {
+      jobIds?.add(j.jobId);
+      if (j.targetedClaims && targetedBatches) {
+        const batches = targetedBatches.get(j.dossierId) ?? [];
+        const key = JSON.stringify(j.targetedClaims);
+        if (!batches.some((b) => JSON.stringify(b) === key)) batches.push(j.targetedClaims);
+        targetedBatches.set(j.dossierId, batches);
+      }
+    }
   }
   return out;
 }
@@ -588,6 +659,12 @@ export async function assessPostCoverage(input: {
   /** Claims whose remaining gap could materially change the writer's account. */
   consequential?: (claim: { claimRecordId: string; statement: string }) => boolean;
   now?: () => Date;
+  /**
+   * Job IDs the workflow already journaled for this analysis (#658). A run
+   * planned before targeted theme requests existed keeps its full request:
+   * the plan follows these rather than inventing a request it never made.
+   */
+  pinnedJobIds?: ReadonlySet<string>;
 }): Promise<{ record: CoverageRecord; ref: ArtifactRef }> {
   const now = (input.now ?? (() => new Date()))().toISOString();
   const judge = input.judge ?? new ThresholdJudge();
@@ -654,11 +731,17 @@ export async function assessPostCoverage(input: {
   const subjects = new Map<string, string>();
   // Reassessing the same analysis reuses the mapping its earlier run saved,
   // so shortlist or judge changes cannot move a theme to another dossier.
+  // Jobs an earlier assessment of this exact analysis commissioned (#658):
+  // reassessment repeats the same request rather than switching mode.
+  const priorJobIds = new Set<string>(input.pinnedJobIds ?? []);
+  const priorTargeted = new Map<string, string[][]>();
   const savedMapping = await priorMappings(
     input.artifacts,
     post,
     input.themeResult,
     input.claimResult,
+    priorJobIds,
+    priorTargeted,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -854,13 +937,38 @@ export async function assessPostCoverage(input: {
     group: AcceptedClaim[],
     pass: number,
     previousJobId?: string,
+    /**
+     * Targeted enhancement of an already researched theme (#658): identity is
+     * the theme and the claims needing evidence only, never the byline,
+     * source context or extraction identifiers of this post (kept as audit
+     * provenance in the coverage record instead).
+     */
+    targeted = false,
+    question?: string,
   ) => {
-    const request: ResearchRequest = {
+    const request = buildRequest(dossierId, group, pass, previousJobId, targeted, question);
+    return commissionAndAssess(
+      dossierId,
+      group,
+      pass,
+      request,
+      targeted ? group.map((c) => c.key) : undefined,
+    );
+  };
+  function buildRequest(
+    dossierId: string,
+    group: AcceptedClaim[],
+    pass: number,
+    previousJobId: string | undefined,
+    targeted: boolean,
+    question?: string,
+  ): ResearchRequest {
+    return {
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
-      origin: "extraction",
+      origin: targeted ? "theme" : "extraction",
       pass,
       ...(previousJobId ? { previousJobId } : {}),
-      post: postRefs,
+      ...(targeted ? {} : { post: postRefs }),
       claims: group
         .flatMap((c) => c.extracted)
         .map((e) => ({
@@ -868,8 +976,9 @@ export async function assessPostCoverage(input: {
           statement: e.statement,
           themeIds: [dossierId],
         })),
-      question:
-        pass === 1
+      question: targeted
+        ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
+        : pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
       // Request identity depends only on the saved analysis and claims, never on
@@ -877,6 +986,14 @@ export async function assessPostCoverage(input: {
       // analysis reuses the same job instead of commissioning new research.
       corpusRefs: [],
     };
+  }
+  async function commissionAndAssess(
+    dossierId: string,
+    group: AcceptedClaim[],
+    pass: number,
+    request: ResearchRequest,
+    targetedClaims?: string[],
+  ) {
     const commissioned = await input.commission(request);
     // Assess the saved result and manifest through their exact pinned
     // references, never an in-memory copy or whatever a path holds now.
@@ -912,16 +1029,108 @@ export async function assessPostCoverage(input: {
             : job.status,
       ...(job.resultRef ? { result: toRef(job.resultRef) } : {}),
       ...(manifestRef ? { manifest: toRef(manifestRef) } : {}),
+      ...(targetedClaims ? { targetedClaims } : {}),
     });
     return { job, assessed: assess(group, job, manifest) };
-  };
+  }
 
+  // The request plan for this analysis is decided once and saved write-once
+  // before anything is commissioned or any dossier revised (#658). Every
+  // retry or reassessment follows the retained plan, so a crash between a
+  // dossier revision and the coverage record can never switch a request.
+  const planned = new Map<string, RequestPlanEntry>();
   for (const [dossierId, all] of groups) {
     // Nothing to research when every claim is already covered.
     if (all.every((c) => outcomes.get(c.key)?.reused)) continue;
-    const sorted = [...all].sort((a, b) => a.key.localeCompare(b.key));
-    for (let start = 0; start < sorted.length; start += MAX_REQUEST_CLAIMS) {
-      await assessGroup(dossierId, sorted.slice(start, start + MAX_REQUEST_CLAIMS));
+    // A theme that already has saved research is not researched again from
+    // scratch because this post's byline, context, claim order or extraction
+    // IDs differ: its covered claims are reused above, and only the claims
+    // that still need evidence get bounded, targeted requests.
+    const saved = existing.get(dossierId);
+    const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
+    const fullRequestedBefore = chunks(sortedAll).some((g) =>
+      priorJobIds.has(researchJobId(buildRequest(dossierId, g, 1, undefined, false))),
+    );
+    if (saved && saved.metadata.claims.length > 0 && !fullRequestedBefore) {
+      const replay = priorTargeted.get(dossierId);
+      const needs = [...all]
+        .filter((c) => !outcomes.get(c.key)?.reused)
+        .sort((a, b) => a.claimRecordId.localeCompare(b.claimRecordId));
+      planned.set(dossierId, {
+        mode: "targeted",
+        batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
+        question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
+        promptVersion: THEME_ENHANCEMENT.version,
+      });
+    } else {
+      planned.set(dossierId, { mode: "full" });
+    }
+  }
+  const plan = await retainedPlan(input.artifacts, post, input.themeResult, input.claimResult, {
+    schemaVersion: 1,
+    dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
+  });
+  for (const [dossierId, entry] of Object.entries(plan.dossiers)) {
+    const all = groups.get(dossierId);
+    if (!all) continue;
+    // A group covered since needs no request: existing research never takes
+    // new-job allowance from groups that still need evidence.
+    if (all.every((c) => outcomes.get(c.key)?.reused)) continue;
+    if (entry.mode === "targeted") {
+      const byKey = new Map(all.map((c) => [c.key, c]));
+      for (const batch of entry.batches) {
+        const group = batch.map((k) => byKey.get(k)).filter((c): c is AcceptedClaim => !!c);
+        if (group.length > 0) await enhanceGroup(dossierId, group, entry.question);
+      }
+    } else {
+      const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
+      for (const g of chunks(sortedAll)) await assessGroup(dossierId, g);
+    }
+  }
+
+  // Every accepted claim ends with an explicit outcome, even when the
+  // retained plan does not name its group (it was fully reused when planned,
+  // and a later claim merge has since changed what matches).
+  for (const [dossierId, all] of groups) {
+    for (const claim of all) {
+      if (outcomes.has(claim.key)) continue;
+      outcomes.set(claim.key, {
+        claimRecordId: claim.claimRecordId,
+        statement: claim.statement,
+        dossierId,
+        status: "not-commissioned",
+        reused: false,
+        jobIds: [],
+        citations: [],
+        reason: "not part of this analysis's retained research plan; reassess as a new analysis",
+      });
+    }
+  }
+
+  function chunks(list: AcceptedClaim[]): AcceptedClaim[][] {
+    const out: AcceptedClaim[][] = [];
+    for (let start = 0; start < list.length; start += MAX_REQUEST_CLAIMS)
+      out.push(list.slice(start, start + MAX_REQUEST_CLAIMS));
+    return out;
+  }
+
+  async function enhanceGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+    const targeted = await run(dossierId, group, 1, undefined, true, question);
+    for (const claim of group) {
+      // Replaying the identical request must not replace evidence found since.
+      if (outcomes.get(claim.key)?.reused) continue;
+      const a = targeted.assessed.get(claim.key)!;
+      // Only what this targeted research supports counts: reused theme
+      // research is never presented as covering a new claim.
+      outcomes.set(claim.key, {
+        claimRecordId: claim.claimRecordId,
+        statement: claim.statement,
+        dossierId,
+        reused: false,
+        jobIds: [targeted.job.jobId],
+        ...a,
+        ...(a.reason ? { reason: a.reason } : {}),
+      });
     }
   }
 

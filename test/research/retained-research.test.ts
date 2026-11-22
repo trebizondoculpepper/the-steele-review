@@ -233,6 +233,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
       artifacts,
       operations,
       jobIds: [researchJobId(f.request)],
+      post: { publicationId: f.request.post.publicationId, postId: f.request.post.postId },
       capture: {
         ...f.request.post.sourceArtifact,
         sha256: f.request.post.sourceArtifact.hash.slice(7),

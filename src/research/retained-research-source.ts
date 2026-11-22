@@ -2,6 +2,7 @@ import { SourceContextSchema, type SourceContext } from "../content/source-conte
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readLengthLimitedResearchDiscovery } from "./discovery.js";
+import { CoverageRecordSchema } from "./librarian.js";
 import {
   ResearchRequestSchema,
   ResearchResultSchema,
@@ -116,12 +117,24 @@ export async function validateRetainedArticleResearch(input: {
   jobIds: readonly string[];
   capture: ArtifactRef;
   sourceContext: SourceContext;
+  /** The article being continued: theme jobs are bound through its coverage only. */
+  post: { publicationId: string; postId: string };
 }) {
   for (const id of input.jobIds) {
     if (!/^research-[0-9a-f]{32}$/.test(id)) throw new Error("invalid-retained-research-id");
     const requestRef = await input.artifacts.lookup(`research-jobs/${id}/request.json`);
     if (!requestRef) throw new Error("retained-research-request-missing");
     const request = ResearchRequestSchema.parse(JSON.parse(await input.artifacts.read(requestRef)));
+    if (request.origin === "theme") {
+      // A theme request (#658) carries no post by design: it is bound to this
+      // article through the coverage record that commissioned it, never by
+      // putting post data back into its shared identity.
+      if (researchJobId(request) !== id) throw new Error("retained-research-capture-mismatch");
+      await requireCommissioningCoverage(input, id);
+      if (!(await readAcceptedResearchRecovery({ ...input, request })))
+        throw new Error("retained-research-not-accepted");
+      continue;
+    }
     if (
       researchJobId(request) !== id ||
       !request.post?.sourceContext ||
@@ -136,4 +149,60 @@ export async function validateRetainedArticleResearch(input: {
     if (!(await readAcceptedResearchRecovery({ ...input, request })))
       throw new Error("retained-research-not-accepted");
   }
+}
+
+/** Bound on coverage records examined when binding a theme request. */
+const COVERAGE_SCAN = 2_000;
+
+/**
+ * A coverage record for exactly this capture and source context must list
+ * the job; otherwise the theme job was not commissioned for this article.
+ */
+async function requireCommissioningCoverage(
+  input: {
+    artifacts: GitArtifactStore;
+    capture: ArtifactRef;
+    sourceContext: SourceContext;
+    post: { publicationId: string; postId: string };
+  },
+  jobId: string,
+): Promise<void> {
+  const capture = JSON.stringify(ref(input.capture));
+  let after: string | undefined;
+  let scanned = 0;
+  let contextMismatch = false;
+  while (scanned < COVERAGE_SCAN) {
+    // Scoped to this article's own coverage, so unrelated history never
+    // pushes the commissioning record past the bound.
+    const paths = await input.artifacts.list(
+      `librarian/coverage/${input.post.publicationId}/${input.post.postId}`,
+      200,
+      after,
+    );
+    for (const path of paths) {
+      scanned++;
+      const r = await input.artifacts.lookup(path);
+      if (!r) continue;
+      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await input.artifacts.read(r)));
+      if (!parsed.success) continue;
+      const c = parsed.data;
+      if (JSON.stringify(c.source) !== capture || !c.jobs.some((j) => j.jobId === jobId)) continue;
+      if (!c.sourceContext) continue;
+      const context = SourceContextSchema.parse(
+        JSON.parse(await input.artifacts.read(fromRef(c.sourceContext))),
+      );
+      const wanted = JSON.stringify(SourceContextSchema.parse(input.sourceContext));
+      // Another record (for example after an attribution change) may match.
+      if (JSON.stringify(context) !== wanted) {
+        contextMismatch = true;
+        continue;
+      }
+      return;
+    }
+    if (paths.length < 200) break;
+    after = paths[paths.length - 1];
+  }
+  throw new Error(
+    contextMismatch ? "retained-research-context-mismatch" : "retained-research-capture-mismatch",
+  );
 }

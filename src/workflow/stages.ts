@@ -335,6 +335,8 @@ export function articleStages(deps: {
         themeResult: themes,
         claimResult: claims,
         shortlister: deps.shortlister,
+        // Requests journaled before an upgrade are kept, never re-derived.
+        pinnedJobIds: new Set(pinned.map((p) => p.jobId)),
         commission: async (request) => {
           const jobId = researchJobId(request);
           const p = byJob.get(jobId);
