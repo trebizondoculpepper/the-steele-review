@@ -281,7 +281,10 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.claims ? { claims: deps.claims } : {}),
       });
       const timeline = await loadEditorialTimeline(
-        { ...(deps.assessments ? { assessments: deps.assessments } : {}), ...(deps.judgments ? { judgments: deps.judgments } : {}) },
+        {
+          ...(deps.assessments ? { assessments: deps.assessments } : {}),
+          ...(deps.judgments ? { judgments: deps.judgments } : {}),
+        },
         post,
       );
       const trigger =
@@ -355,7 +358,7 @@ export function editorialText(
     case "rejected":
       return "verification rejected — this draft was not approved";
     case "evidence-gap":
-      return "evidence gap — drafting was not reached";
+      return "evidence gap — drafting was not reached (a run started before the non-blocking librarian, #747)";
     case "unverified":
       return "unverified — verification was not reached";
     default:

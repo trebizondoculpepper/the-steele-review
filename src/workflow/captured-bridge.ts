@@ -3,7 +3,7 @@ import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "./editorial-cont
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
-import { researchSelectionFor } from "./research-execution.js";
+import { researchSelectionFor, NON_BLOCKING_PACKAGE } from "./research-execution.js";
 
 /**
  * Captured content to the writing engine (#270).
@@ -66,6 +66,7 @@ export function articleRunInputFor(
     ...researchExecutionFromEnv(),
     ...(researchRequestLimit === undefined ? {} : { researchRequestLimit }),
     ...researchSelectionFor(researchRequestLimit),
+    ...NON_BLOCKING_PACKAGE,
     source: {
       namespace: event.source.namespace,
       itemId: event.itemId,

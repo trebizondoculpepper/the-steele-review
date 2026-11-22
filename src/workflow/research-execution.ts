@@ -27,3 +27,10 @@ export function researchSelectionFor(limit: number | undefined): {
     ? {}
     : { researchSelection: "allowance-v1", researchFollowUp: "one-round-v1" };
 }
+
+/**
+ * The package readiness contract for new runs (#747): the librarian gathers
+ * and selects material but never vetoes writing. Serialised at submission,
+ * so runs started before it keep their old behaviour on replay.
+ */
+export const NON_BLOCKING_PACKAGE = { packageReadiness: "non-blocking-v1" } as const;

@@ -46,6 +46,20 @@ describe("explicit durable article attempt identity", () => {
       expect(records.map((r) => r.workflowKey)).toContain(one.identity.workflowKey);
       expect(operations.articleAttempts("fixture", "post", `sha256:${"b".repeat(64)}`)).toEqual([]);
       expect(() => recordArticleAttempt(operations, input, "../bad")).toThrow();
+      // A request recorded before the submission contracts existed still
+      // attaches after upgrade; the returned input is the new one.
+      const upgraded = recordArticleAttempt(
+        operations,
+        {
+          ...input,
+          researchSelection: "allowance-v1",
+          researchFollowUp: "one-round-v1",
+          packageReadiness: "non-blocking-v1",
+        },
+        "owner-request-one",
+      );
+      expect(upgraded.identity).toEqual(one.identity);
+      expect(upgraded.input.packageReadiness).toBe("non-blocking-v1");
     } finally {
       operations.close();
       await rm(dir, { recursive: true, force: true });

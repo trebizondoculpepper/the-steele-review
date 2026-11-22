@@ -37,7 +37,7 @@ The librarian plans a stable list of research requests. Each runs as a durable c
 
 ## Outcomes
 
-`verified`, `rejected`, `drafted-unverified` (until the package-draft verifier, #150, lands), `evidence-gap` (no claim had independent evidence) or `failed` with a reason. The output lists the exact theme, claim, coverage, package, draft and verification references and each research job's outcome.
+`verified`, `rejected`, `drafted-unverified` (until the package-draft verifier, #150, lands), `evidence-gap` (no claim had independent evidence; only runs submitted before the non-blocking package contract, #747, stop here. Newer runs record `packageReadiness: non-blocking-v1` and go on to draft, with claim coverage passed to the writer as information) or `failed` with a reason. The output lists the exact theme, claim, coverage, package, draft and verification references and each research job's outcome.
 
 ## Model choices
 

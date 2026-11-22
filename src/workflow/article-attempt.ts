@@ -2,6 +2,31 @@ import { createHash } from "node:crypto";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { ArticleRunInputSchema, type ArticleRunInput } from "./article-run.js";
 
+/**
+ * Contract fields the deployment adds at submission (#596, #597, #747). They
+ * describe how a new run executes, not what the operator asked for, so they
+ * are left out of the request identity: a repeated request recorded before
+ * a contract existed keeps the same input hash.
+ */
+const SUBMISSION_CONTRACT_FIELDS = [
+  "researchSelection",
+  "researchFollowUp",
+  "packageReadiness",
+] as const;
+
+function attemptIdentity(input: ArticleRunInput): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...input };
+  for (const field of SUBMISSION_CONTRACT_FIELDS) delete out[field];
+  return out;
+}
+
+/** The recorded request identity of one validated article input. */
+export function articleAttemptHash(input: ArticleRunInput): string {
+  return createHash("sha256")
+    .update(JSON.stringify(attemptIdentity(input)))
+    .digest("hex");
+}
+
 /** A new request is a new attempt, never a forged source version or reset workflow. */
 export function recordArticleAttempt(
   operations: Pick<OperationStore, "recordArticleAttempt">,
@@ -15,7 +40,9 @@ export function recordArticleAttempt(
     postId: valid.postId,
     sourceVersion: valid.sourceVersion,
     requestId,
-    inputHash: createHash("sha256").update(JSON.stringify(valid)).digest("hex"),
+    inputHash: createHash("sha256")
+      .update(JSON.stringify(attemptIdentity(valid)))
+      .digest("hex"),
   });
   return { identity, input: valid };
 }

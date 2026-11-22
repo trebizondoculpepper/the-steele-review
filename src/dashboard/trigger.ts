@@ -1,4 +1,8 @@
-import { researchExecutionFromEnv, researchSelectionFor } from "../workflow/research-execution.js";
+import {
+  researchExecutionFromEnv,
+  researchSelectionFor,
+  NON_BLOCKING_PACKAGE,
+} from "../workflow/research-execution.js";
 import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "../workflow/editorial-contract.js";
 import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
@@ -57,6 +61,7 @@ export async function prepareArticleInput(
       researchRequestLimit: deps.researchRequestLimit,
       ...researchSelectionFor(deps.researchRequestLimit),
       ...researchExecutionFromEnv(),
+      ...NON_BLOCKING_PACKAGE,
       source: { namespace: `substack/${publication}`, itemId: post, artifact: ref },
     });
   }

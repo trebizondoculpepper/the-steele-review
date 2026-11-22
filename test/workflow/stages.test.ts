@@ -207,6 +207,20 @@ describe("article stages composed (#243)", () => {
     expect(savedClaims.claims[0].occurrence.publisher.author).toBe("Dr Synthetic");
     const requests = await stages.planResearch(themes, claims);
     expect(requests).toHaveLength(1);
+    // #747: with zero commissioned research no claim is supported, and the
+    // package says so, but it still reaches the real writer boundary.
+    const unsupported = await stages.package(await stages.coverage(themes, claims, []));
+    expect(unsupported.status).toBe("evidence-gap");
+    const unsupportedPackage = JSON.parse(await content.read(unsupported.ref));
+    expect(
+      unsupportedPackage.claims.every((c: { status: string }) => c.status !== "covered"),
+    ).toBe(true);
+    const zeroSupportDraft = await stages.draft(unsupported.ref, input.sourceUrl);
+    expect(zeroSupportDraft.failure).toBeUndefined();
+    expect(zeroSupportDraft.ref).toBeDefined();
+    expect(await content.read(zeroSupportDraft.ref!)).toMatch(
+      /<!-- claim-verdict [a-f0-9]+ unresolved -->/,
+    );
     // The treaty request finishes; nothing else is pinned, so any other claim stays a gap.
     const job = await stages.research(requests[0]);
     const pinned: PinnedResearch[] = [
