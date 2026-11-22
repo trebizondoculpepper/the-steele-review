@@ -1,3 +1,4 @@
+import { researchExecutionFromEnv } from "../workflow/research-execution.js";
 import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
@@ -51,6 +52,7 @@ export async function prepareArticleInput(
       sourceUrl: record.item.url,
       researchDeadlineMs: deps.researchDeadlineMs,
       researchRequestLimit: deps.researchRequestLimit,
+      ...researchExecutionFromEnv(),
       source: { namespace: `substack/${publication}`, itemId: post, artifact: ref },
     });
   }

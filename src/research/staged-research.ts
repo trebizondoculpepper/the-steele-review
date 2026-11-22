@@ -14,6 +14,7 @@ import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js
 import type { PageFetcher } from "./gap-research.js";
 import {
   finishResearchJob,
+  researchJobPath,
   ResearchResultSchema,
   researchJobId,
   type ResearchRequest,
@@ -212,6 +213,18 @@ export async function finishFailedStage(
     ...(deps.now ? { now: deps.now } : {}),
   });
   return { jobId, status: "finished", result: out.result, resultRef: plain(out.resultRef) };
+}
+
+/** A job whose terminal result is already saved is reused, never rerun. */
+export async function existingJob(
+  deps: Pick<StagedResearchDeps, "artifacts">,
+  request: ResearchRequest,
+): Promise<CommissionedJob | null> {
+  const jobId = researchJobId(request);
+  const ref = await deps.artifacts.lookup(researchJobPath(jobId, "result"));
+  if (!ref) return null;
+  const result = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
+  return { jobId, status: "finished", result, resultRef: plain(ref) };
 }
 
 /** Bound on retrieval rounds for transient failures within one invocation. */

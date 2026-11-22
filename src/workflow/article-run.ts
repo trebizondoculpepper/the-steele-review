@@ -64,6 +64,11 @@ export interface ArticleRunInput {
   researchRequestLimit?: number;
   /** Set by an explicit recovery of a stopped run (#480). */
   recoveryGeneration?: number;
+  /**
+   * The research contract chosen at submission (#593). Absent means the
+   * legacy single-step research call, whatever the deployment now enables.
+   */
+  researchExecution?: "staged";
 }
 
 export interface ArticleRunResult {
@@ -177,6 +182,8 @@ export interface ResearchStages {
   retrieve(inventory: StageRef): Promise<{ retryable: number }>;
   assemble(discovery: StageRef, inventory: StageRef): Promise<CommissionedJob>;
   failed(request: ResearchRequest, failure: string): Promise<CommissionedJob>;
+  /** A job already finished (terminal failure or result) is reused, never rerun. */
+  existing(request: ResearchRequest): Promise<CommissionedJob | null>;
   /** Bounded retrieval rounds and the delay between them. */
   rounds: number;
   roundDelayMs: number;
@@ -192,9 +199,15 @@ export async function runResearch(
   ctx: Pick<restate.Context, "run" | "sleep">,
   stages: Pick<ArticleStages, "research" | "researchStages">,
   request: ResearchRequest,
+  execution: "legacy" | "staged" = "legacy",
 ): Promise<CommissionedJob> {
   const s = stages.researchStages;
-  if (!s) return ctx.run("research", () => stages.research(request));
+  // Legacy invocations keep their single journaled step even when staged
+  // stages are now available; a staged invocation needs them configured.
+  if (execution === "legacy") return ctx.run("research", () => stages.research(request));
+  if (!s) throw new restate.TerminalError("staged research is not configured on this worker");
+  const existing = await ctx.run("research-existing", () => s.existing(request));
+  if (existing) return existing;
   const found = await ctx.run("research-discover", () => s.discover(request));
   if (found.kind === "failed") {
     const failure = found.failure;
@@ -213,8 +226,12 @@ export function researchService(stages: Pick<ArticleStages, "research" | "resear
   return restate.service({
     name: "Research",
     handlers: {
+      /** Legacy contract: one coarse step. Unchanged for existing invocations. */
       run: async (ctx: restate.Context, request: ResearchRequest): Promise<CommissionedJob> =>
-        runResearch(ctx, stages, request),
+        runResearch(ctx, stages, request, "legacy"),
+      /** Staged contract (#593): named recoverable steps. */
+      runStaged: async (ctx: restate.Context, request: ResearchRequest): Promise<CommissionedJob> =>
+        runResearch(ctx, stages, request, "staged"),
     },
   });
 }
@@ -248,6 +265,7 @@ export const ArticleRunInputSchema = z
      * reused, while successful saved research artifacts are still reused.
      */
     recoveryGeneration: z.number().int().min(0).max(100).optional(),
+    researchExecution: z.literal("staged").optional(),
     source: z
       .object({
         namespace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}\/[a-z0-9][a-z0-9-]{0,99}$/),
@@ -371,7 +389,8 @@ export function articleRunWorkflow(stages: ArticleStages) {
         ctx
           .scope(RESEARCH_SCOPE)
           .serviceClient(Research)
-          .run(
+          // The contract named by the serialised input, never by current config.
+          [input.researchExecution === "staged" ? "runStaged" : "run"](
             request,
             restate.rpc.opts({
               idempotencyKey: researchCallKey(jobId, input.recoveryGeneration ?? 0),

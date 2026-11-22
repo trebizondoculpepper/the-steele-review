@@ -1,6 +1,7 @@
 import {
   assembleStage,
   discoverStage,
+  existingJob,
   failedJob,
   finishFailedStage,
   inventoryStage,
@@ -254,6 +255,7 @@ export function articleStages(deps: {
               assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
               failed: (request: ResearchRequest, failure: string) =>
                 finishFailedStage(staged, request, failure as Parameters<typeof failedJob>[1]),
+              existing: (request: ResearchRequest) => existingJob(staged, request),
               rounds: MAX_RETRIEVAL_ROUNDS,
               roundDelayMs: 30_000,
             };

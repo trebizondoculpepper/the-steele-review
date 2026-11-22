@@ -8,11 +8,13 @@ import { WebAdapterError } from "../../src/controllers/research-web.js";
 import {
   assembleStage,
   discoverStage,
+  existingJob,
   finishFailedStage,
   inventoryStage,
   retrieveStage,
   type StagedResearchDeps,
 } from "../../src/research/staged-research.js";
+import { researchDocumentKind } from "../../src/research/research-index.js";
 import { runResearch, type ResearchStages } from "../../src/workflow/article-run.js";
 
 let dir: string;
@@ -84,6 +86,7 @@ function stagesFor(deps: StagedResearchDeps): ResearchStages {
     retrieve: (i) => retrieveStage(deps, i),
     assemble: (d, i) => assembleStage(deps, d, i),
     failed: (r, f) => finishFailedStage(deps, r, f as never),
+    existing: (r) => existingJob(deps, r),
     rounds: 3,
     roundDelayMs: 1,
   };
@@ -139,13 +142,14 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
         },
       },
     };
-    await expect(runResearch(run.ctx, crashing, request)).rejects.toThrow("crash");
+    await expect(runResearch(run.ctx, crashing, request, "staged")).rejects.toThrow("crash");
     expect(s.calls.n).toBe(1);
     // Replay of the same invocation: discovery and inventory come from the journal.
-    const job = await runResearch(run.ctx, stages, request);
+    const job = await runResearch(run.ctx, stages, request, "staged");
     expect(s.calls.n).toBe(1);
     expect(run.names).toEqual(
       expect.arrayContaining([
+        "research-existing",
         "research-discover",
         "research-inventory",
         "research-retrieve-0",
@@ -175,6 +179,7 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
       run.ctx,
       { research: async () => ({}) as never, researchStages: stagesFor(deps(s, fetcher)) },
       request,
+      "staged",
     );
     expect(run.names).toContain("research-retrieve-1");
     // The adapter-only fake provenance always leaves a gap; both sources are archived.
@@ -207,6 +212,7 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
         ),
       },
       request,
+      "staged",
     );
     expect(job.result).toMatchObject({ outcome: "failed", failure: "provider-error" });
     // Persisted with its completion event, like the legacy runner.
@@ -228,5 +234,68 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
     const job = await runResearch(run.ctx, { research: async () => legacy }, request);
     expect(job).toEqual(legacy);
     expect(run.names).toEqual(["research"]);
+  });
+
+  it("replays a legacy invocation as one step even with staged stages available", async () => {
+    const run = journalCtx();
+    const legacy = { jobId: "research-" + "1".repeat(32), status: "finished" as const };
+    const job = await runResearch(
+      run.ctx,
+      {
+        research: async () => legacy,
+        researchStages: stagesFor(
+          deps(sonar(), {
+            fetch: async () => {
+              throw new Error("no");
+            },
+          }),
+        ),
+      },
+      request,
+    );
+    expect(job).toEqual(legacy);
+    expect(run.names).toEqual(["research"]);
+  });
+
+  it("reuses a saved terminal failure instead of buying discovery again", async () => {
+    const failing = sonar(new Error("provider down"));
+    const d = deps(failing, {
+      fetch: async () => {
+        throw new Error("no");
+      },
+    });
+    const first = await runResearch(
+      journalCtx().ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d) },
+      request,
+      "staged",
+    );
+    expect(first.result?.failure).toBe("provider-error");
+    // A recovery is a new invocation (new journal): the saved result is reused.
+    const healthy = sonar();
+    const again = journalCtx();
+    const job = await runResearch(
+      again.ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(deps(healthy, d.fetcher)) },
+      request,
+      "staged",
+    );
+    expect(healthy.calls.n).toBe(0);
+    expect(job.resultRef?.path).toBe(first.resultRef?.path);
+    expect(again.names).toEqual(["research-existing"]);
+  });
+});
+
+describe("staged outputs are searchable (#593)", () => {
+  it("classifies assembled reports and citation snapshots", () => {
+    expect(researchDocumentKind("research-discovery/req-a/disc-b/assembled/report.md")).toBe(
+      "research-report",
+    );
+    expect(researchDocumentKind("research-discovery/req-a/disc-b/citations/snapshots/x.json")).toBe(
+      "source-snapshot",
+    );
+    expect(
+      researchDocumentKind("research-discovery/req-a/disc-b/citations/inventory.json"),
+    ).toBeUndefined();
   });
 });

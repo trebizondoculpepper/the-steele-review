@@ -67,6 +67,11 @@ export function researchDocumentKind(path: string): ResearchDocumentKind | undef
     return "covering-note";
   if (/^research-jobs\/research-[0-9a-f]{32}\/sources\/[^/]+\.json$/.test(path))
     return "source-snapshot";
+  // Staged research outputs (#593).
+  if (/^research-discovery\/[^/]+\/[^/]+\/assembled\/report\.md$/.test(path))
+    return "research-report";
+  if (/^research-discovery\/[^/]+\/[^/]+\/citations\/snapshots\/[^/]+\.json$/.test(path))
+    return "source-snapshot";
   return undefined;
 }
 

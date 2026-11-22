@@ -1,3 +1,4 @@
+import { researchExecutionFromEnv } from "../workflow/research-execution.js";
 /**
  * Start one unattended article run for a captured post (#243).
  *
@@ -98,6 +99,7 @@ async function main(): Promise<number> {
     sourceVersion: sourceVersionFor(record.text),
     sourceUrl: record.item.url,
     researchDeadlineMs: deadline.data,
+    ...researchExecutionFromEnv(),
     ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
   };
   const key = articleRunKey(input);
