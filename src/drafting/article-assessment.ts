@@ -88,8 +88,10 @@ export function classifyFindings(document: string): {
   const body = lines.slice(0, -1).join("\n");
   const findings = (body.match(/^##\s+Finding\b/gm) ?? []).length;
   if (findings > 0) return { state: "findings", findings };
-  // A complete document with no finding sections must say so explicitly.
-  return /\bNo faults found\.?/i.test(body)
+  // A clean assessment is exactly the prescribed sentence and nothing else:
+  // an incidental or qualified phrase ("No faults found in the title, but…")
+  // never counts as clean.
+  return /^No faults found\.?$/i.test(body.trim())
     ? { state: "no-faults", findings: 0 }
     : { state: "malformed" };
 }
@@ -192,9 +194,13 @@ export async function assessArticle(input: {
     assessor: { model: input.assessor.modelVersion, promptVersion: promptId },
     assessedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
-  // Only a usable assessment is cached; a failed one may be retried later.
+  // A provider failure is kept as its own write-once attempt record (with its
+  // deterministic findings and provenance), outside the success path, so the
+  // exact input stays retryable and nothing about the attempt is lost.
   if (record.state === "provider-failed") {
-    return { status: "assessed", record, ref: draftRef, reused: false };
+    const attempt = sha(`${record.assessedAt}:${Math.random()}`).slice(0, 16);
+    const ref = await writeOnce(input.content, `${dir}/${key}.failed/${attempt}.json`, record);
+    return { status: "assessed", record, ref, reused: false };
   }
   const ref = await writeOnce(input.content, recordPath, record);
   return { status: "assessed", record, ref, reused: false };

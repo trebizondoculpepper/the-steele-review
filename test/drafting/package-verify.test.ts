@@ -1151,6 +1151,12 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     expect(classifyFindings("Looks fine to me.\nEND OF ASSESSMENT")).toEqual({
       state: "malformed",
     });
+    // A qualified or incidental phrase is not a clean assessment.
+    expect(
+      classifyFindings(
+        "No faults found in the title, but the body misquotes the source.\nEND OF ASSESSMENT",
+      ),
+    ).toEqual({ state: "malformed" });
   });
 
   it("saves a readable findings document bound to the exact body and publication fields", async () => {
@@ -1194,6 +1200,21 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     const failed = await assessArticle({ content, archive, metadata, assessor: failing as never });
     expect(failed).toMatchObject({ status: "assessed", record: { state: "provider-failed" } });
     expect(failed.status === "assessed" && failed.record.document).toBeFalsy();
+    // The failed attempt is saved and its reference returned; the input stays retryable.
+    if (failed.status !== "assessed") throw new Error("expected a record");
+    expect(failed.ref.path).toMatch(/^assessments\/.+\.failed\/[0-9a-f]{16}\.json$/);
+    expect(JSON.parse(await content.read(failed.ref))).toMatchObject({ state: "provider-failed" });
+    const retried = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: model("fake/assessor-down", "No faults found.\nEND OF ASSESSMENT"),
+    });
+    expect(retried).toMatchObject({
+      status: "assessed",
+      reused: false,
+      record: { state: "no-faults" },
+    });
     const cut = await assessArticle({
       content,
       archive,
