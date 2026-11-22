@@ -38,7 +38,7 @@ import { promptIdentity } from "./prompt-identity.js";
  * are enforced by orchestration (#600), not here.
  */
 
-export const DEFAULT_JUDGE_PROMPT = loadPromptFile("verifier", "editorial-judge");
+export const DEFAULT_JUDGE_PROMPT = loadPromptFile("judge", "editorial-judge");
 export const JUDGMENT_SCHEMA_VERSION = 1;
 
 const Ref = ArtifactReferenceSchema;
