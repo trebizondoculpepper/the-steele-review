@@ -32,3 +32,12 @@ After discovery, two named deterministic stages run under the same discovery dir
   - **Transient failures** (rate-limited, unavailable, timeout) retry a bounded number of times, then are reported as retryable and never recorded as permanent.
   - **Credit:** exhausted provider credit stops the stage without recording a verdict.
   - **Isolation:** one URL's failure never loses another's download.
+
+## Assembled result (#592)
+
+`assembleResearch` (`src/research/assemble-research.ts`) builds the research result only from exact saved stages: accepted discovery, the citation inventory and the per-URL outcomes. It never runs discovery or downloads again.
+
+- **Output:** it writes the existing `ResearchManifest` and `ResearchResult` contracts, with the report text, under `research-discovery/<request>/<discovery>/assembled/`. Current consumers and dossiers can read them unchanged.
+- **Support:** every citation's support is `not-checked`. A retrieved document is not evidence, and support assessment stays a separate boundary.
+- **Gaps:** inaccessible, unsupported, not-attempted and pending retrievals, unfetchable URLs, omitted inventory entries and adapter-only citation provenance are listed explicitly, and any of them makes the outcome `complete-with-gaps`. "Retrieval complete" never means "research sufficient".
+- **Completion:** completion and its `research.completed` event are recorded in one state transaction. A failed completion releases its claim for retry. A replay returns the recorded result without rebuilding or emitting again.
