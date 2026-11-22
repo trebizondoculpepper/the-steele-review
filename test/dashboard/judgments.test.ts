@@ -136,6 +136,9 @@ describe("judgments browser (#643)", { timeout: 60_000 }, () => {
     expect(html).toContain("Remove the unsupported claim about funding.");
     expect(html).toContain("Required corrections");
     expect(html).toContain("fake/judge");
+    // The exact reviewed body version is displayed, not only its path.
+    expect(html).toContain("a".repeat(12));
+    expect(html).toContain(`sha256:${"2".repeat(64)}`);
   });
 
   it("shows gate reasons, and a malformed document is not treated as guidance", async () => {

@@ -1,5 +1,6 @@
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { JudgmentDecision, JudgmentRow, JudgmentState, JudgmentsPort } from "./judgments.js";
+import type { ArtifactReference } from "../content/artifact-reference.js";
 
 /**
  * Judgments browser (#643). Read-only view of saved judge attempts and the
@@ -87,6 +88,10 @@ export function judgmentViews(judgments?: JudgmentsPort): DashboardView[] {
       const found = await judgments.detail(path);
       if (!found) return '<p class="empty">Choose a saved judgment from the list.</p>';
       const r: JudgmentRow = found.row;
+      const version = (label: string, a: ArtifactReference): [string, string] => [
+        label,
+        `<code>${escapeHtml(a.path)}</code><br><code>${escapeHtml(a.commit.slice(0, 12))}</code> · <code>${escapeHtml(a.hash)}</code>`,
+      ];
       const facts: [string, string][] = [
         ["Article", `${escapeHtml(r.publicationId)}/${escapeHtml(r.postId)}`],
         ["State", badge(r.state)],
@@ -94,9 +99,9 @@ export function judgmentViews(judgments?: JudgmentsPort): DashboardView[] {
         ["Judge model", r.judgeModel ? escapeHtml(r.judgeModel) : "not recorded"],
         ["Judge prompt", r.promptVersion ? `<code>${escapeHtml(r.promptVersion)}</code>` : "not recorded"],
         ["Decided", escapeHtml(r.decidedAt)],
-        ["Assessment", `<code>${escapeHtml(found.assessmentPath)}</code>`],
-        ["Reviewed body", `<code>${escapeHtml(found.bodyPath)}</code>`],
-        ["Publication", `<code>${escapeHtml(found.publicationPath)}</code>`],
+        version("Assessment", found.assessment),
+        version("Reviewed body", found.body),
+        version("Publication", found.publication),
         ["Saved record", `<code>${escapeHtml(path)}</code>`],
       ];
       const gates = found.gates.length

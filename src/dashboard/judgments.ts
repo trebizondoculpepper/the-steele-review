@@ -1,4 +1,5 @@
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
   JudgmentRecordSchema,
   type JudgmentRecord,
@@ -49,9 +50,10 @@ export interface JudgmentListing {
 export interface JudgmentDetail {
   row: JudgmentRow;
   gates: string[];
-  assessmentPath: string;
-  bodyPath: string;
-  publicationPath: string;
+  /** Exact versions the judgment is bound to (path alone is not an identity). */
+  assessment: ArtifactReference;
+  body: ArtifactReference;
+  publication: ArtifactReference;
   document?: string;
   documentUnreadable: boolean;
   /** Parsed guidance when the retained document is a complete judgement. */
@@ -187,9 +189,9 @@ export function savedJudgments(
       return {
         row,
         gates: record.gates,
-        assessmentPath: record.assessment.path,
-        bodyPath: record.body.path,
-        publicationPath: record.publication.path,
+        assessment: record.assessment,
+        body: record.body,
+        publication: record.publication,
         ...(document === undefined ? {} : { document }),
         documentUnreadable,
         ...(guidance ? { guidance } : {}),
