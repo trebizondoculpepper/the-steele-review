@@ -1,3 +1,4 @@
+import { AppliedResearchTokensSchema } from "../config/research-tokens.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
@@ -55,6 +56,7 @@ export const DiscoveryReturnedSchema = z
       .nonnegative()
       .max(4 * 1024 * 1024),
     bodyHash: z.string().regex(/^[0-9a-f]{64}$/),
+    appliedTokens: AppliedResearchTokensSchema.optional(),
   })
   .strict();
 export const DiscoveryResultSchema = z
@@ -269,6 +271,55 @@ async function readDiscovery(
   }
 }
 
+/** Select retained work before reading live settings for a new dispatch. */
+async function savedDispatchIdentity(
+  artifacts: GitArtifactStore,
+  request: unknown,
+  processor: DiscoveryProcessor,
+) {
+  const current = discoveryIdentity(request, processor);
+  const paths = await artifacts.list(`research-discovery/${current.requestId}`, 201);
+  if (paths.length > 200) throw new ResearchDiscoveryError("archive-failed");
+  const candidates: ReturnType<typeof discoveryIdentity>[] = [];
+  const withoutTokenLimit = (p: DiscoveryProcessor) => {
+    const { maxOutputTokens: _ignored, ...parameters } = p.parameters;
+    return { ...p, parameters };
+  };
+  let descriptors = 0;
+  for (const path of paths) {
+    if (!path.endsWith("/input.json")) continue;
+    descriptors++;
+    const ref = await artifacts.lookup(path);
+    if (!ref) throw new ResearchDiscoveryError("archive-failed");
+    const saved = z
+      .object({
+        schemaVersion: z.literal(1),
+        request: ResearchRequestSchema,
+        processor: DiscoveryProcessorSchema,
+        requestId: z.string(),
+        discoveryId: z.string(),
+      })
+      .strict()
+      .parse(JSON.parse(await artifacts.read(ref)));
+    const identity = discoveryIdentity(saved.request, saved.processor);
+    if (
+      saved.requestId !== identity.requestId ||
+      saved.discoveryId !== identity.discoveryId ||
+      path !== `research-discovery/${identity.requestId}/${identity.discoveryId}/input.json` ||
+      JSON.stringify(saved.request) !== JSON.stringify(current.request)
+    )
+      throw new ResearchDiscoveryError("archive-failed");
+    if (
+      JSON.stringify(withoutTokenLimit(identity.processor)) ===
+      JSON.stringify(withoutTokenLimit(current.processor))
+    )
+      candidates.push(identity);
+  }
+  if (candidates.length > 1 || (descriptors && !candidates.length))
+    throw new ResearchDiscoveryError("archive-failed");
+  return candidates[0] ?? current;
+}
+
 /** Retain a bounded provider body before interpretation; no headers, credentials or environment are supplied. */
 export async function captureResearchDiscovery(input: {
   artifacts: GitArtifactStore;
@@ -281,6 +332,7 @@ export async function captureResearchDiscovery(input: {
   now?: () => Date;
   /** New curation policy; discovery artifacts and terminal jobs remain immutable. */
   partialReport?: "warning-v1";
+  reuseSavedAttempt?: boolean;
 }): Promise<{
   partial: boolean;
   data: DiscoveryData;
@@ -290,8 +342,10 @@ export async function captureResearchDiscovery(input: {
   discoveryId: string;
   reused: boolean;
 }> {
-  const identity = discoveryIdentity(input.request, input.processor),
-    { requestId, discoveryId } = identity;
+  const identity = input.reuseSavedAttempt
+    ? await savedDispatchIdentity(input.artifacts, input.request, input.processor)
+    : discoveryIdentity(input.request, input.processor);
+  const { requestId, discoveryId } = identity;
   const dir = `research-discovery/${requestId}/${discoveryId}`,
     key = `research-discovery:${discoveryId}`;
   const save = async (path: string, value: unknown, exact = false) => {
@@ -481,6 +535,9 @@ export async function captureResearchDiscovery(input: {
         encoding,
         byteLength: bytes.byteLength,
         bodyHash: createHash("sha256").update(bytes).digest("hex"),
+        ...(partial && "appliedTokens" in partial && partial.appliedTokens
+          ? { appliedTokens: AppliedResearchTokensSchema.parse(partial.appliedTokens) }
+          : {}),
       },
       true,
     );

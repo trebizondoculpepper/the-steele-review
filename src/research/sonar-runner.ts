@@ -91,6 +91,7 @@ export async function runSonarResearch(input: {
       request: input.request,
       owner: input.owner,
       partialReport: "warning-v1",
+      reuseSavedAttempt: input.discover.liveTokens,
       processor: input.discover.discoveryProcessor ?? {
         version: "research-discovery-v1",
         model: "adapter-unspecified",

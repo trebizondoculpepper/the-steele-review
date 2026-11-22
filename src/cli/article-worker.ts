@@ -20,7 +20,7 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
  *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?, STEELE_MODEL_VERIFIER?
  *                                                    per-stage overrides
- *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_OUTPUT_TOKENS?
+ *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_TOKENS?
  *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
  *   ELASTICSEARCH_URL?, ELASTICSEARCH_API_KEY[_FILE]?  claim-occurrence index; enables same-speaker
  *                                                    history in the essay (#370)

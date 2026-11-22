@@ -1,3 +1,5 @@
+import { type ResearchTokensReader } from "../config/research-tokens.js";
+import { ResearchMaxTokensSchema } from "../config/settings.js";
 import { assertResearchEffort, researchEffortFromEnv } from "../research/sonar.js";
 import { replaySonarDiscovery } from "./sonar-discovery-replay.js";
 import type { DiscoveryProcessor } from "../research/discovery.js";
@@ -35,14 +37,17 @@ export const SUBJECT_RESEARCH_PROMPT_VERSION = SUBJECT_PROMPT.version;
 export interface SubjectResearchProvider {
   (request: ResearchRequest, capture?: DiscoveryCapture): Promise<SonarReport>;
   readonly discoveryProcessor?: DiscoveryProcessor;
+  readonly liveTokens?: boolean;
 }
 
 export function sonarFromEnv(config: {
   model: string;
   timeoutMs: number;
   maxTokens: number;
+  tokens?: ResearchTokensReader;
 }): SubjectResearchProvider {
   const model = ResearchModelSchema.parse(config.model);
+  const fixedTokens = ResearchMaxTokensSchema.parse(config.maxTokens);
   // Explicit reasoning effort (#662): refused before any paid request when
   // this model's route cannot honour it.
   const effort = researchEffortFromEnv(process.env);
@@ -50,6 +55,7 @@ export function sonarFromEnv(config: {
   // Read live before each request (#738), never retained from start-up.
   const key = liveCredential("OPENROUTER_API_KEY");
   const run: SubjectResearchProvider = async (request, capture) => {
+    const appliedTokens = config.tokens ? await config.tokens() : undefined;
     const signal = AbortSignal.timeout(config.timeoutMs);
     let bytes: Buffer;
     let partial: PartialDiscoveryBody | undefined;
@@ -64,7 +70,7 @@ export function sonarFromEnv(config: {
         signal,
         body: JSON.stringify({
           model,
-          max_tokens: config.maxTokens,
+          max_tokens: appliedTokens?.maxOutputTokens ?? fixedTokens,
           ...(effort ? { reasoning: { effort } } : {}),
           messages: [
             {
@@ -102,7 +108,7 @@ export function sonarFromEnv(config: {
         partial = value;
       });
     } catch (error) {
-      if (partial) await capture?.(partial);
+      if (partial) await capture?.({ ...partial, ...(appliedTokens ? { appliedTokens } : {}) });
       if (error instanceof SonarError) throw error;
       throw new SonarError(signal.aborted ? "timeout" : "provider-error");
     }
@@ -112,6 +118,7 @@ export function sonarFromEnv(config: {
       body: bytes.toString("base64"),
       encoding: "base64",
       transport: "complete",
+      ...(appliedTokens ? { appliedTokens } : {}),
     });
     const replay = replaySonarDiscovery(bytes.toString("utf8"), model);
     if (replay.validation !== "valid" || !replay.data) throw new SonarError("invalid-report");
@@ -129,13 +136,14 @@ export function sonarFromEnv(config: {
     };
   };
   return Object.assign(run, {
+    liveTokens: !!config.tokens,
     discoveryProcessor: {
       version: "research-discovery-v1" as const,
       model,
       promptVersion: SUBJECT_PROMPT.version,
       parameters: {
         timeoutMs: config.timeoutMs,
-        maxOutputTokens: config.maxTokens,
+        ...(config.tokens ? {} : { maxOutputTokens: fixedTokens }),
         maxResponseBytes: 4 * 1024 * 1024,
       },
     },

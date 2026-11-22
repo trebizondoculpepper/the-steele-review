@@ -78,7 +78,7 @@ import { researchBrowseViews } from "../dashboard/research-browse-views.js";
 import { claimBrowseViews } from "../dashboard/claim-browse-views.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { collectActivity, renderActivity } from "../dashboard/activity.js";
-import { renderConfig, renderConfigForm } from "../dashboard/config-view.js";
+import { currentConfigPage, renderConfigForm } from "../dashboard/config-view.js";
 import { configEditAction, savedVersionOf } from "../dashboard/config-edit.js";
 import { listSettingsRevisions, readSettingsFile } from "../config/settings-file.js";
 import { inspectSettings, resolveSettings } from "../config/settings.js";
@@ -282,8 +282,9 @@ const configView = [
     async render() {
       const file = configFile ? await readSettingsFile(configFile) : {};
       const inspected = inspectSettings(resolveSettings(process.env, file));
-      if (!configEnabled) return renderConfig(inspected);
-      return `${renderConfig(inspected)}${renderConfigForm(
+      const page = await currentConfigPage(process.env, file);
+      if (!configEnabled) return page;
+      return `${page}${renderConfigForm(
         inspected,
         savedVersionOf(file, configSalt!),
         await listSettingsRevisions(configFile!),

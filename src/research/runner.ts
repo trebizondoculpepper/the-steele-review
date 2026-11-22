@@ -390,6 +390,7 @@ export async function runResearchJob(input: {
         request,
         owner: input.owner,
         partialReport: "warning-v1",
+        reuseSavedAttempt: sonar.liveTokens,
         processor: {
           version: "research-discovery-v1",
           model: sonar.model,

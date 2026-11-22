@@ -193,6 +193,70 @@ describe("durable research discovery", { timeout: 60000 }, () => {
       readLengthLimitedResearchDiscovery(artifacts, result, operations),
     ).rejects.toMatchObject({ code: "invalid-report" });
   });
+  it("live-token dispatch selects an exact saved response before reading changed configuration", async () => {
+    const appliedTokens = {
+      maxOutputTokens: 4000,
+      source: "file",
+      revision: "settings-sha256:synthetic",
+    };
+    const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+      await capture({
+        representation: "provider-json",
+        body: Buffer.from(body()).toString("base64"),
+        encoding: "base64",
+        transport: "complete",
+        appliedTokens,
+      });
+      return data;
+    });
+    const first = await captureResearchDiscovery({ ...options(), invoke });
+    const bytes = await artifacts.read(first.returned);
+    expect(JSON.parse(bytes).appliedTokens).toEqual(appliedTokens);
+    const forbidden = vi.fn(async () => {
+      throw new Error("no settings read or dispatch on replay");
+    });
+    const changed = {
+      ...processor,
+      parameters: { ...processor.parameters, maxOutputTokens: 12000 },
+    };
+    const replay = await captureResearchDiscovery({
+      ...options(),
+      processor: changed,
+      reuseSavedAttempt: true,
+      invoke: forbidden,
+    });
+    expect(replay.ref).toEqual(first.ref);
+    expect(replay.reused).toBe(true);
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(await artifacts.read(first.returned)).toBe(bytes);
+    // The preexisting fixed-client contract still uses its unchanged processor identity.
+    expect(discoveryIdentity(request, processor)).toMatchObject({ discoveryId: first.discoveryId });
+    expect(discoveryIdentity(request, changed).discoveryId).not.toBe(first.discoveryId);
+  });
+  it("refuses ambiguous saved attempts or an incomplete scan instead of buying another response", async () => {
+    const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+      await capture(body());
+      return data;
+    });
+    await captureResearchDiscovery({ ...options(), invoke });
+    await captureResearchDiscovery({
+      ...options(),
+      processor: { ...processor, parameters: { ...processor.parameters, maxOutputTokens: 12000 } },
+      invoke,
+    });
+    invoke.mockClear();
+    await expect(
+      captureResearchDiscovery({ ...options(), reuseSavedAttempt: true, invoke }),
+    ).rejects.toMatchObject({ code: "archive-failed" });
+    expect(invoke).not.toHaveBeenCalled();
+    vi.spyOn(artifacts, "list").mockResolvedValue(
+      Array.from({ length: 201 }, (_, i) => `synthetic/${i}`),
+    );
+    await expect(
+      captureResearchDiscovery({ ...options(), reuseSavedAttempt: true, invoke }),
+    ).rejects.toMatchObject({ code: "archive-failed" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
   it("never recalls after an ambiguous no-response failure", async () => {
     let calls = 0;
     const invoke = async () => {

@@ -88,6 +88,7 @@ export async function discoverStage(
       operations: deps.operations,
       request,
       owner: deps.owner,
+      reuseSavedAttempt: deps.sonar.liveTokens,
       processor: {
         version: "research-discovery-v1",
         model: deps.sonar.model,
