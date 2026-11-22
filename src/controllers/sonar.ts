@@ -3,7 +3,7 @@ import { replaySonarDiscovery } from "./sonar-discovery-replay.js";
 import type { DiscoveryProcessor } from "../research/discovery.js";
 import type { DiscoveryCapture, PartialDiscoveryBody } from "../research/discovery-data.js";
 import { ResearchModelSchema } from "../config/research-model.js";
-import { readCredential } from "../config/credentials.js";
+import { credentialForRequest, liveCredential } from "../config/credentials.js";
 import { loadPromptFile } from "../prompt-files.js";
 import type { ResearchRequest } from "../research/job.js";
 
@@ -47,7 +47,8 @@ export function sonarFromEnv(config: {
   // this model's route cannot honour it.
   const effort = researchEffortFromEnv(process.env);
   assertResearchEffort(model, effort);
-  const key = readCredential("OPENROUTER_API_KEY", { required: true });
+  // Read live before each request (#738), never retained from start-up.
+  const key = liveCredential("OPENROUTER_API_KEY");
   const run: SubjectResearchProvider = async (request, capture) => {
     const signal = AbortSignal.timeout(config.timeoutMs);
     let bytes: Buffer;
@@ -56,7 +57,10 @@ export function sonarFromEnv(config: {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         redirect: "error",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${credentialForRequest(key, () => new SonarError("unauthorised"))}`,
+          "content-type": "application/json",
+        },
         signal,
         body: JSON.stringify({
           model,

@@ -110,7 +110,7 @@ describe("canonical TOML credential selection", () => {
 });
 
 describe("model adapter startup uses canonical credentials", () => {
-  it("sees atomic owner edits on explicit reload while an existing adapter keeps its loaded snapshot", async () => {
+  it("sees atomic owner edits on the next request, on an existing adapter too (#738)", async () => {
     const { dir, file, env } = fixture(`OPENROUTER_API_KEY = '${KEY}'`);
     const sent: string[] = [];
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
@@ -129,7 +129,8 @@ describe("model adapter startup uses canonical credentials", () => {
     const request = { system: "synthetic", user: "synthetic", maxOutputChars: 100 };
     await original.complete(request, new AbortController().signal);
     await current.complete(request, new AbortController().signal);
-    expect(sent).toEqual([`Bearer ${KEY}`, `Bearer ${OTHER}`]);
+    // The adapter created before the edit no longer keeps a start-up snapshot.
+    expect(sent).toEqual([`Bearer ${OTHER}`, `Bearer ${OTHER}`]);
     expect(readdirSync(dir)).toEqual(["private-config.toml"]);
   });
 
