@@ -1,3 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { OperationStore } from "../../src/controllers/operation-store.js";
+import { articleAttemptHash } from "../../src/workflow/article-attempt.js";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vite-plus/test";
@@ -90,6 +95,44 @@ describe("confirmed article trigger", () => {
       ).status,
     ).toBe(409);
     expect((await trigger.submit(new URLSearchParams(selection))).status).toBe(400);
+  });
+
+  it("records new normal attempts with live policy and reconnects the same form without copying settings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "trigger-live-policy-"));
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    const submissions: { input: ArticleRunInput; key?: string }[] = [];
+    try {
+      const trigger = articleTrigger({
+        archive: { lookup: async () => artifact, read: async () => JSON.stringify(record) },
+        attempts: operations,
+        runs: { status: async () => ({ state: "not-started" as const }) },
+        submitter: {
+          submit: async (input, key) => {
+            submissions.push({ input, key });
+          },
+        },
+        researchDeadlineMs: 60000,
+        researchRequestLimit: 2,
+      });
+      const request = "console-00000000-0000-4000-8000-000000000001";
+      const form = new URLSearchParams({ ...selection, request, confirm: "yes" });
+      expect((await trigger.submit(form)).status).toBe(303);
+      expect((await trigger.submit(form)).status).toBe(303);
+      expect(submissions).toHaveLength(1);
+      const submitted = submissions[0]!;
+      expect(submitted.input.editorialExecution).toBe("live-policy-v1");
+      expect(submitted.input.editorial).toBeUndefined();
+      expect(submitted.input.operatorRequestId).toBe(request);
+      expect(submitted.input.sourceVersion).toBe(revision);
+      expect(submitted.key).not.toBe(articleRunKey(submitted.input));
+      expect(operations.articleAttempt("pub", "post", request)).toMatchObject({
+        workflowKey: submitted.key,
+        inputHash: articleAttemptHash(submitted.input),
+      });
+    } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("requires a bounded same-origin POST and sanitizes failures", async () => {

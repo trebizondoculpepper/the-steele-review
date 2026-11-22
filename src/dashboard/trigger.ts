@@ -8,11 +8,7 @@ import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import {
-  ArticleRunInputSchema,
-  articleRunKey,
-  type ArticleRunInput,
-} from "../workflow/article-run.js";
+import { ArticleRunInputSchema, type ArticleRunInput } from "../workflow/article-run.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import { randomUUID } from "node:crypto";
 import type { OperationStore } from "../controllers/operation-store.js";

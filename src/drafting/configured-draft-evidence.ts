@@ -132,6 +132,44 @@ export async function readConfiguredDraftEvidence(input: {
       sameArtifact(priorPublication.payload.body, version.body) &&
         sameArtifact(priorPublication.payload.metadata, version.metadata),
     );
+    const versionMetadata = PackageDraftMetadataSchema.parse(await read(version.metadata));
+    requireEvidence(
+      !versionMetadata.format &&
+        versionMetadata.mechanicalRun &&
+        sameArtifact(versionMetadata.package, request.package) &&
+        sameArtifact(versionMetadata.source, pkg.source.artifact) &&
+        versionMetadata.sourceContext &&
+        sameArtifact(versionMetadata.sourceContext, checkpoint.sourceContext),
+    );
+    if (index > 0)
+      requireEvidence(
+        sameArtifact(versionMetadata.mechanicalRun!, checkpoint.mechanicalRuns[index - 1]!),
+      );
+    const previous = index > 0 ? versions[index - 1] : undefined;
+    await readDraftMechanicalEvidence({
+      content: input.content,
+      request: { package: request.package, mechanicalRun: versionMetadata.mechanicalRun! },
+      pkg,
+      metadata: versionMetadata,
+      sourceUrl: run.sourceUrl,
+      markdown: priorPublication.markdown,
+      allowedKinds: index > 0 ? ["revision", "correction"] : ["initial", "correction"],
+      ...(index > 0 ? { expectedRevision: index } : {}),
+      requiredContext: [
+        checkpoint.sourceContext,
+        pkg.coverage,
+        pkg.themeResult,
+        pkg.claimResult,
+        ...(previous
+          ? [
+              previous.body,
+              previous.metadata,
+              checkpoint.judgments[index - 1]!,
+              checkpoint.assessments[index - 1]!,
+            ]
+          : []),
+      ],
+    });
     const previousFindings = classifyFindings(
       await input.content.read(artifactRef(priorAssessment.document!)),
     );
@@ -203,17 +241,6 @@ export async function readConfiguredDraftEvidence(input: {
         sameArtifact(checkpoint.mechanicalRuns.at(-1)!, checkpoint.mechanicalRun),
     );
   }
-  await readDraftMechanicalEvidence({
-    content: input.content,
-    request: { package: request.package, mechanicalRun: checkpoint.mechanicalRun },
-    pkg,
-    metadata,
-    sourceUrl: run.sourceUrl,
-    markdown: loaded.markdown,
-    allowedKinds: checkpoint.revisions.length
-      ? ["revision", "correction"]
-      : ["initial", "correction"],
-  });
   if (input.requireCurrent) {
     requireEvidence(input.content.lookup && input.content.lookupAt);
     await assertEditorialBaseCurrent(

@@ -5,7 +5,7 @@ import { articleAttemptHash } from "./article-attempt.js";
 import { JudgmentRecordSchema } from "../drafting/editorial-judgment.js";
 import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
 import { WriterPackageSchema } from "../drafting/writer-package.js";
-import { artifactRef, artifactReference } from "../drafting/publication-payload.js";
+import { artifactReference } from "../drafting/publication-payload.js";
 import {
   assembleStage,
   discoverStage,

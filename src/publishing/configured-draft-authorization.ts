@@ -1,3 +1,4 @@
+import { WriterRecoveryGuardError } from "../drafting/writer-attempts.js";
 import { ArticleRunInputSchema } from "../workflow/article-run.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
@@ -110,7 +111,8 @@ export async function authorizeConfiguredDraft(input: {
   const completed = input.operations.ownerDraftAuthorization(event.eventId);
   if (!completed) {
     for (const target of destinations)
-      if (!(await input.deliveryControl.allow(target))) throw new ConfiguredDraftEvidenceError();
+      if (!(await input.deliveryControl.allow(target)))
+        throw new WriterRecoveryGuardError("policy-changed");
     await readConfiguredDraftEvidence({
       request,
       content: input.content,

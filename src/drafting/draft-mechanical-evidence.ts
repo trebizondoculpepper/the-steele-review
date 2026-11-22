@@ -22,6 +22,8 @@ export async function readDraftMechanicalEvidence(input: {
   sourceUrl: string;
   markdown: string;
   allowedKinds: readonly string[];
+  expectedRevision?: number;
+  requiredContext?: ArtifactReference[];
 }) {
   const { content, request, pkg, metadata, allowedKinds } = input;
   const read = async (ref: ArtifactReference) => JSON.parse(await content.read(artifactRef(ref)));
@@ -45,6 +47,9 @@ export async function readDraftMechanicalEvidence(input: {
       sameArtifact(attempt.package, request.package) &&
       sameArtifact(attempt.source, pkg.source.artifact),
   );
+  requireEvidence(attempt.revision === input.expectedRevision);
+  for (const required of input.requiredContext ?? [])
+    requireEvidence(attempt.context.some((ref) => sameArtifact(ref, required)));
   let accepted = false;
   for (const ref of metadata.writerAttempts ?? []) {
     const m = WriterAttemptManifestSchema.parse(await read(ref));
@@ -60,7 +65,8 @@ export async function readDraftMechanicalEvidence(input: {
       sameArtifact(m.input, attempt.input) &&
       m.kind === attempt.kind &&
       m.number === turn.number &&
-      m.revision === attempt.revision
+      m.revision === attempt.revision &&
+      JSON.stringify(m.context) === JSON.stringify(attempt.context)
     )
       accepted = true;
   }

@@ -317,4 +317,51 @@ describe("explicit live-policy editorial contract", () => {
     expect(fresh.counts().assessed).toBe(0);
     expect(authorize).not.toHaveBeenCalled();
   });
+  it("refuses a delayed fresh revision after its live allowance was reduced without a model call", async () => {
+    const f = fixture(true);
+    let current = observation(1, "create-unpublished-draft");
+    let writerCalls = 0;
+    f.stages.revise = async (...args) => {
+      current = observation(0, "stop");
+      await args[7]!();
+      writerCalls++;
+      throw new Error("unreachable writer");
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, now: () => 0, authorize },
+    });
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(result.reason).toBe("live-policy-policy-changed");
+    expect(writerCalls).toBe(0);
+    expect(result.history.revisions).toHaveLength(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+  it("journals a fixed deadline refusal before delayed paid dispatch, without losing the control category", async () => {
+    const f = fixture(true);
+    let calls = 0;
+    f.stages.assess = async (...args) => {
+      await args[5]!();
+      calls++;
+      return { ref: ref("never.json"), state: "no-faults" };
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: {
+        read: async () => ({
+          ...observation(1, "create-unpublished-draft"),
+          policy: { ...observation(1, "create-unpublished-draft").policy, deadlineMs: 1000 },
+        }),
+        now: () => 2000,
+        authorize,
+      },
+    });
+    expect(result.reason).toBe("live-policy-deadline");
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(result.history.assessments).toHaveLength(0);
+    expect(calls).toBe(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
 });

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beforeEach, afterEach, expect, it } from "vite-plus/test";
-import { GitArtifactStore } from "../src/controllers/artifact-store.js";
+import { GitArtifactStore, ArtifactStoreError } from "../src/controllers/artifact-store.js";
 import { OperationStore } from "../src/controllers/operation-store.js";
 import {
   continuationParentFixture,
@@ -117,6 +117,57 @@ it(
       operations,
       deliveryControl: real.control,
     };
+    const beforeInvalid = await content.list("configured-draft-checkpoints", 100);
+    await expect(
+      authorizeConfiguredDraft({
+        ...args,
+        checkpoint: {
+          ...checkpoint,
+          input: { ...checkpoint.input, syntheticSensitive: "DO-NOT-PERSIST-SENTINEL" },
+        },
+      }),
+    ).rejects.toThrow();
+    expect(await content.list("configured-draft-checkpoints", 100)).toEqual(beforeInvalid);
+    await expect(
+      authorizeConfiguredDraft({
+        ...args,
+        checkpoint: {
+          ...checkpoint,
+          appliedPolicy: {
+            ...checkpoint.appliedPolicy,
+            policy: { ...checkpoint.appliedPolicy.policy, onExhausted: "stop" },
+          },
+        },
+      }),
+    ).rejects.toThrow();
+    expect(
+      operations.ownerDraftIntent(
+        normal.input.publicationId,
+        normal.input.postId,
+        normal.input.operatorRequestId!,
+      ),
+    ).toBeUndefined();
+    const unavailable = new Proxy(content, {
+      get(target, key) {
+        if (key === "read")
+          return async (ref: Parameters<GitArtifactStore["read"]>[0]) => {
+            if (ref.path === checkpoint.metadata.path) throw new ArtifactStoreError("git-failed");
+            return target.read(ref);
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    await expect(authorizeConfiguredDraft({ ...args, content: unavailable })).rejects.toMatchObject(
+      { code: "git-failed" },
+    );
+    expect(
+      operations.ownerDraftIntent(
+        normal.input.publicationId,
+        normal.input.postId,
+        normal.input.operatorRequestId!,
+      ),
+    ).toBeUndefined();
     const authorized = await authorizeConfiguredDraft(args);
     expect(authorized.outcome).toBe("owner-authorized-draft");
     expect((await authorizeConfiguredDraft(args)).eventId).toBe(authorized.eventId);

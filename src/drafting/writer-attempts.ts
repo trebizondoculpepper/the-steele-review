@@ -87,7 +87,9 @@ export type WriterAttemptManifest = z.infer<typeof WriterAttemptManifestSchema>;
 
 /** Fixed domain refusal before any provider invocation; never a provider failure. */
 export class WriterRecoveryGuardError extends Error {
-  constructor(readonly code: "task-mismatch" | "not-denied" | "stale-base" | "deadline") {
+  constructor(
+    readonly code: "task-mismatch" | "not-denied" | "stale-base" | "deadline" | "policy-changed",
+  ) {
     super(`editorial recovery guard: ${code}`);
     this.name = "WriterRecoveryGuardError";
   }

@@ -103,6 +103,13 @@ async function main(): Promise<number> {
     .max(100)
     .optional()
     .safeParse(values["recovery-generation"]);
+  if (
+    values["request-id"] &&
+    (values["editorial-revisions"] !== undefined || values["editorial-deadline-ms"] !== undefined)
+  ) {
+    console.error("article-run: normal operator attempts use live editorial configuration");
+    return 2;
+  }
   let retainedResearchJobIds: string[] | undefined;
   if (!generation.success || (values["recovery-generation"] && !values["request-id"])) {
     console.error(USAGE);

@@ -34,6 +34,7 @@ export async function runEditorialLoop(input: {
   livePolicy?: {
     read(): Promise<EditorialPolicyObservation>;
     targets?(): Promise<DraftTarget[] | undefined>;
+    now?(): number;
     authorize(input: {
       version: { draft: Ref; metadata: Ref };
       initial: { draft: Ref; metadata: Ref };
@@ -87,6 +88,34 @@ export async function runEditorialLoop(input: {
   let version =
     input.initialVersion ??
     (await input.step("editorial-prepare", () => input.stages.prepare(input.draft, input.package)));
+  const beforeDispatch = (phase: "assess" | "judge" | "revise", round: number) =>
+    input.livePolicy || input.beforeNewEditorialCall
+      ? async () => {
+          await input.beforeNewEditorialCall?.();
+          if (!input.livePolicy) return;
+          const current = await input.livePolicy.read();
+          if ((input.livePolicy.now?.() ?? Date.now()) >= startedAt + current.policy.deadlineMs)
+            throw new WriterRecoveryGuardError("deadline");
+          if (phase === "revise" && round > current.policy.maxRevisions)
+            throw new WriterRecoveryGuardError("policy-changed");
+        }
+      : undefined;
+  // Domain controls are serialized inside NEW callbacks: SDK retry boundaries do
+  // not preserve custom Error prototypes. Storage/configuration exceptions still throw.
+  const roleStep = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    if (!input.livePolicy) return input.step(name, work);
+    const outcome = await input.step(name, async () => {
+      try {
+        return { kind: "completed" as const, value: await work() };
+      } catch (error) {
+        if (error instanceof WriterRecoveryGuardError)
+          return { kind: "stopped" as const, code: error.code };
+        throw error;
+      }
+    });
+    if (outcome.kind === "stopped") throw new WriterRecoveryGuardError(outcome.code);
+    return outcome.value;
+  };
   const initial = version;
   const judgmentHistory: JudgmentHistory = [...(input.priorHistory ?? [])];
   const reference = (r: Ref) => ({
@@ -122,14 +151,14 @@ export async function runEditorialLoop(input: {
         reusedAssessments.push(input.initialAssessment);
       } else {
         await input.progress("assess", round);
-        assessment = await input.step(`editorial-assess-${round}`, () =>
+        assessment = await roleStep(`editorial-assess-${round}`, () =>
           input.stages.assess(
             version,
             input.package,
             `${input.attemptId}:assessment:${round}`,
             input.recoveryId,
             input.lineage,
-            ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
+            ...(beforeDispatch("assess", round) ? [beforeDispatch("assess", round)!] : []),
           ),
         );
       }
@@ -158,12 +187,14 @@ export async function runEditorialLoop(input: {
         judgmentHistory.slice(-5),
         round === 0 ? (input.initialJudgeLineage ?? input.lineage) : input.lineage,
       ] as const;
-      const judgment = await input.step(`editorial-judge-${round}`, () =>
-        (round === 0 && input.initialJudgeRecovery) || input.beforeNewEditorialCall
+      const judgment = await roleStep(`editorial-judge-${round}`, () =>
+        (round === 0 && input.initialJudgeRecovery) ||
+        input.beforeNewEditorialCall ||
+        input.livePolicy
           ? input.stages.judge(
               ...judgeArgs,
               round === 0 ? input.initialJudgeRecovery : undefined,
-              input.beforeNewEditorialCall,
+              beforeDispatch("judge", round),
             )
           : input.stages.judge(...judgeArgs),
       );
@@ -204,7 +235,9 @@ export async function runEditorialLoop(input: {
         const destinations = input.livePolicy.targets
           ? await input.step("editorial-draft-targets", input.livePolicy.targets)
           : undefined;
-        const authorized = await input.step("editorial-authorize-draft", () =>
+        if (input.livePolicy.targets && !destinations)
+          throw new WriterRecoveryGuardError("policy-changed");
+        const authorized = await roleStep("editorial-authorize-draft", () =>
           input.livePolicy!.authorize({
             version,
             initial,
@@ -236,7 +269,7 @@ export async function runEditorialLoop(input: {
       if (exhausted) break;
       await input.progress("revise", round + 1);
       revisionAttempts++;
-      const revised = await input.step(`editorial-revise-${round + 1}`, () =>
+      const revised = await roleStep(`editorial-revise-${round + 1}`, () =>
         input.stages.revise(
           version,
           input.package,
@@ -245,7 +278,7 @@ export async function runEditorialLoop(input: {
           input.sourceUrl,
           input.recoveryId,
           input.lineage,
-          ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
+          ...(beforeDispatch("revise", round + 1) ? [beforeDispatch("revise", round + 1)!] : []),
         ),
       );
       if (revised.mechanicalRun) mechanicalRuns.push(revised.mechanicalRun);
@@ -262,15 +295,17 @@ export async function runEditorialLoop(input: {
     }
   } catch (error) {
     if (
-      input.livePolicy ||
-      !input.lineage ||
+      (input.livePolicy && !(error instanceof WriterRecoveryGuardError)) ||
+      (!input.livePolicy && !input.lineage) ||
       (input.initialAssessment && isEditorialStorageFailure(error))
     )
       throw error;
     terminal = "operational-stop";
     reason =
-      input.initialAssessment && error instanceof WriterRecoveryGuardError
-        ? `recovery-${error.code}`
+      (input.initialAssessment || input.livePolicy) && error instanceof WriterRecoveryGuardError
+        ? input.livePolicy
+          ? `live-policy-${error.code}`
+          : `recovery-${error.code}`
         : "editorial-stage-unavailable";
     if (input.initialAssessment && error instanceof WriterAttemptError && error.artifact)
       retainedControlArtifacts.push(error.artifact);

@@ -61,4 +61,3 @@ export const configuredDraftRequestHash = (request: ConfiguredDraftRequest) =>
   digest(ConfiguredDraftRequestSchema.parse(request));
 export const configuredDraftVersionIdentity = (request: ConfiguredDraftRequest) =>
   digest([request.checkpoint, request.body, request.metadata, request.publication]);
-export const normalDraftInputHash = digest;
