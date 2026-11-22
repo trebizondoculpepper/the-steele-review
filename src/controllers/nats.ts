@@ -39,6 +39,8 @@ export class NatsPublishError extends Error {
 /** One delivered JetStream message, with acknowledgment controls. */
 export interface DeliveredMessage {
   data: Uint8Array;
+  /** Broker-owned position, supplied by the controller for selected delivery. */
+  streamSequence?: number;
   /** 1 on first delivery, incremented on each redelivery. */
   deliveryCount: number;
   /** Acknowledge and wait for the server to confirm. */
@@ -49,6 +51,16 @@ export interface DeliveredMessage {
   term(): void;
   /** Extend the acknowledgment deadline while work continues. */
   working(): void;
+}
+
+/** A missing confirmation is uncertainty even if the server may have ACKed. */
+export async function confirmNatsAck(message: { ackAck(): Promise<boolean> }): Promise<void> {
+  try {
+    if ((await message.ackAck()) === true) return;
+  } catch {
+    /* Never expose transport diagnostics. */
+  }
+  throw new NatsPublishError("timeout", true);
 }
 
 export interface PublishReceipt {
@@ -261,6 +273,7 @@ export class NatsController {
     durable: string,
     handler: (message: DeliveredMessage) => Promise<void>,
     signal: AbortSignal,
+    options?: { once: boolean },
   ): Promise<void> {
     if (signal.aborted) return;
     const js = jetstream(this.requireConnection());
@@ -271,41 +284,101 @@ export class NatsController {
       throw new NatsPublishError("no-stream", false);
     }
     if (signal.aborted) return;
-    const messages = await consumer.consume({ max_messages: 1 });
-    // The signal may have aborted while the subscription was being set up.
-    if (signal.aborted) {
-      await messages.close().catch(() => undefined);
-      return;
-    }
-    const stop = () => void messages.stop();
-    signal.addEventListener("abort", stop, { once: true });
-    try {
-      for await (const m of messages) {
-        const delivered: DeliveredMessage = {
-          data: m.data,
-          deliveryCount: m.info.deliveryCount,
-          ack: async () => {
-            await m.ackAck();
-          },
-          nak: (delayMs) => m.nak(delayMs),
-          term: () => m.term(),
-          working: () => m.working(),
-        };
-        try {
-          await handler(delivered);
-        } catch {
-          m.nak(1_000);
-        }
-        if (signal.aborted) break;
+    // Empty fetch expiry is only a receive quantum, never a new caller deadline.
+    do {
+      const messages = options?.once
+        ? await consumer.fetch({ max_messages: 1, expires: 1000 })
+        : await consumer.consume({ max_messages: 1 });
+      // The signal may have aborted while the subscription was being set up.
+      if (signal.aborted) {
+        await messages.close().catch(() => undefined);
+        return;
       }
-    } finally {
-      signal.removeEventListener("abort", stop);
-      stop();
-    }
+      const stop = () => void messages.stop();
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        for await (const m of messages) {
+          const delivered: DeliveredMessage = {
+            data: m.data,
+            streamSequence: m.info.streamSequence,
+            deliveryCount: m.info.deliveryCount,
+            ack: () => confirmNatsAck(m),
+            nak: (delayMs) => m.nak(delayMs),
+            term: () => m.term(),
+            working: () => m.working(),
+          };
+          try {
+            await handler(delivered);
+          } catch {
+            m.nak(1_000);
+          }
+          if (options?.once) return;
+          if (signal.aborted) break;
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+        stop();
+      }
+    } while (options?.once && !signal.aborted);
   }
 
   /** JetStream manager for explicit provisioning tools; never used by publish(). */
   async manager(): Promise<JetStreamManager> {
     return jetstreamManager(this.requireConnection());
+  }
+
+  /** Read one retained message without delivery or acknowledgement. */
+  async readMessage(
+    stream: string,
+    sequence: number,
+  ): Promise<{
+    sequence: number;
+    subject: string;
+    data: Uint8Array;
+    messageId?: string;
+  }> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(stream) || !Number.isSafeInteger(sequence) || sequence < 1)
+      throw new NatsPublishError("rejected", false);
+    try {
+      const message = await (await this.manager()).streams.getMessage(stream, { seq: sequence });
+      if (!message || message.seq !== sequence || message.data.byteLength > 1_000_000)
+        throw new NatsPublishError("rejected", false);
+      const messageId = message.header?.get("Nats-Msg-Id");
+      return {
+        sequence: message.seq,
+        subject: message.subject,
+        data: message.data,
+        ...(messageId ? { messageId } : {}),
+      };
+    } catch (error) {
+      if (error instanceof NatsPublishError) throw error;
+      throw new NatsPublishError("failed", true);
+    }
+  }
+
+  /** Allowlisted consumer position; no mutable broker handle escapes. */
+  async consumerPosition(stream: string, consumer: string) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(stream) || !/^[A-Za-z0-9_-]{1,64}$/.test(consumer))
+      throw new NatsPublishError("rejected", false);
+    try {
+      const info = await (await this.manager()).consumers.info(stream, consumer);
+      if (
+        ![
+          info.num_pending,
+          info.num_ack_pending,
+          info.delivered.stream_seq,
+          info.ack_floor.stream_seq,
+        ].every((n) => Number.isSafeInteger(n) && n >= 0)
+      )
+        throw new Error();
+      return {
+        pending: info.num_pending,
+        ackPending: info.num_ack_pending,
+        deliveredSequence: info.delivered.stream_seq,
+        ackFloorSequence: info.ack_floor.stream_seq,
+      };
+    } catch {
+      throw new NatsPublishError("failed", true);
+    }
   }
 }

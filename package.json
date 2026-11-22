@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "substack-publisher-one": "node --enable-source-maps dist/cli/substack-publisher-one.js",
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "build": "tsc && node -e \"require('node:fs').cpSync('src/prompts', 'dist/prompts', {recursive:true})\"",
     "check": "vp check",
