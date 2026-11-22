@@ -80,3 +80,72 @@ describe("article paging and date sort (#508)", () => {
     expect(html).toContain("after=cursor-2");
   });
 });
+
+describe("article search and publication filter (#509)", () => {
+  it("matches plain words over title and text and filters by exact publication", async () => {
+    const queries: unknown[] = [];
+    const port = {
+      search: async (_i: string, query: unknown) => {
+        queries.push(query);
+        return [];
+      },
+    };
+    await indexArticles(port as never).page!({
+      sort: "newest",
+      limit: 25,
+      query: '  mast "safety" OR x:* ',
+      publicationId: "steeleworks",
+    });
+    expect(queries[0]).toEqual({
+      bool: {
+        must: [
+          {
+            multi_match: {
+              query: 'mast "safety" OR x:*',
+              fields: ["title^2", "text"],
+              operator: "and",
+            },
+          },
+        ],
+        filter: [{ term: { publicationId: "steeleworks" } }],
+      },
+    });
+    await indexArticles(port as never).page!({ sort: "newest", limit: 25 });
+    expect(queries[1]).toEqual({ bool: { must: [{ match_all: {} }], filter: [] } });
+  });
+
+  it("carries search, publication, sort and status through the form and every link", async () => {
+    const seen: unknown[] = [];
+    const port = {
+      recent: async () => [],
+      find: async () => undefined,
+      page: async (o: unknown) => {
+        seen.push(o);
+        return { entries: [], next: "c2" };
+      },
+    };
+    const view = articleViews({ articles: port, canTrigger: false }).find(
+      (v) => v.path === "/articles",
+    )!;
+    const html = await view.render(
+      new URL(
+        "https://dashboard.test/articles?q=mast%20%3Cb%3E&publication=steeleworks&sort=oldest",
+      ),
+    );
+    expect(seen[0]).toMatchObject({
+      sort: "oldest",
+      query: "mast <b>",
+      publicationId: "steeleworks",
+    });
+    expect(html).toContain('value="mast &lt;b&gt;"');
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("No indexed articles match this search.");
+    // Paging and sort links keep the search.
+    expect(html).toMatch(/after=c2[^"]*|q=mast[^"]*after=c2/);
+    expect(html).toContain("publication=steeleworks");
+    // An invalid publication is ignored, never passed to the index.
+    seen.length = 0;
+    await view.render(new URL("https://dashboard.test/articles?publication=Bad%20Pub"));
+    expect(seen[0]).not.toHaveProperty("publicationId");
+  });
+});
