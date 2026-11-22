@@ -816,9 +816,11 @@ export async function assessPostCoverage(input: {
       ...(p.description ? { description: p.description } : {}),
       createdAt: now,
     });
-    // Only an accepted equivalence teaches the catalogue: a new dossier is
-    // this post's own invention and must not become a global default.
-    if (decision.themeId !== null) {
+    // Every decision is recorded durably before any research (#531): an
+    // accepted equivalence, or the newly established canonical theme. A later
+    // post with compatible wording and meaning (title plus description) reuses
+    // it without a new decision; a different meaning has a different key.
+    {
       const recorded = await catalogue.recordPinned({
         proposal: p.title,
         ...(p.description ? { description: p.description } : {}),
@@ -837,8 +839,12 @@ export async function assessPostCoverage(input: {
       if (
         winner.status !== "unresolved" &&
         winner.canonicalThemeId !== dossierId &&
-        established.has(winner.canonicalThemeId)
+        // The current registry, not this run's opening snapshot: a concurrent
+        // assessment may have established the winner after this one started.
+        (established.has(winner.canonicalThemeId) ||
+          (await themeStore.get(winner.canonicalThemeId)) !== undefined)
       ) {
+        established.add(winner.canonicalThemeId);
         const saved = mappings[mappings.length - 1]!;
         saved.dossierId = winner.canonicalThemeId;
         saved.method = "catalogue";
