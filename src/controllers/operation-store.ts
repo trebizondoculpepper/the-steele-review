@@ -848,6 +848,48 @@ export class OperationStore {
     return saved;
   }
 
+  /** Read one exact recorded operator attempt; never a bounded latest-attempt guess. */
+  articleAttempt(
+    publicationId: string,
+    postId: string,
+    requestId: string,
+  ):
+    | {
+        workflowKey: string;
+        requestId: string;
+        sourceVersion: string;
+        recordedAt: string;
+        inputHash: string;
+      }
+    | undefined {
+    if (
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(requestId)
+    )
+      throw new OperationStoreError("invalid-input");
+    const row = this.row(`article-attempt:${publicationId}/${postId}:${requestId}`);
+    if (row?.status !== "completed") return undefined;
+    const value = z
+      .object({
+        publicationId: z.literal(publicationId),
+        postId: z.literal(postId),
+        requestId: z.literal(requestId),
+        workflowKey: z.string().min(1).max(1000),
+        sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        recordedAt: z.iso.datetime(),
+        inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .parse(JSON.parse(row.artifact!));
+    return {
+      workflowKey: value.workflowKey,
+      requestId: value.requestId,
+      sourceVersion: value.sourceVersion,
+      recordedAt: value.recordedAt,
+      inputHash: value.inputHash,
+    };
+  }
+
   /** Bounded operator-attempt discovery for the exact source revision; never exposes raw state or SQL. */
   articleAttempts(
     publicationId: string,
