@@ -52,8 +52,9 @@ export async function loadEditorialTimeline(
   let judgmentsPartial = false;
   let assessmentsUnreadable = 0;
   let judgmentsUnreadable = 0;
-  let assessmentsUnavailable = false;
-  let judgmentsUnavailable = false;
+  // A source that was never configured is not evidence of an empty history.
+  let assessmentsUnavailable = deps.assessments === undefined;
+  let judgmentsUnavailable = deps.judgments === undefined;
   if (deps.assessments) {
     try {
       const listing = await deps.assessments.list({ post: key });

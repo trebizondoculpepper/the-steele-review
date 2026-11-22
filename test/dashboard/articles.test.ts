@@ -598,6 +598,20 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
     expect(html).toContain("/judgments?post=pub%2Fp1");
   });
 
+  it("does not claim an empty history when the timeline sources are unconfigured", async () => {
+    const [, detail] = articleViews({
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).not.toContain("No assessor or judge attempts are saved");
+    expect(html).toContain("unavailable");
+  });
+
   it("shows an explicit empty state when no editorial records exist", async () => {
     const [, detail] = articleViews({
       articles: {
