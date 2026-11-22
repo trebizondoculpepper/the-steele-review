@@ -619,6 +619,41 @@ export class OperationStore {
     });
   }
 
+  /** Reingestion may not start a canonical Git mutation under a stale or expired attempt. */
+  assertActiveReingestion(claim: OperationClaim): void {
+    if (!claim.key.startsWith("reingest:substack/")) throw new OperationStoreError("invalid-input");
+    this.transaction(() => {
+      const row = this.row(claim.key);
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= this.now())
+        throw new OperationStoreError("not-owner");
+    });
+  }
+
+  /** Complete the exact reingestion and its pending events only under its active attempt. */
+  completeReingestion(
+    claim: OperationClaim,
+    artifact: unknown,
+    events: PendingEventInput[],
+  ): unknown {
+    if (!claim.key.startsWith("reingest:substack/")) throw new OperationStoreError("invalid-input");
+    for (const event of events)
+      if (!event.eventId || !event.subject || typeof event.payload !== "string")
+        throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, claim.key);
+      this.insertEvents(claim.key, events, now);
+      return artifact;
+    });
+  }
+
   /**
    * Record completion and pending downstream events in one transaction.
    * Call only after the artifact is durably committed. A repeated completion

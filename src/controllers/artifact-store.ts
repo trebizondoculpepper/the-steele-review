@@ -56,6 +56,7 @@ export type ArtifactErrorCode =
   | "invalid-path"
   | "hash-mismatch"
   | "immutable-conflict"
+  | "mutation-not-authorized"
   | "stale-revision"
   | "too-large"
   | "concurrent-update"
@@ -345,8 +346,9 @@ export class GitArtifactStore {
     content: string,
     parent: string | undefined,
     message: string,
+    beforeCommit?: () => void,
   ): Promise<string> {
-    return this.commitBlobs([{ path, content }], parent, message);
+    return this.commitBlobs([{ path, content }], parent, message, beforeCommit);
   }
 
   /** One commit containing every given document (all or nothing). */
@@ -354,6 +356,7 @@ export class GitArtifactStore {
     entries: { path: string; content: string }[],
     parent: string | undefined,
     message: string,
+    beforeCommit?: () => void,
   ): Promise<string> {
     const path = entries.map((e) => e.path).join(", ");
     const index = join(tmpdir(), `steele-artifact-index-${randomUUID()}`);
@@ -375,6 +378,11 @@ export class GitArtifactStore {
       const commit = (await this.run(commitArgs)).stdout.trim();
       // Compare-and-swap: fails if the branch moved or a stale lock remains.
       const expectedOld = parent ?? "0".repeat(40);
+      try {
+        beforeCommit?.();
+      } catch {
+        throw new ArtifactStoreError("mutation-not-authorized");
+      }
       await this.run(["update-ref", "-m", `artifact ${path}`, this.ref, commit, expectedOld]);
       return commit;
     } catch (error) {
@@ -397,10 +405,19 @@ export class GitArtifactStore {
    * mismatch fails with `stale-revision`, so a concurrent change is never
    * overwritten; the caller must reload and retry. Identical content returns
    * the current reference without a new commit. Earlier versions stay
-   * readable by their commit-pinned references.
+   * readable by their commit-pinned references. A caller-supplied synchronous
+   * domain fence runs when queued work starts and immediately before the ref
+   * update; rejection leaves the canonical document unchanged.
    */
-  revise(path: string, content: string, expectedSha256: string | null): Promise<ArtifactRef> {
-    const task = this.queue.then(() => this.reviseNow(path, content, expectedSha256));
+  revise(
+    path: string,
+    content: string,
+    expectedSha256: string | null,
+    options?: { beforeCommit: () => void },
+  ): Promise<ArtifactRef> {
+    const task = this.queue.then(() =>
+      this.reviseNow(path, content, expectedSha256, options?.beforeCommit),
+    );
     this.queue = task.catch(() => undefined);
     return task;
   }
@@ -409,7 +426,13 @@ export class GitArtifactStore {
     path: string,
     content: string,
     expectedSha256: string | null,
+    beforeCommit?: () => void,
   ): Promise<ArtifactRef> {
+    try {
+      beforeCommit?.();
+    } catch {
+      throw new ArtifactStoreError("mutation-not-authorized");
+    }
     assertArtifactPath(path);
     if (!isRevisablePath(path)) throw new ArtifactStoreError("invalid-path");
     if (Buffer.byteLength(content, "utf8") > this.maxBytes) {
@@ -444,6 +467,7 @@ export class GitArtifactStore {
       content,
       parent,
       `${current ? "Revise" : "Add"} ${path}`,
+      beforeCommit,
     );
     return { repository: this.config.repository, commit, path, sha256: digest };
   }

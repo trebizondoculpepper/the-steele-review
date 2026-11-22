@@ -1,11 +1,12 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   CollectionStore,
   collectionArtifactPath,
   collectionKey,
+  reingestKey,
   type CollectionRecord,
 } from "../../src/collection/collection-store.js";
 import { GitArtifactStore, type ArtifactRef } from "../../src/controllers/artifact-store.js";
@@ -210,5 +211,105 @@ describe("CollectionStore", () => {
       kind: "exhausted",
       errorCode: "transient",
     });
+  });
+  it.each([false, true])(
+    "rejects an expired or replaced reingestion before any Git write (replacement=%s)",
+    async (replacement) => {
+      const store = openStore(),
+        op = ops[0];
+      const before = (
+        await store.commit(
+          held(await store.begin(item, "initial", 60_000, { eventsFor: events })),
+          record("Original"),
+          events,
+        )
+      ).artifact;
+      const claim = held(op.claim(reingestKey(item, "fenced-refresh"), "old", 1000, 3));
+      clock += 2000;
+      const next = replacement ? held(op.claim(claim.key, "new", 1000, 3)) : undefined;
+      const revise = vi.spyOn(artifacts, "revise"),
+        pending = op.duePendingEvents(20).length;
+      await expect(
+        store.reingest(
+          claim,
+          { ...record("New"), reingestion: { requestId: "fenced-refresh" } },
+          before.sha256,
+          events,
+        ),
+      ).rejects.toMatchObject({ code: "not-owner" });
+      expect(revise).not.toHaveBeenCalled();
+      expect(await artifacts.lookup(before.path)).toEqual(before);
+      expect(op.duePendingEvents(20)).toHaveLength(pending);
+      if (next) {
+        expect(op.operationStatus(claim.key)).toMatchObject({ status: "claimed" });
+        expect(() => op.assertActiveReingestion(next)).not.toThrow();
+      }
+    },
+  );
+  it("rechecks ownership when queued work begins and immediately before the canonical Git ref changes", async () => {
+    for (const boundary of ["queue", "commit"] as const) {
+      const store = openStore(),
+        op = ops.at(-1)!;
+      const prior = await store.existing(item);
+      const before =
+        prior?.artifact ??
+        (
+          await store.commit(
+            held(await store.begin(item, "initial", 60_000, { eventsFor: events })),
+            record("Original"),
+            events,
+          )
+        ).artifact;
+      const claim = held(op.claim(reingestKey(item, `fence-${boundary}`), "owner", 1000, 3));
+      const pending = op.duePendingEvents(20).length;
+      const originalAssert = op.assertActiveReingestion.bind(op);
+      let checks = 0;
+      const assert = vi.spyOn(op, "assertActiveReingestion").mockImplementation((c) => {
+        checks++;
+        if (checks === (boundary === "queue" ? 2 : 3)) clock += 2000;
+        originalAssert(c);
+      });
+      await expect(
+        store.reingest(
+          claim,
+          { ...record("New"), reingestion: { requestId: `fence-${boundary}` } },
+          before.sha256,
+          events,
+        ),
+      ).rejects.toMatchObject({ code: "mutation-not-authorized" });
+      expect(await artifacts.lookup(before.path)).toEqual(before);
+      expect(op.duePendingEvents(20)).toHaveLength(pending);
+      assert.mockRestore();
+    }
+  });
+  it("does not complete or announce an expired reingestion after a durable authorized write", async () => {
+    const store = openStore(),
+      op = ops[0];
+    const before = (
+      await store.commit(
+        held(await store.begin(item, "initial", 60_000, { eventsFor: events })),
+        record("Original"),
+        events,
+      )
+    ).artifact;
+    const claim = held(op.claim(reingestKey(item, "completion-fence"), "owner", 1000, 3)),
+      revise = artifacts.revise.bind(artifacts),
+      pending = op.duePendingEvents(20).length;
+    vi.spyOn(artifacts, "revise").mockImplementation(async (...args) => {
+      const result = await revise(...args);
+      clock += 2000;
+      return result;
+    });
+    await expect(
+      store.reingest(
+        claim,
+        { ...record("New"), reingestion: { requestId: "completion-fence" } },
+        before.sha256,
+        events,
+      ),
+    ).rejects.toMatchObject({ code: "not-owner" });
+    expect((await artifacts.lookup(before.path))!.sha256).not.toBe(before.sha256);
+    expect(op.duePendingEvents(20)).toHaveLength(pending);
+    expect(await artifacts.read(before)).toContain("Original");
   });
 });

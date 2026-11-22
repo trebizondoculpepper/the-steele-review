@@ -2,7 +2,7 @@ import { TranscriptionError } from "../../src/transcription/adapter.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   CollectionStore,
   collectionArtifactPath,
@@ -97,8 +97,13 @@ function setup(options: {
   transcriber?: TranscriberPort;
   publishFails?: number;
   owner?: string;
+  now?: () => number;
+  leaseMs?: number;
 }) {
-  const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+  const operations = new OperationStore({
+    path: join(dir, "state.sqlite"),
+    ...(options.now ? { now: options.now } : {}),
+  });
   ops.push(operations);
   const store = new CollectionStore(operations, artifacts);
   let calls = 0;
@@ -125,6 +130,7 @@ function setup(options: {
       },
     },
     owner: options.owner ?? "worker-1",
+    ...(options.leaseMs ? { leaseMs: options.leaseMs } : {}),
     retryDelayMs: 0,
   });
   return { worker, operations, store, published, captured, collectCalls: () => calls };
@@ -970,6 +976,36 @@ describe("single-item reingestion (#558)", () => {
     expect(await second.worker.handle(m)).toBe("already-collected");
     expect(second.collectCalls()).toBe(0);
     expect(second.operations.operationStatus(reingestKey(item, "refresh-7"))?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("does not complete claimed marker recovery after the lease expires during the archive read", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    let clock = Date.now();
+    const second = setup({ now: () => clock, leaseMs: 1000 });
+    requestReingest({ operations: second.operations, item, requestId: "read-fence" });
+    const delivery = delivered(second.operations);
+    const existing = (await second.store.existing(item))!;
+    await artifacts.revise(
+      collectionArtifactPath(item),
+      `${JSON.stringify({ ...existing.record, reingestion: { requestId: "read-fence" } }, null, 2)}\n`,
+      existing.artifact.sha256,
+    );
+    const read = second.store.existing.bind(second.store);
+    vi.spyOn(second.store, "existing").mockImplementation(async (...args) => {
+      const result = await read(...args);
+      clock += 2000;
+      return result;
+    });
+    expect(await second.worker.handle(delivery)).toBe("retry");
+    expect(delivery.acked).toBe(0);
+    expect(delivery.naks).toHaveLength(1);
+    expect(second.collectCalls()).toBe(0);
+    expect(second.published).toHaveLength(0);
+    expect(second.captured).toHaveLength(0);
+    expect(second.operations.operationStatus(reingestKey(item, "read-fence"))?.status).not.toBe(
       "completed",
     );
   });

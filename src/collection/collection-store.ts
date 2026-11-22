@@ -208,6 +208,8 @@ export class CollectionStore {
    * state transaction as for first collection. A retry after a crash between
    * the commit and completion adopts the identical record already committed.
    * A concurrent change fails with `stale-revision` and nothing is replaced.
+   * The state controller verifies the active attempt before Git work, again
+   * inside the queued mutation and before its ref update, then fences completion.
    */
   async reingest(
     claim: OperationClaim,
@@ -221,12 +223,14 @@ export class CollectionStore {
     ) {
       throw new Error("claim does not match record item");
     }
+    this.operations.assertActiveReingestion(claim);
     const artifact = await this.artifacts.revise(
       collectionArtifactPath(valid.item),
       `${JSON.stringify(valid, null, 2)}\n`,
       expectedSha256,
+      { beforeCommit: () => this.operations.assertActiveReingestion(claim) },
     );
-    this.operations.complete(claim, artifact, eventsFor(artifact));
+    this.operations.completeReingestion(claim, artifact, eventsFor(artifact));
     return artifact;
   }
 
