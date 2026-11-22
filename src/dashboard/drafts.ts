@@ -420,7 +420,8 @@ export function draftInventory(
         versions.push({
           version: i + 1,
           current,
-          commit: r.body.commit,
+          // The commit holding this whole version: the one that changed a document.
+          commit: r.base.body === r.body.sha256 ? r.metadata.commit : r.body.commit,
           entry: { ...entry, article: { id, version: i + 1, current } },
         });
       }

@@ -426,6 +426,9 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
       [3, "Title three", true],
     ]);
     expect(h.unreadable).toBe(0);
+    // The title-only revision shows the commit that holds its new title.
+    expect(h.versions[1]!.commit).toBe(v2.metadata.commit);
+    expect(h.versions[1]!.commit).not.toBe(v1.body.commit);
   });
 
   it("returns nothing for an unknown or malformed article id", async () => {
