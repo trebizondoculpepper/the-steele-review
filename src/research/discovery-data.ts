@@ -28,48 +28,6 @@ export interface PartialDiscoveryBody {
 }
 export type DiscoveryCapture = (data: unknown) => Promise<void>;
 
-/** Select only returned report/citation/usage fields. No request, header or connection object is copied. */
-export function selectDiscoveryData(payload: unknown, requestedModel: string): unknown {
-  const object = (v: unknown): Record<string, unknown> =>
-    v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-  const root = object(payload),
-    first = Array.isArray(root.choices) ? object(root.choices[0]) : {},
-    message = object(first.message);
-  const annotations = message.annotations;
-  const usage = object(root.usage),
-    numbers: Record<string, number> = {};
-  for (const [key, target] of [
-    ["cost", "costUsd"],
-    ["prompt_tokens", "promptTokens"],
-    ["completion_tokens", "completionTokens"],
-    ["total_tokens", "totalTokens"],
-  ]) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value)) numbers[target] = value;
-  }
-  return {
-    report: message.content ?? "",
-    citations: root.citations ?? [],
-    annotationUrls:
-      annotations === undefined
-        ? []
-        : Array.isArray(annotations)
-          ? annotations
-              .map((v) => object(object(v).url_citation).url)
-              .filter((v) => v !== undefined)
-          : annotations,
-    searchResultUrls:
-      root.search_results === undefined
-        ? []
-        : Array.isArray(root.search_results)
-          ? root.search_results.map((v) => object(v).url)
-          : root.search_results,
-    model: root.model ?? requestedModel,
-    citationProvenance: "provider-original",
-    ...(Object.keys(numbers).length ? { usage: numbers } : {}),
-  };
-}
-
 /** Compatibility for adapters without raw capture; explicitly not the original provider envelope. */
 export function discoveryFromAdapterReport(report: {
   report: string;

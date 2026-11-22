@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { OpenRouterSonarClient } from "../../src/research/sonar.js";
-import { selectDiscoveryData } from "../../src/research/discovery-data.js";
+import { selectDiscoveryData } from "../../src/controllers/sonar-discovery-replay.js";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import {
   captureResearchDiscovery,

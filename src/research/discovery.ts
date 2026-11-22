@@ -3,11 +3,11 @@ import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { OperationStoreError, type OperationStore } from "../controllers/operation-store.js";
+import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { researchJobId, ResearchRequestSchema, writeOnce } from "./job.js";
 import {
   DiscoveryDataSchema,
-  selectDiscoveryData,
   type DiscoveryData,
   type DiscoveryCapture,
 } from "./discovery-data.js";
@@ -160,39 +160,16 @@ function interpretDiscovery(
       data: undefined,
     };
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body);
-    validation = "invalid-schema";
-  } catch {
-    /* Raw bytes remain retained. */
-  }
-  if (validation !== "invalid-json") {
-    if (value.representation === "provider-json") {
-      const root =
-        payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-      const choice = Array.isArray(root.choices)
-        ? (root.choices[0] as { finish_reason?: unknown } | undefined)
-        : undefined;
-      completion =
-        choice?.finish_reason === "length"
-          ? "length-limit"
-          : choice?.finish_reason === "stop"
-            ? "completed"
-            : "unknown";
-    }
-    const parsed = DiscoveryDataSchema.safeParse(
-      value.representation === "provider-json"
-        ? selectDiscoveryData(payload, value.processor.model)
-        : payload,
-    );
-    if (parsed.success) {
-      data = parsed.data;
-      validation = !data.report.trim()
-        ? "invalid-schema"
-        : completion === "length-limit"
-          ? "length-limit"
-          : "valid";
+  if (value.representation === "provider-json") {
+    ({ validation, completion, data } = replaySonarDiscovery(body, value.processor.model));
+  } else {
+    // The compatibility representation is our neutral typed data, not a vendor envelope.
+    try {
+      const parsed = DiscoveryDataSchema.safeParse(JSON.parse(body));
+      validation = parsed.success && parsed.data.report.trim() ? "valid" : "invalid-schema";
+      if (parsed.success) data = parsed.data;
+    } catch {
+      // Returned bytes remain available even when the adapter return is malformed.
     }
   }
   if (value.transport !== "complete")
