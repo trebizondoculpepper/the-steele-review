@@ -113,7 +113,12 @@ export function articleStages(deps: {
     const attribution = postAttribution(deps.sourceMetadata, record.item);
     const sourceContext = await saveSourceContext(
       deps.content,
-      sourceContextFor(record, ref, attribution),
+      sourceContextFor(
+        record,
+        ref,
+        attribution,
+        post.source ? { namespace: post.source.namespace } : undefined,
+      ),
     );
     return { ref, record, sourceVersion: sourceVersionFor(record.text), sourceContext };
   };
