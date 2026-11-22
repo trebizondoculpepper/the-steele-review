@@ -77,7 +77,9 @@ import { researchBrowseViews } from "../dashboard/research-browse-views.js";
 import { claimBrowseViews } from "../dashboard/claim-browse-views.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { collectActivity, renderActivity } from "../dashboard/activity.js";
-import { renderConfig } from "../dashboard/config-view.js";
+import { renderConfig, renderConfigForm } from "../dashboard/config-view.js";
+import { configEditAction, savedVersionOf } from "../dashboard/config-edit.js";
+import { listSettingsRevisions, readSettingsFile } from "../config/settings-file.js";
 import { inspectSettings, resolveSettings } from "../config/settings.js";
 import { createDashboardServer } from "../dashboard/server.js";
 import { restateRunIndex, restateInvocations, restateUiLinks } from "../dashboard/restate-links.js";
@@ -101,6 +103,12 @@ const env = z
       .optional(),
     /** "1" enables the draft trash action; the content mount must be writable. */
     STEELE_DASHBOARD_TRASH: z.enum(["0", "1"]).optional(),
+    /** Saved configuration file the console may edit, when editing is enabled. */
+    STEELE_CONFIG_PATH: z.string().min(1).optional(),
+    /** Private salt the configuration version tokens are keyed on. */
+    STEELE_CONFIG_VERSION_SALT: z.string().min(1).optional(),
+    /** "1" enables the configuration edit form and its action. */
+    STEELE_CONFIG_EDIT: z.enum(["0", "1"]).optional(),
     STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: z.coerce.number().int().min(0).max(100).default(5),
     STEELE_DASHBOARD_RESEARCH_DEADLINE_MS: z.coerce
       .number()
@@ -249,12 +257,30 @@ const activityView =
         },
       ]
     : [];
-// Read-only configuration projection (#544).
+// Configuration projection (#544), editable only when explicitly enabled (#545).
+const configEnabled =
+  env.data.STEELE_CONFIG_EDIT === "1" &&
+  env.data.STEELE_CONFIG_PATH !== undefined &&
+  env.data.STEELE_CONFIG_VERSION_SALT !== undefined;
+const configFile = env.data.STEELE_CONFIG_PATH;
+const configSalt = env.data.STEELE_CONFIG_VERSION_SALT;
+const configAction = configEnabled
+  ? configEditAction({ path: configFile!, salt: configSalt! })
+  : undefined;
 const configView = [
   {
     path: "/config",
     title: "Configuration",
-    render: () => renderConfig(inspectSettings(resolveSettings(process.env))),
+    async render() {
+      const file = configFile ? await readSettingsFile(configFile) : {};
+      const inspected = inspectSettings(resolveSettings(process.env, file));
+      if (!configEnabled) return renderConfig(inspected);
+      return `${renderConfig(inspected)}${renderConfigForm(
+        inspected,
+        savedVersionOf(file, configSalt!),
+        await listSettingsRevisions(configFile!),
+      )}`;
+    },
   },
 ];
 const views = [
@@ -394,6 +420,7 @@ const actions =
           ...(trigger ? { "/articles/run": trigger.submit } : {}),
           ...(recovery ? { "/articles/recover": recovery.submit } : {}),
           ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
+          ...(configAction ? { "/config/save": configAction.submit } : {}),
         },
       }
     : undefined;
