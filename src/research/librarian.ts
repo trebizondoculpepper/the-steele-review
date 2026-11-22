@@ -1226,6 +1226,10 @@ export async function assessPostCoverage(input: {
         (input.consequential?.(c) ?? false),
     );
     if (followUp.length === 0 || first.job.status !== "finished") return;
+    // A partial report is usable work, not permission to buy missing prose.
+    // Retain its unsupported claims as gaps; an explicit operator can request
+    // another research attempt, but incompleteness alone never schedules one.
+    if (first.job.result?.warnings?.some((w) => w.code === "report-output-limit")) return;
     const second = await commission(followUp);
     for (const claim of followUp) {
       if (outcomes.get(claim.key)?.reused) continue;

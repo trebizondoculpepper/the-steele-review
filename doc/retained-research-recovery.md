@@ -54,3 +54,21 @@ without another discovery call. This change adds no workflow steps or new
 scheduler. Existing completed steps and terminal invocations replay their saved
 results. Empty content, corrupt or unparseable transport, lost fences, resource
 limits and artifact failures do not qualify as a partial-report warning.
+
+### Reuse and diagnostics
+
+The ordinary exact-request terminal cache and accepted retained-recovery binding
+reuse partial results on subsequent runs. Incompleteness does not invalidate the
+saved result. The librarian does not automatically commission its consequential
+follow-up from a `report-output-limit` result; unsupported claims remain gaps.
+Explicit operator reprocessing remains distinct. General cross-post semantic
+matching is separate from this exact-request reuse contract.
+
+A best-effort Sentry warning uses the existing allowlisted pipeline-log adapter:
+only opaque research job ID, discovery digest, fixed stage and category. The
+state controller reserves one diagnostic per exact discovery digest, including
+across restarts and recovered aliases. It reserves before export to avoid
+retry floods; a crash or unavailable Sentry can lose that telemetry, while the
+warning remains durable in the research artifacts and browser. Diagnostic
+storage or Sentry failure never blocks research. Live Sentry arrival is an
+operational verification after reviewed deployment, not a synthetic-test claim.

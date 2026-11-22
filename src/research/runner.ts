@@ -1,3 +1,4 @@
+import { reportPartialResearch } from "../observability/research-warning.js";
 import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import {
@@ -233,13 +234,15 @@ export async function runResearchJob(input: {
   const submitted = ResearchRequestSchema.parse(input.request);
   if (!submitted.retainedRecovery) {
     const recovered = await readAcceptedResearchRecovery({ ...input, request: submitted });
-    if (recovered)
+    if (recovered) {
+      reportPartialResearch(input.operations, recovered.result);
       return {
         status: "finished",
         jobId: recovered.binding.jobId,
         result: recovered.result,
         reused: true,
       };
+    }
   }
   const retained = submitted.retainedRecovery
     ? await loadRetainedResearch({ ...input, request: submitted })
@@ -254,6 +257,7 @@ export async function runResearchJob(input: {
   });
   if (opened.status === "busy") return { status: "busy", jobId: opened.jobId };
   if (opened.status === "finished") {
+    reportPartialResearch(input.operations, opened.existing);
     return { status: "finished", jobId: opened.jobId, result: opened.existing, reused: true };
   }
   const { jobId } = opened;
@@ -681,5 +685,6 @@ export async function runResearchJob(input: {
     ...(warnings.length ? { warnings } : {}),
     now,
   });
+  reportPartialResearch(input.operations, done.result);
   return { status: "finished", jobId, result: done.result, reused: false };
 }

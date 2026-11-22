@@ -1,3 +1,4 @@
+import { reportPartialResearch } from "../observability/research-warning.js";
 import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -59,7 +60,10 @@ export async function runSonarResearch(input: {
 > {
   const job = await openResearchJob(input);
   if (job.status === "busy") return { status: "busy", jobId: job.jobId };
-  if (job.status === "finished") return { status: "finished", result: job.existing, reused: true };
+  if (job.status === "finished") {
+    reportPartialResearch(input.operations, job.existing);
+    return { status: "finished", result: job.existing, reused: true };
+  }
 
   const finish = async (
     fields: Pick<
@@ -73,6 +77,7 @@ export async function runSonarResearch(input: {
       jobId: job.jobId,
       ...fields,
     });
+    reportPartialResearch(input.operations, result);
     return { status: "finished" as const, result, reused };
   };
 

@@ -205,12 +205,15 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     f.sonar.research.mockImplementation(async () => {
       throw new Error("new discovery forbidden");
     });
+    let commissions = 0;
     const coverage = await assessPostCoverage({
       artifacts,
       themeResult: f.themes,
       claimResult: f.claims,
       shortlister: new LexicalShortlister(),
+      consequential: () => true,
       commission: async (request) => {
+        commissions++;
         const out = await runResearchJob({ ...d, request, sonar: f.sonar });
         if (out.status !== "finished") throw new Error("unexpected busy");
         return {
@@ -219,6 +222,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         };
       },
     });
+    expect(commissions).toBe(1); // Partial text never buys an automatic follow-up.
     const pkg = await saveWriterPackage({ content: artifacts, coverage: coverage.ref });
     expect(coverage.record.jobs[0]).toMatchObject({
       outcome: "complete-with-gaps",
