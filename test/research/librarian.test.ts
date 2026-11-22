@@ -1094,4 +1094,50 @@ describe("mappings first (#531)", { timeout: 60_000 }, () => {
     });
     expect(saved?.canonicalThemeId).toBe(out.record.mappings[0]!.dossierId);
   });
+
+  it("reconciles to a theme a concurrent assessment established after this one started", async () => {
+    const { ThemeMappingCatalogue } = await import("../../src/research/theme-mappings.js");
+    const { ThemeStore } = await import("../../src/research/theme-store.js");
+    const a = await analysis("p2", [claims[1]!], "Mercury");
+    // Simulate the race: the other assessment's theme and mapping land after
+    // this assessment's opening snapshot (injected on its first commission).
+    let raced = false;
+    const r = researcher(() => ({ passages: [] }));
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    const store = new ThemeStore(artifacts);
+    const originalRecord = catalogue.recordPinned.bind(catalogue);
+    const proto = Object.getPrototypeOf(catalogue) as {
+      recordPinned: typeof catalogue.recordPinned;
+    };
+    const realRecord = proto.recordPinned;
+    proto.recordPinned = async function (this: unknown, mapping) {
+      if (!raced) {
+        raced = true;
+        await store.ensure({
+          id: "mercury-other",
+          title: "Mercury",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        await originalRecord({ ...mapping, canonicalThemeId: "mercury-other" });
+      }
+      return realRecord.call(this, mapping);
+    };
+    try {
+      const out = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      expect(out.record.mappings[0]).toMatchObject({
+        dossierId: "mercury-other",
+        method: "catalogue",
+      });
+      expect(
+        r.requests.every((q) => q.claims.every((c) => c.themeIds.includes("mercury-other"))),
+      ).toBe(true);
+    } finally {
+      proto.recordPinned = realRecord;
+    }
+  });
 });

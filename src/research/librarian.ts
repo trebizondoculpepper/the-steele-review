@@ -839,8 +839,12 @@ export async function assessPostCoverage(input: {
       if (
         winner.status !== "unresolved" &&
         winner.canonicalThemeId !== dossierId &&
-        established.has(winner.canonicalThemeId)
+        // The current registry, not this run's opening snapshot: a concurrent
+        // assessment may have established the winner after this one started.
+        (established.has(winner.canonicalThemeId) ||
+          (await themeStore.get(winner.canonicalThemeId)) !== undefined)
       ) {
+        established.add(winner.canonicalThemeId);
         const saved = mappings[mappings.length - 1]!;
         saved.dossierId = winner.canonicalThemeId;
         saved.method = "catalogue";
