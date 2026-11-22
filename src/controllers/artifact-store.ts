@@ -91,9 +91,20 @@ export const REVISABLE_PREFIXES: readonly string[] = ["dossier/", "catalogue/"];
 
 /** Normalised claim records (claims/claim-<hex>.json) evolve as occurrences accumulate. */
 const REVISABLE_CLAIM_RECORD = /^claims\/claim-[0-9a-f]{32}\.json$/;
+/**
+ * Canonical logical-article documents (#578/#579), edited in place. Only the
+ * article body and metadata qualify; hash-named generation drafts and commit
+ * records beside them stay write-once.
+ */
+const REVISABLE_ARTICLE =
+  /^articles\/[a-z0-9][a-z0-9-]{0,254}\/[a-z0-9][a-z0-9-]{0,254}\/article-[0-9a-f]{24}\/article\.(md|json)$/;
 
 export function isRevisablePath(path: string): boolean {
-  return REVISABLE_PREFIXES.some((p) => path.startsWith(p)) || REVISABLE_CLAIM_RECORD.test(path);
+  return (
+    REVISABLE_PREFIXES.some((p) => path.startsWith(p)) ||
+    REVISABLE_CLAIM_RECORD.test(path) ||
+    REVISABLE_ARTICLE.test(path)
+  );
 }
 
 export function sha256(content: string): string {
@@ -316,15 +327,29 @@ export class GitArtifactStore {
     parent: string | undefined,
     message: string,
   ): Promise<string> {
+    return this.commitBlobs([{ path, content }], parent, message);
+  }
+
+  /** One commit containing every given document (all or nothing). */
+  private async commitBlobs(
+    entries: { path: string; content: string }[],
+    parent: string | undefined,
+    message: string,
+  ): Promise<string> {
+    const path = entries.map((e) => e.path).join(", ");
     const index = join(tmpdir(), `steele-artifact-index-${randomUUID()}`);
     const env = { GIT_INDEX_FILE: index };
     try {
-      const blob = (
-        await this.run(["hash-object", "-w", "--stdin"], { input: content })
-      ).stdout.trim();
       if (parent) await this.run(["read-tree", parent], { env });
       else await this.run(["read-tree", "--empty"], { env });
-      await this.run(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
+      for (const entry of entries) {
+        const blob = (
+          await this.run(["hash-object", "-w", "--stdin"], { input: entry.content })
+        ).stdout.trim();
+        await this.run(["update-index", "--add", "--cacheinfo", `100644,${blob},${entry.path}`], {
+          env,
+        });
+      }
       const tree = (await this.run(["write-tree"], { env })).stdout.trim();
       const commitArgs = ["commit-tree", tree, "-m", message];
       if (parent) commitArgs.push("-p", parent);
@@ -402,6 +427,65 @@ export class GitArtifactStore {
       `${current ? "Revise" : "Add"} ${path}`,
     );
     return { repository: this.config.repository, commit, path, sha256: digest };
+  }
+
+  /**
+   * Revise several revisable documents atomically (#579): every expected
+   * version is checked against the same head and all changes land in ONE
+   * commit, so a rejected update leaves every document unchanged. A document
+   * already holding exactly the new content counts as applied (safe retry);
+   * any other unexpected version fails the whole update with `stale-revision`.
+   */
+  reviseAll(
+    entries: { path: string; content: string; expectedSha256: string | null }[],
+  ): Promise<ArtifactRef[]> {
+    const task = this.queue.then(() => this.reviseAllNow(entries));
+    this.queue = task.catch(() => undefined);
+    return task;
+  }
+
+  private async reviseAllNow(
+    entries: { path: string; content: string; expectedSha256: string | null }[],
+  ): Promise<ArtifactRef[]> {
+    if (entries.length === 0 || new Set(entries.map((e) => e.path)).size !== entries.length) {
+      throw new ArtifactStoreError("invalid-path");
+    }
+    for (const e of entries) {
+      assertArtifactPath(e.path);
+      if (!isRevisablePath(e.path)) throw new ArtifactStoreError("invalid-path");
+      if (Buffer.byteLength(e.content, "utf8") > this.maxBytes) {
+        throw new ArtifactStoreError("too-large");
+      }
+    }
+    const parent = await this.head();
+    const checked = [];
+    for (const e of entries) {
+      const blob = parent ? await this.entryAt(parent, e.path) : undefined;
+      const current = blob === undefined ? null : sha256(await this.blobContent(blob));
+      const digest = sha256(e.content);
+      if (current !== e.expectedSha256 && current !== digest) {
+        throw new ArtifactStoreError("stale-revision");
+      }
+      checked.push({ ...e, digest, applied: current === digest });
+    }
+    const pending = checked.filter((e) => !e.applied);
+    const commit = pending.length
+      ? await this.commitBlobs(
+          pending.map((e) => ({ path: e.path, content: e.content })),
+          parent,
+          `Revise ${pending.map((e) => e.path).join(", ")}`,
+        )
+      : undefined;
+    const refs: ArtifactRef[] = [];
+    for (const e of checked) {
+      refs.push({
+        repository: this.config.repository,
+        commit: !e.applied && commit ? commit : await this.latestCommit(commit ?? parent!, e.path),
+        path: e.path,
+        sha256: e.digest,
+      });
+    }
+    return refs;
   }
 
   /** Newest commit on the branch that changed the path. */
