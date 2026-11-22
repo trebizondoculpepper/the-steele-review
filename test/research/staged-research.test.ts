@@ -8,7 +8,7 @@ import { WebAdapterError } from "../../src/controllers/research-web.js";
 import {
   assembleStage,
   discoverStage,
-  failedJob,
+  finishFailedStage,
   inventoryStage,
   retrieveStage,
   type StagedResearchDeps,
@@ -83,7 +83,7 @@ function stagesFor(deps: StagedResearchDeps): ResearchStages {
     inventory: (d) => inventoryStage(deps, d),
     retrieve: (i) => retrieveStage(deps, i),
     assemble: (d, i) => assembleStage(deps, d, i),
-    failed: async (r, f) => failedJob(r, f as never),
+    failed: (r, f) => finishFailedStage(deps, r, f as never),
     rounds: 3,
     roundDelayMs: 1,
   };
@@ -209,7 +209,17 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
       request,
     );
     expect(job.result).toMatchObject({ outcome: "failed", failure: "provider-error" });
+    // Persisted with its completion event, like the legacy runner.
+    expect(job.resultRef?.path).toMatch(/^research-jobs\/.+\/result\.json$/);
+    expect(operations.pendingEventStatus(job.jobId)).toBeDefined();
     expect(run.names).not.toContain("research-inventory");
+  });
+
+  it("keeps credit exhaustion recoverable: nothing is finalised", async () => {
+    const out = await finishFailedStage({ artifacts, operations }, request, "budget-exceeded");
+    expect(out.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
+    expect(out.resultRef).toBeUndefined();
+    expect(operations.pendingEventStatus(out.jobId)).toBeUndefined();
   });
 
   it("keeps the legacy single step when staged research is not configured", async () => {

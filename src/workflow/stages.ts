@@ -2,6 +2,7 @@ import {
   assembleStage,
   discoverStage,
   failedJob,
+  finishFailedStage,
   inventoryStage,
   MAX_RETRIEVAL_ROUNDS,
   retrieveStage,
@@ -251,8 +252,8 @@ export function articleStages(deps: {
               inventory: (d: StageRef) => inventoryStage(staged, d),
               retrieve: (i: StageRef) => retrieveStage(staged, i),
               assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
-              failed: async (request: ResearchRequest, failure: string) =>
-                failedJob(request, failure as Parameters<typeof failedJob>[1]),
+              failed: (request: ResearchRequest, failure: string) =>
+                finishFailedStage(staged, request, failure as Parameters<typeof failedJob>[1]),
               rounds: MAX_RETRIEVAL_ROUNDS,
               roundDelayMs: 30_000,
             };

@@ -13,6 +13,7 @@ import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
 import type { PageFetcher } from "./gap-research.js";
 import {
+  finishResearchJob,
   ResearchResultSchema,
   researchJobId,
   type ResearchRequest,
@@ -186,6 +187,31 @@ export function failedJob(
       finishedAt: now().toISOString(),
     }),
   };
+}
+
+/**
+ * Finish a staged job that ended without evidence. Terminal failures
+ * (provider error, invalid report) are persisted write-once with their
+ * `research.completed` outbox event, exactly as the legacy runner does.
+ * Credit exhaustion is not final: it is returned unpersisted so the same
+ * job can run once credit is restored, and coverage stops the article run.
+ */
+export async function finishFailedStage(
+  deps: Pick<StagedResearchDeps, "artifacts" | "operations" | "now">,
+  request: ResearchRequest,
+  failure: NonNullable<ResearchResult["failure"]>,
+): Promise<CommissionedJob> {
+  if (failure === "budget-exceeded") return failedJob(request, failure, deps.now);
+  const jobId = researchJobId(request);
+  const out = await finishResearchJob({
+    artifacts: deps.artifacts,
+    operations: deps.operations,
+    jobId,
+    outcome: "failed",
+    failure,
+    ...(deps.now ? { now: deps.now } : {}),
+  });
+  return { jobId, status: "finished", result: out.result, resultRef: plain(out.resultRef) };
 }
 
 /** Bound on retrieval rounds for transient failures within one invocation. */
