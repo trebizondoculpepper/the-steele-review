@@ -1,6 +1,8 @@
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import {
+  retainEmbeddedImages,
   retainPreviewImage,
+  type EmbeddedRetentionReport,
   type ImageFetcherPort,
   type PreviewRetentionOutcome,
 } from "./preview-retention.js";
@@ -103,6 +105,8 @@ export interface CollectionWorkerConfig {
   };
   /** Sanitised retention outcome per item, for operator logs. */
   onPreviewImage?: (outcome: PreviewRetentionOutcome, item: SubstackItem) => void;
+  /** Sanitised embedded-image counts per item, for operator logs. */
+  onEmbeddedImages?: (report: EmbeddedRetentionReport, item: SubstackItem) => void;
   publisher: EventPublisherPort;
   /** Identity of this worker instance, used as the claim owner. */
   owner: string;
@@ -496,6 +500,13 @@ export class CollectionWorker {
         });
         record = retained.record;
         this.config.onPreviewImage?.(retained.outcome, item);
+        // Then the images embedded in or linked from the article.
+        const embedded = await retainEmbeddedImages(record, {
+          ...this.config.imageRetention,
+          signal: keep.signal,
+        });
+        record = embedded.record;
+        this.config.onEmbeddedImages?.(embedded.report, item);
       }
 
       try {

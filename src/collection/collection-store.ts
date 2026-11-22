@@ -75,6 +75,54 @@ export const PreviewImageSchema = z
   .strict();
 export type PreviewImage = z.infer<typeof PreviewImageSchema>;
 
+const RetainedArtifactSchema = z
+  .object({
+    repository: z.string().min(1),
+    commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+    path: z.string().regex(/^substack\/[^/]+\/[^/]+\/images\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/),
+    hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  })
+  .strict();
+
+/**
+ * Images retained beside the capture (#277): the thumbnail and the images
+ * embedded in or linked from the article, each saved once with an exact
+ * pinned reference, every source URL and alt text that led to it, and
+ * whether it is the thumbnail. Only saved images are listed.
+ */
+export const RetainedImagesSchema = z
+  .object({
+    version: z.literal("retained-images-v1"),
+    items: z
+      .array(
+        z
+          .object({
+            artifact: RetainedArtifactSchema,
+            contentType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+            bytes: z.number().int().positive(),
+            thumbnail: z.boolean(),
+            sources: z
+              .array(
+                z
+                  .object({
+                    url: z.url({ protocol: /^https$/ }),
+                    alt: z.string().max(1000).optional(),
+                  })
+                  .strict(),
+              )
+              .min(1)
+              .max(50),
+          })
+          .strict(),
+      )
+      .max(21),
+    /** A count, size or time bound stopped retention early. */
+    truncated: z.boolean().optional(),
+    /** Downloads that were refused or failed and so are not listed. */
+    failed: z.number().int().positive().optional(),
+  })
+  .strict();
+
 /** Retained collection record: text and provenance, never media. */
 export const CollectionRecordSchema = z
   .object({
@@ -91,6 +139,7 @@ export const CollectionRecordSchema = z
       .strict(),
     /** The post's own preview image (#277); absent when it is not post-specific. */
     previewImage: PreviewImageSchema.optional(),
+    images: RetainedImagesSchema.optional(),
     /**
      * Set when this version was produced by a deliberate reingestion (#558):
      * its stable request ID, so an interrupted request can recognise and
