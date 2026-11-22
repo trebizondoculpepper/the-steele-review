@@ -1057,6 +1057,9 @@ export async function assessPostCoverage(input: {
   for (const [dossierId, entry] of Object.entries(plan.dossiers)) {
     const all = groups.get(dossierId);
     if (!all) continue;
+    // A group covered since needs no request: existing research never takes
+    // new-job allowance from groups that still need evidence.
+    if (all.every((c) => outcomes.get(c.key)?.reused)) continue;
     if (entry.mode === "targeted") {
       const byKey = new Map(all.map((c) => [c.key, c]));
       for (const batch of entry.batches) {

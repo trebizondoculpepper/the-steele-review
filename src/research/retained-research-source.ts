@@ -2,6 +2,7 @@ import { SourceContextSchema, type SourceContext } from "../content/source-conte
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readLengthLimitedResearchDiscovery } from "./discovery.js";
+import { CoverageRecordSchema } from "./librarian.js";
 import {
   ResearchRequestSchema,
   ResearchResultSchema,
@@ -122,6 +123,16 @@ export async function validateRetainedArticleResearch(input: {
     const requestRef = await input.artifacts.lookup(`research-jobs/${id}/request.json`);
     if (!requestRef) throw new Error("retained-research-request-missing");
     const request = ResearchRequestSchema.parse(JSON.parse(await input.artifacts.read(requestRef)));
+    if (request.origin === "theme") {
+      // A theme request (#658) carries no post by design: it is bound to this
+      // article through the coverage record that commissioned it, never by
+      // putting post data back into its shared identity.
+      if (researchJobId(request) !== id) throw new Error("retained-research-capture-mismatch");
+      await requireCommissioningCoverage(input, id);
+      if (!(await readAcceptedResearchRecovery({ ...input, request })))
+        throw new Error("retained-research-not-accepted");
+      continue;
+    }
     if (
       researchJobId(request) !== id ||
       !request.post?.sourceContext ||
@@ -136,4 +147,42 @@ export async function validateRetainedArticleResearch(input: {
     if (!(await readAcceptedResearchRecovery({ ...input, request })))
       throw new Error("retained-research-not-accepted");
   }
+}
+
+/** Bound on coverage records examined when binding a theme request. */
+const COVERAGE_SCAN = 2_000;
+
+/**
+ * A coverage record for exactly this capture and source context must list
+ * the job; otherwise the theme job was not commissioned for this article.
+ */
+async function requireCommissioningCoverage(
+  input: { artifacts: GitArtifactStore; capture: ArtifactRef; sourceContext: SourceContext },
+  jobId: string,
+): Promise<void> {
+  const capture = JSON.stringify(ref(input.capture));
+  let after: string | undefined;
+  let scanned = 0;
+  while (scanned < COVERAGE_SCAN) {
+    const paths = await input.artifacts.list("librarian/coverage", 200, after);
+    for (const path of paths) {
+      scanned++;
+      const r = await input.artifacts.lookup(path);
+      if (!r) continue;
+      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await input.artifacts.read(r)));
+      if (!parsed.success) continue;
+      const c = parsed.data;
+      if (JSON.stringify(c.source) !== capture || !c.jobs.some((j) => j.jobId === jobId)) continue;
+      if (!c.sourceContext) continue;
+      const context = SourceContextSchema.parse(
+        JSON.parse(await input.artifacts.read(fromRef(c.sourceContext))),
+      );
+      const wanted = JSON.stringify(SourceContextSchema.parse(input.sourceContext));
+      if (JSON.stringify(context) !== wanted) throw new Error("retained-research-context-mismatch");
+      return;
+    }
+    if (paths.length < 200) break;
+    after = paths[paths.length - 1];
+  }
+  throw new Error("retained-research-capture-mismatch");
 }

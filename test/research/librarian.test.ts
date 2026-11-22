@@ -908,4 +908,65 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
     expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
     expect(retry.record.jobs.map((j) => j.jobId)).toEqual([ids[0]]);
   });
+
+  it("spends no request allowance on a group covered since the plan was made", async () => {
+    const both = (req: ResearchRequest) => ({
+      passages: req.claims.map((c) => ({
+        claimRecordId: c.claimRecordId,
+        url: "https://un.example/x",
+      })),
+    });
+    const a = await analysis("p1", claims, "Weather warfare");
+    const first = researcher(both);
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: first.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(first.requests).toHaveLength(1);
+    // Everything is covered now: replaying the retained plan commissions nothing.
+    const again = researcher(both);
+    await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: again.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(again.requests).toHaveLength(0);
+  });
+
+  it("refuses recovery of a theme job that no coverage record binds to this article", async () => {
+    const { validateRetainedArticleResearch } =
+      await import("../../src/research/retained-research-source.js");
+    const request: ResearchRequest = {
+      schemaVersion: 1,
+      origin: "theme",
+      pass: 1,
+      claims: [
+        {
+          claimRecordId: "claim-new",
+          statement: "A new aircraft sprayed the region",
+          themeIds: ["weather"],
+        },
+      ],
+      question: "Targeted enhancement",
+      corpusRefs: [],
+    };
+    const id = researchJobId(request);
+    await artifacts.write(`research-jobs/${id}/request.json`, JSON.stringify(request));
+    const capture = await artifacts.write("substack/pub/p9/collected.json", "{}");
+    await expect(
+      validateRetainedArticleResearch({
+        artifacts,
+        operations: {
+          researchRecovery: () => undefined,
+          researchDiscoveryAccepted: () => false,
+        } as never,
+        jobIds: [id],
+        capture,
+        sourceContext: { schemaVersion: 1 } as never,
+      }),
+    ).rejects.toThrow("retained-research-capture-mismatch");
+  });
 });
