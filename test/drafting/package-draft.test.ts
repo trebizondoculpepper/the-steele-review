@@ -503,18 +503,51 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     expect(calls).toBe(3);
   });
 
-  it("does not draft from an evidence-gap package", async () => {
+  it("drafts from a package with zero supported claims (#747)", async () => {
     const ref = await packageRef(() => "failed");
-    expect(
-      await draftFromPackage({
-        operations,
-        content,
-        archive,
-        package: ref,
-        provider: model(GOOD),
-        sourceUrl: "https://x/p",
-      }),
-    ).toEqual({ status: "evidence-gap" });
+    const pkg = JSON.parse(await content.read(ref));
+    // The coverage label stays honest; it is information, not a veto.
+    expect(pkg.status).toBe("evidence-gap");
+    const unsupported = JSON.stringify({
+      ...JSON.parse(GOOD),
+      responses: [
+        {
+          claimRecordId: "claim-treaty",
+          verdict: "unresolved",
+          text: "No independent source was found for this claim.",
+          evidence: [],
+        },
+        {
+          claimRecordId: "claim-payment",
+          verdict: "unresolved",
+          text: "No source documenting such a payment was found.",
+          evidence: [],
+        },
+      ],
+    });
+    const drafted = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider: model(unsupported),
+      sourceUrl: "https://x/p",
+    });
+    expect(drafted.status).toBe("drafted");
+  });
+
+  it("still refuses a citation for a claim the package does not cover (#747)", async () => {
+    const ref = await packageRef(() => "failed");
+    // GOOD cites evidence for the treaty claim, which this package leaves uncovered.
+    const out = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider: model(GOOD, GOOD, GOOD),
+      sourceUrl: "https://x/p",
+    });
+    expect(out.status).toBe("failed");
   });
 
   it("keeps older drafts when the prompt version changes", async () => {

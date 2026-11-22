@@ -687,7 +687,9 @@ export async function draftFromPackage(input: {
     ? MARKDOWN_OUTPUT_REPAIR_PROMPT.instructions
     : OUTPUT_REPAIR_PROMPT.instructions;
   const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(input.package)));
-  if (pkg.status !== "ready") return { status: "evidence-gap" };
+  // Coverage is information for the writer, not a veto (#747): a valid
+  // package with zero, partial or full claim support is drafted. Its
+  // uncovered claims keep their own statuses and cannot be cited.
   const pinnedUrl = pkg.source.originalUrl;
   if (pinnedUrl && input.sourceUrl && input.sourceUrl !== pinnedUrl)
     return { status: "failed", reason: "source-url-mismatch" };

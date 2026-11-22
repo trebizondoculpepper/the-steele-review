@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { articleAttemptHash } from "../workflow/article-attempt.js";
 import type { EditorialPolicy } from "../workflow/editorial-contract.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import {
@@ -47,8 +47,7 @@ function selectedRecovery(input: ArticleRunInput, run: RunState) {
   const selected = run.attempts?.find((attempt) => attempt.workflowKey === run.workflowKey);
   if (!selected?.inputHash) return undefined;
   const original = ArticleRunInputSchema.parse({ ...input, operatorRequestId: selected.requestId });
-  if (createHash("sha256").update(JSON.stringify(original)).digest("hex") !== selected.inputHash)
-    return undefined;
+  if (articleAttemptHash(original) !== selected.inputHash) return undefined;
   return { input: original, key: selected.workflowKey };
 }
 

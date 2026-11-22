@@ -179,7 +179,11 @@ const stages: ArticleStages = {
     if (themes.path.includes("followup-late") && !options?.followUp) await sleep(2_000);
     return ref(`librarian/coverage/${themes.path}`);
   },
-  package: async (coverage) => ({ ref: ref(`writer-packages/${coverage.path}`), status: "ready" }),
+  // "unsupported-" posts have no supported claim (#747).
+  package: async (coverage) => ({
+    ref: ref(`writer-packages/${coverage.path}`),
+    status: coverage.path.includes("unsupported-") ? "evidence-gap" : "ready",
+  }),
   draft: async (pkg) => {
     calls.draft++;
     return pkg.path.includes("invalid-writer-json")
@@ -632,6 +636,45 @@ describe("follow-up after the deadline (#597)", () => {
     ]);
     expect(researchSubjects).not.toContain("follow-gap-late-one");
     expect(reassessed.has("theme-proposals/followup-late.json")).toBe(false);
+  }, 120_000);
+});
+
+describe("non-blocking package readiness (#747)", () => {
+  const run = async (name: string, plan: string[], extra: Record<string, unknown>) => {
+    plans.set(name, plan);
+    const post = { ...input(name), researchDeadlineMs: 60_000, ...extra } as ArticleRunInput;
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    await client.workflowSubmit(post);
+    return client.workflowAttach();
+  };
+
+  it("keeps the legacy stop for runs submitted without the contract", async () => {
+    const result = await run("unsupported-legacy", ["unsupported-l1"], {});
+    expect(result.outcome).toBe("evidence-gap");
+    expect(result.draft).toBeUndefined();
+  }, 120_000);
+
+  it("drafts with zero supported claims after bounded completed research", async () => {
+    const result = await run("unsupported-researched", ["unsupported-r1"], {
+      packageReadiness: "non-blocking-v1",
+      researchRequestLimit: 2,
+    });
+    expect(result.research.map((r) => r.outcome)).toEqual(["finished"]);
+    expect(result.draft).toBeDefined();
+    expect(result.outcome).not.toBe("evidence-gap");
+  }, 120_000);
+
+  it("drafts with zero commissioned jobs and with the allowance exhausted", async () => {
+    const none = await run("unsupported-none", [], { packageReadiness: "non-blocking-v1" });
+    expect(none.research).toEqual([]);
+    expect(none.draft).toBeDefined();
+    const exhausted = await run("unsupported-exhausted", ["unsupported-x1"], {
+      packageReadiness: "non-blocking-v1",
+      researchRequestLimit: 0,
+    });
+    // Not commissioned stays not commissioned; it is never reported as searched.
+    expect(exhausted.research.map((r) => r.outcome)).toEqual(["not-commissioned"]);
+    expect(exhausted.draft).toBeDefined();
   }, 120_000);
 });
 

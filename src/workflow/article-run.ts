@@ -87,6 +87,12 @@ export interface ArticleRunInput {
    * submission. Requires allowance selection, whose allowance it shares.
    */
   researchFollowUp?: "one-round-v1";
+  /**
+   * Package readiness contract chosen at submission (#747). `non-blocking-v1`
+   * drafts from every valid package, including one with no supported claim.
+   * Absent means the legacy stop on an evidence-gap package.
+   */
+  packageReadiness?: "non-blocking-v1";
   /** Serialized version selects a new journal sequence; absent means legacy. */
   editorial?: EditorialPolicy;
   operatorRequestId?: string;
@@ -368,6 +374,7 @@ export const ArticleRunInputSchema = z
     researchExecution: z.literal("staged").optional(),
     researchSelection: z.literal("allowance-v1").optional(),
     researchFollowUp: z.literal("one-round-v1").optional(),
+    packageReadiness: z.literal("non-blocking-v1").optional(),
     editorial: EditorialPolicySchema.optional(),
     operatorRequestId: z
       .string()
@@ -659,7 +666,10 @@ export function articleRunWorkflow(stages: ArticleStages) {
       }
     }
     const pkg = await step("package", () => stages.package(coverage));
-    if (pkg.status !== "ready") {
+    // Legacy runs stop when no claim is supported. Runs submitted with the
+    // non-blocking contract (#747) pass every valid package to the writer:
+    // claim coverage is information for the article, not a librarian veto.
+    if (pkg.status !== "ready" && input.packageReadiness !== "non-blocking-v1") {
       return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };
     }
     const drafted = await step("draft", () => stages.draft(pkg.ref, input.sourceUrl));
