@@ -20,6 +20,12 @@ External controllers own service authentication and connections. Grant each comp
 
 Treat source pages, transcripts, research material, and model responses as untrusted input. Validate structured data at runtime and prevent source text from changing tool permissions, credentials, verification rules, or publishing policy. Validate destinations before implementing arbitrary URL fetching so untrusted content cannot reach internal services or metadata endpoints.
 
+## Secret persistence and live configuration
+
+Persist secret values only in canonical private configuration supplied through the configuration handler. Do not create derived key files, per-worker credential copies, configuration caches or durable snapshots containing secrets. Run records, workflow journals, Git artifacts, events, prompts, receipts and telemetry must never contain keys. Temporary request authentication belongs inside the owning adapter and is not a second persisted credential source.
+
+Read current validated configuration through the handler before new decisions and outbound requests. Apply edits at the next applicable boundary; never silently continue from a stale cached credential after a read or validation failure. Audit only the non-secret values actually applied and their configuration revision. Preserve historical decisions for replay, and recheck live delivery permissions before future external effects.
+
 ## Safe diagnostics
 
 Return bounded operational status without private endpoints or credentials. Client exceptions may contain request URLs, headers, and authentication details; do not serialize them directly to logs or API responses. Use sanitised error categories and correlation IDs. Apply the same controls to telemetry and third-party error tracking.
