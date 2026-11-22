@@ -68,7 +68,12 @@ export interface CollectionAdapter {
 
 export class CollectionQueryError extends Error {
   constructor(
-    readonly code: "unknown-filter" | "invalid-filter" | "unknown-sort" | "invalid-limit",
+    readonly code:
+      | "unknown-filter"
+      | "invalid-filter"
+      | "unknown-sort"
+      | "invalid-limit"
+      | "adapter-overflow",
     readonly keys: string[] = [],
   ) {
     super(`collection query: ${code}${keys.length ? ` (${keys.join(", ")})` : ""}`);
@@ -99,13 +104,24 @@ export function validateCollectionQuery(
   adapter: CollectionAdapter,
   raw: RawCollectionQuery,
 ): CollectionQuery {
+  // Check the allowlist against the raw object first: schema parsing rebuilds
+  // the filters object, and a key like `__proto__` would be dropped in the
+  // rebuild rather than refused.
+  const rawFilters = (raw as { filters?: Record<string, unknown> }).filters ?? {};
+  const unknownRaw = Object.keys(rawFilters).filter(
+    (k) => !Object.hasOwn(adapter.filters, k),
+  );
+  if (unknownRaw.length > 0) throw new CollectionQueryError("unknown-filter", unknownRaw);
+
   const parsed = RawQuerySchema.parse(raw);
   const text = parsed.text?.trim();
   if (text !== undefined && text.length > MAX_QUERY_TEXT)
     throw new CollectionQueryError("invalid-filter", ["text"]);
 
   const requested = parsed.filters ?? {};
-  const unknown = Object.keys(requested).filter((k) => !(k in adapter.filters));
+  // `in` would accept inherited keys such as `constructor` or `__proto__`;
+  // only the adapter's own published filters are allowed.
+  const unknown = Object.keys(requested).filter((k) => !Object.hasOwn(adapter.filters, k));
   if (unknown.length > 0) throw new CollectionQueryError("unknown-filter", unknown);
 
   const filters: Record<string, unknown> = {};
@@ -144,13 +160,18 @@ export async function queryCollection(
 ): Promise<CollectionPage> {
   const query = validateCollectionQuery(adapter, raw);
   const page = await adapter.search(query);
-  // The adapter owns paging, but the contract keeps the page bounded.
-  return { ...page, rows: page.rows.slice(0, query.limit) };
+  // Never silently drop rows: an adapter that overruns its own limit has a
+  // paging bug, and slicing would hide it while keeping a stale cursor.
+  if (page.rows.length > query.limit)
+    throw new CollectionQueryError("adapter-overflow", [adapter.name]);
+  return page;
 }
 
 /** Build a raw query from URL search params, keeping filters namespaced. */
 export function collectionQueryFromParams(url: URL, filterPrefix = "f."): RawCollectionQuery {
-  const filters: Record<string, unknown> = {};
+  // A null-prototype map: assigning `__proto__` on a plain object would change
+  // the prototype instead of recording a filter key.
+  const filters: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of url.searchParams.entries()) {
     if (key.startsWith(filterPrefix)) filters[key.slice(filterPrefix.length)] = value;
   }

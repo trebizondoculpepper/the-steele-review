@@ -72,10 +72,21 @@ describe("shared collection query (#617)", () => {
     expect(claimCalls[0]).toMatchObject({ text: "payment" });
   });
 
-  it("keeps every page within the requested bound", async () => {
+  it("refuses an adapter that overruns the page bound instead of dropping rows", async () => {
     const many = Array.from({ length: 40 }, (_, i) => ({ id: `t${i}`, summary: `Theme ${i}` }));
-    const page = await queryCollection(adapter("themes", many), { limit: 5 });
-    expect(page.rows).toHaveLength(5);
+    await expect(queryCollection(adapter("themes", many), { limit: 5 })).rejects.toMatchObject({
+      code: "adapter-overflow",
+    });
+  });
+
+  it("rejects inherited property names as filters", () => {
+    const a = adapter("themes", []);
+    for (const key of ["constructor", "toString", "hasOwnProperty"]) {
+      expect(() => validateCollectionQuery(a, { filters: { [key]: "x" } })).toThrow(/unknown-filter/);
+    }
+    // `__proto__` can only arrive as a URL param; it must not become a filter.
+    const raw = collectionQueryFromParams(new URL("https://x/themes?f.__proto__=x"));
+    expect(() => validateCollectionQuery(a, raw)).toThrow(/unknown-filter/);
   });
 
   it("escapes rendered summaries and shows the exact artifact", () => {
