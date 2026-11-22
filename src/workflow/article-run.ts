@@ -1,3 +1,4 @@
+import type { StageRef } from "../research/staged-research.js";
 import {
   CREDIT_EXHAUSTED,
   isCreditExhausted,
@@ -98,6 +99,11 @@ export interface ArticleStages {
   planResearch(themes: Ref, claims: Ref): Promise<ResearchRequest[]>;
   /** Run (or reuse) one research job. Called from the `Research` service. */
   research(request: ResearchRequest): Promise<CommissionedJob>;
+  /**
+   * Staged research (#593): when present, the `Research` service runs these
+   * as separately named durable steps instead of one coarse `research` step.
+   */
+  researchStages?: ResearchStages;
   /** Librarian coverage from exactly the pinned research results. */
   coverage(themes: Ref, claims: Ref, pinned: PinnedResearch[]): Promise<Ref>;
   package(coverage: Ref): Promise<{ ref: Ref; status: "ready" | "evidence-gap" }>;
@@ -163,12 +169,52 @@ export function articleRunKey(post: {
   return `${post.publicationId}/${post.postId}@${post.sourceVersion.replace(/^sha256:/, "").slice(0, 32)}`;
 }
 
-export function researchService(stages: Pick<ArticleStages, "research">) {
+export interface ResearchStages {
+  discover(
+    request: ResearchRequest,
+  ): Promise<{ kind: "discovered"; discovery: StageRef } | { kind: "failed"; failure: string }>;
+  inventory(discovery: StageRef): Promise<StageRef>;
+  retrieve(inventory: StageRef): Promise<{ retryable: number }>;
+  assemble(discovery: StageRef, inventory: StageRef): Promise<CommissionedJob>;
+  failed(request: ResearchRequest, failure: string): Promise<CommissionedJob>;
+  /** Bounded retrieval rounds and the delay between them. */
+  rounds: number;
+  roundDelayMs: number;
+}
+
+/**
+ * One research job as named, recoverable Restate steps (#593). A replay
+ * reuses every completed step: a failed URL never restarts discovery, and
+ * each stage is visible in the invocation journal. Without staged stages the
+ * legacy single step is kept, so existing invocations replay unchanged.
+ */
+export async function runResearch(
+  ctx: Pick<restate.Context, "run" | "sleep">,
+  stages: Pick<ArticleStages, "research" | "researchStages">,
+  request: ResearchRequest,
+): Promise<CommissionedJob> {
+  const s = stages.researchStages;
+  if (!s) return ctx.run("research", () => stages.research(request));
+  const found = await ctx.run("research-discover", () => s.discover(request));
+  if (found.kind === "failed") {
+    const failure = found.failure;
+    return ctx.run("research-failed", () => s.failed(request, failure));
+  }
+  const inventory = await ctx.run("research-inventory", () => s.inventory(found.discovery));
+  for (let round = 0; round < s.rounds; round++) {
+    const out = await ctx.run(`research-retrieve-${round}`, () => s.retrieve(inventory));
+    if (out.retryable === 0) break;
+    if (round < s.rounds - 1) await ctx.sleep(s.roundDelayMs * 2 ** round);
+  }
+  return ctx.run("research-assemble", () => s.assemble(found.discovery, inventory));
+}
+
+export function researchService(stages: Pick<ArticleStages, "research" | "researchStages">) {
   return restate.service({
     name: "Research",
     handlers: {
       run: async (ctx: restate.Context, request: ResearchRequest): Promise<CommissionedJob> =>
-        ctx.run("research", () => stages.research(request)),
+        runResearch(ctx, stages, request),
     },
   });
 }

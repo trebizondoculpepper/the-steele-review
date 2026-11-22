@@ -1,3 +1,13 @@
+import {
+  assembleStage,
+  discoverStage,
+  failedJob,
+  inventoryStage,
+  MAX_RETRIEVAL_ROUNDS,
+  retrieveStage,
+  type StagedResearchDeps,
+  type StageRef,
+} from "../research/staged-research.js";
 import { isCanonicalArticlePath } from "../drafting/article-identity.js";
 import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
@@ -74,6 +84,12 @@ export function articleStages(deps: {
     fetcher: PageFetcher;
     judge?: SupportJudge;
     monitoredHosts?: string[];
+    /**
+     * Run research as named recoverable stages (#593). Off by default: the
+     * staged result does not yet assess support (that boundary is separate),
+     * and article coverage depends on supported passages.
+     */
+    staged?: boolean;
   };
   /**
    * Same-speaker history for the essay (#370). Optional: without it, or when
@@ -212,6 +228,37 @@ export function articleStages(deps: {
     },
 
     planResearch: (themes, claims) => planned(themes, claims),
+
+    ...(deps.research.staged
+      ? {
+          researchStages: (() => {
+            const staged: StagedResearchDeps = {
+              artifacts: deps.content,
+              operations: deps.operations,
+              sonar: deps.research.sonar,
+              fetcher: deps.research.fetcher,
+              owner: deps.owner,
+              // The same retrieval bounds as the whole-job runner.
+              limits: {
+                maxSources: 20,
+                maxAttempts: 3,
+                timeoutMs: 30_000,
+                maxSourceChars: 200_000,
+              },
+            };
+            return {
+              discover: (request: ResearchRequest) => discoverStage(staged, request),
+              inventory: (d: StageRef) => inventoryStage(staged, d),
+              retrieve: (i: StageRef) => retrieveStage(staged, i),
+              assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
+              failed: async (request: ResearchRequest, failure: string) =>
+                failedJob(request, failure as Parameters<typeof failedJob>[1]),
+              rounds: MAX_RETRIEVAL_ROUNDS,
+              roundDelayMs: 30_000,
+            };
+          })(),
+        }
+      : {}),
 
     async research(request): Promise<CommissionedJob> {
       const out = await runResearchJob({

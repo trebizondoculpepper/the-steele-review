@@ -41,3 +41,9 @@ After discovery, two named deterministic stages run under the same discovery dir
 - **Support:** every citation's support is `not-checked`. A retrieved document is not evidence, and support assessment stays a separate boundary.
 - **Gaps:** inaccessible, unsupported, not-attempted and pending retrievals, unfetchable URLs, omitted inventory entries and adapter-only citation provenance are listed explicitly, and any of them makes the outcome `complete-with-gaps`. "Retrieval complete" never means "research sufficient".
 - **Completion:** completion and its `research.completed` event are recorded in one state transaction. A failed completion releases its claim for retry. A replay returns the recorded result without rebuilding or emitting again.
+
+## Staged research workflow (#593)
+
+The Restate `Research` service can run one research job as named, recoverable steps instead of one coarse step: `research-discover`, `research-inventory`, `research-retrieve-<round>` (up to three bounded rounds, with backoff between them) and `research-assemble`. A replay reuses each completed step, so a failed URL never restarts discovery and each stage is visible in the invocation journal. Provider failure and credit exhaustion end as a failed result (`provider-error`, `budget-exceeded`), never as an evidence gap.
+
+It's off by default and enabled with `STEELE_RESEARCH_STAGED=1` on the article worker. The staged result doesn't yet assess support, and article coverage depends on supported passages. Without the setting the legacy single `research` step runs unchanged, so in-flight invocations replay exactly as before. Both article and manual origins go through the same service.

@@ -119,6 +119,8 @@ function main(): number {
         sonar,
         fetcher: new PublicPageFetcher(),
         judge: new ModelSupportJudge(model("STEELE_MODEL_SUPPORT")),
+        // Staged research (#593): opt-in until support assessment is staged too.
+        ...(process.env.STEELE_RESEARCH_STAGED === "1" ? { staged: true } : {}),
         ...(c.STEELE_MONITORED_HOSTS
           ? {
               monitoredHosts: c.STEELE_MONITORED_HOSTS.split(",")
