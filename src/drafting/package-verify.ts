@@ -184,25 +184,24 @@ export type VerifyOutcome =
   | { status: "context-unavailable"; reason: string }
   | { status: "failed"; reason: "provider-failed" | "malformed-output" };
 
-/** Verify one exact draft against its exact package and pinned context. */
-export async function verifyPackageDraft(input: {
+/**
+ * Load one exact draft for review and bind everything a reviewer may see:
+ * the pinned body, its publication payload (title, subtitle, excerpt), the
+ * package and the pinned source context. Shared by the combined verifier and
+ * the findings-only assessor (#598) so both bind exactly the same inputs.
+ */
+export async function loadArticleForReview(input: {
   content: GitArtifactStore;
   archive: Pick<GitArtifactStore, "read">;
-  /** The draft's metadata (articles/.../<key>.json), which pins draft and package. */
   metadata: ArtifactRef;
-  verifier: ExtractionModelProvider;
-  prompt?: ExtractionPrompt;
-  maxAttempts?: number;
-  now?: () => Date;
-}): Promise<VerifyOutcome> {
-  const prompt = input.prompt ?? DEFAULT_PACKAGE_VERIFY_PROMPT;
+}) {
   const meta = PackageDraftMetadataSchema.parse(
     JSON.parse(await input.content.read(input.metadata)),
   );
   const draftPath = meta.draft.slice(meta.draft.indexOf(":") + 1);
   const draftRef = await input.content.lookup(draftPath);
   if (!draftRef || `${draftRef.commit}:${draftRef.path}` !== meta.draft) {
-    return { status: "context-unavailable", reason: "draft-version-mismatch" };
+    return { status: "context-unavailable" as const, reason: "draft-version-mismatch" };
   }
   const markdown = await input.content.read(draftRef);
   const pkgRef = toArtifactRef(meta.package);
@@ -231,9 +230,29 @@ export async function verifyPackageDraft(input: {
     themes: toArtifactRef(pkg.themeResult),
     ...(pkg.source.context ? { sourceContext: toArtifactRef(pkg.source.context) } : {}),
   });
-  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
+  if (loaded.kind !== "loaded")
+    return { status: "context-unavailable" as const, reason: loaded.kind };
   if (meta.contextVersion && meta.contextVersion !== loaded.context.contextRef)
-    return { status: "context-unavailable", reason: "source-context-version-mismatch" };
+    return { status: "context-unavailable" as const, reason: "source-context-version-mismatch" };
+
+  return { status: "loaded" as const, meta, draftRef, markdown, pkg, publication, loaded };
+}
+
+/** Verify one exact draft against its exact package and pinned context. */
+export async function verifyPackageDraft(input: {
+  content: GitArtifactStore;
+  archive: Pick<GitArtifactStore, "read">;
+  /** The draft's metadata (articles/.../<key>.json), which pins draft and package. */
+  metadata: ArtifactRef;
+  verifier: ExtractionModelProvider;
+  prompt?: ExtractionPrompt;
+  maxAttempts?: number;
+  now?: () => Date;
+}): Promise<VerifyOutcome> {
+  const prompt = input.prompt ?? DEFAULT_PACKAGE_VERIFY_PROMPT;
+  const bound = await loadArticleForReview(input);
+  if (bound.status !== "loaded") return bound;
+  const { meta, draftRef, markdown, pkg, publication, loaded } = bound;
 
   // Bound to the exact verifier wording, not only its semantic version (#430).
   const promptId = promptIdentity(prompt.version, prompt.instructions);

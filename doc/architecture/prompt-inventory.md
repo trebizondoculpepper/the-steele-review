@@ -12,26 +12,27 @@ This is the state of every model-facing prompt after the migration slices (#421â
 
 ## Complete: loaded from Markdown, with a content-hashed identity
 
-| Stage                     | Prompt file                                                              | Loaded by                                                                  |
-| ------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Theme proposals           | `analysis/theme-proposals-v2.md`                                         | `analysis/theme-proposals.ts`                                              |
-| Theme catalogue           | `analysis/theme-catalogue-v2.md`                                         | `analysis/theme-catalogue.ts`                                              |
-| Theme extraction (legacy) | `analysis/theme-extraction-v1.md`                                        | `analysis/theme-extraction.ts`                                             |
-| Grounded claims           | `analysis/grounded-claims-v6.md`                                         | `analysis/grounded-claims.ts`                                              |
-| Claim extraction (legacy) | `analysis/claim-extraction-v1.md`                                        | `analysis/extraction.ts`                                                   |
-| Claim equivalence         | `analysis/claim-equivalence-v1.md`                                       | `analysis/claim-equivalence.ts`                                            |
-| Historical comparison     | `analysis/historical-comparison-v1.md`                                   | `analysis/historical-comparison.ts`                                        |
-| Same-speaker matching     | `librarian/same-speaker-match.md`                                        | `analysis/same-speaker-history.ts`                                         |
-| Speaker evolution         | `librarian/speaker-evolution.md`                                         | `analysis/speaker-evolution.ts`                                            |
-| Cross-speaker parallels   | `librarian/cross-speaker-parallel.md`                                    | `analysis/cross-speaker-parallels.ts`                                      |
-| Research applicability    | `research/applicability-v1.md`                                           | `research/applicability.ts`                                                |
-| Research query plan       | `research/query-plan-v1.md`                                              | `research/query-plan.ts`                                                   |
-| Gap research              | `research/gap-research-v1.md`                                            | `research/gap-research.ts`                                                 |
-| Draft writer (legacy)     | `writer/explainer.md`, `writer/explainer-with-source.md`                 | `drafting/draft.ts`                                                        |
-| Draft verifier (legacy)   | `verifier/draft-verifier-v1.md`, `verifier/draft-verifier-context-v1.md` | `drafting/verify.ts`                                                       |
-| Package writer            | `writer/package-explainer.md`                                            | `drafting/package-draft.ts` (identity from `drafting/prompt-identity.ts`)  |
-| Package redraft           | `writer/package-revision.md`                                             | `drafting/package-draft.ts` (identity from `drafting/prompt-identity.ts`)  |
-| Package verifier          | `verifier/package-verifier.md`                                           | `drafting/package-verify.ts` (identity from `drafting/prompt-identity.ts`) |
+| Stage                                  | Prompt file                                                              | Loaded by                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Theme proposals                        | `analysis/theme-proposals-v2.md`                                         | `analysis/theme-proposals.ts`                                                  |
+| Theme catalogue                        | `analysis/theme-catalogue-v2.md`                                         | `analysis/theme-catalogue.ts`                                                  |
+| Theme extraction (legacy)              | `analysis/theme-extraction-v1.md`                                        | `analysis/theme-extraction.ts`                                                 |
+| Grounded claims                        | `analysis/grounded-claims-v6.md`                                         | `analysis/grounded-claims.ts`                                                  |
+| Claim extraction (legacy)              | `analysis/claim-extraction-v1.md`                                        | `analysis/extraction.ts`                                                       |
+| Claim equivalence                      | `analysis/claim-equivalence-v1.md`                                       | `analysis/claim-equivalence.ts`                                                |
+| Historical comparison                  | `analysis/historical-comparison-v1.md`                                   | `analysis/historical-comparison.ts`                                            |
+| Same-speaker matching                  | `librarian/same-speaker-match.md`                                        | `analysis/same-speaker-history.ts`                                             |
+| Speaker evolution                      | `librarian/speaker-evolution.md`                                         | `analysis/speaker-evolution.ts`                                                |
+| Cross-speaker parallels                | `librarian/cross-speaker-parallel.md`                                    | `analysis/cross-speaker-parallels.ts`                                          |
+| Research applicability                 | `research/applicability-v1.md`                                           | `research/applicability.ts`                                                    |
+| Research query plan                    | `research/query-plan-v1.md`                                              | `research/query-plan.ts`                                                       |
+| Gap research                           | `research/gap-research-v1.md`                                            | `research/gap-research.ts`                                                     |
+| Draft writer (legacy)                  | `writer/explainer.md`, `writer/explainer-with-source.md`                 | `drafting/draft.ts`                                                            |
+| Draft verifier (legacy)                | `verifier/draft-verifier-v1.md`, `verifier/draft-verifier-context-v1.md` | `drafting/verify.ts`                                                           |
+| Package writer                         | `writer/package-explainer.md`                                            | `drafting/package-draft.ts` (identity from `drafting/prompt-identity.ts`)      |
+| Package redraft                        | `writer/package-revision.md`                                             | `drafting/package-draft.ts` (identity from `drafting/prompt-identity.ts`)      |
+| Package verifier                       | `verifier/package-verifier.md`                                           | `drafting/package-verify.ts` (identity from `drafting/prompt-identity.ts`)     |
+| Article assessor (findings only, #598) | `verifier/article-assessor.md`                                           | `drafting/article-assessment.ts` (identity from `drafting/prompt-identity.ts`) |
 
 ## Remaining
 
