@@ -97,6 +97,7 @@ function setup(options: {
   transcriber?: TranscriberPort;
   publishFails?: number;
   owner?: string;
+  imageRetention?: ConstructorParameters<typeof CollectionWorker>[0]["imageRetention"];
   now?: () => number;
   leaseMs?: number;
 }) {
@@ -130,6 +131,7 @@ function setup(options: {
       },
     },
     owner: options.owner ?? "worker-1",
+    ...(options.imageRetention ? { imageRetention: options.imageRetention } : {}),
     ...(options.leaseMs ? { leaseMs: options.leaseMs } : {}),
     retryDelayMs: 0,
   });
@@ -271,6 +273,80 @@ describe("CollectionWorker", () => {
       ingestionReason: "backfill",
       text: "Synthetic transcript text.",
     });
+  });
+
+  it("retains the preview image before committing a record that references it (#277)", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    const preview = {
+      url: "https://substackcdn.example/image/upload/cover.png",
+      source: "cover_image" as const,
+      kind: "uploaded" as const,
+    };
+    const { worker, published } = setup({
+      collect: () => ({ ...textResult(), previewImage: preview }),
+      imageRetention: {
+        fetcher: { fetch: async () => ({ bytes: png, contentType: "image/png" as const }) },
+        artifacts,
+      },
+    });
+    expect(await worker.handle(message("live"))).toBe("collected");
+    const event = parseTextReadyEvent(published[0]!.body);
+    const stored = JSON.parse(
+      await artifacts.read({
+        repository: event.data!.artifact.repository,
+        commit: event.data!.artifact.commit,
+        path: event.data!.artifact.path,
+        sha256: event.data!.artifact.hash.slice(7),
+      }),
+    );
+    expect(stored.previewImage).toMatchObject({ url: preview.url, kind: "uploaded" });
+    const retained = stored.previewImage.retained;
+    expect(retained).toMatchObject({ contentType: "image/png", bytes: png.length });
+    expect(retained.artifact.path).toMatch(
+      /^substack\/example-pub\/a-post\/images\/[0-9a-f]{64}\.png$/,
+    );
+    const bytes = await artifacts.readBinary({
+      repository: retained.artifact.repository,
+      commit: retained.artifact.commit,
+      path: retained.artifact.path,
+      sha256: retained.artifact.hash.slice(7),
+    });
+    expect(Buffer.compare(bytes, png)).toBe(0);
+  });
+
+  it("commits without a reference when the preview image cannot be retained (#277)", async () => {
+    const { worker, published } = setup({
+      collect: () => ({
+        ...textResult(),
+        previewImage: {
+          url: "https://substackcdn.example/image/upload/cover.png",
+          source: "cover_image" as const,
+          kind: "uploaded" as const,
+        },
+      }),
+      imageRetention: {
+        fetcher: {
+          fetch: async () => {
+            throw new Error("refused");
+          },
+        },
+        artifacts,
+      },
+    });
+    expect(await worker.handle(message("live"))).toBe("collected");
+    const event = parseTextReadyEvent(published[0]!.body);
+    const stored = JSON.parse(
+      await artifacts.read({
+        repository: event.data!.artifact.repository,
+        commit: event.data!.artifact.commit,
+        path: event.data!.artifact.path,
+        sha256: event.data!.artifact.hash.slice(7),
+      }),
+    );
+    expect(stored.previewImage.url).toBeDefined();
+    expect(stored.previewImage.retained).toBeUndefined();
+    // No image was written: nothing dangles and nothing half-exists.
+    expect(await artifacts.list("substack/example-pub/a-post/images", 10)).toEqual([]);
   });
 
   it("reuses the completed result on duplicate delivery without collecting again", async () => {

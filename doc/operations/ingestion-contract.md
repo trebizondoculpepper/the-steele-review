@@ -27,3 +27,21 @@ The event subject is `<namespace>/<itemId>`. Its ID is derived from the namespac
 4. Add the source's producer to the message registry description if it is new.
 
 The NATS-to-Restate bridge (#270) consumes this event to start one article workflow per item revision.
+
+## Retained preview images (#277)
+
+When a new post is captured with an eligible preview image (`previewImage`, derived from Substack's `cover_image` under the #277 eligibility rules), the collector downloads it and saves the exact bytes in the capture archive, beside the record, as a binary artifact:
+
+```text
+substack/<publication>/<post>/images/<sha256>.<png|jpg|gif|webp>
+```
+
+The download goes through `PublicImageFetcher`:
+- HTTPS only, to public addresses only, with the same address pinning as research page fetches;
+- no redirects and no content encoding;
+- a 5 MB limit and a 20-second timeout;
+- the declared content type and the bytes' own signature must agree on an allowlisted image type.
+
+The record's `previewImage.retained` is added only after the image is saved. It holds the exact pinned artifact reference, the content type and the byte size, and `previewImage.url` stays as provenance. A refused or failed download commits the record without `retained` and doesn't block collection. The image is content-addressed, so a retry or an unchanged image reuses the same artifact.
+
+This applies to new captures only: there's no backfill or refetch. Indexers select their own document paths, so they never decode image bytes, and nothing runs OCR or image understanding on them. Set `STEELE_RETAIN_PREVIEW_IMAGES=0` to turn retention off in the collector. Each item logs a `preview-image` line with its outcome: `retained`, `no-preview`, `already-retained` or `failed`.

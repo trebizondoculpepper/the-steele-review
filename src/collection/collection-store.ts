@@ -48,6 +48,29 @@ export const PreviewImageSchema = z
     url: z.url({ protocol: /^https$/ }),
     source: z.literal("cover_image"),
     kind: z.enum(["video-frame", "uploaded"]),
+    /**
+     * The retained copy (#277), present only once its bytes were saved beside
+     * this capture: an exact pinned reference to the image artifact. The
+     * `url` above stays as provenance. Absent when the fetch was refused or
+     * failed, or for records captured before retention existed.
+     */
+    retained: z
+      .object({
+        artifact: z
+          .object({
+            repository: z.string().min(1),
+            commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+            path: z
+              .string()
+              .regex(/^substack\/[^/]+\/[^/]+\/images\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/),
+            hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+          })
+          .strict(),
+        contentType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+        bytes: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type PreviewImage = z.infer<typeof PreviewImageSchema>;
