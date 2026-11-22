@@ -93,6 +93,8 @@ export const REVISABLE_PREFIXES: readonly string[] = [
   "catalogue/",
   // Reusable theme mappings (#518): corrected by normal file revisions.
   "librarian/theme-mappings/",
+  // Per-article research allowance ledgers (#596): compare-and-set revisions.
+  "librarian/research-allowance/",
 ];
 
 /** Normalised claim records (claims/claim-<hex>.json) evolve as occurrences accumulate. */

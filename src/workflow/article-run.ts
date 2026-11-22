@@ -15,6 +15,7 @@ export { articleRunTarget } from "../content/article-run-target.js";
 import { z } from "zod";
 import { researchJobId, type ResearchRequest } from "../research/job.js";
 import type { CommissionedJob } from "../research/librarian.js";
+import { dispatched, type SelectedCandidate } from "../research/research-allowance.js";
 
 /**
  * Unattended article run on Restate (#243).
@@ -75,6 +76,12 @@ export interface ArticleRunInput {
    * legacy single-step research call, whatever the deployment now enables.
    */
   researchExecution?: "staged";
+  /**
+   * Research selection chosen at submission (#596). `allowance-v1` treats
+   * `researchRequestLimit` as the article's allowance of NEW jobs across its
+   * rounds, with reused saved research free. Absent means the legacy prefix.
+   */
+  researchSelection?: "allowance-v1";
   /** Serialized version selects a new journal sequence; absent means legacy. */
   editorial?: EditorialPolicy;
   operatorRequestId?: string;
@@ -117,6 +124,16 @@ export interface ArticleStages {
   claims(post: ArticleRunInput, themes: Ref): Promise<Ref>;
   /** The librarian's stable list of research requests for this analysis. */
   planResearch(themes: Ref, claims: Ref): Promise<ResearchRequest[]>;
+  /**
+   * Apply the article's new-job allowance to the planned requests, in order
+   * (#596). Saved write-once, so a retry returns the same decisions.
+   */
+  selectResearch?(
+    themes: Ref,
+    claims: Ref,
+    requests: ResearchRequest[],
+    allowance: number,
+  ): Promise<SelectedCandidate[]>;
   /** Run (or reuse) one research job. Called from the `Research` service. */
   research(request: ResearchRequest): Promise<CommissionedJob>;
   /**
@@ -324,6 +341,7 @@ export const ArticleRunInputSchema = z
       .max(100)
       .optional(),
     researchExecution: z.literal("staged").optional(),
+    researchSelection: z.literal("allowance-v1").optional(),
     editorial: EditorialPolicySchema.optional(),
     operatorRequestId: z
       .string()
@@ -355,6 +373,12 @@ export const ArticleRunInputSchema = z
         input.researchExecution !== "staged"),
     "retained recovery requires an explicit request and generation on the normal research path",
   )
+  .refine(
+    (input) =>
+      !input.researchSelection ||
+      (input.researchRequestLimit !== undefined && !input.retainedResearchJobIds),
+    "allowance selection needs a configured allowance and is not a retained recovery",
+  )
   .refine((input) => {
     if (!input.source) return true;
     const target = articleRunTarget(input.source.namespace, input.source.itemId);
@@ -369,6 +393,7 @@ export const PROGRESS_STAGES = [
   "themes",
   "claims",
   "plan-research",
+  "select-research",
   "research",
   "coverage",
   "package",
@@ -468,10 +493,35 @@ export function articleRunWorkflow(stages: ArticleStages) {
         claims,
         research: [],
       };
+    // Which planned requests to dispatch. Legacy: the configured prefix.
+    // Allowance selection (#596): reused and in-flight jobs are free and only
+    // NEW jobs count against the article's allowance.
+    let commissioned = (i: number) =>
+      input.researchRequestLimit === undefined || i < input.researchRequestLimit;
+    if (input.researchSelection === "allowance-v1") {
+      if (!stages.selectResearch) throw new restate.TerminalError("research selection unavailable");
+      const decisions = await step("select-research", () =>
+        stages.selectResearch!(themes, claims, requests, input.researchRequestLimit!),
+      );
+      const by = new Map(decisions.map((d) => [d.jobId, d.decision]));
+      const first = new Map<string, number>();
+      requests.forEach((r, i) => {
+        const id = researchJobId(r);
+        if (!first.has(id)) first.set(id, i);
+      });
+      commissioned = (i: number) => {
+        const id = researchJobId(requests[i]!);
+        const decision = by.get(id);
+        return first.get(id) === i && decision !== undefined && dispatched(decision);
+      };
+      for (const d of decisions)
+        logPipeline(input, "research-selection", d.decision, input.sourceVersion);
+    }
     await mark("research", "running");
-    // Commission the configured prefix in librarian order. Restate limits concurrency separately.
+    // Commission in librarian order. Restate limits concurrency separately.
     const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
-    requests.slice(0, input.researchRequestLimit).forEach((request, i) => {
+    requests.forEach((request, i) => {
+      if (!commissioned(i)) return;
       const jobId = researchJobId(request);
       pending.set(
         i,
@@ -507,7 +557,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
     await mark("research", "completed");
     const pinned: PinnedResearch[] = requests.map((request, i) => {
       const jobId = researchJobId(request);
-      if (input.researchRequestLimit !== undefined && i >= input.researchRequestLimit) {
+      if (!commissioned(i)) {
         return { jobId, request, outcome: "not-commissioned" };
       }
       const job = harvested.get(i);

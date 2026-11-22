@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { validateRetainedArticleResearch } from "../research/retained-research-source.js";
 import { sourceContextFor } from "../content/source-context.js";
 import { sourceMetadataFromEnv, postAttribution } from "../content/source-metadata.js";
-import { researchExecutionFromEnv } from "../workflow/research-execution.js";
+import { researchExecutionFromEnv, researchSelectionFor } from "../workflow/research-execution.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 import { recordArticleAttempt } from "../workflow/article-attempt.js";
 import { OperationStore } from "../controllers/operation-store.js";
@@ -162,6 +162,8 @@ async function main(): Promise<number> {
     ...(retainedResearchJobIds ? { retainedResearchJobIds } : {}),
     ...researchExecutionFromEnv(),
     ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
+    // A retained recovery keeps its exact prefix; others use the allowance.
+    ...(retainedResearchJobIds ? {} : researchSelectionFor(requestLimit.data)),
   };
   if (!ArticleRunInputSchema.safeParse(input).success) {
     console.error(USAGE);

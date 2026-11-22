@@ -12,3 +12,14 @@ export function researchExecutionFromEnv(env: Record<string, string | undefined>
 } {
   return env.STEELE_RESEARCH_STAGED === "1" ? { researchExecution: "staged" } : {};
 }
+
+/**
+ * Allowance selection for new runs (#596): when an allowance is configured,
+ * new runs count only NEW research jobs against it, shared across the
+ * article's rounds. Serialised at submission like the execution contract.
+ */
+export function researchSelectionFor(limit: number | undefined): {
+  researchSelection?: "allowance-v1";
+} {
+  return limit === undefined ? {} : { researchSelection: "allowance-v1" };
+}

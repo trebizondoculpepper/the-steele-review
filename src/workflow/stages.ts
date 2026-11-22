@@ -15,6 +15,7 @@ import {
 } from "../research/staged-research.js";
 import { editorialStages } from "./editorial-stages.js";
 import { writeOnce } from "../research/job.js";
+import { selectAndSaveResearch } from "../research/research-allowance.js";
 import { createHash } from "node:crypto";
 import { isCanonicalArticlePath } from "../drafting/article-identity.js";
 import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
@@ -280,6 +281,18 @@ export function articleStages(deps: {
     },
 
     planResearch: (themes, claims) => planned(themes, claims),
+    async selectResearch(themes, claims, requests, allowance) {
+      const { post } = await readCoverageAnalysis(deps.content, themes, claims);
+      const { record } = await selectAndSaveResearch(deps.content, {
+        post,
+        themeResult: themes,
+        claimResult: claims,
+        // Planned order is the librarian ranking (`planResearch`).
+        candidates: requests.map((r, i) => ({ jobId: researchJobId(r), rank: i + 1 })),
+        allowance,
+      });
+      return record.decisions;
+    },
 
     ...(deps.research.staged
       ? {

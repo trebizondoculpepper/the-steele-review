@@ -292,6 +292,7 @@ const STAGE_ALIASES: Record<string, StageName> = {
   claims: "claims",
   research: "research",
   "plan-research": "research",
+  "select-research": "research",
   coverage: "research",
   package: "drafting",
   draft: "drafting",
