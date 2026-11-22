@@ -200,6 +200,18 @@ describe("review search paging and filter fidelity (#622 review)", () => {
       if (!cursor) break;
     }
     expect(seen).toHaveLength(21);
+    // A report from the reader's second page links to that page of the history.
+    const second = await queryCollection(reviewsCollection(p, content), {
+      filters: { kind: "verifier-report", post: "pub/p1" },
+      cursor: Buffer.from(JSON.stringify({ k: "verifier-report", page: 1 })).toString("base64url"),
+    });
+    expect(second.rows[0]).toMatchObject({ history: { page: 1 } });
+    const html = await reviewsBrowseViews(p, content)[0]!.render(
+      new URL(
+        `https://d.test/reviews/search?f.kind=verifier-report&f.post=pub%2Fp1&after=${second.next ?? Buffer.from(JSON.stringify({ k: "verifier-report", page: 1 })).toString("base64url")}`,
+      ),
+    );
+    expect(html).toContain("page=1");
     expect(new Set(seen).size).toBe(21);
     expect(notes).toMatch(/Not every saved report/);
   });

@@ -42,6 +42,8 @@ export type ReviewBrowseRow = CollectionRow & {
   model?: string;
   /** Count of recorded findings, gates or issues, when recorded. */
   count?: number;
+  /** Verifier reports: where this report sits in the post's review history. */
+  history?: { page: number; after?: string };
 };
 
 const ref = (r: ArtifactRef) => ({
@@ -146,6 +148,7 @@ export function reviewsCollection(
           ...(r.kind === "review" && r.verifiedAt ? { at: r.verifiedAt } : {}),
           ...(r.kind === "review" && r.modelVersion ? { model: r.modelVersion } : {}),
           ...(r.kind !== "unreadable" ? { count: r.issues.length } : {}),
+          history: { page: readerPage, ...(after ? { after } : {}) },
         }));
       } else if (kind === "assessment") {
         const listing = await ports.assessments.list({

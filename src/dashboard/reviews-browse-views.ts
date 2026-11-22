@@ -46,7 +46,13 @@ export function reviewsBrowseViews(
           ? `/assessments/view?${new URLSearchParams({ path: r.id }).toString()}`
           : r.kind === "judgment"
             ? `/judgments/view?${new URLSearchParams({ path: r.id }).toString()}`
-            : `${REVIEW_PATH}?${new URLSearchParams({ publication: r.publicationId, post: r.postId }).toString()}`;
+            : // Open the history at the page and window where this report was found.
+              `${REVIEW_PATH}?${new URLSearchParams({
+                publication: r.publicationId,
+                post: r.postId,
+                ...(r.history?.page ? { page: String(r.history.page) } : {}),
+                ...(r.history?.after ? { after: r.history.after } : {}),
+              }).toString()}`;
       const rows = (page.rows as ReviewBrowseRow[])
         .map(
           (r) =>
