@@ -301,7 +301,7 @@ export class CollectionWorker {
       // complete the hand-off from it rather than fetching again.
       if (previous && previous.record.reingestion?.requestId === reingestRequestId) {
         try {
-          this.config.operations.complete(
+          this.config.operations.completeReingestion(
             claim,
             previous.artifact,
             this.eventsFor(causationId)(previous.artifact, previous.record),
