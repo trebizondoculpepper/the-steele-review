@@ -29,6 +29,9 @@ export const LibrarianPlanSchema = z
         postId: z.string().min(1),
         /** The analysed revision the plan was derived from. */
         sourceVersion: z.string().min(1),
+        /** Exact extraction artifacts assessed (repository@commit:path). */
+        themeResult: z.string().min(1).max(400).optional(),
+        claimResult: z.string().min(1).max(400).optional(),
         /** Resolved post authorship, when it is known (#462). */
         author: z
           .object({
@@ -46,6 +49,9 @@ export const LibrarianPlanSchema = z
             proposalId: z.string().min(1),
             canonicalThemeId: Id,
             source: z.enum(["catalogue", "new"]),
+            /** Original proposal payload, preserved for reconstruction. */
+            proposalTitle: z.string().min(1).max(300).optional(),
+            proposalDescription: z.string().max(2000).optional(),
             rationale: z.string().min(1).max(1000),
           })
           .strict(),
@@ -70,6 +76,8 @@ export const LibrarianPlanSchema = z
         z
           .object({
             claimRecordId: z.string().min(1),
+            /** Original claim statement, preserved for reconstruction. */
+            statement: z.string().max(2000).optional(),
             canonicalThemeId: Id,
             /** `none` when the theme has no dossier yet. */
             coverage: z.enum(["covered", "gap", "none"]),
@@ -91,6 +99,7 @@ export interface PlanProposal {
 
 export interface PlanClaim {
   claimRecordId: string;
+  statement?: string;
   /** Canonical theme the claim's proposal mapped to. */
   canonicalThemeId: string;
 }
@@ -99,6 +108,8 @@ export interface PlanInputs {
   publicationId: string;
   postId: string;
   sourceVersion: string;
+  themeResult?: string;
+  claimResult?: string;
   author?: { name: string; basis: "post-byline" | "source-configured" };
   proposals: PlanProposal[];
   claims: PlanClaim[];
@@ -149,6 +160,8 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       saved?.canonicalThemeId ?? proposedThemeId(proposal.title, proposal.description);
     mappings.push({
       proposalId: proposal.id,
+      proposalTitle: proposal.title,
+      ...(proposal.description ? { proposalDescription: proposal.description } : {}),
       canonicalThemeId,
       source: saved ? "catalogue" : "new",
       rationale: saved
@@ -202,6 +215,7 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
     if (!resolvedThemes.has(claim.canonicalThemeId)) {
       return {
         claimRecordId: claim.claimRecordId,
+        ...(claim.statement ? { statement: claim.statement } : {}),
         canonicalThemeId: claim.canonicalThemeId,
         coverage: "none" as const,
         action: "research" as const,
@@ -211,6 +225,7 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
     const coverage = dossier?.coverage.get(claim.claimRecordId) ?? (dossier ? "gap" : "none");
     return {
       claimRecordId: claim.claimRecordId,
+      ...(claim.statement ? { statement: claim.statement } : {}),
       canonicalThemeId: claim.canonicalThemeId,
       coverage,
       action:
@@ -228,6 +243,8 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       publicationId: input.publicationId,
       postId: input.postId,
       sourceVersion: input.sourceVersion,
+      ...(input.themeResult ? { themeResult: input.themeResult } : {}),
+      ...(input.claimResult ? { claimResult: input.claimResult } : {}),
       ...(input.author ? { author: input.author } : {}),
     },
     mappings,
@@ -248,6 +265,8 @@ export function librarianPlanPath(
 ): string {
   const identity = JSON.stringify([
     plan.inputs.sourceVersion,
+    plan.inputs.themeResult ?? null,
+    plan.inputs.claimResult ?? null,
     plan.inputs.author ? [plan.inputs.author.name, plan.inputs.author.basis] : null,
     plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps, d.dossierRef ?? null]),
     plan.mappings.map((m) => [m.proposalId, m.canonicalThemeId, m.source]).sort(),

@@ -244,6 +244,28 @@ describe("librarian assessment and plan (#595)", () => {
     expect(librarianPlanPath(base, first)).not.toBe(librarianPlanPath(base, second));
   });
 
+  it("records the extraction artifacts and makes them part of the identity", () => {
+    const make = (claimResult: string) =>
+      planLibrarianAssessment({
+        ...base,
+        themeResult: "content@aaaa:themes/pub/p1/v1.json",
+        claimResult,
+        mappings: new Map([["t1", mapping("geoengineering")]]),
+        themes: new Set(["geoengineering"]),
+        dossiers: new Map(),
+      });
+    const first = make("content@aaaa:claim-extractions/pub/p1/v1.json");
+    const second = make("content@bbbb:claim-extractions/pub/p1/v2.json");
+    expect(first.inputs).toMatchObject({
+      themeResult: "content@aaaa:themes/pub/p1/v1.json",
+      claimResult: "content@aaaa:claim-extractions/pub/p1/v1.json",
+    });
+    // Same source text, different extraction: a different assessment.
+    expect(librarianPlanPath(base, first)).not.toBe(librarianPlanPath(base, second));
+    // The original proposal and claim payloads are preserved.
+    expect(first.mappings[0]!.proposalTitle).toBe("Weather modification programmes");
+  });
+
   it("saves write-once so an earlier plan stays readable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-plan-"));
     await mkdir(join(dir, "c"));
