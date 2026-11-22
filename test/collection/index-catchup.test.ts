@@ -228,6 +228,21 @@ describe("incremental captured-post indexing from Git (#250)", { timeout: 60_000
     expect([...index.docs.keys()]).toEqual([id("a")]);
   });
 
+  it("skips raw image files committed with a capture record, without decoding them (#277)", async () => {
+    const first = await commit({ "README.md": "x\n" });
+    const cp = memoryCheckpoint({ commit: first });
+    // One commit with a record and an image beside it; then an image alone.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00]);
+    await commit({ [path("img")]: record("img") });
+    await artifacts.writeBinary("substack/example-pub/img/images/a.png", png);
+    await artifacts.writeBinary("substack/example-pub/img/images/b.png", Buffer.from([0xff]));
+    const index = fakeIndex();
+    const report = await catchUpIndex({ artifacts, index, checkpoint: cp.store });
+    expect(report).toMatchObject({ ok: true, indexed: 1 });
+    expect(report.failed).toEqual([]);
+    expect([...index.docs.keys()]).toEqual([id("img")]);
+  });
+
   it("keeps a deletion that failed until a later pass applies it", async () => {
     const first = await commit({ [path("a")]: record("a") });
     const index = fakeIndex();

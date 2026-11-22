@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +43,58 @@ describe("assertArtifactPath", () => {
     "a/ b",
   ])("rejects %j", (path) => {
     expect(() => assertArtifactPath(path)).toThrow(ArtifactStoreError);
+  });
+});
+
+describe("binary artifacts (#277)", { timeout: 30_000 }, () => {
+  // Not valid UTF-8: a text round trip would corrupt these bytes.
+  const bytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80,
+  ]);
+  const path = "substack/pub/p1/images/cover.png";
+
+  it("round-trips exact bytes, pinned and hash-verified", async () => {
+    await store.initialise();
+    const ref = await store.writeBinary(path, bytes);
+    expect(ref.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(Buffer.compare(await store.readBinary(ref), bytes)).toBe(0);
+    expect(await store.lookup(path)).toEqual(ref);
+  });
+
+  it("is write-once: identical bytes reuse the reference, different bytes conflict", async () => {
+    await store.initialise();
+    const ref = await store.writeBinary(path, bytes);
+    expect(await store.writeBinary(path, Uint8Array.from(bytes))).toEqual(ref);
+    await expect(store.writeBinary(path, Buffer.from([1, 2, 3]))).rejects.toMatchObject({
+      code: "immutable-conflict",
+    });
+  });
+
+  it("refuses wrong expected hashes, oversized content and revisable paths", async () => {
+    await store.initialise();
+    await expect(store.writeBinary(path, bytes, "0".repeat(64))).rejects.toMatchObject({
+      code: "hash-mismatch",
+    });
+    const small = new GitArtifactStore({ repoPath: dir, repository: "test-archive", maxBytes: 4 });
+    await expect(small.writeBinary("x/big.bin", bytes)).rejects.toMatchObject({
+      code: "too-large",
+    });
+    await expect(store.writeBinary("librarian/theme-mappings/x.png", bytes)).rejects.toMatchObject({
+      code: "invalid-path",
+    });
+  });
+
+  it("detects a reference whose hash does not match the stored bytes", async () => {
+    await store.initialise();
+    const ref = await store.writeBinary(path, bytes);
+    await expect(store.readBinary({ ...ref, sha256: "0".repeat(64) })).rejects.toMatchObject({
+      code: "hash-mismatch",
+    });
+    await expect(
+      store.readBinary({ ...ref, path: "substack/pub/p1/images/missing.png" }),
+    ).rejects.toMatchObject({ code: "not-found" });
+    // Text reads stay text-only: decoding these bytes cannot match their hash.
+    await expect(store.read(ref)).rejects.toMatchObject({ code: "hash-mismatch" });
   });
 });
 
