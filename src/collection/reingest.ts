@@ -18,7 +18,8 @@ export const REQUEST_ID = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 export type ReingestRequestOutcome =
   | { outcome: "requested"; key: string; eventId: string }
-  | { outcome: "already-requested"; key: string; status: string };
+  | { outcome: "already-requested"; key: string; status: string }
+  | { outcome: "conflicting-request"; key: string; open: string };
 
 export function reingestEventId(
   item: Pick<SubstackItem, "publicationId" | "postId">,
@@ -45,11 +46,22 @@ export function requestReingest(input: {
     { reason: "reprocess", reingestRequestId: input.requestId },
     { newId: () => eventId, now: input.now ?? (() => new Date()) },
   );
-  const result = input.operations.requestOperation(key, {
-    eventId,
-    subject: input.subject ?? DEFAULT_DISCOVERY_SUBJECT,
-    payload: serializeDiscoveryEvent(event),
-  });
+  // One reingestion per item at a time: a later request cannot replace the
+  // recovery marker of one still in flight.
+  const prefix = key.slice(0, key.lastIndexOf("/") + 1);
+  const result = input.operations.requestOperation(
+    key,
+    {
+      eventId,
+      subject: input.subject ?? DEFAULT_DISCOVERY_SUBJECT,
+      payload: serializeDiscoveryEvent(event),
+    },
+    5,
+    prefix,
+  );
+  if (result.kind === "conflicting-request") {
+    return { outcome: "conflicting-request", key, open: result.key };
+  }
   return result.kind === "requested"
     ? { outcome: "requested", key, eventId }
     : { outcome: "already-requested", key, status: result.status };

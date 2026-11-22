@@ -545,7 +545,15 @@ export class OperationStore {
     key: string,
     event: PendingEventInput,
     maxAttempts = 5,
-  ): { kind: "requested" } | { kind: "already-requested"; status: string } {
+    /**
+     * Refuse while any other operation under this key prefix is still in
+     * flight (claimed or released), so requests for one item never overlap.
+     */
+    exclusivePrefix?: string,
+  ):
+    | { kind: "requested" }
+    | { kind: "already-requested"; status: string }
+    | { kind: "conflicting-request"; key: string } {
     if (!Key.safeParse(key).success || !event.eventId || !event.subject) {
       throw new OperationStoreError("invalid-input");
     }
@@ -556,6 +564,14 @@ export class OperationStore {
       if (prior && prior.operation_key !== key) throw new OperationStoreError("event-conflict");
       const row = this.row(key);
       if (row) return { kind: "already-requested" as const, status: row.status };
+      if (exclusivePrefix) {
+        const open = this.db
+          .prepare(
+            "SELECT key FROM operations WHERE substr(key, 1, ?) = ? AND key <> ? AND status IN ('claimed', 'released') LIMIT 1",
+          )
+          .get(exclusivePrefix.length, exclusivePrefix, key) as { key: string } | undefined;
+        if (open) return { kind: "conflicting-request" as const, key: open.key };
+      }
       const now = this.now();
       this.db
         .prepare(

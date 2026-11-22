@@ -989,6 +989,39 @@ describe("single-item reingestion (#558)", () => {
     ).toBe(true);
   });
 
+  it("refuses a second request for a post while one is still in flight", async () => {
+    const w = setup({});
+    await w.worker.handle(message());
+    expect(requestReingest({ operations: w.operations, item, requestId: "first" }).outcome).toBe(
+      "requested",
+    );
+    expect(requestReingest({ operations: w.operations, item, requestId: "second" })).toMatchObject({
+      outcome: "conflicting-request",
+    });
+    // Once the first completes, a new request is accepted.
+    await w.worker.handle(delivered(w.operations));
+    expect(requestReingest({ operations: w.operations, item, requestId: "second" }).outcome).toBe(
+      "requested",
+    );
+  });
+
+  it("keeps an exhausted reingestion retryable when the archive cannot be read", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-8" });
+    const m = delivered(second.operations);
+    const key = reingestKey(item, "refresh-8");
+    const claim = second.operations.claim(key, "crashed", 60_000);
+    if (claim.kind !== "claimed") throw new Error(claim.kind);
+    second.operations.fail(claim.claim, "crashed", false);
+    second.store.existing = async () => {
+      throw new Error("archive unavailable");
+    };
+    expect(await second.worker.handle(m)).toBe("retry");
+    expect(m.acked).toBe(0);
+  });
+
   it("refuses to reingest a post that was never collected", async () => {
     const w = setup({});
     requestReingest({ operations: w.operations, item, requestId: "refresh-4" });

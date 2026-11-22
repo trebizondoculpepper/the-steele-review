@@ -123,7 +123,7 @@ async function main(argv: string[]): Promise<number> {
         ...result,
       }),
     );
-    return 0;
+    return result.outcome === "conflicting-request" ? 1 : 0;
   } finally {
     operations.close();
   }

@@ -246,7 +246,14 @@ export class CollectionWorker {
       // A reingestion whose own version was committed before a crash on its
       // last attempt is completed from that version, never left disconnected.
       if (reingestRequestId) {
-        const current = await this.config.store.existing(item).catch(() => undefined);
+        let current: Awaited<ReturnType<CollectionStore["existing"]>>;
+        try {
+          current = await this.config.store.existing(item);
+        } catch {
+          // Unknown is not "nothing to recover": keep the delivery retryable.
+          message.nak(this.retryDelayMs);
+          return { result: "retry", item };
+        }
         if (current?.record.reingestion?.requestId === reingestRequestId) {
           this.config.operations.reconcileCompleted(
             reingestKey(item, reingestRequestId),
