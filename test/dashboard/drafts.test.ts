@@ -384,6 +384,50 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     expect(listing).toContain("not committed to an article");
   });
 
+  it("orders a metadata-only revision and never calls an older version current", async () => {
+    const article = { publicationId: "pub", postId: "p2" };
+    const gen = async (markdown: string, title: string) => {
+      const d = await saveDraft("p2", markdown, title);
+      return {
+        draft: d.md,
+        metadata: (await content.lookup(d.metadata))!,
+        metadataPath: d.metadata,
+      };
+    };
+    // v1 approved; v2 changes only the title (same body); v3 changes the body.
+    const g1 = await gen("# Same body\n", "Title one");
+    await report("p2", ref(g1.draft), "approved", g1.metadataPath);
+    const v1 = await commitArticleRevision({ content, article, generation: g1, base: "current" });
+    if (v1.status === "conflict") throw new Error("conflict");
+    const g2 = await gen("# Same body\n", "Title two");
+    const v2 = await commitArticleRevision({
+      content,
+      article,
+      generation: g2,
+      base: { body: v1.body.sha256, metadata: v1.metadata.sha256 },
+    });
+    if (v2.status === "conflict") throw new Error("conflict");
+    expect(v2.body.sha256).toBe(v1.body.sha256);
+    const g3 = await gen("# New body\n", "Title three");
+    await commitArticleRevision({
+      content,
+      article,
+      generation: g3,
+      base: { body: v2.body.sha256, metadata: v2.metadata.sha256 },
+    });
+    const inventory = draftInventory(content);
+    const id = (await inventory.page({ publicationId: "pub", postId: "p2" })).entries.find(
+      (e) => e.article,
+    )!.article!.id;
+    const h = (await inventory.article("pub", "p2", id))!;
+    expect(h.versions.map((v) => [v.version, v.entry.title, v.current])).toEqual([
+      [1, "Title one", false],
+      [2, "Title two", false],
+      [3, "Title three", true],
+    ]);
+    expect(h.unreadable).toBe(0);
+  });
+
   it("returns nothing for an unknown or malformed article id", async () => {
     const inventory = draftInventory(content);
     expect(await inventory.article("pub", "p1", `article-${"0".repeat(24)}`)).toBeUndefined();

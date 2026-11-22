@@ -153,6 +153,7 @@ ${found.markdown !== undefined ? `<h2>Body</h2><p>Shown as text; its markup is n
 <p>One logical article (<code>${escapeHtml(h.id)}</code>) for ${escapeHtml(`${h.publicationId}/${h.postId}`)}. Each version is a Git commit of the same document; earlier versions stay readable exactly as saved.</p>
 <p>${escapeHtml(summary)}</p>
 ${h.unreadable ? `<p class="empty">${h.unreadable} version record(s) could not be read or ordered.</p>` : ""}
+${h.incomplete ? '<p class="empty">This post has too many stored files to list in full here; the history shown may be incomplete.</p>' : ""}
 <div class="wrap"><table><thead><tr><th>Version</th><th>Draft</th><th>Verification</th><th>Saved</th><th>Commit</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     },
   };

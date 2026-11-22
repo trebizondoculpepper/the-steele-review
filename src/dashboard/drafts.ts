@@ -77,6 +77,8 @@ export interface ArticleHistory {
   }[];
   /** Commit records that could not be read or ordered. */
   unreadable: number;
+  /** The listing was cut off, so earlier versions may be missing. */
+  incomplete?: boolean;
 }
 
 export interface DraftPage {
@@ -267,11 +269,23 @@ export function draftInventory(
   const historiesFor = async (publicationId: string, postId: string) => {
     const byArticle = new Map<string, ArticleCommitRecord[]>();
     let unreadable = 0;
-    let paths: string[] = [];
+    const paths: string[] = [];
+    let complete = true;
     try {
-      paths = await content.list(`articles/${publicationId}/${postId}`, 1000);
+      // Follow the listing to the end, bounded; a cut-off history is reported.
+      let after: string | undefined;
+      for (let page = 0; ; page++) {
+        if (page >= 20) {
+          complete = false;
+          break;
+        }
+        const batch = await content.list(`articles/${publicationId}/${postId}`, 1000, after);
+        paths.push(...batch);
+        if (batch.length < 1000) break;
+        after = batch.at(-1);
+      }
     } catch {
-      return { byArticle, unreadable: 1 };
+      return { byArticle, unreadable: 1, complete: false };
     }
     for (const path of paths) {
       const m = /\/(article-[0-9a-f]{24})\/commits\/[0-9a-f]{32}\.json$/.exec(path);
@@ -288,29 +302,38 @@ export function draftInventory(
     const ordered = new Map<string, ArticleCommitRecord[]>();
     for (const [id, records] of byArticle) {
       const chain: ArticleCommitRecord[] = [];
-      const bodies = new Set(records.map((r) => r.body.sha256));
-      let next = records.find((r) => r.base.body === null || !bodies.has(r.base.body));
+      // A version is its body AND metadata: chain on both base hashes, so a
+      // metadata-only revision is never skipped or misordered.
+      const pair = (body: string | null, metadata: string | null) => `${body}|${metadata}`;
+      const versions = new Set(records.map((r) => pair(r.body.sha256, r.metadata.sha256)));
+      let next = records.find((r) => !versions.has(pair(r.base.body, r.base.metadata)));
       const seen = new Set<ArticleCommitRecord>();
       while (next && !seen.has(next)) {
         seen.add(next);
         chain.push(next);
-        const at = next.body.sha256;
-        next = records.find((r) => !seen.has(r) && r.base.body === at);
+        const at = pair(next.body.sha256, next.metadata.sha256);
+        next = records.find((r) => !seen.has(r) && pair(r.base.body, r.base.metadata) === at);
       }
       unreadable += records.length - chain.length;
       ordered.set(id, chain);
     }
-    return { byArticle: ordered, unreadable };
+    return { byArticle: ordered, unreadable, complete };
   };
 
-  /** Canonical body hash of a logical article now, if readable. */
+  /** Canonical body and metadata hashes of a logical article now, if readable. */
   const currentHash = async (publicationId: string, postId: string, id: string) => {
     try {
-      return (await content.lookup(`articles/${publicationId}/${postId}/${id}/article.md`))?.sha256;
+      const dir = `articles/${publicationId}/${postId}/${id}`;
+      const body = (await content.lookup(`${dir}/article.md`))?.sha256;
+      const metadata = (await content.lookup(`${dir}/article.json`))?.sha256;
+      return body && metadata ? `${body}|${metadata}` : undefined;
     } catch {
       return undefined;
     }
   };
+  /** True only when both canonical documents are exactly this version's. */
+  const isCurrent = (r: ArticleCommitRecord, head: string | undefined) =>
+    head !== undefined && `${r.body.sha256}|${r.metadata.sha256}` === head;
 
   const buildPage = async (
     after: string | undefined,
@@ -344,7 +367,7 @@ export function draftInventory(
             versionOf.set(r.generation.metadata.path, {
               id,
               version: i + 1,
-              current: r.body.sha256 === head,
+              current: isCurrent(r, head),
             }),
           );
         }
@@ -385,7 +408,7 @@ export function draftInventory(
       if (!ID.test(publicationId) || !ID.test(postId) || !/^article-[0-9a-f]{24}$/.test(id)) {
         return undefined;
       }
-      const { byArticle, unreadable } = await historiesFor(publicationId, postId);
+      const { byArticle, unreadable, complete } = await historiesFor(publicationId, postId);
       const chain = byArticle.get(id);
       if (!chain) return undefined;
       const reports = await reportsFor(publicationId, postId);
@@ -393,7 +416,7 @@ export function draftInventory(
       const versions = [];
       for (const [i, r] of chain.entries()) {
         const { entry } = await entryFor(r.generation.metadata.path, reports);
-        const current = r.body.sha256 === head;
+        const current = isCurrent(r, head);
         versions.push({
           version: i + 1,
           current,
@@ -408,6 +431,7 @@ export function draftInventory(
         ...(head ? { currentHash: head } : {}),
         versions,
         unreadable,
+        ...(complete ? {} : { incomplete: true }),
       };
     },
     async text(path: string) {
@@ -423,7 +447,7 @@ export function draftInventory(
           ...found,
           entry: {
             ...found.entry,
-            article: { id, version: i + 1, current: chain[i]!.body.sha256 === head },
+            article: { id, version: i + 1, current: isCurrent(chain[i]!, head) },
           },
         };
       }
