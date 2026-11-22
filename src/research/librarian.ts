@@ -18,6 +18,7 @@ import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
   ResearchResultSchema,
+  ResearchWarningsSchema,
   researchJobId,
   type ResearchManifest,
   type ResearchRequest,
@@ -283,6 +284,7 @@ export const CoverageRecordSchema = z
           outcome: z.string(),
           result: Ref.optional(),
           manifest: Ref.optional(),
+          warnings: ResearchWarningsSchema.optional(),
           /**
            * The exact claim batch of a targeted theme request (#658), so a
            * reassessment replays the same request instead of rebuilding it
@@ -1097,9 +1099,16 @@ export async function assessPostCoverage(input: {
             : job.status,
       ...(job.resultRef ? { result: toRef(job.resultRef) } : {}),
       ...(manifestRef ? { manifest: toRef(manifestRef) } : {}),
+      ...(manifest?.warnings?.length ? { warnings: manifest.warnings } : {}),
       ...(targetedClaims ? { targetedClaims } : {}),
     });
-    return { job, assessed: assess(group, job, manifest) };
+    return {
+      job,
+      assessed: assess(group, job, manifest),
+      partial:
+        !!manifest?.retainedRecovery ||
+        !!manifest?.warnings?.some((w) => w.code === "report-output-limit"),
+    };
   }
 
   // The request plan for this analysis is decided once and saved write-once
@@ -1233,6 +1242,10 @@ export async function assessPostCoverage(input: {
         (input.consequential?.(c) ?? false),
     );
     if (followUp.length === 0 || first.job.status !== "finished") return;
+    // A partial report is usable work, not permission to buy missing prose.
+    // Retain its unsupported claims as gaps; an explicit operator can request
+    // another research attempt, but incompleteness alone never schedules one.
+    if (first.partial) return;
     const second = await commission(followUp);
     for (const claim of followUp) {
       if (outcomes.get(claim.key)?.reused) continue;

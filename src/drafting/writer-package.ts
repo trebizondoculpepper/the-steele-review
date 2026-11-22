@@ -13,7 +13,7 @@ import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { parseDossier } from "../research/dossier.js";
-import { ResearchManifestSchema, writeOnce } from "../research/job.js";
+import { ResearchManifestSchema, ResearchWarningSchema, writeOnce } from "../research/job.js";
 import { CoverageRecordSchema, type CoverageRecord } from "../research/librarian.js";
 
 /**
@@ -57,6 +57,7 @@ export const WriterPackageSchema = z
         context: ArtifactReferenceSchema.optional(),
       })
       .strict(),
+    researchWarnings: z.array(ResearchWarningSchema).max(100).optional(),
     coverage: Ref,
     themeResult: Ref,
     claimResult: Ref,
@@ -387,6 +388,7 @@ export async function buildWriterPackage(input: {
   // Archived snapshots per (job, cited URL), from each job's pinned manifest:
   // a claim's evidence is resolved from the jobs that supported it, never from
   // another job that happened to fetch the same URL.
+  const researchWarnings: z.infer<typeof ResearchWarningSchema>[] = [];
   const archivedByJobUrl = new Map<string, z.infer<typeof Ref>>();
   // Theme context (#748): saved research for this post's mapped themes, in
   // job order, bounded. Only jobs this coverage record names, for themes
@@ -400,6 +402,13 @@ export async function buildWriterPackage(input: {
     const manifest = ResearchManifestSchema.parse(
       JSON.parse(await readPinned(input.content, job.manifest, `manifest for ${job.jobId}`)),
     );
+    for (const warning of manifest.warnings ?? []) {
+      if (
+        researchWarnings.length < 100 &&
+        !researchWarnings.some((w) => JSON.stringify(w) === JSON.stringify(warning))
+      )
+        researchWarnings.push(warning);
+    }
     if (mappedThemes.has(job.dossierId) && !themeReports.some((r) => r.jobId === job.jobId)) {
       if (themeReports.length >= MAX_THEME_REPORTS) {
         themeTruncated = true;
@@ -575,6 +584,7 @@ export async function buildWriterPackage(input: {
       path: input.coverage.path,
       hash: `sha256:${input.coverage.sha256}`,
     },
+    ...(researchWarnings.length ? { researchWarnings } : {}),
     themeResult: record.themeResult,
     claimResult: record.claimResult,
     themes: themes.proposals.map((p) => ({

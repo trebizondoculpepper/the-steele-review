@@ -251,6 +251,7 @@ async function readDiscovery(
       parsed.validation !== (lengthLimited ? "length-limit" : "valid") ||
       returned.transport !== "complete" ||
       !parsed.data ||
+      (lengthLimited && !parsed.data.report.trim()) ||
       result.validation !== parsed.validation ||
       result.completion !== parsed.completion
     )
@@ -278,7 +279,10 @@ export async function captureResearchDiscovery(input: {
   owner: string;
   leaseMs?: number;
   now?: () => Date;
+  /** New curation policy; discovery artifacts and terminal jobs remain immutable. */
+  partialReport?: "warning-v1";
 }): Promise<{
+  partial: boolean;
   data: DiscoveryData;
   ref: ArtifactRef;
   returned: ArtifactRef;
@@ -384,9 +388,15 @@ export async function captureResearchDiscovery(input: {
         { result, returned },
       );
     }
-    if (outcome !== "captured" || !data)
+    const partial =
+      input.partialReport === "warning-v1" &&
+      validation === "length-limit" &&
+      completion === "length-limit" &&
+      value.transport === "complete" &&
+      !!data?.report.trim();
+    if ((outcome !== "captured" && !partial) || !data)
       throw new ResearchDiscoveryError("invalid-report", { result, returned });
-    return { data, ref: result, returned, requestId, discoveryId, reused };
+    return { data, ref: result, returned, requestId, discoveryId, reused, partial };
   };
   const returned = await read(`${dir}/returned.json`);
   if (returned) {

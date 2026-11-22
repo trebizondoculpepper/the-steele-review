@@ -1,6 +1,11 @@
+import { reportPartialResearch } from "../observability/research-warning.js";
 import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
+import {
+  captureResearchDiscovery,
+  readLengthLimitedResearchDiscovery,
+  ResearchDiscoveryError,
+} from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { citationUrls } from "./sonar.js";
 import { createHash } from "node:crypto";
@@ -14,6 +19,9 @@ import type { PageFetcher } from "./gap-research.js";
 import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
+  ResearchWarningsSchema,
+  outputLimitWarning,
+  type ResearchWarning,
   type ResearchManifest,
   ResearchRequestSchema,
   RetainedResearchRecoverySchema,
@@ -77,6 +85,7 @@ const SavedReportSchema = z
     costUsd: z.number().nonnegative().optional(),
     discoveryCompleteness: z.enum(["provider-original", "adapter-return-only"]).optional(),
     retainedRecovery: RetainedResearchRecoverySchema.optional(),
+    warnings: ResearchWarningsSchema.optional(),
   })
   .strict();
 
@@ -225,13 +234,15 @@ export async function runResearchJob(input: {
   const submitted = ResearchRequestSchema.parse(input.request);
   if (!submitted.retainedRecovery) {
     const recovered = await readAcceptedResearchRecovery({ ...input, request: submitted });
-    if (recovered)
+    if (recovered) {
+      reportPartialResearch(input.operations, recovered.result);
       return {
         status: "finished",
         jobId: recovered.binding.jobId,
         result: recovered.result,
         reused: true,
       };
+    }
   }
   const retained = submitted.retainedRecovery
     ? await loadRetainedResearch({ ...input, request: submitted })
@@ -246,6 +257,7 @@ export async function runResearchJob(input: {
   });
   if (opened.status === "busy") return { status: "busy", jobId: opened.jobId };
   if (opened.status === "finished") {
+    reportPartialResearch(input.operations, opened.existing);
     return { status: "finished", jobId: opened.jobId, result: opened.existing, reused: true };
   }
   const { jobId } = opened;
@@ -294,6 +306,7 @@ export async function runResearchJob(input: {
   let discoveryRef: ArtifactRef | undefined;
   let discoveryCompleteness: "provider-original" | "adapter-return-only" | undefined;
   let legacyDiscovery = false;
+  let warnings: ResearchWarning[] = [];
   const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
   if (savedReport) {
     const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
@@ -324,6 +337,21 @@ export async function runResearchJob(input: {
           ))
     )
       return fail("invalid-report");
+    warnings = saved.data.warnings ?? [];
+    if (warnings.length) {
+      if (
+        !saved.data.discovery ||
+        JSON.stringify(warnings[0]!.discovery) !== JSON.stringify(saved.data.discovery)
+      )
+        return fail("invalid-report");
+      const partial = await readLengthLimitedResearchDiscovery(
+        input.artifacts,
+        { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) },
+        input.operations,
+      );
+      if (partial.data.report !== saved.data.report || partial.data.model !== saved.data.model)
+        return fail("invalid-report");
+    }
     legacyDiscovery = !saved.data.discovery;
     if (saved.data.discovery)
       discoveryRef = { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) };
@@ -340,6 +368,7 @@ export async function runResearchJob(input: {
       ...submitted.retainedRecovery!.discovery,
       sha256: submitted.retainedRecovery!.discovery.hash.slice(7),
     };
+    warnings = [outputLimitWarning(submitted.retainedRecovery!.discovery)];
     discoveryCompleteness = retained.retained.data.citationProvenance;
     const data = retained.retained.data;
     const all = citationUrls([...data.citations, ...data.annotationUrls], Number.MAX_SAFE_INTEGER);
@@ -360,6 +389,7 @@ export async function runResearchJob(input: {
         operations: input.operations,
         request,
         owner: input.owner,
+        partialReport: "warning-v1",
         processor: {
           version: "research-discovery-v1",
           model: sonar.model,
@@ -380,6 +410,15 @@ export async function runResearchJob(input: {
         now,
       });
       discoveryRef = captured.ref;
+      if (captured.partial)
+        warnings = [
+          outputLimitWarning({
+            repository: captured.ref.repository,
+            commit: captured.ref.commit,
+            path: captured.ref.path,
+            hash: `sha256:${captured.ref.sha256}`,
+          }),
+        ];
       discoveryCompleteness = captured.data.citationProvenance;
       const all = citationUrls(
           [...captured.data.citations, ...captured.data.annotationUrls],
@@ -427,6 +466,7 @@ export async function runResearchJob(input: {
         }
       : {}),
     ...(discoveryCompleteness ? { discoveryCompleteness } : {}),
+    ...(warnings.length ? { warnings } : {}),
     ...(request.retainedRecovery ? { retainedRecovery: request.retainedRecovery } : {}),
     ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
     ...(report.omittedCitations ? { omittedCitations: report.omittedCitations } : {}),
@@ -447,6 +487,7 @@ export async function runResearchJob(input: {
         "Legacy report-only discovery lacks the original provider citation envelope and available usage metadata; it has not been reconstructed.",
       ]
     : [];
+  if (warnings.length && !request.retainedRecovery) gaps.push(warnings[0]!.message);
   if (request.retainedRecovery)
     gaps.push(
       "The original provider report stopped at its output limit. Missing report text was not reconstructed; this recovery made no new discovery call.",
@@ -623,7 +664,9 @@ export async function runResearchJob(input: {
           discovery: request.retainedRecovery.discovery,
         }
       : {}),
+    ...(discoveryRef ? { discovery: ref(discoveryRef) } : {}),
     coveringNote: ref(noteRef),
+    ...(warnings.length ? { warnings } : {}),
     citations,
     gaps: gaps.slice(0, 100),
     provider: {
@@ -639,7 +682,9 @@ export async function runResearchJob(input: {
     jobId,
     outcome: gaps.length === 0 ? "complete" : "complete-with-gaps",
     manifest: manifestRef,
+    ...(warnings.length ? { warnings } : {}),
     now,
   });
+  reportPartialResearch(input.operations, done.result);
   return { status: "finished", jobId, result: done.result, reused: false };
 }

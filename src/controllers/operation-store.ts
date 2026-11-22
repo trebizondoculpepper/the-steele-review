@@ -1354,6 +1354,25 @@ export class OperationStore {
     }
   }
 
+  /** At-most-once best-effort diagnostic per exact retained partial response. */
+  markResearchPartialWarning(input: { jobId: string; discoveryHash: string }): boolean {
+    if (
+      !/^research-[0-9a-f]{32}$/.test(input.jobId) ||
+      !/^sha256:[0-9a-f]{64}$/.test(input.discoveryHash)
+    )
+      throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const key = `research-partial-warning:${input.discoveryHash}`;
+      if (this.row(key)) return false;
+      this.db
+        .prepare(
+          "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+        )
+        .run(key, JSON.stringify({ code: "report-output-limit", jobId: input.jobId }), this.now());
+      return true;
+    });
+  }
+
   /**
    * Record completion for an operation whose artifact is already durable but
    * whose completion was never recorded (the worker crashed after committing,

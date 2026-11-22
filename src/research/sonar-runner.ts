@@ -1,3 +1,4 @@
+import { reportPartialResearch } from "../observability/research-warning.js";
 import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -19,6 +20,8 @@ import {
   finishResearchJob,
   openResearchJob,
   ResearchManifestSchema,
+  outputLimitWarning,
+  type ResearchWarning,
   researchJobPath,
   type ResearchManifest,
   type ResearchRequest,
@@ -57,10 +60,16 @@ export async function runSonarResearch(input: {
 > {
   const job = await openResearchJob(input);
   if (job.status === "busy") return { status: "busy", jobId: job.jobId };
-  if (job.status === "finished") return { status: "finished", result: job.existing, reused: true };
+  if (job.status === "finished") {
+    reportPartialResearch(input.operations, job.existing);
+    return { status: "finished", result: job.existing, reused: true };
+  }
 
   const finish = async (
-    fields: Pick<Parameters<typeof finishResearchJob>[0], "outcome" | "failure" | "manifest">,
+    fields: Pick<
+      Parameters<typeof finishResearchJob>[0],
+      "outcome" | "failure" | "manifest" | "warnings"
+    >,
   ) => {
     const { result, reused } = await finishResearchJob({
       artifacts: input.artifacts,
@@ -68,9 +77,11 @@ export async function runSonarResearch(input: {
       jobId: job.jobId,
       ...fields,
     });
+    reportPartialResearch(input.operations, result);
     return { status: "finished" as const, result, reused };
   };
 
+  let warnings: ResearchWarning[] = [];
   let discovery: SonarReport;
   let discoveryRef: ArtifactRef | undefined;
   try {
@@ -79,6 +90,7 @@ export async function runSonarResearch(input: {
       operations: input.operations,
       request: input.request,
       owner: input.owner,
+      partialReport: "warning-v1",
       processor: input.discover.discoveryProcessor ?? {
         version: "research-discovery-v1",
         model: "adapter-unspecified",
@@ -109,6 +121,7 @@ export async function runSonarResearch(input: {
       },
     });
     discoveryRef = captured.ref;
+    if (captured.partial) warnings = [outputLimitWarning(reference(captured.ref))];
     const cited = [
       ...captured.data.citations,
       ...captured.data.annotationUrls,
@@ -163,7 +176,7 @@ export async function runSonarResearch(input: {
       }),
     ),
   ];
-  const gaps: string[] = [];
+  const gaps: string[] = warnings.map((w) => w.message);
   if (!urls.length) gaps.push("The report did not provide any usable citation URLs.");
   if (urls.length > 12) gaps.push("Source retrieval was limited to the first 12 URLs.");
   const citations: ResearchManifest["citations"] = [];
@@ -238,6 +251,7 @@ export async function runSonarResearch(input: {
     ...(discoveryRef ? { discovery: reference(discoveryRef) } : {}),
     report: reference(report),
     coveringNote: reference(note),
+    ...(warnings.length ? { warnings } : {}),
     citations,
     gaps,
     provider: {
@@ -253,5 +267,6 @@ export async function runSonarResearch(input: {
   return finish({
     outcome: gaps.length ? "complete-with-gaps" : "complete",
     manifest: manifestRef,
+    ...(warnings.length ? { warnings } : {}),
   });
 }
