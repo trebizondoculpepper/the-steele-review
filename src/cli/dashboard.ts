@@ -71,8 +71,15 @@ const env = z
   .object({
     STEELE_DASHBOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(8090),
     RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }).optional(),
-    STEELE_RESTATE_UI_URL: z.url({ protocol: /^https?$/ }).optional(),
-    STEELE_RESTATE_ADMIN_URL: z.url({ protocol: /^https?$/ }).optional(),
+    // Compose passes unset values as "": treat that as not configured.
+    STEELE_RESTATE_UI_URL: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.url({ protocol: /^https?$/ }).optional(),
+    ),
+    STEELE_RESTATE_ADMIN_URL: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.url({ protocol: /^https?$/ }).optional(),
+    ),
     STEELE_DASHBOARD_ORIGIN: z
       .url({ protocol: /^https?$/ })
       .refine((value) => value === new URL(value).origin)

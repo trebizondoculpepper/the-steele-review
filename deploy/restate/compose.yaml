@@ -91,6 +91,9 @@ services:
       # Archived-revision trigger (#379): off unless the exact browser origin is
       # set; research bounds default in the service. Empty values are ignored.
       STEELE_DASHBOARD_ORIGIN: ${STEELE_DASHBOARD_ORIGIN:-}
+      # Links to Restate's own execution UI (#561): set privately to enable.
+      STEELE_RESTATE_UI_URL: ${STEELE_RESTATE_UI_URL:-}
+      STEELE_RESTATE_ADMIN_URL: ${STEELE_RESTATE_ADMIN_URL:-}
       STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: ${STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT:-}
       STEELE_DASHBOARD_RESEARCH_DEADLINE_MS: ${STEELE_DASHBOARD_RESEARCH_DEADLINE_MS:-}
       STEELE_DASHBOARD_DESTINATIONS: ${STEELE_DASHBOARD_DESTINATIONS:-}
