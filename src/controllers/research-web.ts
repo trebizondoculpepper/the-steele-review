@@ -72,8 +72,12 @@ function abortCode(signal: AbortSignal, timeout: AbortSignal): WebAdapterError |
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<string> {
+  return (await readBoundedBytes(response, maxBytes)).toString("utf8");
+}
+
+async function readBoundedBytes(response: Response, maxBytes: number): Promise<Buffer> {
   const reader = response.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return Buffer.alloc(0);
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
@@ -86,7 +90,7 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +378,122 @@ export class PublicPageFetcher implements PageFetcher {
     if (addresses.length === 0 || !addresses.every(isPublicAddress)) {
       throw new WebAdapterError("not-public");
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public image fetcher (#277)
+
+export type RetainedImageType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+export const IMAGE_EXTENSIONS: Record<RetainedImageType, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/** The type the bytes themselves declare, from their signature; never trusted from headers alone. */
+export function sniffImageType(bytes: Uint8Array): RetainedImageType | undefined {
+  const b = bytes;
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (b.length >= 8 && PNG.every((v, i) => b[i] === v)) return "image/png";
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b.length >= 6 && Buffer.from(b.subarray(0, 6)).toString("latin1").startsWith("GIF8"))
+    return "image/gif";
+  if (
+    b.length >= 12 &&
+    Buffer.from(b.subarray(0, 4)).toString("latin1") === "RIFF" &&
+    Buffer.from(b.subarray(8, 12)).toString("latin1") === "WEBP"
+  )
+    return "image/webp";
+  return undefined;
+}
+
+/**
+ * Fetch one public HTTPS image (#277) with the same public-address pinning,
+ * no redirects, identity encoding and size/time bounds as the page fetcher.
+ * The declared content type and the bytes' own signature must agree on an
+ * allowlisted image type; anything else is refused.
+ */
+export class PublicImageFetcher {
+  private readonly timeoutMs: number;
+  private readonly maxBytes: number;
+  private readonly resolve: (hostname: string) => Promise<string[]>;
+  private readonly transport: NonNullable<PageFetcherConfig["fetch"]>;
+
+  constructor(private readonly config: PageFetcherConfig = {}) {
+    this.timeoutMs = config.timeoutMs ?? 20_000;
+    this.maxBytes = config.maxBytes ?? 5 * 1024 * 1024;
+    this.resolve = config.resolve ?? defaultResolve;
+    this.transport = config.fetch ?? pinnedTransport(this.resolve);
+  }
+
+  async fetch(
+    url: string,
+    signal: AbortSignal,
+  ): Promise<{ bytes: Buffer; contentType: RetainedImageType }> {
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const combined = AbortSignal.any([signal, timeout]);
+    if (!isPublicHttpsUrl(url)) throw new WebAdapterError("not-public");
+    const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    if (!isIP(hostname)) {
+      let addresses: string[];
+      // The lookup obeys the same deadline and cancellation as the request.
+      const aborted = new Promise<never>((_, reject) => {
+        const fail = () => reject(abortCode(signal, timeout) ?? new WebAdapterError("timeout"));
+        if (combined.aborted) fail();
+        else combined.addEventListener("abort", fail, { once: true });
+      });
+      try {
+        addresses = await Promise.race([this.resolve(hostname), aborted]);
+      } catch (error) {
+        if (error instanceof WebAdapterError) throw error;
+        throw new WebAdapterError("unavailable");
+      }
+      if (addresses.length === 0 || !addresses.every(isPublicAddress))
+        throw new WebAdapterError("not-public");
+    }
+    let response: Response;
+    try {
+      response = await this.transport(url, {
+        headers: {
+          accept: "image/png,image/jpeg,image/gif,image/webp",
+          "accept-encoding": "identity",
+          "user-agent": this.config.userAgent ?? "steele-review-capture/1",
+        },
+        signal: combined,
+      });
+    } catch (error) {
+      if (error instanceof WebAdapterError) throw error;
+      throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
+    }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError("redirected", response.status);
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError(statusCode(response.status), response.status);
+    }
+    const encoding = (response.headers.get("content-encoding") ?? "identity").trim().toLowerCase();
+    const declared = (response.headers.get("content-type") ?? "")
+      .split(";")[0]!
+      .trim()
+      .toLowerCase();
+    if ((encoding !== "identity" && encoding !== "") || !(declared in IMAGE_EXTENSIONS)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebAdapterError("unsupported-content");
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readBoundedBytes(response, this.maxBytes);
+    } catch (error) {
+      if (error instanceof WebAdapterError) throw error;
+      throw abortCode(signal, timeout) ?? new WebAdapterError("unavailable");
+    }
+    if (bytes.length === 0 || sniffImageType(bytes) !== declared)
+      throw new WebAdapterError("unsupported-content");
+    return { bytes, contentType: declared as RetainedImageType };
   }
 }
 

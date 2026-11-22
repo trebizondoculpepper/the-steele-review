@@ -1,3 +1,9 @@
+import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  retainPreviewImage,
+  type ImageFetcherPort,
+  type PreviewRetentionOutcome,
+} from "./preview-retention.js";
 import { postCorrelationId } from "../observability/post-correlation.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import type { SubstackItem } from "../content/substack-item.js";
@@ -90,6 +96,13 @@ export interface CollectionWorkerConfig {
   collector: CollectorPort;
   /** Absent when no transcription provider is configured. */
   transcriber?: TranscriberPort;
+  /** Preview-image retention (#277); absent leaves records without a retained copy. */
+  imageRetention?: {
+    fetcher: ImageFetcherPort;
+    artifacts: Pick<GitArtifactStore, "writeBinary">;
+  };
+  /** Sanitised retention outcome per item, for operator logs. */
+  onPreviewImage?: (outcome: PreviewRetentionOutcome, item: SubstackItem) => void;
   publisher: EventPublisherPort;
   /** Identity of this worker instance, used as the claim owner. */
   owner: string;
@@ -471,6 +484,18 @@ export class CollectionWorker {
         this.config.store.fail(claim, "transient-failure", true);
         message.nak(this.retryDelayMs);
         return { result: "retry", item };
+      }
+
+      // Retain the eligible preview image beside the capture (#277). Saved
+      // before the record, which references it only once it exists; any
+      // failure just leaves the reference out.
+      if (this.config.imageRetention) {
+        const retained = await retainPreviewImage(record, {
+          ...this.config.imageRetention,
+          signal: keep.signal,
+        });
+        record = retained.record;
+        this.config.onPreviewImage?.(retained.outcome, item);
       }
 
       try {

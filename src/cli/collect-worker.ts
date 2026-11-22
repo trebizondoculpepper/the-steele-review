@@ -16,6 +16,7 @@
  *   STEELE_COLLECT_RETRY_DELAY_MS?    redelivery delay after a retryable failure
  *   STEELE_COLLECT_DISPATCH_INTERVAL_MS?  pending handoff retry interval (default 30 s)
  *   STEELE_DISCOVERY_SUBJECT?          override for redelivered discovery events (default steele.v1.source.detected)
+ *   STEELE_RETAIN_PREVIEW_IMAGES?      "0" disables retaining each new post's preview image (#277)
  *
  * Optional CPU-only transcription is selected with STEELE_TRANSCRIPTION_PROVIDER.
  * Disabled by default; see doc/testing/local-whisper.md for configuration.
@@ -30,6 +31,7 @@ import { CollectionStore } from "../collection/collection-store.js";
 import { CollectionWorker } from "../collection/worker.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { NatsController } from "../controllers/nats.js";
+import { PublicImageFetcher } from "../controllers/research-web.js";
 import { OperationStore } from "../controllers/operation-store.js";
 import { SubstackContentCollector } from "../controllers/substack/collect.js";
 import { DEFAULT_DISCOVERY_SUBJECT } from "../controllers/nats-discovery.js";
@@ -92,6 +94,20 @@ async function main(): Promise<number> {
       c.STEELE_DISCOVERY_SUBJECT ?? DEFAULT_DISCOVERY_SUBJECT,
     ],
     ...(transcriber ? { transcriber } : {}),
+    // Retain each new post's eligible preview image beside its capture (#277),
+    // through the bounded public fetcher. Disable with STEELE_RETAIN_PREVIEW_IMAGES=0.
+    ...(process.env.STEELE_RETAIN_PREVIEW_IMAGES === "0"
+      ? {}
+      : { imageRetention: { fetcher: new PublicImageFetcher(), artifacts } }),
+    onPreviewImage: (outcome, item) =>
+      console.log(
+        JSON.stringify({
+          event: "preview-image",
+          outcome,
+          publicationId: item.publicationId,
+          postId: item.postId,
+        }),
+      ),
     owner: `collect-worker:${hostname()}:${process.pid}`,
     ...(c.STEELE_COLLECT_RETRY_DELAY_MS ? { retryDelayMs: c.STEELE_COLLECT_RETRY_DELAY_MS } : {}),
     onOutcome: (outcome, item) =>
