@@ -73,12 +73,40 @@ const toRef = (r: ArtifactRef) => ({
   hash: `sha256:${r.sha256}`,
 });
 
-/** The decision line, read strictly from the end of the document. */
+/** The text of one `## <name>` section, or undefined when the section is absent. */
+function section(document: string, name: string): string | undefined {
+  const lines = document.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim().toLowerCase() === `## ${name}`.toLowerCase());
+  if (start < 0) return undefined;
+  const end = lines.findIndex((l, i) => i > start && /^##\s/.test(l.trim()));
+  return lines
+    .slice(start + 1, end < 0 ? undefined : end)
+    .filter((l) => !/^DECISION:/.test(l.trim()))
+    .join("\n")
+    .trim();
+}
+const NONE = /^none\.?$/i;
+
+/**
+ * The decision, only from a complete judgement: a valid final decision line
+ * AND the required sections with substance. Reasons must say something; a
+ * revision must carry at least one actual correction; accepted minor
+ * observations may be "None." but must be present. A bare marker, or empty
+ * sections, is no decision.
+ */
 export function readDecision(document: string): "approve" | "revise" | undefined {
   const last = document.trim().split(/\r?\n/).at(-1)?.trim();
-  if (last === "DECISION: APPROVE") return "approve";
-  if (last === "DECISION: REVISE") return "revise";
-  return undefined;
+  const decision =
+    last === "DECISION: APPROVE" ? "approve" : last === "DECISION: REVISE" ? "revise" : undefined;
+  if (!decision) return undefined;
+  const reasons = section(document, "Reasons");
+  const corrections = section(document, "Required corrections");
+  const minor = section(document, "Accepted minor observations");
+  if (!reasons || NONE.test(reasons)) return undefined;
+  if (corrections === undefined || minor === undefined || minor === "") return undefined;
+  if (decision === "revise" && (corrections === "" || NONE.test(corrections))) return undefined;
+  if (decision === "approve" && corrections === "") return undefined;
+  return decision;
 }
 
 export async function judgeAssessment(input: {

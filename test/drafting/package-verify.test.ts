@@ -15,7 +15,11 @@ import {
 } from "../../src/drafting/package-draft.js";
 import { readFileSync } from "node:fs";
 import { assessArticle, classifyFindings } from "../../src/drafting/article-assessment.js";
-import { judgeAssessment, DEFAULT_JUDGE_PROMPT } from "../../src/drafting/editorial-judgment.js";
+import {
+  judgeAssessment,
+  readDecision,
+  DEFAULT_JUDGE_PROMPT,
+} from "../../src/drafting/editorial-judgment.js";
 const DEFAULT_REVISION_TEXT = readFileSync(
   new URL("../../src/prompts/writer/package-revision.md", import.meta.url),
   "utf8",
@@ -1397,6 +1401,24 @@ describe("separately recorded editorial judgment (#599)", { timeout: 60_000 }, (
       status: "judged",
       record: { decision: "revise", gates: ["deterministic-fault-blocks-approval"] },
     });
+  });
+
+  it("requires a complete judgment: reasons, sections and actual corrections for a revision", () => {
+    expect(readDecision("DECISION: APPROVE")).toBeUndefined();
+    expect(readDecision("DECISION: REVISE")).toBeUndefined();
+    expect(
+      readDecision(
+        "## Reasons\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: APPROVE",
+      ),
+    ).toBeUndefined();
+    // A revision with no actual correction is not a judgement.
+    expect(
+      readDecision(
+        "## Reasons\nMaterial.\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: REVISE",
+      ),
+    ).toBeUndefined();
+    expect(readDecision(judgeDoc("APPROVE"))).toBe("approve");
+    expect(readDecision(judgeDoc("REVISE", "- Quote exactly."))).toBe("revise");
   });
 
   it("treats a missing or invalid decision line as no decision", async () => {
