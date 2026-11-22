@@ -213,6 +213,39 @@ describe("article stages composed (#243)", () => {
       { jobId: researchJobId(requests[0]), request: requests[0], outcome: "finished", job },
     ];
     const coverage = await stages.coverage(themes, claims, pinned);
+    // #597: the follow-up plan names targeted second-pass requests that
+    // follow the first job, and planning dispatches nothing itself.
+    const researchedBefore = (await content.list("research-jobs", 1000)).length;
+    const followUps = await stages.planFollowUp!(themes, claims, pinned);
+    expect(followUps.length).toBeGreaterThan(0);
+    for (const f of followUps) {
+      expect(f).toMatchObject({ pass: 2, previousJobId: researchJobId(requests[0]) });
+    }
+    expect(await stages.planFollowUp!(themes, claims, pinned)).toEqual(followUps);
+    expect((await content.list("research-jobs", 1000)).length).toBe(researchedBefore);
+    // A follow-up that failed is reassessed as an explicit gap, never support.
+    const reassessed = await stages.coverage(
+      themes,
+      claims,
+      [
+        ...pinned,
+        ...followUps.map((f) => ({
+          jobId: researchJobId(f),
+          request: f,
+          outcome: "failed" as const,
+        })),
+      ],
+      { followUp: true },
+    );
+    const after = JSON.parse(await content.read(reassessed));
+    expect(after.jobs.map((j: { pass: number }) => j.pass).sort()).toEqual([1, 2]);
+    expect(
+      after.claims.filter((c: { status: string }) => c.status === "evidence-found").length,
+    ).toBe(
+      JSON.parse(await content.read(coverage)).claims.filter(
+        (c: { status: string }) => c.status === "evidence-found",
+      ).length,
+    );
     const pkg = await stages.package(coverage);
     expect(pkg.status).toBe("ready");
     const packageJson = JSON.parse(await content.read(pkg.ref));

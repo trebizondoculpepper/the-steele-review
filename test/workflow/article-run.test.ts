@@ -66,6 +66,8 @@ const calls = {
 let active = 0;
 let maxActive = 0;
 const pinnedByPost = new Map<string, PinnedResearch[]>();
+const ledgers = new Map<string, Set<string>>();
+const reassessed = new Set<string>();
 const plans = new Map<string, string[]>();
 const researchSubjects: string[] = [];
 
@@ -113,17 +115,33 @@ const stages: ArticleStages = {
   },
   // Allowance selection (#596) over the planned order; "saved-" subjects
   // stand for jobs whose result is already saved.
-  selectResearch: async (_themes, _claims, requests, allowance) =>
-    selectResearch(
+  // A per-article ledger shares the allowance across rounds, as the real one does.
+  selectResearch: async (themes, _claims, requests, allowance) => {
+    const counted = ledgers.get(themes.path) ?? new Set<string>();
+    const { decisions } = selectResearch(
       requests.map((r, i) => ({ jobId: researchJobId(r), rank: i + 1 })),
       {
         allowance,
         reusable: new Set(
           requests.filter((r) => r.subject!.startsWith("saved-")).map(researchJobId),
         ),
-        counted: new Set(),
+        counted,
       },
-    ).decisions,
+    );
+    for (const d of decisions) if (d.decision === "new") counted.add(d.jobId);
+    ledgers.set(themes.path, counted);
+    return decisions;
+  },
+  // "gap-" subjects come back without independent evidence and get one
+  // targeted follow-up request (#597).
+  planFollowUp: async (_themes, _claims, pinned) =>
+    pinned
+      .filter((p) => p.outcome === "finished" && p.request.subject!.startsWith("gap-"))
+      .map((p) => ({
+        ...request(`follow-${p.request.subject}`),
+        pass: 2,
+        previousJobId: p.jobId,
+      })),
   research: async (req) => {
     calls.research++;
     researchSubjects.push(req.subject!);
@@ -153,9 +171,12 @@ const stages: ArticleStages = {
       active--;
     }
   },
-  coverage: async (themes, _claims, pinned) => {
+  coverage: async (themes, _claims, pinned, options) => {
     calls.coverage++;
     pinnedByPost.set(themes.path, pinned);
+    if (options?.followUp) reassessed.add(themes.path);
+    // A slow first assessment uses up the shared research deadline (#597).
+    if (themes.path.includes("followup-late") && !options?.followUp) await sleep(2_000);
     return ref(`librarian/coverage/${themes.path}`);
   },
   package: async (coverage) => ({ ref: ref(`writer-packages/${coverage.path}`), status: "ready" }),
@@ -546,6 +567,71 @@ describe("new-job allowance in the workflow (#596)", () => {
       "alw-second",
       "alw-third",
     ]);
+  }, 120_000);
+});
+
+describe("one follow-up research round (#597)", () => {
+  const run = async (name: string, plan: string[], allowance: number, deadlineMs = 60_000) => {
+    plans.set(name, plan);
+    const post = {
+      ...input(name),
+      researchRequestLimit: allowance,
+      researchSelection: "allowance-v1" as const,
+      researchFollowUp: "one-round-v1" as const,
+      researchDeadlineMs: deadlineMs,
+    };
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    await client.workflowSubmit(post);
+    // A duplicate delivery attaches to the same run; it commissions nothing more.
+    await client.workflowSubmit(post).catch(() => undefined);
+    return client.workflowAttach();
+  };
+
+  it("dispatches targeted follow-up research within the shared allowance and reassesses", async () => {
+    const result = await run("followup", ["gap-fu-one"], 2);
+    expect(result.research).toEqual([
+      expect.objectContaining({ outcome: "finished", round: 1, mode: "full" }),
+      expect.objectContaining({ outcome: "finished", round: 2, mode: "targeted" }),
+    ]);
+    expect(researchSubjects.filter((s) => s.endsWith("gap-fu-one")).sort()).toEqual([
+      "follow-gap-fu-one",
+      "gap-fu-one",
+    ]);
+    expect(reassessed.has("theme-proposals/followup.json")).toBe(true);
+  }, 120_000);
+
+  it("defers the follow-up when the allowance is spent, with no third round", async () => {
+    const result = await run("followup-spent", ["gap-sp-one", "gap-sp-two"], 2);
+    // Both first-round jobs used the allowance; neither follow-up runs.
+    expect(result.research.filter((r) => r.round === 2).map((r) => r.outcome)).toEqual([
+      "not-commissioned",
+      "not-commissioned",
+    ]);
+    expect(researchSubjects.filter((s) => s.startsWith("follow-gap-sp"))).toEqual([]);
+    // There is never a third round.
+    expect(result.research.every((r) => (r.round ?? 1) <= 2)).toBe(true);
+  }, 120_000);
+});
+
+describe("follow-up after the deadline (#597)", () => {
+  it("commissions no follow-up once the shared deadline has passed", async () => {
+    plans.set("followup-late", ["gap-late-one"]);
+    const post = {
+      ...input("followup-late"),
+      researchRequestLimit: 2,
+      researchSelection: "allowance-v1" as const,
+      researchFollowUp: "one-round-v1" as const,
+      researchDeadlineMs: 1_200,
+    };
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    await client.workflowSubmit(post);
+    const result = await client.workflowAttach();
+    expect(result.research).toEqual([
+      expect.objectContaining({ outcome: "finished", round: 1 }),
+      expect.objectContaining({ outcome: "not-commissioned", round: 2, mode: "targeted" }),
+    ]);
+    expect(researchSubjects).not.toContain("follow-gap-late-one");
+    expect(reassessed.has("theme-proposals/followup-late.json")).toBe(false);
   }, 120_000);
 });
 

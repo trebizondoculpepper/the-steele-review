@@ -159,6 +159,18 @@ export function articleStages(deps: {
   };
 
   // Planning captures the librarian's requests without commissioning research.
+  /** Timed out, failed, or not part of the pinned batch: an explicit gap. */
+  const pinnedGap = (jobId: string, p: PinnedResearch | undefined): CommissionedJob => ({
+    jobId,
+    status: "finished",
+    result: {
+      schemaVersion: 1,
+      jobId,
+      outcome: "failed",
+      failure: p?.outcome === "timed-out" || !p ? "timeout" : "provider-error",
+      finishedAt: new Date(0).toISOString(),
+    },
+  });
   const planned = async (themes: Ref, claims: Ref): Promise<ResearchRequest[]> => {
     const { post } = await readCoverageAnalysis(deps.content, themes, claims);
     // Ordering is decided once per analysis, before this planning writes any
@@ -354,7 +366,35 @@ export function articleStages(deps: {
       };
     },
 
-    async coverage(themes, claims, pinned: PinnedResearch[]) {
+    async planFollowUp(themes, claims, pinned) {
+      // Replays the first round from exactly its pinned results; the targeted
+      // second-pass requests the librarian derives from them are collected,
+      // not dispatched (the workflow selects and dispatches them).
+      const byJob = new Map(pinned.map((p) => [p.jobId, p]));
+      const followUps: ResearchRequest[] = [];
+      await assessPostCoverage({
+        artifacts: deps.content,
+        themeResult: themes,
+        claimResult: claims,
+        shortlister: deps.shortlister,
+        pinnedJobIds: new Set(pinned.map((p) => p.jobId)),
+        consequential: () => true,
+        commission: async (request) => {
+          const jobId = researchJobId(request);
+          const p = byJob.get(jobId);
+          if (p?.outcome === "finished") return p.job;
+          if (p?.outcome === "not-commissioned") return { jobId, status: "not-commissioned" };
+          if (!p && request.pass > 1) {
+            followUps.push(request);
+            return { jobId, status: "busy" };
+          }
+          return pinnedGap(jobId, p);
+        },
+      });
+      return followUps;
+    },
+
+    async coverage(themes, claims, pinned: PinnedResearch[], options) {
       // Research that stopped for lack of provider credit is not a gap in the
       // evidence: stop the run so the article is not written from it (#407).
       if (
@@ -382,19 +422,11 @@ export function articleStages(deps: {
           const p = byJob.get(jobId);
           if (p?.outcome === "finished") return p.job;
           if (p?.outcome === "not-commissioned") return { jobId, status: "not-commissioned" };
-          // Timed out, failed, or not part of the pinned batch: an explicit gap.
-          return {
-            jobId,
-            status: "finished",
-            result: {
-              schemaVersion: 1,
-              jobId,
-              outcome: "failed",
-              failure: p?.outcome === "timed-out" || !p ? "timeout" : "provider-error",
-              finishedAt: new Date(0).toISOString(),
-            },
-          };
+          return pinnedGap(jobId, p);
         },
+        // The reassessment after a follow-up round (#597) derives the same
+        // targeted requests the plan did, and reads their pinned results.
+        ...(options?.followUp ? { consequential: () => true } : {}),
       });
       return plain(out.ref);
     },

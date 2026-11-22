@@ -1202,6 +1202,44 @@ export async function assessPostCoverage(input: {
         ...(a.reason ? { reason: a.reason } : {}),
       });
     }
+    // The same single follow-up as a full first pass (#597), kept targeted.
+    await secondPass(dossierId, group, targeted, (followUp) =>
+      run(dossierId, followUp, 2, targeted.job.jobId, true, question),
+    );
+  }
+
+  /** One targeted second pass for consequential claims the first left unsupported. */
+  async function secondPass(
+    dossierId: string,
+    group: AcceptedClaim[],
+    first: Awaited<ReturnType<typeof run>>,
+    commission: (followUp: AcceptedClaim[]) => ReturnType<typeof run>,
+  ) {
+    // Derived from the first job's saved result only (never from reuse in
+    // the dossier), so reassessment rebuilds the identical second request.
+    const followUp = group.filter(
+      (c) =>
+        first.assessed.get(c.key)?.status === "no-independent-evidence" &&
+        (input.consequential?.(c) ?? false),
+    );
+    if (followUp.length === 0 || first.job.status !== "finished") return;
+    const second = await commission(followUp);
+    for (const claim of followUp) {
+      if (outcomes.get(claim.key)?.reused) continue;
+      const a = second.assessed.get(claim.key)!;
+      const prior = outcomes.get(claim.key)!;
+      outcomes.set(claim.key, {
+        ...prior,
+        jobIds: [...prior.jobIds, second.job.jobId],
+        // Evidence from the second pass replaces the gap; a pending or failed
+        // second pass is recorded as such rather than hidden behind pass 1.
+        ...(a.status === "evidence-found"
+          ? { status: a.status, citations: a.citations, reason: undefined }
+          : a.status === "pending" || a.status === "research-failed" || a.status === "claimant-only"
+            ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
+            : {}),
+      });
+    }
   }
 
   async function assessGroup(dossierId: string, group: AcceptedClaim[]) {
@@ -1220,34 +1258,9 @@ export async function assessPostCoverage(input: {
       });
     }
     // 4. One targeted second pass for consequential, unsupported claims.
-    // Derived from the pass-1 job's saved result only (never from reuse in
-    // the dossier), so reassessment rebuilds the identical pass-2 request.
-    const followUp = group.filter(
-      (c) =>
-        first.assessed.get(c.key)?.status === "no-independent-evidence" &&
-        (input.consequential?.(c) ?? false),
+    await secondPass(dossierId, group, first, (followUp) =>
+      run(dossierId, followUp, 2, first.job.jobId),
     );
-    if (followUp.length > 0 && first.job.status === "finished") {
-      const second = await run(dossierId, followUp, 2, first.job.jobId);
-      for (const claim of followUp) {
-        if (outcomes.get(claim.key)?.reused) continue;
-        const a = second.assessed.get(claim.key)!;
-        const prior = outcomes.get(claim.key)!;
-        outcomes.set(claim.key, {
-          ...prior,
-          jobIds: [...prior.jobIds, second.job.jobId],
-          // Evidence from the second pass replaces the gap; a pending or failed
-          // second pass is recorded as such rather than hidden behind pass 1.
-          ...(a.status === "evidence-found"
-            ? { status: a.status, citations: a.citations, reason: undefined }
-            : a.status === "pending" ||
-                a.status === "research-failed" ||
-                a.status === "claimant-only"
-              ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
-              : {}),
-        });
-      }
-    }
   }
 
   // 5. Revise affected dossiers, then save the coverage record.
