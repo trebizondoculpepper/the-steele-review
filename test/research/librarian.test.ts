@@ -965,6 +965,7 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
         } as never,
         jobIds: [id],
         capture,
+        post: { publicationId: "pub", postId: "p9" },
         sourceContext: { schemaVersion: 1 } as never,
       }),
     ).rejects.toThrow("retained-research-capture-mismatch");

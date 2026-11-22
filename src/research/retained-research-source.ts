@@ -117,6 +117,8 @@ export async function validateRetainedArticleResearch(input: {
   jobIds: readonly string[];
   capture: ArtifactRef;
   sourceContext: SourceContext;
+  /** The article being continued: theme jobs are bound through its coverage only. */
+  post: { publicationId: string; postId: string };
 }) {
   for (const id of input.jobIds) {
     if (!/^research-[0-9a-f]{32}$/.test(id)) throw new Error("invalid-retained-research-id");
@@ -157,14 +159,25 @@ const COVERAGE_SCAN = 2_000;
  * the job; otherwise the theme job was not commissioned for this article.
  */
 async function requireCommissioningCoverage(
-  input: { artifacts: GitArtifactStore; capture: ArtifactRef; sourceContext: SourceContext },
+  input: {
+    artifacts: GitArtifactStore;
+    capture: ArtifactRef;
+    sourceContext: SourceContext;
+    post: { publicationId: string; postId: string };
+  },
   jobId: string,
 ): Promise<void> {
   const capture = JSON.stringify(ref(input.capture));
   let after: string | undefined;
   let scanned = 0;
   while (scanned < COVERAGE_SCAN) {
-    const paths = await input.artifacts.list("librarian/coverage", 200, after);
+    // Scoped to this article's own coverage, so unrelated history never
+    // pushes the commissioning record past the bound.
+    const paths = await input.artifacts.list(
+      `librarian/coverage/${input.post.publicationId}/${input.post.postId}`,
+      200,
+      after,
+    );
     for (const path of paths) {
       scanned++;
       const r = await input.artifacts.lookup(path);
