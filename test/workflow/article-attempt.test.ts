@@ -77,7 +77,10 @@ describe("explicit durable article attempt identity", () => {
     ).toThrow();
     // An input saved before the action existed stays valid and means stop.
     const savedBefore = { ...DEFAULT_EDITORIAL_POLICY };
-    const parsedLegacy = ArticleRunInputSchema.parse({ ...input, editorial: savedBefore }).editorial!;
+    const parsedLegacy = ArticleRunInputSchema.parse({
+      ...input,
+      editorial: savedBefore,
+    }).editorial!;
     expect(parsedLegacy).not.toHaveProperty("onExhausted");
     expect(exhaustionAction(parsedLegacy)).toBe("stop");
     expect(
