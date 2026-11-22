@@ -529,28 +529,60 @@ export function mergeCoverage(
 type RequestPlanEntry =
   | { mode: "full" }
   | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
-const RequestPlanSchema = z
+const RequestPlanEntries = z.record(
+  z.string(),
+  z.union([
+    z.object({ mode: z.literal("full") }).strict(),
+    z
+      .object({
+        mode: z.literal("targeted"),
+        batches: z.array(z.array(z.string()).max(100)).max(100),
+        question: z.string().min(1).max(4000).optional(),
+        promptVersion: z.string().min(1).max(200).optional(),
+      })
+      .strict(),
+  ]),
+);
+const OrderedRequestPlanSchema = z
   .object({
-    schemaVersion: z.literal(1),
-    dossiers: z.record(
-      z.string(),
-      z.union([
-        z.object({ mode: z.literal("full") }).strict(),
-        z
-          .object({
-            mode: z.literal("targeted"),
-            batches: z.array(z.array(z.string()).max(100)).max(100),
-            /** The rendered question, so a later prompt edit never changes this plan's requests. */
-            question: z.string().min(1).max(4000).optional(),
-            /** Identity of the prompt file the question was rendered from. */
-            promptVersion: z.string().min(1).max(200).optional(),
-          })
-          .strict(),
-      ]),
-    ),
+    schemaVersion: z.literal(2),
+    dossiers: RequestPlanEntries,
+    order: z.array(z.string()).max(1000),
   })
-  .strict();
+  .strict()
+  .superRefine((p, ctx) => {
+    const keys = Object.keys(p.dossiers);
+    if (
+      p.order.length !== keys.length ||
+      new Set(p.order).size !== p.order.length ||
+      p.order.some((id) => !Object.hasOwn(p.dossiers, id))
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "research plan order must name every dossier exactly once",
+      });
+  });
+const RequestPlanSchema = z.union([
+  z.object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries }).strict(),
+  OrderedRequestPlanSchema,
+]);
 type RequestPlan = z.infer<typeof RequestPlanSchema>;
+
+/** Prior exact-analysis coverage wins; unrecorded groups keep extraction order. */
+function commissioningOrder(groups: string[], history: string[][]): string[] {
+  const wanted = new Set(groups);
+  const sequences = history
+    .map((ids) => [...new Set(ids.filter((id) => wanted.has(id)))])
+    .filter((ids) => ids.length > 0)
+    .sort((a, b) => b.length - a.length);
+  const recorded = sequences[0] ?? [];
+  for (const sequence of sequences) {
+    let next = 0;
+    for (const id of recorded) if (sequence[next] === id) next++;
+    if (next !== sequence.length) throw new Error("research-plan-order-conflict");
+  }
+  return [...recorded, ...groups.filter((id) => !recorded.includes(id))];
+}
 
 /**
  * The request plan of one analysis, saved write-once: the first plan saved
@@ -562,17 +594,16 @@ async function retainedPlan(
   post: { publicationId: string; postId: string },
   themeResult: ArtifactRef,
   claimResult: ArtifactRef,
-  proposed: RequestPlan,
+  proposed: () => z.infer<typeof OrderedRequestPlanSchema>,
 ): Promise<RequestPlan> {
   const key = createHash("sha256")
     .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
     .digest("hex")
     .slice(0, 32);
-  const ref = await writeOnce(
-    artifacts,
-    `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`,
-    RequestPlanSchema.parse(proposed),
-  );
+  const path = `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`;
+  const existing = await artifacts.lookup(path);
+  if (existing) return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
+  const ref = await writeOnce(artifacts, path, OrderedRequestPlanSchema.parse(proposed()));
   return RequestPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
 }
 
@@ -583,6 +614,7 @@ async function priorMappings(
   claimResult: ArtifactRef,
   jobIds?: Set<string>,
   targetedBatches?: Map<string, string[][]>,
+  commissioningOrders?: string[][],
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -595,9 +627,12 @@ async function priorMappings(
     const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
     if (!parsed.success) continue;
     const r = parsed.data;
-    const same = (a: { commit: string; path: string }, b: ArtifactRef) =>
-      a.commit === b.commit && a.path === b.path;
+    const same = (a: { commit: string; path: string; hash: string }, b: ArtifactRef) =>
+      a.commit === b.commit && a.path === b.path && a.hash === `sha256:${b.sha256}`;
     if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
+    commissioningOrders?.push([
+      ...new Set(r.jobs.filter((j) => j.pass === 1).map((j) => j.dossierId)),
+    ]);
     for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
@@ -735,6 +770,7 @@ export async function assessPostCoverage(input: {
   // reassessment repeats the same request rather than switching mode.
   const priorJobIds = new Set<string>(input.pinnedJobIds ?? []);
   const priorTargeted = new Map<string, string[][]>();
+  const priorOrders: string[][] = [];
   const savedMapping = await priorMappings(
     input.artifacts,
     post,
@@ -742,6 +778,7 @@ export async function assessPostCoverage(input: {
     input.claimResult,
     priorJobIds,
     priorTargeted,
+    priorOrders,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -1072,11 +1109,23 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, { mode: "full" });
     }
   }
-  const plan = await retainedPlan(input.artifacts, post, input.themeResult, input.claimResult, {
-    schemaVersion: 1,
-    dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
-  });
-  for (const [dossierId, entry] of Object.entries(plan.dossiers)) {
+  const plan = await retainedPlan(
+    input.artifacts,
+    post,
+    input.themeResult,
+    input.claimResult,
+    () => ({
+      schemaVersion: 2,
+      dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
+      order: commissioningOrder(
+        [...groups.keys()].filter((id) => planned.has(id)),
+        priorOrders,
+      ),
+    }),
+  );
+  const order = plan.schemaVersion === 2 ? plan.order : Object.keys(plan.dossiers);
+  for (const dossierId of order) {
+    const entry = plan.dossiers[dossierId]!;
     const all = groups.get(dossierId);
     if (!all) continue;
     // A group covered since needs no request: existing research never takes

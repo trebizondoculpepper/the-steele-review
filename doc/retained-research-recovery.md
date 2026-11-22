@@ -21,3 +21,15 @@ After both required recoveries are accepted, submit a new explicitly named artic
 The CLI verifies every accepted binding against the exact current capture and configured source context before recording or submitting the attempt. The existing serialized recovery generation changes the Research service idempotency key: the original failed service invocation and article attempt remain untouched. Without that generation, Restate correctly returns the old cached failure.
 
 The workflow checks its selected research-request prefix against the supplied IDs before dispatch. A changed plan stops with an explicit gap, so this saved-report continuation cannot silently buy replacement discovery. Successful matching calls return the distinct recovered job references through normal research, coverage and package composition. No special writer-package or editorial workflow bypass is introduced. With these flags absent, prior submission and journal identities stay compatible.
+
+### Commissioning priority across planner upgrades
+
+The normal planner records an explicit ordered dossier list in version-2 plans;
+sorting the mode map for serialization does not change which requests consume
+the article allowance first. A new plan preserves compatible first-pass dossier
+order from coverage of the exact same analysis, then appends unrecorded groups
+in extraction order. Conflicting historical orders stop with an explicit
+compatibility error. Existing version-1 plans retain their serialized order,
+and every saved plan remains immutable. The retained-research prefix guard still
+refuses a plan that would select different jobs; do not bypass it by shuffling
+operator input or increasing the allowance.
