@@ -1,3 +1,4 @@
+import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
@@ -14,6 +15,8 @@ import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
   type ResearchManifest,
+  ResearchRequestSchema,
+  RetainedResearchRecoverySchema,
   type ResearchRequest,
   type ResearchResult,
   finishResearchJob,
@@ -73,6 +76,7 @@ const SavedReportSchema = z
     discovery: ArtifactReferenceSchema.optional(),
     costUsd: z.number().nonnegative().optional(),
     discoveryCompleteness: z.enum(["provider-original", "adapter-return-only"]).optional(),
+    retainedRecovery: RetainedResearchRecoverySchema.optional(),
   })
   .strict();
 
@@ -204,7 +208,7 @@ export async function runResearchJob(input: {
   operations: OperationStore;
   request: unknown;
   owner: string;
-  sonar: SonarClient;
+  sonar?: SonarClient;
   fetcher: PageFetcher;
   judge?: SupportJudge;
   limits?: RunnerLimits;
@@ -218,6 +222,21 @@ export async function runResearchJob(input: {
   signal?: AbortSignal;
 }): Promise<RunOutcome> {
   const now = input.now ?? (() => new Date());
+  const submitted = ResearchRequestSchema.parse(input.request);
+  if (!submitted.retainedRecovery) {
+    const recovered = await readAcceptedResearchRecovery({ ...input, request: submitted });
+    if (recovered)
+      return {
+        status: "finished",
+        jobId: recovered.binding.jobId,
+        result: recovered.result,
+        reused: true,
+      };
+  }
+  const retained = submitted.retainedRecovery
+    ? await loadRetainedResearch({ ...input, request: submitted })
+    : undefined;
+  if (!retained && !input.sonar) throw new Error("research-discovery-capability-required");
   const opened = await openResearchJob({
     artifacts: input.artifacts,
     operations: input.operations,
@@ -287,6 +306,24 @@ export async function runResearchJob(input: {
     if (!saved.success || saved.data.jobId !== jobId || !knownPrompt) {
       return fail("invalid-report");
     }
+    if (
+      JSON.stringify(saved.data.retainedRecovery ?? null) !==
+      JSON.stringify(request.retainedRecovery ?? null)
+    )
+      return fail("invalid-report");
+    if (
+      retained &&
+      (saved.data.report !== retained.retained.data.report ||
+        saved.data.model !== retained.retained.data.model ||
+        JSON.stringify(saved.data.citations) !==
+          JSON.stringify(
+            citationUrls(
+              [...retained.retained.data.citations, ...retained.retained.data.annotationUrls],
+              Number.MAX_SAFE_INTEGER,
+            ).slice(0, MAX_SAVED_CITATIONS),
+          ))
+    )
+      return fail("invalid-report");
     legacyDiscovery = !saved.data.discovery;
     if (saved.data.discovery)
       discoveryRef = { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) };
@@ -298,7 +335,25 @@ export async function runResearchJob(input: {
       ...(saved.data.costUsd === undefined ? {} : { costUsd: saved.data.costUsd }),
       ...(saved.data.omittedCitations ? { omittedCitations: saved.data.omittedCitations } : {}),
     } as typeof report;
+  } else if (retained) {
+    discoveryRef = {
+      ...submitted.retainedRecovery!.discovery,
+      sha256: submitted.retainedRecovery!.discovery.hash.slice(7),
+    };
+    discoveryCompleteness = retained.retained.data.citationProvenance;
+    const data = retained.retained.data;
+    const all = citationUrls([...data.citations, ...data.annotationUrls], Number.MAX_SAFE_INTEGER);
+    report = {
+      report: data.report,
+      model: data.model,
+      citations: all.slice(0, MAX_SAVED_CITATIONS),
+      ...(all.length > MAX_SAVED_CITATIONS
+        ? { omittedCitations: all.length - MAX_SAVED_CITATIONS }
+        : {}),
+      costUsd: 0,
+    };
   } else {
+    const sonar = input.sonar!;
     try {
       const captured = await captureResearchDiscovery({
         artifacts: input.artifacts,
@@ -307,20 +362,20 @@ export async function runResearchJob(input: {
         owner: input.owner,
         processor: {
           version: "research-discovery-v1",
-          model: input.sonar.model,
+          model: sonar.model,
           promptVersion: RESEARCH_PROMPT_VERSION,
           parameters:
-            input.sonar.discoveryParameters ??
-            (input.sonar.settings
+            sonar.discoveryParameters ??
+            (sonar.settings
               ? {
-                  timeoutMs: input.sonar.settings.timeoutMs,
-                  maxOutputTokens: input.sonar.settings.maxOutputTokens,
+                  timeoutMs: sonar.settings.timeoutMs,
+                  maxOutputTokens: sonar.settings.maxOutputTokens,
                 }
               : {}),
         },
         invoke: async (capture) =>
           discoveryFromAdapterReport(
-            await input.sonar.research(researchPrompt(request), signal, capture),
+            await sonar.research(researchPrompt(request), signal, capture),
           ),
         now,
       });
@@ -372,6 +427,7 @@ export async function runResearchJob(input: {
         }
       : {}),
     ...(discoveryCompleteness ? { discoveryCompleteness } : {}),
+    ...(request.retainedRecovery ? { retainedRecovery: request.retainedRecovery } : {}),
     ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
     ...(report.omittedCitations ? { omittedCitations: report.omittedCitations } : {}),
   });
@@ -391,6 +447,10 @@ export async function runResearchJob(input: {
         "Legacy report-only discovery lacks the original provider citation envelope and available usage metadata; it has not been reconstructed.",
       ]
     : [];
+  if (request.retainedRecovery)
+    gaps.push(
+      "The original provider report stopped at its output limit. Missing report text was not reconstructed; this recovery made no new discovery call.",
+    );
   const monitored = (url: string) => {
     const host = new URL(url).hostname.toLowerCase();
     return (input.monitoredHosts ?? []).some(
@@ -537,7 +597,9 @@ export async function runResearchJob(input: {
   const note = [
     `# Research job ${jobId}`,
     "",
-    `One ${report.model} pass (${RESEARCH_PROMPT_VERSION}) cited ${citations.length} source(s); ${archivedCount} archived, ${count((c) => c.support === "supported")} with verified supporting passages.`,
+    request.retainedRecovery
+      ? `An incomplete retained ${report.model} response was reused without a new discovery call; ${citations.length} source(s) cited, ${archivedCount} archived, ${count((c) => c.support === "supported")} with verified supporting passages.`
+      : `One ${report.model} pass (${RESEARCH_PROMPT_VERSION}) cited ${citations.length} source(s); ${archivedCount} archived, ${count((c) => c.support === "supported")} with verified supporting passages.`,
     "",
     "Retrieval uses the public-page fetcher only: PDFs and redirecting URLs are recorded as unsupported, not followed.",
     "",
@@ -555,6 +617,12 @@ export async function runResearchJob(input: {
     schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
     jobId,
     report: ref(reportRef),
+    ...(request.retainedRecovery
+      ? {
+          retainedRecovery: request.retainedRecovery,
+          discovery: request.retainedRecovery.discovery,
+        }
+      : {}),
     coveringNote: ref(noteRef),
     citations,
     gaps: gaps.slice(0, 100),

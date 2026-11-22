@@ -1,3 +1,7 @@
+import {
+  ResearchRecoveryBindingSchema,
+  type ResearchRecoveryBinding,
+} from "../content/research-recovery.js";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -758,6 +762,59 @@ export class OperationStore {
       JSON.stringify(JSON.parse(row.artifact ?? "null")) ===
         JSON.stringify({ discovery: parsed.data })
     );
+  }
+
+  /** Activate a retained recovery only under a current fenced owner, after durable job completion. */
+  completeResearchRecovery(claim: OperationClaim, value: ResearchRecoveryBinding): void {
+    const binding = ResearchRecoveryBindingSchema.parse(value);
+    const key = `retained-research:${binding.originalJobId}:${binding.jobId}`;
+    if (claim.key !== key || binding.originalJobId === binding.jobId)
+      throw new OperationStoreError("invalid-input");
+    this.transaction(() => {
+      const row = this.row(key),
+        now = this.now();
+      if (row?.status === "completed") {
+        if (JSON.stringify(JSON.parse(row.artifact ?? "null")) !== JSON.stringify(binding))
+          throw new OperationStoreError("invalid-input");
+        return;
+      }
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      const old = this.row(`research:${binding.originalJobId}`),
+        recovered = this.row(`research:${binding.jobId}`);
+      if (
+        old?.status !== "completed" ||
+        JSON.parse(old.artifact ?? "null")?.outcome !== "failed" ||
+        recovered?.status !== "completed" ||
+        JSON.parse(recovered.artifact ?? "null")?.outcome !== "complete-with-gaps"
+      )
+        throw new OperationStoreError("invalid-input");
+      const indexKey = `accepted-research-recovery:${binding.originalJobId}`,
+        prior = this.row(indexKey);
+      if (prior && JSON.stringify(JSON.parse(prior.artifact ?? "null")) !== JSON.stringify(binding))
+        throw new OperationStoreError("invalid-input");
+      if (!prior)
+        this.db
+          .prepare(
+            "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+          )
+          .run(indexKey, JSON.stringify(binding), now);
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(binding), now, key);
+    });
+  }
+
+  /** Narrow accepted exact-request mapping; no caller can infer acceptance from a Git candidate alone. */
+  researchRecovery(originalJobId: string): ResearchRecoveryBinding | undefined {
+    if (!/^research-[0-9a-f]{32}$/.test(originalJobId))
+      throw new OperationStoreError("invalid-input");
+    const row = this.row(`accepted-research-recovery:${originalJobId}`);
+    return row?.status === "completed"
+      ? ResearchRecoveryBindingSchema.parse(JSON.parse(row.artifact!))
+      : undefined;
   }
 
   /** Record one intentional article rerun before its external submission. */

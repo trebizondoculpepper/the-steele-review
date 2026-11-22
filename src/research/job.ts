@@ -27,6 +27,13 @@ export const RESEARCH_JOB_SCHEMA_VERSION = 1;
 
 const Ref = ArtifactReferenceSchema;
 const JobId = z.string().regex(/^research-[0-9a-f]{32}$/);
+export const RetainedResearchRecoverySchema = z
+  .object({
+    version: z.literal("retained-length-limit-v1"),
+    discovery: Ref,
+    failedResult: Ref,
+  })
+  .strict();
 
 export const ResearchRequestSchema = z
   .object({
@@ -44,6 +51,7 @@ export const ResearchRequestSchema = z
     /** 1 for the first pass; a second pass names the job it follows. */
     pass: z.number().int().min(1).max(5),
     previousJobId: JobId.optional(),
+    retainedRecovery: RetainedResearchRecoverySchema.optional(),
     /** Extraction-derived requests point at an exact post and analysis; manual ones may not. */
     post: z
       .object({
@@ -137,6 +145,7 @@ export const ResearchManifestSchema = z
     jobId: JobId,
     report: Ref,
     discovery: Ref.optional(),
+    retainedRecovery: RetainedResearchRecoverySchema.optional(),
     coveringNote: Ref.optional(),
     citations: z.array(CitationRecordSchema).max(500),
     gaps: z.array(z.string().min(1).max(2000)).max(100),
@@ -186,6 +195,16 @@ export function researchJobId(input: unknown): string {
     brief: r.brief ? r.brief.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
     pass: r.pass,
     previous: r.previousJobId ?? null,
+    ...(r.retainedRecovery
+      ? {
+          retainedRecovery: [
+            r.retainedRecovery.version,
+            refKey(r.retainedRecovery.discovery),
+            refKey(r.retainedRecovery.failedResult),
+            r.post?.sourceContext ? refKey(r.post.sourceContext) : null,
+          ],
+        }
+      : {}),
     post: r.post
       ? [
           r.post.publicationId,

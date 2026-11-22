@@ -1,3 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { validateRetainedArticleResearch } from "../research/retained-research-source.js";
+import { sourceContextFor } from "../content/source-context.js";
+import { sourceMetadataFromEnv, postAttribution } from "../content/source-metadata.js";
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 import { recordArticleAttempt } from "../workflow/article-attempt.js";
@@ -5,7 +9,7 @@ import { OperationStore } from "../controllers/operation-store.js";
 /**
  * Start one unattended article run for a captured post (#243).
  *
- *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]
+ *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--recovery-generation <1..100>] [--retained-research-file <private-job-id-json-file>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]
  *
  * Reads the captured post to find its exact source version, then submits the
  * `ArticleRun` workflow keyed by publication, post and source version. A
@@ -31,12 +35,14 @@ import {
 } from "../workflow/article-run.js";
 
 const USAGE =
-  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]";
+  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--recovery-generation <1..100>] [--retained-research-file <private-job-id-json-file>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]";
 const Env = z.object({
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
   RESTATE_INGRESS_URL: z.url(),
   STEELE_STATE_PATH: z.string().min(1).optional(),
+  STEELE_CONTENT_PATH: z.string().min(1).optional(),
+  STEELE_CONTENT_REPOSITORY: z.string().min(1).optional(),
 });
 const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/);
 
@@ -50,6 +56,8 @@ async function main(): Promise<number> {
         "deadline-ms": { type: "string" },
         "research-request-limit": { type: "string" },
         "request-id": { type: "string" },
+        "recovery-generation": { type: "string" },
+        "retained-research-file": { type: "string" },
         "editorial-revisions": { type: "string" },
         "editorial-deadline-ms": { type: "string" },
         wait: { type: "boolean" },
@@ -84,6 +92,37 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  const generation = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .safeParse(values["recovery-generation"]);
+  let retainedResearchJobIds: string[] | undefined;
+  if (!generation.success || (values["recovery-generation"] && !values["request-id"])) {
+    console.error(USAGE);
+    return 2;
+  }
+  if (values["retained-research-file"]) {
+    if (!generation.data || !values["request-id"]) {
+      console.error(USAGE);
+      return 2;
+    }
+    try {
+      const raw = await readFile(values["retained-research-file"], "utf8");
+      if (raw.length > 32_000) throw new Error();
+      retainedResearchJobIds = z
+        .array(z.string().regex(/^research-[0-9a-f]{32}$/))
+        .min(1)
+        .max(100)
+        .parse(JSON.parse(raw));
+      if (new Set(retainedResearchJobIds).size !== retainedResearchJobIds.length) throw new Error();
+    } catch {
+      console.error("Invalid retained research job selection.");
+      return 2;
+    }
+  }
   const env = Env.safeParse(process.env);
   if (!env.success) {
     console.error(
@@ -114,10 +153,13 @@ async function main(): Promise<number> {
   let input = {
     ...post,
     editorial: policy,
+    ...(values["request-id"] ? { operatorRequestId: values["request-id"] } : {}),
     source: { namespace: `substack/${post.publicationId}`, itemId: post.postId, artifact: ref },
     sourceVersion: sourceVersionFor(record.text),
     sourceUrl: record.item.url,
     researchDeadlineMs: deadline.data,
+    ...(generation.data ? { recoveryGeneration: generation.data } : {}),
+    ...(retainedResearchJobIds ? { retainedResearchJobIds } : {}),
     ...researchExecutionFromEnv(),
     ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
   };
@@ -133,6 +175,23 @@ async function main(): Promise<number> {
     }
     const operations = new OperationStore({ path: env.data.STEELE_STATE_PATH });
     try {
+      if (retainedResearchJobIds) {
+        if (!env.data.STEELE_CONTENT_PATH || !env.data.STEELE_CONTENT_REPOSITORY)
+          throw new Error("missing-content-configuration");
+        const metadata = sourceMetadataFromEnv(process.env);
+        await validateRetainedArticleResearch({
+          artifacts: new GitArtifactStore({
+            repoPath: env.data.STEELE_CONTENT_PATH,
+            repository: env.data.STEELE_CONTENT_REPOSITORY,
+          }),
+          operations,
+          jobIds: retainedResearchJobIds,
+          capture: ref,
+          sourceContext: sourceContextFor(record, ref, postAttribution(metadata, record.item), {
+            namespace: `substack/${post.publicationId}`,
+          }),
+        });
+      }
       const recorded = recordArticleAttempt(operations, input, values["request-id"]);
       key = recorded.identity.workflowKey;
       input = recorded.input as typeof input;

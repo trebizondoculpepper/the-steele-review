@@ -68,6 +68,8 @@ export interface ArticleRunInput {
   researchRequestLimit?: number;
   /** Set by an explicit recovery of a stopped run (#480). */
   recoveryGeneration?: number;
+  /** Explicit saved-response continuation: never commission a changed request prefix. */
+  retainedResearchJobIds?: string[];
   /**
    * The research contract chosen at submission (#593). Absent means the
    * legacy single-step research call, whatever the deployment now enables.
@@ -316,6 +318,11 @@ export const ArticleRunInputSchema = z
      * reused, while successful saved research artifacts are still reused.
      */
     recoveryGeneration: z.number().int().min(0).max(100).optional(),
+    retainedResearchJobIds: z
+      .array(z.string().regex(/^research-[0-9a-f]{32}$/))
+      .min(1)
+      .max(100)
+      .optional(),
     researchExecution: z.literal("staged").optional(),
     editorial: EditorialPolicySchema.optional(),
     operatorRequestId: z
@@ -339,6 +346,15 @@ export const ArticleRunInputSchema = z
       .optional(),
   })
   .strict()
+  .refine(
+    (input) =>
+      !input.retainedResearchJobIds ||
+      ((input.recoveryGeneration ?? 0) > 0 &&
+        !!input.operatorRequestId &&
+        new Set(input.retainedResearchJobIds).size === input.retainedResearchJobIds.length &&
+        input.researchExecution !== "staged"),
+    "retained recovery requires an explicit request and generation on the normal research path",
+  )
   .refine((input) => {
     if (!input.source) return true;
     const target = articleRunTarget(input.source.namespace, input.source.itemId);
@@ -440,6 +456,18 @@ export function articleRunWorkflow(stages: ArticleStages) {
     const claims = await step("claims", () => stages.claims(input, themes));
     const requests = await step("plan-research", () => stages.planResearch(themes, claims));
 
+    if (
+      input.retainedResearchJobIds &&
+      JSON.stringify(requests.slice(0, input.researchRequestLimit).map(researchJobId)) !==
+        JSON.stringify(input.retainedResearchJobIds)
+    )
+      return {
+        outcome: "evidence-gap",
+        reason: "retained-research-plan-mismatch",
+        themes,
+        claims,
+        research: [],
+      };
     await mark("research", "running");
     // Commission the configured prefix in librarian order. Restate limits concurrency separately.
     const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
