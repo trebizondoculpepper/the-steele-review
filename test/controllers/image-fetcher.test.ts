@@ -58,8 +58,21 @@ describe("public image fetcher (#277)", () => {
     expect(called).toBe(false);
   });
 
+  it("bounds the address lookup by cancellation", async () => {
+    const f = new PublicImageFetcher({
+      resolve: () => new Promise(() => undefined), // never answers
+      fetch: async () => image(PNG, "image/png"),
+    });
+    const controller = new AbortController();
+    const pending = f.fetch(URL_, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+  });
+
   it("sniffs only allowlisted image signatures", () => {
     expect(sniffImageType(PNG)).toBe("image/png");
+    // The full eight-byte PNG signature is required.
+    expect(sniffImageType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0]))).toBeUndefined();
     expect(sniffImageType(JPEG)).toBe("image/jpeg");
     expect(sniffImageType(Buffer.from("GIF89a"))).toBe("image/gif");
     expect(sniffImageType(Buffer.from("RIFF0000WEBPVP8 "))).toBe("image/webp");

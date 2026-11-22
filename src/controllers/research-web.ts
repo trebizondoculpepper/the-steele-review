@@ -395,8 +395,8 @@ export const IMAGE_EXTENSIONS: Record<RetainedImageType, string> = {
 /** The type the bytes themselves declare, from their signature; never trusted from headers alone. */
 export function sniffImageType(bytes: Uint8Array): RetainedImageType | undefined {
   const b = bytes;
-  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47)
-    return "image/png";
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (b.length >= 8 && PNG.every((v, i) => b[i] === v)) return "image/png";
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
   if (b.length >= 6 && Buffer.from(b.subarray(0, 6)).toString("latin1").startsWith("GIF8"))
     return "image/gif";
@@ -438,9 +438,16 @@ export class PublicImageFetcher {
     const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
     if (!isIP(hostname)) {
       let addresses: string[];
+      // The lookup obeys the same deadline and cancellation as the request.
+      const aborted = new Promise<never>((_, reject) => {
+        const fail = () => reject(abortCode(signal, timeout) ?? new WebAdapterError("timeout"));
+        if (combined.aborted) fail();
+        else combined.addEventListener("abort", fail, { once: true });
+      });
       try {
-        addresses = await this.resolve(hostname);
-      } catch {
+        addresses = await Promise.race([this.resolve(hostname), aborted]);
+      } catch (error) {
+        if (error instanceof WebAdapterError) throw error;
         throw new WebAdapterError("unavailable");
       }
       if (addresses.length === 0 || !addresses.every(isPublicAddress))
