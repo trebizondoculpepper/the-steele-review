@@ -211,3 +211,55 @@ describe("judgments browser (#643)", { timeout: 60_000 }, () => {
     expect(page.next).toBeDefined();
   });
 });
+
+describe("judgment document exact version (#643 follow-up)", { timeout: 60_000 }, () => {
+  it("reads the recorded judgement document, not the current path", async () => {
+    const doc = await content.write("judgments/pub/p1/pinned.md", judgementDoc("APPROVE", "None."));
+    await writeJudgment(
+      "pub",
+      "p1",
+      "7".repeat(32),
+      record({
+        document: {
+          repository: doc.repository,
+          commit: doc.commit,
+          path: doc.path,
+          hash: `sha256:${doc.sha256}`,
+        },
+      }),
+    );
+    const pinnedOnly = {
+      list: content.list.bind(content),
+      // HEAD cannot see the document path; only the pinned read can.
+      lookup: async (target: string) =>
+        target === 'judgments/pub/p1/pinned.md' ? undefined : content.lookup(target),
+      lookupAt: content.lookupAt.bind(content),
+      read: content.read.bind(content),
+    };
+    const found = await savedJudgments(pinnedOnly as never).detail(
+      `judgments/pub/p1/${"7".repeat(32)}.json`,
+    );
+    expect(found?.guidance).toMatchObject({ decision: "approve" });
+    expect(found?.documentUnreadable).toBe(false);
+  });
+
+  it("refuses a document whose bytes do not match the recorded hash", async () => {
+    const doc = await content.write("judgments/pub/p2/pinned.md", judgementDoc("REVISE", "Fix it."));
+    await writeJudgment(
+      "pub",
+      "p2",
+      "8".repeat(32),
+      record({
+        document: {
+          repository: doc.repository,
+          commit: doc.commit,
+          path: doc.path,
+          hash: `sha256:${"0".repeat(64)}`,
+        },
+      }),
+    );
+    const found = await savedJudgments(content).detail(`judgments/pub/p2/${"8".repeat(32)}.json`);
+    expect(found?.document).toBeUndefined();
+    expect(found?.documentUnreadable).toBe(true);
+  });
+});

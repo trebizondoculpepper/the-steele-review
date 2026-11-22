@@ -76,7 +76,7 @@ export interface JudgmentsPort {
   detail(path: string): Promise<JudgmentDetail | undefined>;
 }
 
-type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
+type Store = Pick<GitArtifactStore, "list" | "lookup" | "lookupAt" | "read">;
 
 export function savedJudgments(
   content: Store,
@@ -178,9 +178,13 @@ export function savedJudgments(
       let documentUnreadable = false;
       if (record.document) {
         try {
-          const docRef = await content.lookup(record.document.path);
-          if (docRef) document = await content.read(docRef);
-          else documentUnreadable = true;
+          // Pin the judgement document to the exact recorded version.
+          const found = await content.lookupAt(record.document.commit, record.document.path);
+          if (!found || `sha256:${found.ref.sha256}` !== record.document.hash) {
+            documentUnreadable = true;
+          } else {
+            document = found.content;
+          }
         } catch {
           documentUnreadable = true;
         }
