@@ -318,7 +318,7 @@ describe("durable research discovery", { timeout: 60000 }, () => {
       JSON.stringify({ ...result, requestId: "research-" + "0".repeat(32) }),
     );
     await expect(readResearchDiscovery(artifacts, forged, operations)).rejects.toMatchObject({
-      code: "archive-failed",
+      code: "quarantined",
     });
     const selected = selectDiscoveryData(
       {
