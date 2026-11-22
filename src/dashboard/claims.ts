@@ -35,6 +35,10 @@ export interface SourceArtifact {
 
 export interface ClaimRow {
   result: string;
+  /** Exact commit of the saved extraction, so a reader can pin it. */
+  resultCommit?: string;
+  /** Exact content hash of the saved extraction. */
+  resultHash?: string;
   category: ClaimCategory;
   /** Position within its category in the saved extraction (link identity). */
   index: number;
@@ -161,6 +165,8 @@ export function savedClaims(content: Store, archive?: Archive): ClaimsPort {
       const { path: themePath, titles, source } = await titlesFor(rec.themeResult);
       const base = {
         result: path,
+        resultCommit: ref.commit,
+        resultHash: `sha256:${ref.sha256}`,
         publicationId: rec.post.publicationId,
         postId: rec.post.postId,
         sourceVersion: rec.sourceVersion,
