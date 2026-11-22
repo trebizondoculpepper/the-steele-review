@@ -92,7 +92,16 @@ export function renderEditorialTimeline(
   data: EditorialTimelineData,
   post: { publicationId: string; postId: string },
 ): string {
-  if (!data.assessments.length && !data.judgments.length && !data.assessmentsUnavailable && !data.judgmentsUnavailable) {
+  const emptyButComplete =
+    data.assessments.length === 0 &&
+    data.judgments.length === 0 &&
+    !data.assessmentsUnavailable &&
+    !data.judgmentsUnavailable &&
+    !data.assessmentsPartial &&
+    !data.judgmentsPartial &&
+    data.assessmentsUnreadable === 0 &&
+    data.judgmentsUnreadable === 0;
+  if (emptyButComplete) {
     return `<h2>Editorial timeline</h2><p class="empty">No assessor or judge attempts are saved for this article yet. This is not approval.</p>`;
   }
   const entries: TimelineEntry[] = [

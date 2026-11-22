@@ -573,6 +573,31 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
     expect(html).toContain("not approval");
   });
 
+  it("keeps incomplete-history warnings when the scan finds no rows", async () => {
+    const [, detail] = articleViews({
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
+      },
+      assessments: {
+        list: async () => ({ state: "ok", rows: [], partial: true, unreadable: 0, next: "x" }),
+        detail: async () => undefined,
+      },
+      judgments: {
+        list: async () => ({ state: "ok", rows: [], partial: false, unreadable: 2 }),
+        detail: async () => undefined,
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).not.toContain("No assessor or judge attempts are saved");
+    expect(html).toContain("bounded");
+    expect(html).toContain("could not be read");
+    expect(html).toContain("/assessments?post=pub%2Fp1");
+    expect(html).toContain("/judgments?post=pub%2Fp1");
+  });
+
   it("shows an explicit empty state when no editorial records exist", async () => {
     const [, detail] = articleViews({
       articles: {
