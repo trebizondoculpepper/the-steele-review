@@ -39,7 +39,7 @@ export const MAX_SCANNED_RECORDS = 2_000;
 
 const RECORD_PATH = /^claims\/claim-[0-9a-f]{32}\.json$/;
 
-const DecisionSchema = z
+export const ClaimEquivalenceDecisionSchema = z
   .object({
     schemaVersion: z.literal(1),
     record: z.string(),
@@ -53,7 +53,7 @@ const DecisionSchema = z
     decidedAt: z.string(),
   })
   .strict();
-export type EquivalenceDecision = z.infer<typeof DecisionSchema>;
+export type EquivalenceDecision = z.infer<typeof ClaimEquivalenceDecisionSchema>;
 
 const ModelOutputSchema = z
   .object({
@@ -386,7 +386,7 @@ export async function resolveClaimEquivalence(input: {
   const existing = await input.artifacts.lookup(path);
   const reused = existing !== undefined;
   if (existing) {
-    decision = DecisionSchema.parse(JSON.parse(await input.artifacts.read(existing)));
+    decision = ClaimEquivalenceDecisionSchema.parse(JSON.parse(await input.artifacts.read(existing)));
   } else {
     // Statements alone can hide context ("our revenue"): include the exact
     // source passages, posts and speaker kinds for each side.
@@ -424,7 +424,7 @@ export async function resolveClaimEquivalence(input: {
       output.match !== null && offered.has(output.match) && output.confidence === "high"
         ? output.match
         : null;
-    decision = DecisionSchema.parse({
+    decision = ClaimEquivalenceDecisionSchema.parse({
       schemaVersion: 1,
       record: record.id,
       statement: record.statement,
@@ -443,7 +443,7 @@ export async function resolveClaimEquivalence(input: {
         throw error;
       const winner = await input.artifacts.lookup(path);
       if (!winner) throw error;
-      decision = DecisionSchema.parse(JSON.parse(await input.artifacts.read(winner)));
+      decision = ClaimEquivalenceDecisionSchema.parse(JSON.parse(await input.artifacts.read(winner)));
     }
   }
 
