@@ -1,5 +1,5 @@
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
-import { DEFAULT_EDITORIAL_POLICY } from "../workflow/editorial-contract.js";
+import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 import { recordArticleAttempt } from "../workflow/article-attempt.js";
 import { OperationStore } from "../controllers/operation-store.js";
 /**
@@ -103,7 +103,7 @@ async function main(): Promise<number> {
   }
   const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
   const policy = {
-    ...DEFAULT_EDITORIAL_POLICY,
+    ...editorialPolicyFromEnv(process.env),
     ...(values["editorial-revisions"] !== undefined
       ? { maxRevisions: Number(values["editorial-revisions"]) }
       : {}),

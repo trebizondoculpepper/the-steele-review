@@ -14,6 +14,18 @@ export const DEFAULT_EDITORIAL_POLICY: EditorialPolicy = {
   maxRevisions: 2,
   deadlineMs: 20 * 60_000,
 };
+/** Read once at submission; the resolved values are serialized into the workflow journal. */
+export function editorialPolicyFromEnv(env: Record<string, string | undefined>): EditorialPolicy {
+  return EditorialPolicySchema.parse({
+    ...DEFAULT_EDITORIAL_POLICY,
+    ...(env.STEELE_EDITORIAL_MAX_REVISIONS?.trim()
+      ? { maxRevisions: Number(env.STEELE_EDITORIAL_MAX_REVISIONS) }
+      : {}),
+    ...(env.STEELE_EDITORIAL_DEADLINE_MS?.trim()
+      ? { deadlineMs: Number(env.STEELE_EDITORIAL_DEADLINE_MS) }
+      : {}),
+  });
+}
 export interface EditorialVersion {
   draft: Ref;
   metadata: Ref;

@@ -350,8 +350,9 @@ export function restateRuns(
   ingressUrl: string,
   timeoutMs = 5_000,
   attempts?: Pick<OperationStore, "articleAttempts">,
+  connect: typeof clients.connect = clients.connect,
 ): RunStatusPort {
-  const ingress = clients.connect({ url: ingressUrl });
+  const ingress = connect({ url: ingressUrl });
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
     try {

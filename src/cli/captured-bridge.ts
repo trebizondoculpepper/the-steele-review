@@ -1,3 +1,4 @@
+import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 /**
  * Captured-content bridge (#270): consume `steele.v1.content.captured` from a
  * provisioned durable JetStream consumer and submit one `ArticleRun` workflow
@@ -83,6 +84,7 @@ async function main(): Promise<number> {
         const decision = await handleCapturedContent(new TextDecoder().decode(message.data), {
           enabledSources,
           researchRequestLimit: c.STEELE_RESEARCH_REQUEST_LIMIT,
+          editorialPolicy: editorialPolicyFromEnv(process.env),
           researchDeadlineMs: c.STEELE_RESEARCH_DEADLINE_MS ?? 30 * 60_000,
           ...(c.STEELE_BRIDGE_RETRY_DELAY_MS
             ? { retryDelayMs: c.STEELE_BRIDGE_RETRY_DELAY_MS }

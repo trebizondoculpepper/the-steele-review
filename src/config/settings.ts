@@ -1,3 +1,4 @@
+import { DEFAULT_EDITORIAL_POLICY, EditorialPolicySchema } from "../workflow/editorial-contract.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { MechanicalPolicySchema } from "../drafting/mechanical-policy.js";
@@ -78,6 +79,24 @@ export const SETTINGS: readonly SettingSpec[] = [
     description: "One shared durable deadline for mechanical writer repair, in milliseconds.",
     schema: z.coerce.number().pipe(MechanicalPolicySchema.shape.deadlineMs.unwrap()),
     default: String(MechanicalPolicySchema.parse({}).deadlineMs),
+    sensitivity: "public",
+    activation: "restart",
+  },
+  {
+    key: "STEELE_EDITORIAL_MAX_REVISIONS",
+    domain: "models",
+    description: "Maximum editorial revisions after the first assessment and judgment.",
+    schema: z.coerce.number().pipe(EditorialPolicySchema.shape.maxRevisions),
+    default: String(DEFAULT_EDITORIAL_POLICY.maxRevisions),
+    sensitivity: "public",
+    activation: "restart",
+  },
+  {
+    key: "STEELE_EDITORIAL_DEADLINE_MS",
+    domain: "models",
+    description: "Shared assessment/judgment/revision deadline, serialized at submission.",
+    schema: z.coerce.number().pipe(EditorialPolicySchema.shape.deadlineMs),
+    default: String(DEFAULT_EDITORIAL_POLICY.deadlineMs),
     sensitivity: "public",
     activation: "restart",
   },
@@ -323,10 +342,7 @@ export function savedFileVersion(
       // Unknown keys are hashed salted as well: the registry decides what may
       // be shown, and an unknown key is never public.
       if (spec?.sensitivity === "public") return [key, value];
-      return [
-        key,
-        createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex"),
-      ];
+      return [key, createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex")];
     });
   return `config-file-sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32)}`;
 }
@@ -363,7 +379,12 @@ export type SettingsSaveDecision =
     }
   | {
       status: "rejected";
-      reason: "unknown-key" | "not-editable" | "invalid-value" | "invalid-configuration" | "stale-version";
+      reason:
+        | "unknown-key"
+        | "not-editable"
+        | "invalid-value"
+        | "invalid-configuration"
+        | "stale-version";
       keys: string[];
     };
 

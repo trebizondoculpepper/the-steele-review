@@ -1,3 +1,4 @@
+import type { EditorialPolicy } from "../workflow/editorial-contract.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { articleRunKey, type ArticleRunInput } from "../workflow/article-run.js";
 import { isCreditBlocked } from "./article-views.js";
@@ -20,6 +21,7 @@ export interface ArticleRecoveryDeps {
   archive: Pick<GitArtifactStore, "lookup" | "read">;
   researchDeadlineMs: number;
   researchRequestLimit: number;
+  editorialPolicy?: EditorialPolicy;
   submitter: ArticleSubmissionPort;
   runs: RunStatusPort;
   identities: RecoveryIdentities;

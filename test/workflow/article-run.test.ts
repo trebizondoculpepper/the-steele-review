@@ -177,7 +177,7 @@ let ingress: clients.Ingress;
 const Workflow = articleRunWorkflow(stages);
 beforeAll(async () => {
   env = await RestateTestEnvironment.start(
-    { services: [Workflow, researchService(stages)] },
+    { services: [Workflow, researchService(stages)], serviceEndpointAccess: "docker-host" },
     () => new RestateContainer("1.8.1"),
   );
   const put = await fetch(`${env.adminAPIBaseUrl()}/limits/rules`, {

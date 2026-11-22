@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { AssessmentRecordSchema, classifyFindings } from "../drafting/article-assessment.js";
@@ -13,6 +14,7 @@ import {
 export type ApprovalKind = "combined-verification" | "editorial-judgment";
 export interface ApprovalEvidence {
   kind: ApprovalKind;
+  post: { publicationId: string; postId: string };
   body: ArtifactReference;
   package: ArtifactReference;
   publication?: ArtifactReference;
@@ -34,6 +36,15 @@ export async function readApprovalEvidence(
   kind: ApprovalKind = "combined-verification",
 ): Promise<ApprovalEvidence> {
   const raw = JSON.parse(await content.read(ref));
+  const postFor = async (packageRef: ArtifactReference) =>
+    z
+      .object({
+        post: z.object({
+          publicationId: z.string().min(1).max(200),
+          postId: z.string().min(1).max(200),
+        }),
+      })
+      .parse(JSON.parse(await content.read(artifactRef(packageRef)))).post;
   if (kind === "combined-verification") {
     const report = PackageVerificationReportSchema.parse(raw);
     if (report.outcome !== "approved")
@@ -49,6 +60,7 @@ export async function readApprovalEvidence(
     if (!approvalValidFor(report, markdown, loaded)) throw new ApprovalEvidenceError();
     return {
       kind,
+      post: await postFor(report.package),
       body: report.draft,
       package: report.package,
       approvedAt: report.verifiedAt,
@@ -58,6 +70,7 @@ export async function readApprovalEvidence(
   }
   const judgment = JudgmentRecordSchema.parse(raw);
   if (
+    judgment.operationalFailure !== undefined ||
     judgment.state !== "decided" ||
     judgment.decision !== "approve" ||
     judgment.gates.length ||
@@ -72,6 +85,7 @@ export async function readApprovalEvidence(
     JSON.parse(await content.read(artifactRef(judgment.assessment))),
   );
   if (
+    assessment.operationalFailure !== undefined ||
     !assessment.document ||
     !assessment.assessor.model.trim() ||
     !assessment.assessor.promptVersion.trim() ||
@@ -91,6 +105,7 @@ export async function readApprovalEvidence(
   if (!sameArtifact(loaded.payload.body, judgment.body)) throw new ApprovalEvidenceError();
   return {
     kind,
+    post: await postFor(assessment.package),
     body: judgment.body,
     package: assessment.package,
     assessment: judgment.assessment,

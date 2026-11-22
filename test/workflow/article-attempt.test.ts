@@ -5,7 +5,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { recordArticleAttempt } from "../../src/workflow/article-attempt.js";
 import { ArticleRunInputSchema, articleRunKey } from "../../src/workflow/article-run.js";
-import { DEFAULT_EDITORIAL_POLICY } from "../../src/workflow/editorial-contract.js";
+import {
+  DEFAULT_EDITORIAL_POLICY,
+  editorialPolicyFromEnv,
+} from "../../src/workflow/editorial-contract.js";
 const input = {
   publicationId: "fixture",
   postId: "post",
@@ -50,6 +53,13 @@ describe("explicit durable article attempt identity", () => {
     const legacy = { ...input, editorial: undefined };
     expect(ArticleRunInputSchema.parse(legacy).editorial).toBeUndefined();
     expect(ArticleRunInputSchema.parse(input).editorial).toEqual(DEFAULT_EDITORIAL_POLICY);
+    expect(
+      editorialPolicyFromEnv({
+        STEELE_EDITORIAL_MAX_REVISIONS: "1",
+        STEELE_EDITORIAL_DEADLINE_MS: "3000",
+      }),
+    ).toMatchObject({ maxRevisions: 1, deadlineMs: 3000 });
+    expect(() => editorialPolicyFromEnv({ STEELE_EDITORIAL_MAX_REVISIONS: "999" })).toThrow();
     expect(
       ArticleRunInputSchema.safeParse({
         ...input,

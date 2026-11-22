@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -766,7 +767,6 @@ export class OperationStore {
     sourceVersion: string;
     requestId: string;
     inputHash: string;
-    workflowKey: string;
   }): { workflowKey: string; requestId: string; sourceVersion: string; recordedAt: string } {
     const parsed = z
       .object({
@@ -775,16 +775,16 @@ export class OperationStore {
         sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
         requestId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
         inputHash: z.string().regex(/^[0-9a-f]{64}$/),
-        workflowKey: z.string().min(1).max(700),
       })
       .strict()
       .parse(input);
     const key = `article-attempt:${parsed.publicationId}/${parsed.postId}:${parsed.requestId}`;
-    const value = { ...parsed, recordedAt: new Date(this.now()).toISOString() };
+    const workflowKey = `${parsed.publicationId}/${parsed.postId}@${parsed.sourceVersion.slice(7, 39)}~run-${createHash("sha256").update(parsed.requestId).digest("hex").slice(0, 16)}`;
+    const value = { ...parsed, workflowKey, recordedAt: new Date(this.now()).toISOString() };
     const saved = this.reconcileCompleted(key, value, []) as typeof value;
     if (
       saved.inputHash !== parsed.inputHash ||
-      saved.workflowKey !== parsed.workflowKey ||
+      saved.workflowKey !== workflowKey ||
       saved.sourceVersion !== parsed.sourceVersion
     )
       throw new OperationStoreError("invalid-input");

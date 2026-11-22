@@ -92,6 +92,15 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
     expect(await handle(a)).toMatchObject({ action: "ack", outcome: "delivered" });
     expect(await handle(b)).toMatchObject({ action: "ack", outcome: "delivered" });
     expect(await readDummyDeliveryProof(content, event.data)).toBeDefined();
+    const crossPost = {
+      ...event,
+      subject: "article/pub/other",
+      data: { ...event.data, postId: "other" },
+    };
+    expect(await handle(a, JSON.stringify(crossPost))).toMatchObject({
+      action: "term",
+      reason: "approval-mismatch",
+    });
     expect(await handle(a)).toMatchObject({ action: "ack", outcome: "reused" });
     expect(a.deliveries).toHaveLength(1);
     const metadata = JSON.parse(await content.read(version.metadata));

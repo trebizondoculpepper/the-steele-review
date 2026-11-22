@@ -1,5 +1,5 @@
 import { researchExecutionFromEnv } from "./research-execution.js";
-import { DEFAULT_EDITORIAL_POLICY } from "./editorial-contract.js";
+import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "./editorial-contract.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
@@ -32,6 +32,7 @@ export interface CapturedBridgeOptions {
   /** Research batch deadline for submitted runs. */
   researchDeadlineMs: number;
   researchRequestLimit?: number;
+  editorialPolicy?: EditorialPolicy;
   /** Submit (or attach to) the workflow with this key. Throws when Restate is unreachable. */
   submit(key: string, input: ArticleRunInput): Promise<SubmitResult>;
   retryDelayMs?: number;
@@ -52,12 +53,13 @@ export function articleRunInputFor(
   event: ReturnType<typeof parseCapturedContentEvent>,
   researchDeadlineMs: number,
   researchRequestLimit?: number,
+  editorialPolicy: EditorialPolicy = DEFAULT_EDITORIAL_POLICY,
 ): ArticleRunInput {
   const target = articleRunTarget(event.source.namespace, event.itemId);
   return {
     ...target,
     sourceVersion: event.sourceVersion,
-    editorial: DEFAULT_EDITORIAL_POLICY,
+    editorial: editorialPolicy,
     sourceUrl: event.originalUrl,
     researchDeadlineMs,
     ...researchExecutionFromEnv(),
@@ -85,7 +87,12 @@ export async function handleCapturedContent(
   } catch {
     return { action: "term", reason: "invalid-event" };
   }
-  const input = articleRunInputFor(event, options.researchDeadlineMs, options.researchRequestLimit);
+  const input = articleRunInputFor(
+    event,
+    options.researchDeadlineMs,
+    options.researchRequestLimit,
+    options.editorialPolicy,
+  );
   const skipReason =
     event.ingestionReason !== "live"
       ? "not-live"

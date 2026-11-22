@@ -93,13 +93,10 @@ export async function recordApproval(input: {
 }): Promise<{ eventId: string; data: ArticleApprovedData }> {
   const evidence = await readApprovalEvidence(input.content, input.report, input.kind);
   const draft = fromRef(evidence.body);
-  const pkg = JSON.parse(await input.content.read(fromRef(evidence.package))) as {
-    post: { publicationId: string; postId: string };
-  };
   const eventId = approvedArticleEventId(draft, input.report);
   const data: ArticleApprovedData = {
-    publicationId: pkg.post.publicationId,
-    postId: pkg.post.postId,
+    publicationId: evidence.post.publicationId,
+    postId: evidence.post.postId,
     draft: evidence.body,
     approval: toRef(input.report),
     ...(evidence.publication ? { publication: evidence.publication } : {}),
@@ -257,6 +254,8 @@ async function readApprovedContent(
     article.approvalKind,
   );
   if (
+    evidence.post.publicationId !== article.publicationId ||
+    evidence.post.postId !== article.postId ||
     !sameArtifact(evidence.body, article.draft) ||
     !sameArtifact(evidence.package, article.package) ||
     (evidence.publication

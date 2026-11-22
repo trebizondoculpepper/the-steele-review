@@ -1,3 +1,4 @@
+import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 /**
  * LAN-only operator dashboard (#375, #377).
  *
@@ -138,6 +139,7 @@ const trigger =
         submitter: restateSubmitter(env.data.RESTATE_INGRESS_URL),
         researchRequestLimit: env.data.STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT,
         researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
+        editorialPolicy: editorialPolicyFromEnv(process.env),
       })
     : undefined;
 // A recoverable stopped run needs a durable recovery identity in the state
@@ -158,6 +160,7 @@ const recovery =
         archive,
         researchRequestLimit: env.data.STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT,
         researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
+        editorialPolicy: editorialPolicyFromEnv(process.env),
         submitter: restateSubmitter(env.data.RESTATE_INGRESS_URL),
         runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, operations),
         identities: recoveryIdentities(operations),
@@ -216,7 +219,9 @@ const views = [
     canRecover: Boolean(recovery),
     ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
-    ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, operations) } : {}),
+    ...(env.data.RESTATE_INGRESS_URL
+      ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, operations) }
+      : {}),
     ...(() => {
       // External workflow inspection (#561): only a validated private UI base.
       const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
