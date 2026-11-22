@@ -42,8 +42,7 @@ const WorkerVerificationSchema = z
             requiredChange: z.string(),
           })
           .strict(),
-      )
-      .max(50),
+      ),
     attempt: z.number().int().min(0),
     maxAttempts: z.number().int().min(0),
     verifier: z
@@ -322,6 +321,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
 
       const editorial: EditorialDecisionView[] = [];
       let editorialTruncated = false;
+      let editorialIncomplete = false;
       const decisionPaths: string[] = [];
       let decisionAfter: string | undefined;
       for (let calls = 0; calls < 10; calls++) {
@@ -333,7 +333,9 @@ export function savedReviews(content: Store): ReviewHistoryPort {
             decisionAfter,
           );
         } catch {
-          // No decisions directory is simply no manual decisions.
+          // A missing directory lists as empty; an exception is a storage
+          // failure, so collected decisions are not the whole story.
+          if (calls > 0 || decisionPaths.length > 0) editorialIncomplete = true;
           break;
         }
         decisionPaths.push(...batch);
@@ -352,7 +354,8 @@ export function savedReviews(content: Store): ReviewHistoryPort {
           const view = asDecision(JSON.parse(await content.read(ref)));
           if (view) editorial.push({ ...view, path });
         } catch {
-          // An unreadable manual decision is omitted, not guessed.
+          // An unreadable manual decision is omitted, but the history says so.
+          editorialIncomplete = true;
         }
       }
       editorial.sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
@@ -365,7 +368,8 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         unreadableReports > 0 ||
         unreadableListing ||
         payloadUnreadable > 0 ||
-        editorialTruncated;
+        editorialTruncated ||
+        editorialIncomplete;
       const state =
         parsed.length === 0 ? (incomplete ? "partial" : "none") : incomplete ? "partial" : "ok";
       return {
