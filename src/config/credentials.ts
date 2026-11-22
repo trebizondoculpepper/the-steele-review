@@ -71,7 +71,7 @@ export function readCredential(
     let parsed: TomlTable;
     try {
       if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error();
-      parsed = parseToml(raw);
+      parsed = parseToml(raw, { integersAsBigInt: true });
     } catch {
       // Parser diagnostics can include file contents: never retain the cause.
       throw new CredentialError(name, "invalid");

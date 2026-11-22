@@ -27,6 +27,14 @@ afterEach(() => {
 });
 
 describe("canonical TOML credential selection", () => {
+  it("permits unrelated full-range TOML integers without weakening selected-field validation", () => {
+    const { env } = fixture(`OPENROUTER_API_KEY = '${KEY}'\nUNRELATED_ID = 9223372036854775807\n`);
+    expect(readCredential("OPENROUTER_API_KEY", { env, required: true })).toBe(KEY);
+    const selectedInteger = fixture("OPENROUTER_API_KEY = 9223372036854775807");
+    expect(() => readCredential("OPENROUTER_API_KEY", { env: selectedInteger.env })).toThrow(
+      "OPENROUTER_API_KEY: invalid",
+    );
+  });
   it("returns only the selected top-level credential without creating derived files", () => {
     const { dir, env } = fixture(`OPENROUTER_API_KEY = '${KEY}'\nOTHER_SECRET = '${OTHER}'\n`);
     const before = readdirSync(dir);
