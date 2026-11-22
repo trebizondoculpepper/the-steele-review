@@ -124,7 +124,7 @@ export function writerFormatFromEnv(
   throw new Error("STEELE_WRITER_FORMAT must be json or markdown");
 }
 
-const ModelDraftSchema = z
+export const ModelDraftSchema = z
   .object({
     title: PublicationFieldsSchema.shape.title,
     subtitle: PublicationFieldsSchema.shape.subtitle,

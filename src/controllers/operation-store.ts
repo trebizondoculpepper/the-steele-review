@@ -15,6 +15,10 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  OwnerDraftBindingSchema,
+  type OwnerDraftBinding,
+} from "../content/owner-draft-authorization.js";
 
 /**
  * SQLite operation claims and pending event records for processing stages.
@@ -894,6 +898,91 @@ export class OperationStore {
       recordedAt: value.recordedAt,
       inputHash: value.inputHash,
     };
+  }
+
+  /** Explicit operator intent, not an editorial verdict or model-controlled flag. */
+  recordOwnerDraftIntent(input: Omit<OwnerDraftBinding, "recordedAt">): OwnerDraftBinding {
+    const binding = OwnerDraftBindingSchema.parse({
+      ...input,
+      recordedAt: new Date(this.now()).toISOString(),
+    });
+    const key = `owner-draft-intent:${binding.publicationId}/${binding.postId}:${binding.requestId}`;
+    const slot = OwnerDraftBindingSchema.parse(
+      this.reconcileCompleted(`owner-draft-slot:${binding.versionIdentity}`, binding, []),
+    );
+    if (
+      slot.requestHash !== binding.requestHash ||
+      slot.requestId !== binding.requestId ||
+      slot.publicationId !== binding.publicationId ||
+      slot.postId !== binding.postId
+    )
+      throw new OperationStoreError("invalid-input");
+    const saved = OwnerDraftBindingSchema.parse(this.reconcileCompleted(key, slot, []));
+    if (
+      saved.requestHash !== binding.requestHash ||
+      saved.versionIdentity !== binding.versionIdentity
+    )
+      throw new OperationStoreError("invalid-input");
+    return saved;
+  }
+
+  ownerDraftIntent(
+    publicationId: string,
+    postId: string,
+    requestId: string,
+  ): OwnerDraftBinding | undefined {
+    const probe = OwnerDraftBindingSchema.parse({
+      publicationId,
+      postId,
+      requestId,
+      requestHash: "0".repeat(64),
+      versionIdentity: "0".repeat(64),
+      recordedAt: "2000-01-01T00:00:00.000Z",
+    });
+    const row = this.row(
+      `owner-draft-intent:${probe.publicationId}/${probe.postId}:${probe.requestId}`,
+    );
+    return row?.status === "completed"
+      ? OwnerDraftBindingSchema.parse(JSON.parse(row.artifact!))
+      : undefined;
+  }
+
+  /** The durable authorization and its pending event commit in one transaction. */
+  completeOwnerDraftAuthorization(input: {
+    binding: OwnerDraftBinding;
+    authorization: ArtifactReference;
+    event: PendingEventInput;
+  }): void {
+    const binding = OwnerDraftBindingSchema.parse(input.binding),
+      authorization = ArtifactReferenceSchema.parse(input.authorization);
+    const known = this.ownerDraftIntent(binding.publicationId, binding.postId, binding.requestId);
+    if (
+      JSON.stringify(known) !== JSON.stringify(binding) ||
+      !/^approved-[a-f0-9]{32}$/.test(input.event.eventId)
+    )
+      throw new OperationStoreError("invalid-input");
+    const value = { eventId: input.event.eventId, ownerDraft: { binding, authorization } };
+    const saved = this.reconcileCompleted(`approved:${input.event.eventId}`, value, [input.event]);
+    if (JSON.stringify(saved) !== JSON.stringify(value))
+      throw new OperationStoreError("invalid-input");
+  }
+
+  /** Consumer-side authority proof: an artifact alone cannot enable draft rehearsal. */
+  ownerDraftAuthorization(
+    eventId: string,
+  ): { binding: OwnerDraftBinding; authorization: ArtifactReference } | undefined {
+    if (!/^approved-[a-f0-9]{32}$/.test(eventId)) throw new OperationStoreError("invalid-input");
+    const row = this.row(`approved:${eventId}`);
+    if (row?.status !== "completed") return undefined;
+    return z
+      .object({
+        eventId: z.literal(eventId),
+        ownerDraft: z
+          .object({ binding: OwnerDraftBindingSchema, authorization: ArtifactReferenceSchema })
+          .strict(),
+      })
+      .strict()
+      .parse(JSON.parse(row.artifact!)).ownerDraft;
   }
 
   /** Stable explicit continuation intent, not a claim that its workflow completed. */
