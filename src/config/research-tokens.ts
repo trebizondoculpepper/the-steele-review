@@ -27,7 +27,7 @@ export function researchTokensFromConfiguration(
   return async () => {
     const env = options.env ?? process.env;
     const controller = new ConfigurationController({
-      settingsFile: env.STEELE_SETTINGS_FILE,
+      settingsFile: env.STEELE_CONFIG_PATH,
       env,
       salt: "public-research-token-setting-v1",
       registry: [RESEARCH_TOKEN_SETTING],

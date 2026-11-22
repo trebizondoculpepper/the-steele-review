@@ -84,8 +84,11 @@ export function configPage(env: NodeJS.ProcessEnv, file: Record<string, string> 
 }
 
 /** Fresh generic-handler read of the live research knob; never a credential file. */
-export async function currentConfigPage(env: NodeJS.ProcessEnv): Promise<string> {
-  const resolved = resolveSettings(env);
+export async function currentConfigPage(
+  env: NodeJS.ProcessEnv,
+  file: Record<string, string> = {},
+): Promise<string> {
+  const resolved = resolveSettings(env, file);
   const index = resolved.findIndex((r) => r.key === RESEARCH_MAX_TOKENS);
   try {
     const applied = await researchTokensFromConfiguration({ env })();
@@ -99,7 +102,7 @@ export async function currentConfigPage(env: NodeJS.ProcessEnv): Promise<string>
       key: RESEARCH_MAX_TOKENS,
       source: env[RESEARCH_MAX_TOKENS]
         ? "environment"
-        : env.STEELE_SETTINGS_FILE
+        : env.STEELE_CONFIG_PATH
           ? "file"
           : "default",
       error: "invalid",

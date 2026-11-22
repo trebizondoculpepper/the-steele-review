@@ -7,7 +7,10 @@ import { ConfigurationController } from "../../src/controllers/configuration.js"
 import { RESEARCH_MAX_TOKENS, RESEARCH_TOKEN_SETTING } from "../../src/config/settings.js";
 import { OpenRouterSonarClient } from "../../src/research/sonar.js";
 import { sonarFromEnv as subjectProvider } from "../../src/controllers/sonar.js";
-import { currentConfigPage } from "../../src/dashboard/config-view.js";
+import { currentConfigPage, renderConfigForm } from "../../src/dashboard/config-view.js";
+import { configEditAction, savedVersionOf } from "../../src/dashboard/config-edit.js";
+import { readSettingsFile, listSettingsRevisions } from "../../src/config/settings-file.js";
+import { inspectSettings, resolveSettings } from "../../src/config/settings.js";
 let dir: string, file: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "research-tokens-"));
@@ -29,7 +32,7 @@ it("resolves the same typed default, file and environment setting without cachin
     source: "default",
   });
   await writeFile(file, JSON.stringify({ [RESEARCH_MAX_TOKENS]: "12000" }));
-  const env = { STEELE_SETTINGS_FILE: file };
+  const env = { STEELE_CONFIG_PATH: file };
   const reader = researchTokensFromConfiguration({ env });
   const first = await reader();
   expect(first).toMatchObject({ maxOutputTokens: 12000, source: "file" });
@@ -48,7 +51,7 @@ it.each(["0", "32001", "1.5", "not-a-number"])(
   async (value) => {
     await writeFile(file, JSON.stringify({ [RESEARCH_MAX_TOKENS]: value }));
     await expect(
-      researchTokensFromConfiguration({ env: { STEELE_SETTINGS_FILE: file } })(),
+      researchTokensFromConfiguration({ env: { STEELE_CONFIG_PATH: file } })(),
     ).rejects.toMatchObject({ category: "invalid-setting" });
   },
 );
@@ -90,7 +93,7 @@ it("both adapters apply the next live value once per outbound request and captur
   let raw = JSON.stringify({ [RESEARCH_MAX_TOKENS]: "12000" });
   const read = vi.fn(async () => raw);
   const tokens = researchTokensFromConfiguration({
-    env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+    env: { STEELE_CONFIG_PATH: "synthetic-settings.json" },
     read,
   });
   const article = new OpenRouterSonarClient({
@@ -142,7 +145,7 @@ it("browser shows effective value and source from the generic file, never creden
     file,
     JSON.stringify({ [RESEARCH_MAX_TOKENS]: "12000", OPENROUTER_API_KEY: "SECRET-SENTINEL" }),
   );
-  const env = { STEELE_SETTINGS_FILE: file };
+  const env = { STEELE_CONFIG_PATH: file };
   const page = await currentConfigPage(env);
   expect(page).toContain(RESEARCH_MAX_TOKENS);
   expect(page).toContain("12000</td><td>configured</td><td>file");
@@ -150,4 +153,52 @@ it("browser shows effective value and source from the generic file, never creden
   expect(page).not.toContain(dir);
   await writeFile(file, JSON.stringify({ [RESEARCH_MAX_TOKENS]: "13000" }));
   expect(await currentConfigPage(env)).toContain("13000</td>");
+});
+
+it("dashboard form save changes the same adapter's next request without restart", async () => {
+  vi.stubEnv(RESEARCH_MAX_TOKENS, "");
+  await writeFile(file, JSON.stringify({ [RESEARCH_MAX_TOKENS]: "12000" }));
+  const env = { STEELE_CONFIG_PATH: file };
+  const requests: number[] = [];
+  const captures: any[] = [];
+  const client = new OpenRouterSonarClient({
+    apiKey: "synthetic-test-key",
+    model: "fixture/model",
+    timeoutMs: 1000,
+    maxOutputTokens: 4000,
+    tokens: researchTokensFromConfiguration({ env }),
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(init!.body as string).max_tokens);
+      return new Response(body);
+    },
+  });
+  const dispatch = () =>
+    client.research(
+      { system: "Synthetic prompt", user: "Synthetic data" },
+      new AbortController().signal,
+      async (value) => {
+        captures.push(value);
+      },
+    );
+  await dispatch();
+  const saved = await readSettingsFile(file);
+  const salt = "synthetic-version-salt";
+  const version = savedVersionOf(saved, salt);
+  expect(renderConfigForm(inspectSettings(resolveSettings(env, saved)), version, [])).toContain(
+    'name="k.STEELE_RESEARCH_MAX_TOKENS"',
+  );
+  const form = new URLSearchParams({
+    action: "save",
+    version,
+    "k.STEELE_RESEARCH_MAX_TOKENS": "16000",
+  });
+  const action = configEditAction({ path: file, salt });
+  expect(await action.submit(form)).toEqual({ status: 303, location: "/config" });
+  await dispatch();
+  expect(requests).toEqual([12000, 16000]);
+  expect(captures.map((x) => x.appliedTokens.maxOutputTokens)).toEqual(requests);
+  expect(captures[1].appliedTokens.source).toBe("file");
+  expect(await currentConfigPage(env, await readSettingsFile(file))).toContain("16000</td>");
+  expect((await listSettingsRevisions(file)).length).toBeGreaterThan(0);
+  expect(await action.submit(form)).toMatchObject({ status: 409, reason: "stale-version" });
 });

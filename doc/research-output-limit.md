@@ -7,7 +7,7 @@ Both article-commissioned research and local standalone subject research use it.
 Default standalone Restate submissions use the worker's same research adapter.
 
 The existing generic configuration controller reads a flat JSON settings file
-selected by the private `STEELE_SETTINGS_FILE` location pointer. Values are strings,
+selected by the private `STEELE_CONFIG_PATH` location pointer. Values are strings,
 for example `{ "STEELE_RESEARCH_MAX_TOKENS": "12000" }`. Credentials belong in
 their separate canonical credential configuration, never this setting or an audit.
 The controller's established precedence remains nonempty environment, then file,

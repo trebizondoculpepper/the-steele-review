@@ -66,7 +66,7 @@ it(
         timeoutMs: 1000,
         maxOutputTokens: 4000,
         tokens: researchTokensFromConfiguration({
-          env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+          env: { STEELE_CONFIG_PATH: "synthetic-settings.json" },
           read,
         }),
         fetch,
@@ -152,7 +152,7 @@ it.each(["configuration", "storage"] as const)(
         timeoutMs: 1000,
         maxOutputTokens: 4000,
         tokens: researchTokensFromConfiguration({
-          env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+          env: { STEELE_CONFIG_PATH: "synthetic-settings.json" },
           read: async () => raw,
         }),
         fetch,
@@ -219,7 +219,7 @@ it.each(["local", "staged"] as const)(
       );
       vi.stubGlobal("fetch", fetch);
       const tokens = researchTokensFromConfiguration({
-        env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+        env: { STEELE_CONFIG_PATH: "synthetic-settings.json" },
         read: async () => raw,
       });
       const request = {
