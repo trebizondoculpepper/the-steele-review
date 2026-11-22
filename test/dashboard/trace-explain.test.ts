@@ -112,6 +112,24 @@ describe("article trace explanation (#525)", () => {
     }
   });
 
+  it("shows the recovery's own reason and never falls back for an unreadable one", () => {
+    const failed = explainTrace({
+      ...base,
+      summary: "failed",
+      editorial: "none",
+      recovery: { summary: "failed", outcome: "failed", reason: "draft: provider-failed" },
+    });
+    expect(failed.stoppedReason).toBe("draft: provider-failed");
+    const unreadable = explainTrace({
+      ...base,
+      summary: "failed",
+      editorial: "none",
+      recovery: { summary: "unavailable" },
+    });
+    expect(unreadable.status).toMatch(/Recovery state unknown/);
+    expect(unreadable.status).not.toMatch(/^Failed/);
+  });
+
   it("escapes rendered text", () => {
     const html = renderExplanation(
       explainTrace({ ...base, summary: "failed", editorial: "none", reason: "<script>x</script>" }),

@@ -30,8 +30,10 @@ type Input = Pick<
   recoveryAvailable?: boolean;
   /** The recorded recovery run for this revision, when one was started. */
   recovery?: {
-    summary: "completed" | "failed" | "pending" | "not-started" | "unknown";
+    summary: "completed" | "failed" | "pending" | "not-started" | "unknown" | "unavailable";
     outcome?: string;
+    /** The recovery's own sanitised diagnostic, when it recorded one. */
+    reason?: string;
     verification?: { outcome: string };
   };
 };
@@ -69,10 +71,16 @@ export function explainTrace(t: Input): TraceExplanation {
         status: "Recovery is running for this revision after the original run stopped.",
         next: "Wait for the recovery to finish; completed stage results are reused.",
       };
+    if (r.summary === "unavailable" || r.summary === "unknown")
+      return {
+        status: "Recovery state unknown: the recorded recovery could not be read.",
+        next: "Retry the status check; this is not a second failure and not evidence the recovery stopped.",
+      };
     if (r.summary === "failed")
       return {
         status: "Recovery failed as well, so this revision still has no verified draft.",
-        stoppedReason: r.outcome ?? "the recovery run stopped",
+        // Prefer the recovery's own diagnostic over the coarse outcome word.
+        stoppedReason: r.reason ?? r.outcome ?? "the recovery run stopped",
         next: "Inspect both runs before attempting anything further; recovery is not re-offered automatically.",
       };
     if (r.summary === "completed") {

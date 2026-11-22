@@ -424,6 +424,7 @@ export function renderTrace(t: ArticleTrace): string {
             recovery: {
               summary: t.recovery.summary,
               ...(t.recovery.outcome ? { outcome: t.recovery.outcome } : {}),
+              ...(t.recovery.reason ? { reason: t.recovery.reason } : {}),
               ...(t.recovery.verification ? { verification: t.recovery.verification } : {}),
             },
           }
