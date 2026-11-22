@@ -423,6 +423,51 @@ describe("staged support handoff (#593)", { timeout: 60_000 }, () => {
     expect(judge.calls).toBe(before);
   });
 
+  it("never reuses a verdict made under another judge prompt", async () => {
+    const first = Object.assign(
+      judgeWith(() => [{ findingId: "", passage: "a key fact" }]),
+      {
+        identity: "support-judge-v1+sha256:aaaa",
+      },
+    );
+    const d1 = { ...deps(sonar(), fetchOk), judge: first as never };
+    await runResearch(
+      journalCtx().ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d1) },
+      request,
+      "staged",
+    );
+    const second = Object.assign(
+      judgeWith(() => []),
+      { identity: "support-judge-v2+sha256:bbbb" },
+    );
+    const d2 = { ...deps(sonar(), fetchOk), judge: second as never };
+    // A new invocation under the new prompt judges again (the old verdict is kept, not reused).
+    for (const id of await retrievalIds(
+      d2,
+      (await artifacts.lookup(
+        (await artifacts.list("research-discovery", 50)).find((p) => p.endsWith("inventory.json"))!,
+      ))!,
+    )) {
+      await supportStage(
+        d2,
+        (await artifacts.lookup(
+          (await artifacts.list("research-discovery", 50)).find(
+            (p) => p.endsWith("/result.json") && !p.includes("assembled"),
+          )!,
+        ))!,
+        (await artifacts.lookup(
+          (await artifacts.list("research-discovery", 50)).find((p) =>
+            p.endsWith("inventory.json"),
+          )!,
+        ))!,
+        id,
+      );
+    }
+    expect(second.calls).toBe(2);
+    expect(first.calls).toBe(2);
+  });
+
   it("keeps the claimant's own pages unverified and labelled", async () => {
     const judge = judgeWith(() => [{ findingId: "", passage: "a key fact" }]);
     const d = { ...deps(sonar(), fetchOk), judge: judge as never, monitoredHosts: ["ok.example"] };

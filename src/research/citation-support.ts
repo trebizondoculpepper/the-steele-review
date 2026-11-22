@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -35,6 +36,8 @@ export const CitationSupportSchema = z
     retrievalKey: z.string(),
     snapshot: Ref,
     support: z.enum(["supported", "unverified"]),
+    /** Prompt identity of the judge that produced this verdict; "none" for the host-only decision. */
+    judge: z.string().max(200),
     monitored: z.boolean(),
     sourceType: z.string().max(100).optional(),
     rationale: z.string().max(2000).optional(),
@@ -47,8 +50,13 @@ export type CitationSupport = z.infer<typeof CitationSupportSchema>;
 
 const normalise = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim();
 
-export const supportPath = (inventory: ArtifactRef, retrievalId: string) =>
-  `${inventory.path.replace(/\/inventory\.json$/, "")}/support/${retrievalId}.json`;
+/** The judge identity a verdict is keyed by; "none" when no judge is configured. */
+export const judgeIdentity = (judge?: SupportJudge) =>
+  judge?.identity ?? (judge ? "unidentified" : "none");
+
+/** One verdict per source per judge identity: a prompt change never reuses an old verdict. */
+export const supportPath = (inventory: ArtifactRef, retrievalId: string, identity: string) =>
+  `${inventory.path.replace(/\/inventory\.json$/, "")}/support/${retrievalId}/${createHash("sha256").update(identity).digest("hex").slice(0, 32)}.json`;
 
 export type SupportStep =
   | { kind: "judged"; support: CitationSupport["support"] }
@@ -67,11 +75,12 @@ export async function judgeCitationSupport(input: {
   monitoredHosts?: string[];
   signal?: AbortSignal;
 }): Promise<SupportStep> {
-  const path = supportPath(input.inventory, input.retrievalId);
+  const identity = judgeIdentity(input.judge);
+  const path = supportPath(input.inventory, input.retrievalId, identity);
   const saved = await input.artifacts.lookup(path);
   if (saved) {
     const s = CitationSupportSchema.parse(JSON.parse(await input.artifacts.read(saved)));
-    return { kind: "judged", support: s.support };
+    if (s.judge === identity) return { kind: "judged", support: s.support };
   }
   const dir = input.inventory.path.replace(/\/inventory\.json$/, "");
   const outcomeRef = await input.artifacts.lookup(`${dir}/retrievals/${input.retrievalId}.json`);
@@ -104,6 +113,7 @@ export async function judgeCitationSupport(input: {
         retrievalKey: entry.retrievalKey,
         snapshot: outcome.snapshot,
         monitored,
+        judge: identity,
         ...fields,
       }),
     );

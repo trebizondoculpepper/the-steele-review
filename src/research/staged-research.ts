@@ -25,7 +25,7 @@ import {
 import type { CommissionedJob } from "./librarian.js";
 import { RESEARCH_PROMPT_VERSION, researchPrompt } from "./runner.js";
 import type { SonarClient } from "./sonar.js";
-import { judgeCitationSupport, type SupportStep } from "./citation-support.js";
+import { judgeCitationSupport, judgeIdentity, type SupportStep } from "./citation-support.js";
 import type { SupportJudge } from "./runner.js";
 
 /**
@@ -244,6 +244,7 @@ export async function assembleStage(
     read: acceptedAssemblyReader(deps.artifacts, deps.operations),
     owner: deps.owner,
     ...(deps.now ? { now: deps.now } : {}),
+    supportIdentity: judgeIdentity(deps.judge),
   });
   const result = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(out.result)));
   // Compatible job artifacts (write-once), so the result is found by its

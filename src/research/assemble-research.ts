@@ -87,6 +87,8 @@ export async function assembleResearch(input: {
   read: AssemblyReader;
   owner: string;
   now?: () => Date;
+  /** Judge identity whose saved verdicts apply (#593); "none" when unjudged. */
+  supportIdentity?: string;
 }): Promise<AssembledResearch> {
   const dir = input.discovery.path.replace(/\/result\.json$/, "");
   const assembledDir = `${dir}/assembled`;
@@ -197,6 +199,7 @@ export async function assembleResearch(input: {
         input.inventory,
         entry.retrievalId,
         o.snapshot,
+        input.supportIdentity ?? "none",
       );
       citations.push({
         ...base,
@@ -371,13 +374,15 @@ async function readSupport(
   inventory: ArtifactRef,
   retrievalId: string,
   snapshot: { repository: string; commit: string; path: string; hash: string },
+  identity: string,
 ): Promise<CitationSupport | undefined> {
-  const ref = await artifacts.lookup(supportPath(inventory, retrievalId));
+  const ref = await artifacts.lookup(supportPath(inventory, retrievalId, identity));
   if (!ref) return undefined;
   const parsed = CitationSupportSchema.safeParse(JSON.parse(await artifacts.read(ref)));
   if (!parsed.success) return undefined;
   const s = parsed.data;
   return s.retrievalId === retrievalId &&
+    s.judge === identity &&
     s.snapshot.repository === snapshot.repository &&
     s.snapshot.commit === snapshot.commit &&
     s.snapshot.path === snapshot.path &&
