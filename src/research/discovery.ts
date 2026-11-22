@@ -178,16 +178,40 @@ function interpretDiscovery(
 }
 
 /** Hash-verified, identity-bound reader for subsequent research stages; never interprets legacy report-only jobs as complete discovery. */
-export async function readResearchDiscovery(
+export function readResearchDiscovery(
   artifacts: GitArtifactStore,
   reference: ArtifactRef,
   acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
+) {
+  return readDiscovery(artifacts, reference, acceptance, false);
+}
+
+/** Explicit rescue reader: a retained length-limited report remains incomplete research. */
+export function readLengthLimitedResearchDiscovery(
+  artifacts: GitArtifactStore,
+  reference: ArtifactRef,
+  acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
+) {
+  return readDiscovery(artifacts, reference, acceptance, true);
+}
+
+async function readDiscovery(
+  artifacts: GitArtifactStore,
+  reference: ArtifactRef,
+  acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
+  lengthLimited: boolean,
 ) {
   try {
     const result = DiscoveryResultSchema.parse(JSON.parse(await artifacts.read(reference)));
     if (!acceptance.researchDiscoveryAccepted(result.discoveryId, ref(reference)))
       throw new ResearchDiscoveryError("quarantined");
-    if (result.outcome !== "captured")
+    if (
+      lengthLimited
+        ? result.outcome !== "invalid" ||
+          result.validation !== "length-limit" ||
+          result.completion !== "length-limit"
+        : result.outcome !== "captured"
+    )
       throw new ResearchDiscoveryError(
         result.outcome === "quarantined" ? "quarantined" : "invalid-report",
       );
@@ -224,7 +248,8 @@ export async function readResearchDiscovery(
       throw new ResearchDiscoveryError("archive-failed");
     const parsed = interpretDiscovery(returned, await artifacts.read(fromRef(returned.body)));
     if (
-      parsed.validation !== "valid" ||
+      parsed.validation !== (lengthLimited ? "length-limit" : "valid") ||
+      returned.transport !== "complete" ||
       !parsed.data ||
       result.validation !== parsed.validation ||
       result.completion !== parsed.completion
