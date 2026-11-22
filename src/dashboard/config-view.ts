@@ -28,6 +28,34 @@ function valueCell(setting: InspectedSetting): string {
   return setting.value === undefined ? "(not shown)" : esc(String(setting.value));
 }
 
+/**
+ * Editable form over public settings only (#545).
+ *
+ * The saved version travels with the form, so a submission made against a
+ * stale page is refused rather than applied over someone else's change.
+ */
+export function renderConfigForm(
+  inspected: readonly InspectedSetting[],
+  version: string,
+  revisions: readonly string[] = [],
+): string {
+  const editable = inspected.filter((s) => s.sensitivity === "public");
+  const inputs = editable
+    .map(
+      (s) =>
+        `<tr><td><label for="k-${esc(s.key)}">${esc(s.key)}</label></td><td>${esc(s.description)}</td><td><input id="k-${esc(s.key)}" name="k.${esc(s.key)}" value="${esc(
+          s.value === undefined ? "" : String(s.value),
+        )}" maxlength="10000"></td></tr>`,
+    )
+    .join("");
+  const history = revisions.length
+    ? `<h2>Restore a saved revision</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="restore"><input type="hidden" name="version" value="${esc(version)}"><label>Revision <select name="restoreVersion">${revisions
+        .map((r) => `<option value="${esc(r)}">${esc(r)}</option>`)
+        .join("")}</select></label> <button>Restore</button></form>`
+    : "";
+  return `<h2>Edit public settings</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="save"><input type="hidden" name="version" value="${esc(version)}"><div class="wrap"><table><thead><tr><th>Setting</th><th>Description</th><th>Value</th></tr></thead><tbody>${inputs}</tbody></table></div><p>Other settings are managed outside the console and cannot be edited here. Saving changes the desired configuration only; services keep their running values until #546 applies them.</p><button>Save</button></form>${history}`;
+}
+
 export function renderConfig(inspected: readonly InspectedSetting[]): string {
   // The dashboard only observes its own process environment and files. Other
   // services can receive different values, so the page says whose view this is
