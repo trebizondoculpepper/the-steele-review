@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
+import type { DiscoveryCapture, PartialDiscoveryBody } from "./discovery-data.js";
 import {
   DEFAULT_RESEARCH_MODEL,
   ResearchModelSchema,
@@ -35,7 +37,17 @@ export interface SonarReport {
 
 export interface SonarClient {
   readonly model: string;
-  research(prompt: { system: string; user: string }, signal: AbortSignal): Promise<SonarReport>;
+  readonly settings?: { model: string; timeoutMs: number; maxOutputTokens: number };
+  readonly discoveryParameters?: {
+    timeoutMs: number;
+    maxOutputTokens: number;
+    maxResponseBytes: number;
+  };
+  research(
+    prompt: { system: string; user: string },
+    signal: AbortSignal,
+    capture?: DiscoveryCapture,
+  ): Promise<SonarReport>;
 }
 
 export interface OpenRouterSonarConfig {
@@ -52,29 +64,6 @@ export interface OpenRouterSonarConfig {
 const Limits = z.object({
   timeoutMs: z.number().int().min(1_000).max(900_000),
   maxOutputTokens: z.number().int().min(1).max(32_000),
-});
-
-const ResponseSchema = z.object({
-  model: z.string().optional(),
-  citations: z.array(z.string()).optional(),
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-          annotations: z
-            .array(
-              z.looseObject({
-                type: z.string().optional(),
-                url_citation: z.looseObject({ url: z.string() }).optional(),
-              }),
-            )
-            .optional(),
-        }),
-      }),
-    )
-    .min(1),
-  usage: z.object({ cost: z.number().optional() }).optional(),
 });
 
 /** http(s) citation URLs in first-seen order, without duplicates. */
@@ -125,9 +114,14 @@ export class OpenRouterSonarClient implements SonarClient {
     return { model: this.model, ...this.limits };
   }
 
+  get discoveryParameters() {
+    return { ...this.limits, maxResponseBytes: this.config.maxResponseBytes ?? 4 * 1024 * 1024 };
+  }
+
   async research(
     prompt: { system: string; user: string },
     signal: AbortSignal,
+    capture?: DiscoveryCapture,
   ): Promise<SonarReport> {
     const timeout = AbortSignal.timeout(this.limits.timeoutMs);
     const combined = AbortSignal.any([signal, timeout]);
@@ -164,53 +158,81 @@ export class OpenRouterSonarClient implements SonarClient {
       await response.body?.cancel().catch(() => undefined);
       throw new ModelProviderError(codeForStatus(response.status), response.status);
     }
-    let text: string;
+    let bytes: Buffer;
+    let partial: PartialDiscoveryBody | undefined;
     try {
-      text = await readBounded(response, this.config.maxResponseBytes ?? 4 * 1024 * 1024);
+      bytes = await readBounded(
+        response,
+        this.config.maxResponseBytes ?? 4 * 1024 * 1024,
+        (value) => {
+          partial = value;
+        },
+      );
     } catch (error) {
+      if (partial) await capture?.(partial);
       if (error instanceof ModelProviderError) throw error;
       throw failed();
     }
-    let parsed: z.infer<typeof ResponseSchema>;
-    try {
-      parsed = ResponseSchema.parse(JSON.parse(text));
-    } catch {
-      throw new ModelProviderError("bad-response");
-    }
-    const message = parsed.choices[0].message;
-    const report = message.content ?? "";
-    if (report.trim().length === 0) throw new ModelProviderError("bad-response");
-    const annotated = (message.annotations ?? []).flatMap((a) =>
-      a.url_citation ? [a.url_citation.url] : [],
+    await capture?.({
+      representation: "provider-json",
+      body: bytes.toString("base64"),
+      encoding: "base64",
+      transport: "complete",
+    });
+    const replay = replaySonarDiscovery(bytes.toString("utf8"), this.model);
+    if (replay.validation !== "valid" || !replay.data) throw new ModelProviderError("bad-response");
+    const parsed = replay.data;
+    const report = parsed.report;
+    const all = citationUrls(
+      [...parsed.citations, ...parsed.annotationUrls],
+      Number.MAX_SAFE_INTEGER,
     );
-    const all = citationUrls([...(parsed.citations ?? []), ...annotated], Number.MAX_SAFE_INTEGER);
     const kept = all.slice(0, 500);
     return {
       report,
       citations: kept,
       ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
       model: parsed.model ?? this.model,
-      ...(parsed.usage?.cost !== undefined ? { costUsd: parsed.usage.cost } : {}),
+      ...(parsed.usage?.costUsd !== undefined ? { costUsd: parsed.usage.costUsd } : {}),
     };
   }
 }
 
-async function readBounded(response: Response, maxBytes: number): Promise<string> {
+async function readBounded(
+  response: Response,
+  maxBytes: number,
+  onPartial: (value: PartialDiscoveryBody) => void,
+): Promise<Buffer> {
   const reader = response.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return Buffer.alloc(0);
   const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new ModelProviderError("response-too-large");
+  let total = 0,
+    limited = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+      if (total > maxBytes) {
+        limited = true;
+        await reader.cancel().catch(() => undefined);
+        throw new ModelProviderError("response-too-large");
+      }
     }
-    chunks.push(value);
+  } catch (error) {
+    if (total)
+      onPartial({
+        representation: "provider-json",
+        body: Buffer.concat(chunks).subarray(0, maxBytes).toString("base64"),
+        encoding: "base64",
+        transport: limited ? "resource-limit" : "incomplete",
+      });
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 /**

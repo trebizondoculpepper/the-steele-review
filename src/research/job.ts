@@ -136,6 +136,7 @@ export const ResearchManifestSchema = z
     schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
     jobId: JobId,
     report: Ref,
+    discovery: Ref.optional(),
     coveringNote: Ref.optional(),
     citations: z.array(CitationRecordSchema).max(500),
     gaps: z.array(z.string().min(1).max(2000)).max(100),

@@ -1,3 +1,7 @@
+import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
+import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
+import { discoveryFromAdapterReport } from "./discovery-data.js";
+import { citationUrls } from "./sonar.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
@@ -66,6 +70,9 @@ const SavedReportSchema = z
     // No per-URL cap: the Sonar client and manifest keep long citation URLs; the report size bound applies.
     citations: z.array(z.string().min(1)).max(MAX_SAVED_CITATIONS),
     omittedCitations: z.number().int().min(0).optional(),
+    discovery: ArtifactReferenceSchema.optional(),
+    costUsd: z.number().nonnegative().optional(),
+    discoveryCompleteness: z.enum(["provider-original", "adapter-return-only"]).optional(),
   })
   .strict();
 
@@ -260,6 +267,9 @@ export async function runResearchJob(input: {
   // saved by an attempt that later stopped for lack of credit is reused, so a
   // recovery neither pays for the report again nor diverges from the pinned one.
   let report: Awaited<ReturnType<SonarClient["research"]>>;
+  let discoveryRef: ArtifactRef | undefined;
+  let discoveryCompleteness: "provider-original" | "adapter-return-only" | undefined;
+  let legacyDiscovery = false;
   const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
   if (savedReport) {
     const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
@@ -272,16 +282,66 @@ export async function runResearchJob(input: {
     if (!saved.success || saved.data.jobId !== jobId || !knownPrompt) {
       return fail("invalid-report");
     }
+    legacyDiscovery = !saved.data.discovery;
+    if (saved.data.discovery)
+      discoveryRef = { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) };
+    discoveryCompleteness = saved.data.discoveryCompleteness;
     report = {
       model: saved.data.model,
       report: saved.data.report,
       citations: saved.data.citations,
+      ...(saved.data.costUsd === undefined ? {} : { costUsd: saved.data.costUsd }),
       ...(saved.data.omittedCitations ? { omittedCitations: saved.data.omittedCitations } : {}),
     } as typeof report;
   } else {
     try {
-      report = await input.sonar.research(researchPrompt(request), signal);
+      const captured = await captureResearchDiscovery({
+        artifacts: input.artifacts,
+        operations: input.operations,
+        request,
+        owner: input.owner,
+        processor: {
+          version: "research-discovery-v1",
+          model: input.sonar.model,
+          promptVersion: RESEARCH_PROMPT_VERSION,
+          parameters:
+            input.sonar.discoveryParameters ??
+            (input.sonar.settings
+              ? {
+                  timeoutMs: input.sonar.settings.timeoutMs,
+                  maxOutputTokens: input.sonar.settings.maxOutputTokens,
+                }
+              : {}),
+        },
+        invoke: async (capture) =>
+          discoveryFromAdapterReport(
+            await input.sonar.research(researchPrompt(request), signal, capture),
+          ),
+        now,
+      });
+      discoveryRef = captured.ref;
+      discoveryCompleteness = captured.data.citationProvenance;
+      const all = citationUrls(
+          [...captured.data.citations, ...captured.data.annotationUrls],
+          Number.MAX_SAFE_INTEGER,
+        ),
+        kept = all.slice(0, 500);
+      report = {
+        report: captured.data.report,
+        model: captured.data.model,
+        citations: kept,
+        ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
+        ...(captured.data.usage?.costUsd === undefined
+          ? {}
+          : { costUsd: captured.data.usage.costUsd }),
+      };
     } catch (error) {
+      if (error instanceof ResearchDiscoveryError && error.code === "busy") {
+        input.operations.yieldClaim(opened.claim);
+        return { status: "busy", jobId };
+      }
+      if (error instanceof ResearchDiscoveryError && error.code === "invalid-report")
+        return fail("invalid-report");
       if (error instanceof ModelProviderError && error.code === "timeout") return fail("timeout");
       if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
         return creditBlocked();
@@ -296,6 +356,18 @@ export async function runResearchJob(input: {
     model: report.model,
     report: report.report,
     citations: report.citations,
+    ...(discoveryRef
+      ? {
+          discovery: {
+            repository: discoveryRef.repository,
+            commit: discoveryRef.commit,
+            path: discoveryRef.path,
+            hash: `sha256:${discoveryRef.sha256}`,
+          },
+        }
+      : {}),
+    ...(discoveryCompleteness ? { discoveryCompleteness } : {}),
+    ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
     ...(report.omittedCitations ? { omittedCitations: report.omittedCitations } : {}),
   });
 
@@ -309,7 +381,11 @@ export async function runResearchJob(input: {
   const findings = findingsFor(request);
   const findingIds = new Set(findings.map((f) => f.id));
   const citations: ResearchManifest["citations"] = [];
-  const gaps: string[] = [];
+  const gaps: string[] = legacyDiscovery
+    ? [
+        "Legacy report-only discovery lacks the original provider citation envelope and available usage metadata; it has not been reconstructed.",
+      ]
+    : [];
   const monitored = (url: string) => {
     const host = new URL(url).hostname.toLowerCase();
     return (input.monitoredHosts ?? []).some(
