@@ -225,7 +225,6 @@ export async function judgeAssessment(input: {
           JSON.stringify(assessment.sourceContext ?? null) ||
         item.body.repository !== assessment.body.repository ||
         item.body.path !== assessment.body.path ||
-        payload.mode !== "structured" ||
         !sameArtifact(payload.body, item.body) ||
         !sameArtifact(payload.metadata, item.metadata)
       )

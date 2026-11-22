@@ -1,3 +1,4 @@
+import { commitArticleRevision } from "../../src/drafting/article-revisions.js";
 import type { JudgmentHistory } from "../../src/content/judgment-history.js";
 import { editorialAttemptIdentity } from "../../src/workflow/editorial-attempt-identity.js";
 import { OperationStoreError } from "../../src/controllers/operation-store.js";
@@ -42,10 +43,13 @@ async function seeded(
     assessor?: () => Promise<string>;
     writer?: (request: any) => Promise<string>;
     judge?: (request: { system: string; user: string }) => Promise<string>;
+    legacy?: boolean;
   } = {},
 ) {
   const report = PackageVerificationReportSchema.parse(
-    JSON.parse(await content.read(await approvedReport(content))),
+    JSON.parse(
+      await content.read(await approvedReport(content, "approved", options.legacy ?? false)),
+    ),
   );
   if (report.schemaVersion !== 2) throw new Error("legacy");
   const stages = editorialStages({
@@ -62,7 +66,19 @@ async function seeded(
       complete: options.writer ?? (async () => WRITER),
     },
   });
-  const version = await stages.prepare(artifactRef(report.draft), artifactRef(report.package));
+  let draft = artifactRef(report.draft);
+  if (options.legacy) {
+    const { payload } = await readPublicationPayload(content, report.publication);
+    const committed = await commitArticleRevision({
+      content,
+      article: { publicationId: "pub", postId: "p1" },
+      generation: { draft, metadata: artifactRef(payload.metadata) },
+      base: "current",
+    });
+    if (committed.status === "conflict") throw new Error("fixture legacy conflict");
+    draft = committed.body;
+  }
+  const version = await stages.prepare(draft, artifactRef(report.package));
   return { stages, version, pkg: artifactRef(report.package) };
 }
 describe("typed editorial stages and judgment-backed delivery", { timeout: 60000 }, () => {
@@ -338,6 +354,48 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
       expect(judge).toHaveBeenCalledTimes(2);
     },
   );
+  it("accepts exact legacy body-only history after a structured revision", async () => {
+    let calls = 0;
+    const judge = vi.fn(async (request: any) => {
+      const u = JSON.parse(request.user);
+      if (++calls === 1) {
+        expect(u.publication.mode).toBe("legacy-body-only");
+        return "## Reasons\nA material correction.\n## Required corrections\nCorrect the summary.\n## Accepted minor observations\nNone.\nDECISION: REVISE";
+      }
+      expect(u.publication.mode).toBe("structured");
+      expect(u.priorJudgmentGuidance).toHaveLength(1);
+      return APPROVE;
+    });
+    const f = await seeded({ judge, legacy: true });
+    const a = await f.stages.assess(f.version, f.pkg, "legacy-history-assessment-0"),
+      j = await f.stages.judge(a.ref, "legacy-history-judge-0");
+    const first = JSON.parse(await content.read(j.ref));
+    expect((await readPublicationPayload(content, first.publication)).payload.mode).toBe(
+      "legacy-body-only",
+    );
+    const revised = await f.stages.revise(
+      f.version,
+      f.pkg,
+      j.ref,
+      1,
+      "https://pub.example.com/p/p1",
+    );
+    if (!revised.version) throw new Error("revision failed");
+    expect(JSON.parse(await content.read(revised.version.metadata))).toHaveProperty("fields");
+    const current = await f.stages.assess(revised.version, f.pkg, "legacy-history-assessment-1");
+    const history = [
+      {
+        judgment: artifactReference(j.ref),
+        assessment: artifactReference(a.ref),
+        body: artifactReference(f.version.draft),
+        metadata: artifactReference(f.version.metadata),
+      },
+    ];
+    expect(
+      await f.stages.judge(current.ref, "legacy-history-judge-1", undefined, history),
+    ).toMatchObject({ decision: "approve", state: "decided" });
+    expect(judge).toHaveBeenCalledTimes(2);
+  });
   it("preserves absent-history reuse and captures a valid five-round history without overflowing context bounds", async () => {
     const reviseDoc =
       "## Reasons\nA material correction is requested.\n## Required corrections\nCorrect the summary.\n## Accepted minor observations\nNone.\nDECISION: REVISE";
