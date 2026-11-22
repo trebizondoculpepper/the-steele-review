@@ -8,7 +8,7 @@ import {
   NON_BLOCKING_PACKAGE,
 } from "../workflow/research-execution.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
-import { recordArticleAttempt } from "../workflow/article-attempt.js";
+import { recordArticleAttempt, liveEditorialInput } from "../workflow/article-attempt.js";
 import { OperationStore } from "../controllers/operation-store.js";
 /**
  * Start one unattended article run for a captured post (#243).
@@ -200,7 +200,11 @@ async function main(): Promise<number> {
           }),
         });
       }
-      const recorded = recordArticleAttempt(operations, input, values["request-id"]);
+      const recorded = recordArticleAttempt(
+        operations,
+        liveEditorialInput(input),
+        values["request-id"],
+      );
       key = recorded.identity.workflowKey;
       input = recorded.input as typeof input;
     } catch {

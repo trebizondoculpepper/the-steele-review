@@ -52,7 +52,7 @@ export function renderConfigForm(
         .map((r) => `<option value="${esc(r)}">${esc(r)}</option>`)
         .join("")}</select></label> <button>Restore</button></form>`
     : "";
-  return `<h2>Edit public settings</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="save"><input type="hidden" name="version" value="${esc(version)}"><div class="wrap"><table><thead><tr><th>Setting</th><th>Description</th><th>Value</th></tr></thead><tbody>${inputs}</tbody></table></div><p>Other settings are managed outside the console and cannot be edited here. Saving changes the desired configuration only; services keep their running values until #546 applies them.</p><button>Save</button></form>${history}`;
+  return `<h2>Edit public settings</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="save"><input type="hidden" name="version" value="${esc(version)}"><div class="wrap"><table><thead><tr><th>Setting</th><th>Description</th><th>Value</th></tr></thead><tbody>${inputs}</tbody></table></div><p>Other settings are managed outside the console and cannot be edited here. Live settings apply at the next supported decision or request. Settings marked restart require their owning service to reload.</p><button>Save</button></form>${history}`;
 }
 
 export function renderConfig(inspected: readonly InspectedSetting[]): string {

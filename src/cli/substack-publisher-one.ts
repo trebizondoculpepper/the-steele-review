@@ -1,3 +1,4 @@
+import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configuration.js";
 /** Explicit one-event draft delivery; never enables the continuous publisher. */
 import { parseArgs } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -70,10 +71,12 @@ async function main() {
     const connection = natsConnection();
     const session = async () => (await readFile(c.STEELE_SUBSTACK_SESSION_FILE, "utf8")).trim();
     if (!(await session())) throw new Error();
+    const deliveryControl = draftDeliveryConfiguration().control;
     const destination = new SubstackDraftDestination(
       new SubstackClient({ origin: c.STEELE_SUBSTACK_ORIGIN, session }),
       {
         name: c.STEELE_PUBLISHER_DESTINATION,
+        deliveryControl,
         ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
       },
     );
@@ -91,6 +94,7 @@ async function main() {
       content,
       operations,
       destination,
+      deliveryControl,
       owner: `selected-publisher:${process.pid}`,
       delayMs: c.STEELE_PUBLISHER_DELAY_MS,
       retryDelayMs: c.STEELE_PUBLISHER_RETRY_DELAY_MS,

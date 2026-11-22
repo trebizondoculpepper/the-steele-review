@@ -1,3 +1,4 @@
+import type { DraftTarget } from "../content/owner-draft-authorization.js";
 import type { EditorialPolicyObservation } from "../config/editorial-live-policy.js";
 import { isEditorialStorageFailure } from "../drafting/editorial-provider.js";
 import {
@@ -32,8 +33,10 @@ export async function runEditorialLoop(input: {
   /** Only a serialized new workflow contract supplies these ports. */
   livePolicy?: {
     read(): Promise<EditorialPolicyObservation>;
+    targets?(): Promise<DraftTarget[] | undefined>;
     authorize(input: {
       version: { draft: Ref; metadata: Ref };
+      initial: { draft: Ref; metadata: Ref };
       assessment: Ref;
       judgment: Ref;
       assessments: Ref[];
@@ -41,6 +44,7 @@ export async function runEditorialLoop(input: {
       revisions: { draft: Ref; metadata: Ref }[];
       mechanicalRuns: Ref[];
       policy: EditorialPolicyObservation;
+      destinations?: DraftTarget[];
     }): Promise<{ eventId: string }>;
   };
   draft: Ref;
@@ -197,9 +201,13 @@ export async function runEditorialLoop(input: {
         policy.onExhausted === "create-unpublished-draft" &&
         (judgment.decision === "approve" || exhausted)
       ) {
+        const destinations = input.livePolicy.targets
+          ? await input.step("editorial-draft-targets", input.livePolicy.targets)
+          : undefined;
         const authorized = await input.step("editorial-authorize-draft", () =>
           input.livePolicy!.authorize({
             version,
+            initial,
             assessment: assessment.ref,
             judgment: judgment.ref,
             assessments,
@@ -207,6 +215,7 @@ export async function runEditorialLoop(input: {
             revisions,
             mechanicalRuns,
             policy: appliedPolicy!,
+            ...(destinations ? { destinations } : {}),
           }),
         );
         draftAuthorizationEvent = authorized.eventId;
@@ -240,7 +249,8 @@ export async function runEditorialLoop(input: {
         ),
       );
       if (revised.mechanicalRun) mechanicalRuns.push(revised.mechanicalRun);
-      if (input.lineage) retainedWriterAttempts.push(...(revised.retainedAttempts ?? []));
+      if (input.lineage || input.livePolicy)
+        retainedWriterAttempts.push(...(revised.retainedAttempts ?? []));
       diagnostics.push(...(revised.diagnostics ?? []));
       if (!revised.version) {
         terminal = "operational-stop";
@@ -273,7 +283,7 @@ export async function runEditorialLoop(input: {
     revisions,
     mechanicalRuns,
     diagnostics,
-    ...(input.lineage ? { retainedWriterAttempts, revisionAttempts } : {}),
+    ...(input.lineage || input.livePolicy ? { retainedWriterAttempts, revisionAttempts } : {}),
     ...(input.initialAssessment ? { reusedAssessments, retainedControlArtifacts } : {}),
     ...(input.livePolicy
       ? { policyObservations, ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}) }
@@ -302,3 +312,7 @@ export async function runEditorialLoop(input: {
     ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}),
   };
 }
+
+export type LiveEditorialPolicyPort = NonNullable<
+  Parameters<typeof runEditorialLoop>[0]["livePolicy"]
+>;

@@ -1,3 +1,4 @@
+import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configuration.js";
 /**
  * Dummy publisher consumer (#315).
  *
@@ -87,6 +88,7 @@ async function main(): Promise<number> {
       stream: c.STEELE_PUBLICATION_STREAM,
       consumer: c.STEELE_PUBLISHER_CONSUMER,
       destination,
+      deliveryControl: draftDeliveryConfiguration().control,
       content,
       operations,
       owner,

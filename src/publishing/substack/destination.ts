@@ -13,7 +13,12 @@ import {
 import type { ArticleApprovedData } from "../../events/article-approved-event.js";
 import type { PublicationPayload } from "../../drafting/publication-payload.js";
 import type { DraftTarget } from "../../content/owner-draft-authorization.js";
-import { SubstackError, type SubstackClient, type SubstackDraft } from "./client.js";
+import {
+  SubstackError,
+  substackDraftOriginIdentity,
+  type SubstackClient,
+  type SubstackDraft,
+} from "./client.js";
 import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
 
 /**
@@ -78,6 +83,32 @@ function receiptFor(
     ...(ownerDraft
       ? { draftSafety: { unpublished: true as const, emailTimestampAbsent: true as const } }
       : {}),
+  };
+}
+
+/** Pure protocol-adapter target projection. No publishing credentials are read. */
+export function substackDraftTarget(input: {
+  origin: string;
+  name: string;
+  bylineId?: string;
+}): DraftTarget {
+  if (input.bylineId !== undefined && !BylineId.safeParse(input.bylineId).success)
+    throw new Error("substack: invalid draft target");
+  return {
+    name: input.name,
+    provider: "substack",
+    action: "draft",
+    capability: "unpublished-no-email-v1",
+    identity: `sha256:${createHash("sha256")
+      .update(
+        JSON.stringify([
+          "substack-owner-draft-v1",
+          substackDraftOriginIdentity(input.origin),
+          input.name,
+          input.bylineId ?? null,
+        ]),
+      )
+      .digest("hex")}`,
   };
 }
 

@@ -46,3 +46,9 @@ export function recordArticleAttempt(
   });
   return { identity, input: valid };
 }
+
+/** New normal operator attempts opt into live decisions; historical recorded inputs remain unchanged. */
+export function liveEditorialInput(input: ArticleRunInput): ArticleRunInput {
+  const { editorial: _historicalPolicy, ...rest } = input;
+  return ArticleRunInputSchema.parse({ ...rest, editorialExecution: "live-policy-v1" });
+}

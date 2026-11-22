@@ -16,7 +16,7 @@ import {
 import { escapeHtml, type DashboardView } from "./server.js";
 import { randomUUID } from "node:crypto";
 import type { OperationStore } from "../controllers/operation-store.js";
-import { recordArticleAttempt } from "../workflow/article-attempt.js";
+import { recordArticleAttempt, liveEditorialInput } from "../workflow/article-attempt.js";
 import type { RunStatusPort } from "./articles.js";
 
 /** A one-time submission token carried by the confirm form (#749). */
@@ -193,7 +193,7 @@ export function articleTrigger(deps: {
         if (!deps.attempts || !token) return { status: 409 };
         let recorded;
         try {
-          recorded = recordArticleAttempt(deps.attempts, input, token);
+          recorded = recordArticleAttempt(deps.attempts, liveEditorialInput(input), token);
         } catch {
           return { status: 409 };
         }
@@ -208,9 +208,12 @@ export function articleTrigger(deps: {
           // bound to this token first when attempts are recorded.
           if (deps.attempts) {
             if (!token) return { status: 409 };
-            if (!bindRun(deps.attempts, token, articleRunKey(input))) return done;
+            const recorded = recordArticleAttempt(deps.attempts, liveEditorialInput(input), token);
+            if (!bindRun(deps.attempts, token, recorded.identity.workflowKey)) return done;
+            await deps.submitter.submit(recorded.input, recorded.identity.workflowKey);
+          } else {
+            await deps.submitter.submit(input);
           }
-          await deps.submitter.submit(input);
         } else if (deps.attempts) {
           // A recorded attempt whose submission never reached the engine:
           // submit that same attempt again (its recorded input must match).
