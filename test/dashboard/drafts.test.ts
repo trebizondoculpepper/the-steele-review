@@ -222,22 +222,82 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     const body = `First paragraph <b>bold</b>.\n\nSecond paragraph ${long}`;
     const withFields = await saveDraft("p6", body, "A <i>careful</i> title");
     const legacy = await saveDraft("p7", "Legacy body only.");
-    const [, view] = draftViews(draftInventory(content));
+    const [, view, source] = draftViews(draftInventory(content));
     const html = await view!.render(
       new URL(`http://x/drafts/view?path=${encodeURIComponent(withFields.metadata)}`),
     );
     expect(html).toContain("A &lt;i&gt;careful&lt;/i&gt; title");
     expect(html).toMatch(/<dt>Subtitle<\/dt><dd><span class="draft-text">s<\/span>/);
     expect(html).toMatch(/<dt>Excerpt<\/dt><dd><span class="draft-text">e<\/span>/);
-    expect(html).toContain(
+    // Reading view: prose paragraphs, not the escaped source block (#772).
+    expect(html).toMatch(/<p>First paragraph &lt;b&gt;bold&lt;\/b&gt;\.<\/p>/);
+    expect(html).toContain("Second paragraph");
+    expect(html).toContain('href="/drafts/source?path=');
+    expect(html).not.toContain('<pre class="draft-text">First paragraph');
+    // The exact source view keeps the original bytes, wrapped only by CSS.
+    const exact = await source!.render(
+      new URL(`http://x/drafts/source?path=${encodeURIComponent(withFields.metadata)}`),
+    );
+    expect(exact).toContain(
       '<pre class="draft-text">First paragraph &lt;b&gt;bold&lt;/b&gt;.\n\nSecond paragraph',
     );
-    expect(html).toContain(long); // exact stored text, wrapped by CSS only
+    expect(exact).toContain(long);
     expect(html).toContain("No payload-aware verification is bound to these fields");
     const old = await view!.render(
       new URL(`http://x/drafts/view?path=${encodeURIComponent(legacy.metadata)}`),
     );
     expect(old.match(/not saved \(this draft predates generated fields\)/g)).toHaveLength(3);
+  });
+
+  it("defaults the draft to a reading view with a separate exact source (#772)", async () => {
+    const body = [
+      "## What happened",
+      "",
+      "The **first** paragraph cites a [report](https://example.test/report).",
+      "",
+      "- one point",
+      "- another point",
+      "",
+      "> A quoted claim.",
+    ].join("\n");
+    const draft = await saveDraft("p8", body, "A readable title", {
+      subtitle: "A readable subtitle",
+      excerpt: "A readable excerpt",
+    });
+    const legacy = await saveDraft("p9", "Old body without generated fields.");
+    const [, view, source] = draftViews(draftInventory(content));
+    const html = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(draft.metadata)}`),
+    );
+    // Distinct title, subtitle and excerpt, then rendered prose.
+    expect(html).toMatch(/<h1>A readable title<\/h1>/);
+    expect(html).toContain('<p class="reading-subtitle">A readable subtitle</p>');
+    expect(html).toContain('<p class="reading-excerpt">A readable excerpt</p>');
+    expect(html).toContain("<h2>What happened</h2>");
+    expect(html).toContain("<strong>first</strong>");
+    expect(html).toContain(
+      '<a href="https://example.test/report" rel="noopener noreferrer" target="_blank">report</a>',
+    );
+    expect(html).toContain("<ul><li>one point</li><li>another point</li></ul>");
+    expect(html).toContain("<blockquote><p>A quoted claim.</p></blockquote>");
+    // No visible source delimiters in the reading view.
+    expect(html).not.toContain("**first**");
+    expect(html).not.toContain("## What happened");
+    // The exact source is a separate, clearly labelled view.
+    expect(html).toContain("View exact saved source");
+    const exact = await source!.render(
+      new URL(`http://x/drafts/source?path=${encodeURIComponent(draft.metadata)}`),
+    );
+    expect(exact).toContain("Exact saved source");
+    expect(exact).toContain('<pre class="draft-text">');
+    expect(exact).toContain("The **first** paragraph cites a [report]");
+    expect(exact).toContain("&gt; A quoted claim.");
+    // An old draft with no generated fields still reads.
+    const old = await view!.render(
+      new URL(`http://x/drafts/view?path=${encodeURIComponent(legacy.metadata)}`),
+    );
+    expect(old).toContain("<h1>Untitled draft</h1>");
+    expect(old).toContain("<p>Old body without generated fields.</p>");
   });
 
   it("wraps draft text and long tokens within the viewport", async () => {
@@ -374,7 +434,7 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     // The older version keeps its own approval; it does not carry over.
     expect(history?.versions[0]!.entry.status).toBe("approved");
 
-    const [, , articleView] = draftViews(inventory);
+    const [, , , articleView] = draftViews(inventory);
     const html = await articleView!.render(
       new URL(
         `http://x/drafts/article?${new URLSearchParams({ publication: "pub", post: "p1", id })}`,

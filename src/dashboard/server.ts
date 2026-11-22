@@ -88,6 +88,16 @@ code { font-size: 0.85em; word-break: break-all; }
 .s-verified { color: #2e8540; } .s-rejected { color: #c0392b; font-weight: 600; } .s-not-reached, .s-not-started, .s-unknown { color: var(--muted); }
 .warning { border: 1px solid #c0392b; border-left-width: 4px; padding: 0.5rem 0.75rem; }
 .s-credit-exhausted { color: #c0392b; font-weight: 600; }
+/* Draft reading view (#772): typographic prose, bounded measure, narrow-safe. */
+.reading { max-width: 68ch; line-height: 1.6; }
+.reading h1 { margin: 0.2em 0 0.4em; line-height: 1.25; }
+.reading-subtitle { color: var(--muted); font-size: 1.1em; margin: 0 0 0.2em; }
+.reading-excerpt { font-style: italic; border-left: 3px solid var(--muted); padding-left: 0.75rem; }
+.reading p, .reading li { margin: 0.6em 0; overflow-wrap: anywhere; }
+.reading blockquote { margin: 0.8em 0; padding-left: 0.9rem; border-left: 3px solid var(--muted); color: var(--muted); }
+.reading ul, .reading ol { padding-left: 1.5rem; }
+.reading pre.draft-code { background: rgba(127, 127, 127, 0.12); padding: 0.6rem 0.8rem; overflow-x: auto; }
+.reading .draft-image { color: var(--muted); font-style: italic; }
 /* Saved draft text: wrap within the viewport without changing the stored text (#469). */
 .draft-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
 pre.draft-text { font: inherit; margin: 0; }
