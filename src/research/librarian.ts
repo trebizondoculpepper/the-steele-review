@@ -751,7 +751,11 @@ export async function assessPostCoverage(input: {
       mappings[mappings.length - 1]!.mappingRef = toRef(recorded.ref);
       // A concurrent assessment may have stored a different winner. It is
       // authoritative: this mapping must not diverge from it.
-      if (winner.canonicalThemeId !== dossierId && established.has(winner.canonicalThemeId)) {
+      if (
+        winner.status !== "unresolved" &&
+        winner.canonicalThemeId !== dossierId &&
+        established.has(winner.canonicalThemeId)
+      ) {
         const saved = mappings[mappings.length - 1]!;
         saved.dossierId = winner.canonicalThemeId;
         saved.method = "catalogue";

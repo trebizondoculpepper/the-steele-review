@@ -181,9 +181,18 @@ describe("mapping corrections as file revisions (#518)", () => {
       correctedAt: "2026-03-01T00:00:00.000Z",
     });
     expect(await catalogue.lookup({ proposal: decided.proposal })).toBeUndefined();
-    // Recording again cannot silently overwrite the unresolved file.
-    const again = await catalogue.record({ ...decided, canonicalThemeId: "anything" });
-    expect(again.status).toBe("unresolved");
+    // A fresh accepted decision resolves it, as a revision of the same file.
+    const resolved = await catalogue.recordPinned({
+      ...decided,
+      canonicalThemeId: "weather-control",
+    });
+    expect(resolved.mapping.status).toBeUndefined();
+    expect(resolved.ref.path).toBe(first.ref.path);
+    expect((await catalogue.lookup({ proposal: decided.proposal }))?.canonicalThemeId).toBe(
+      "weather-control",
+    );
+    // The earlier versions stay readable by their pins.
+    expect((await catalogue.pinned(first.ref)).canonicalThemeId).toBe("geoengineering");
   });
 
   it("records decision method and source provenance", async () => {

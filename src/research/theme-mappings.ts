@@ -201,19 +201,28 @@ export class ThemeMappingCatalogue {
       ...mapping,
     });
     const path = themeMappingPath(payload);
-    const existing = await this.at(path);
-    if (existing) return existing;
-    try {
-      // `null`: create only if absent, so a concurrent winner is never overwritten.
-      const ref = await this.artifacts.revise(path, serialise(payload), null);
-      return { mapping: payload, ref };
-    } catch (error) {
-      if (error instanceof ArtifactStoreError && error.code === "stale-revision") {
-        const winner = await this.at(path);
-        if (winner) return winner;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = await this.at(path);
+      // A resolved decision is authoritative and never overwritten here.
+      if (existing && existing.mapping.status !== "unresolved") return existing;
+      try {
+        // Create only if absent; an unresolved mapping is resolved by this
+        // fresh accepted decision as a revision checked against its version.
+        const ref = await this.artifacts.revise(
+          path,
+          serialise(payload),
+          existing ? existing.ref.sha256 : null,
+        );
+        return { mapping: payload, ref };
+      } catch (error) {
+        // Someone else changed the file first: re-read and decide again.
+        if (error instanceof ArtifactStoreError && error.code === "stale-revision") continue;
+        throw error;
       }
-      throw error;
     }
+    const winner = await this.at(path);
+    if (winner && winner.mapping.status !== "unresolved") return winner;
+    throw new Error("theme mapping: could not record a decision");
   }
 
   /**
