@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 /**
  * Minimal Substack editor client (#385; design in doc/architecture/06).
@@ -49,6 +50,7 @@ export const DraftSchema = z.looseObject({
   draft_title: z.string().nullable().optional(),
   draft_body: z.string().nullable().optional(),
   is_published: z.boolean().optional(),
+  email_sent_at: z.string().nullable().optional(),
   draft_created_at: z.string().nullable().optional(),
   /** Bylines the editor reports for the draft, when it reports any. */
   draft_bylines: z
@@ -68,6 +70,8 @@ export interface NewDraft {
 }
 
 export class SubstackClient {
+  /** Opaque publication binding for draft-only authorizations; never exposes the origin. */
+  readonly draftTargetIdentity: string;
   private readonly origin: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -78,6 +82,9 @@ export class SubstackClient {
       throw new Error("substack origin must be a bare https origin");
     }
     this.origin = url.origin;
+    this.draftTargetIdentity = `sha256:${createHash("sha256")
+      .update(JSON.stringify(["substack-draft-origin-v1", this.origin]))
+      .digest("hex")}`;
     this.timeoutMs = config.timeoutMs ?? 20_000;
     this.fetchImpl = config.fetch ?? fetch;
   }

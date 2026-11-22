@@ -20,7 +20,9 @@ import {
   readApprovalEvidence,
   ApprovalEvidenceError,
   type ApprovalKind,
+  type ApprovalEvidence,
 } from "./approval-evidence.js";
+import { DraftTargetSchema, type DraftTarget } from "../content/owner-draft-authorization.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
   ArticleApprovedDataSchema,
@@ -91,26 +93,39 @@ export async function recordApproval(input: {
   kind?: ApprovalKind;
   now?: () => Date;
 }): Promise<{ eventId: string; data: ArticleApprovedData }> {
-  const evidence = await readApprovalEvidence(input.content, input.report, input.kind);
-  const draft = fromRef(evidence.body);
-  const eventId = approvedArticleEventId(draft, input.report);
+  const evidence = await readApprovalEvidence(
+    input.content,
+    input.report,
+    input.kind,
+    input.operations,
+  );
+  const { eventId, data, event } = approvalEventFor(evidence, input.report);
+  input.operations.reconcileCompleted(`approved:${eventId}`, { eventId }, [
+    { eventId, subject: ARTICLE_APPROVED_SUBJECT, payload: JSON.stringify(event.toJSON()) },
+  ]);
+  return { eventId, data };
+}
+
+/** Shared pure envelope construction; authorization is checked by the caller. */
+export function approvalEventFor(evidence: ApprovalEvidence, report: ArtifactRef) {
+  const eventId = approvedArticleEventId(fromRef(evidence.body), report);
   const data: ArticleApprovedData = {
     publicationId: evidence.post.publicationId,
     postId: evidence.post.postId,
     draft: evidence.body,
-    approval: toRef(input.report),
+    approval: toRef(report),
     ...(evidence.publication ? { publication: evidence.publication } : {}),
-    ...(evidence.kind === "editorial-judgment"
+    ...(evidence.kind !== "combined-verification"
       ? { approvalKind: evidence.kind, assessment: evidence.assessment }
+      : {}),
+    ...(evidence.authorizationOutcome
+      ? { authorizationOutcome: evidence.authorizationOutcome, draftTargets: evidence.draftTargets }
       : {}),
     package: evidence.package,
     approvedAt: evidence.approvedAt,
   };
   const event = createArticleApprovedEvent(data, eventId);
-  input.operations.reconcileCompleted(`approved:${eventId}`, { eventId }, [
-    { eventId, subject: ARTICLE_APPROVED_SUBJECT, payload: JSON.stringify(event.toJSON()) },
-  ]);
-  return { eventId, data };
+  return { eventId, data, event };
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +138,7 @@ export interface DestinationPreview {
   contentType: string;
   /** Exact saved payload, retained by simulated previews; live adapters map approved fields explicitly. */
   publication?: PublicationPayload;
+  draftAuthorization?: DraftTarget;
 }
 
 export const DeliveryReceiptSchema = z
@@ -137,7 +153,15 @@ export const DeliveryReceiptSchema = z
       .optional(),
     /** Manifest actually used for this delivery; retained unchanged on identical-content reuse. */
     publication: ArtifactReferenceSchema.optional(),
-    approvalKind: z.enum(["combined-verification", "editorial-judgment"]).optional(),
+    approvalKind: z
+      .enum(["combined-verification", "editorial-judgment", "owner-draft-rehearsal"])
+      .optional(),
+    authorizationOutcome: z.literal("owner-authorized-draft").optional(),
+    draftTarget: DraftTargetSchema.optional(),
+    draftSafety: z
+      .object({ unpublished: z.literal(true), emailTimestampAbsent: z.literal(true) })
+      .strict()
+      .optional(),
     approval: ArtifactReferenceSchema.optional(),
     assessment: ArtifactReferenceSchema.optional(),
     draftHash: z
@@ -166,7 +190,7 @@ export class UncertainDeliveryError extends Error {
  */
 export class DestinationUnavailableError extends Error {
   constructor(
-    readonly reason: "auth-expired" | "rate-limited" | "unavailable",
+    readonly reason: "auth-expired" | "rate-limited" | "unavailable" | "paused",
     readonly retryAfterMs: number,
   ) {
     super(`destination unavailable: ${reason}`);
@@ -189,6 +213,8 @@ export interface ReconcileContext {
 export interface DestinationAdapter {
   readonly name: string;
   readonly action: string;
+  /** Absent by default. Only a narrowly implemented draft-only adapter opts in. */
+  readonly draftTarget?: DraftTarget;
   /** Opt in only when render consumes the exact structured fields without substitutions. */
   readonly supportsPublicationPayload?: boolean;
   render(article: {
@@ -215,6 +241,14 @@ export interface DestinationSchedule {
   delayMs: number;
 }
 
+/** Fresh configuration-handler decision; no configuration is copied or cached here.
+ * The handler must check current stop/action policy AND the target's current
+ * identity/capability, so a stale adapter cannot approve its own old snapshot.
+ */
+export interface DraftDeliveryControl {
+  allow(target: DraftTarget): Promise<boolean>;
+}
+
 export type DeliveryDecision =
   | { action: "ack"; outcome: "delivered" | "reused"; receipt: ArtifactRef }
   | {
@@ -222,6 +256,7 @@ export type DeliveryDecision =
       delayMs: number;
       reason:
         | "unsupported-payload"
+        | "paused"
         | "scheduled"
         | "busy"
         | "retry"
@@ -242,18 +277,23 @@ const SavedPreviewSchema = z.looseObject({
   body: z.string().max(2_000_000),
   contentType: z.string().min(1).max(200),
   publication: PublicationPayloadSchema.optional(),
+  draftAuthorization: DraftTargetSchema.optional(),
 });
 
 export async function readApprovedContent(
   content: Pick<GitArtifactStore, "read">,
   article: ArticleApprovedData,
+  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
 ) {
   const evidence = await readApprovalEvidence(
     content,
     fromRef(article.approval),
     article.approvalKind,
+    operations,
   );
   if (
+    evidence.authorizationOutcome !== article.authorizationOutcome ||
+    JSON.stringify(evidence.draftTargets) !== JSON.stringify(article.draftTargets) ||
     evidence.post.publicationId !== article.publicationId ||
     evidence.post.postId !== article.postId ||
     !sameArtifact(evidence.body, article.draft) ||
@@ -269,6 +309,65 @@ export async function readApprovedContent(
   return { markdown: evidence.markdown, publication: evidence.payload };
 }
 
+/** Checked before receipt reuse, original-intent replay, reconciliation and creation. */
+export function assertDraftAuthorizationTarget(
+  article: ArticleApprovedData,
+  destination: Pick<DestinationAdapter, "name" | "action" | "draftTarget">,
+): DraftTarget | undefined {
+  if (article.approvalKind !== "owner-draft-rehearsal") return undefined;
+  const actual = DraftTargetSchema.safeParse(destination.draftTarget);
+  if (
+    !actual.success ||
+    destination.action !== "draft" ||
+    actual.data.name !== destination.name ||
+    !article.draftTargets?.some((t) => JSON.stringify(t) === JSON.stringify(actual.data))
+  )
+    throw new ApprovalError("draft authorization target mismatch");
+  return actual.data;
+}
+
+export function dummyDraftTarget(name: string): DraftTarget | undefined {
+  return ["dummy-a", "dummy-b"].includes(name)
+    ? {
+        name,
+        provider: "dummy",
+        action: "draft",
+        capability: "unpublished-no-email-v1",
+        identity: `sha256:${createHash("sha256")
+          .update(JSON.stringify(["dummy-draft-v1", name]))
+          .digest("hex")}`,
+      }
+    : undefined;
+}
+
+function ownerReceiptMatches(
+  receipt: DeliveryReceipt,
+  article: ArticleApprovedData,
+  destination: Pick<DestinationAdapter, "name" | "action" | "draftTarget">,
+): boolean {
+  if (article.approvalKind !== "owner-draft-rehearsal") return true;
+  const target = assertDraftAuthorizationTarget(article, destination);
+  return (
+    receipt.destination === destination.name &&
+    receipt.action === destination.action &&
+    receipt.approvalKind === "owner-draft-rehearsal" &&
+    receipt.authorizationOutcome === "owner-authorized-draft" &&
+    !!receipt.approval &&
+    sameArtifact(receipt.approval, article.approval) &&
+    !!receipt.assessment &&
+    !!article.assessment &&
+    sameArtifact(receipt.assessment, article.assessment) &&
+    !!receipt.publication &&
+    !!article.publication &&
+    sameArtifact(receipt.publication, article.publication) &&
+    JSON.stringify(receipt.draftTarget) === JSON.stringify(target) &&
+    (target?.provider !== "substack" ||
+      (receipt.simulated === false &&
+        receipt.draftSafety?.unpublished === true &&
+        receipt.draftSafety.emailTimestampAbsent === true))
+  );
+}
+
 function deliveryDirectory(
   article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
   destination: Pick<DestinationAdapter, "name" | "action">,
@@ -282,8 +381,11 @@ function deliveryDirectory(
 export async function readDummyDeliveryProof(
   content: Pick<GitArtifactStore, "lookup" | "read">,
   article: ArticleApprovedData,
+  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
 ): Promise<{ a: ArtifactRef; b: ArtifactRef } | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
+  if (approved.approvalKind === "owner-draft-rehearsal")
+    await readApprovedContent(content, approved, operations);
   const payload = approved.publication
     ? (await readPublicationPayload(content, approved.publication)).payload
     : undefined;
@@ -304,7 +406,12 @@ export async function readDummyDeliveryProof(
       receipt.destination !== name ||
       receipt.action !== "draft" ||
       receipt.draftHash !== approved.draft.hash ||
-      receipt.publicationHash !== publicationHash
+      receipt.publicationHash !== publicationHash ||
+      !ownerReceiptMatches(receipt, approved, {
+        name,
+        action: "draft",
+        draftTarget: dummyDraftTarget(name),
+      })
     ) {
       throw new ApprovalError("dummy receipt does not prove the approved draft");
     }
@@ -318,11 +425,13 @@ export async function readDummyDeliveryProof(
 export async function readDestinationDeliveryProof(
   content: Pick<GitArtifactStore, "lookup" | "read">,
   article: ArticleApprovedData,
-  destination: Pick<DestinationAdapter, "name" | "action">,
+  destination: Pick<DestinationAdapter, "name" | "action" | "draftTarget">,
   expectedSimulated?: boolean,
+  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
 ): Promise<ArtifactRef | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
-  const checked = await readApprovedContent(content, approved);
+  const checked = await readApprovedContent(content, approved, operations);
+  assertDraftAuthorizationTarget(approved, destination);
   const publicationHash =
     checked.publication?.mode === "structured" ? checked.publication.contentHash : undefined;
   const ref = await content.lookup(
@@ -336,7 +445,8 @@ export async function readDestinationDeliveryProof(
     (expectedSimulated !== undefined && receipt.simulated !== expectedSimulated) ||
     receipt.draftHash !== approved.draft.hash ||
     receipt.publicationHash !== publicationHash ||
-    (publicationHash !== undefined && !receipt.publication)
+    (publicationHash !== undefined && !receipt.publication) ||
+    !ownerReceiptMatches(receipt, approved, destination)
   )
     throw new ApprovalError("receipt does not prove the selected publication");
   return ref;
@@ -349,6 +459,7 @@ export async function handleApprovedArticle(input: {
   schedule: DestinationSchedule;
   content: GitArtifactStore;
   operations: OperationStore;
+  deliveryControl?: DraftDeliveryControl;
   owner: string;
   now?: () => Date;
   retryDelayMs?: number;
@@ -385,7 +496,10 @@ async function deliverApprovedArticle(
   let markdown: string;
   let publication: PublicationPayload | undefined;
   try {
-    const checked = await readApprovedContent(input.content, event);
+    const checked = await readApprovedContent(input.content, event, input.operations);
+    const target = assertDraftAuthorizationTarget(event, input.destination);
+    if (target && !(await input.deliveryControl?.allow(target)))
+      return { action: "nak", reason: "paused", delayMs: input.retryDelayMs ?? 30_000 };
     markdown = checked.markdown;
     publication = checked.publication;
   } catch (error) {
@@ -421,7 +535,8 @@ async function deliverApprovedArticle(
     if (
       receipt.publicationHash !== publicationHash ||
       receipt.draftHash !== event.draft.hash ||
-      (publicationHash !== undefined && receipt.publication === undefined)
+      (publicationHash !== undefined && receipt.publication === undefined) ||
+      !ownerReceiptMatches(receipt, event, destination)
     )
       return { action: "term", reason: "approval-mismatch" };
     input.operations.reconcileCompleted(
@@ -436,7 +551,14 @@ async function deliverApprovedArticle(
   const claim = input.operations.claim(key, input.owner, 10 * 60_000, 5);
   if (claim.kind === "completed") {
     const saved = await input.content.lookup(`${dir}/receipt.json`);
-    if (saved) return { action: "ack", outcome: "reused", receipt: saved };
+    if (saved) {
+      if (event.approvalKind === "owner-draft-rehearsal") {
+        const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(saved)));
+        if (!ownerReceiptMatches(receipt, event, destination))
+          return { action: "term", reason: "approval-mismatch" };
+      }
+      return { action: "ack", outcome: "reused", receipt: saved };
+    }
   }
   if (claim.kind === "busy") return { action: "nak", delayMs: 5_000, reason: "busy" };
   if (claim.kind === "exhausted") return { action: "term", reason: "exhausted" };
@@ -444,6 +566,17 @@ async function deliverApprovedArticle(
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
   try {
+    const requireLive = async (article: ArticleApprovedData) => {
+      const target = assertDraftAuthorizationTarget(article, destination);
+      if (!target) return;
+      let allowed: boolean | undefined;
+      try {
+        allowed = await input.deliveryControl?.allow(target);
+      } catch {
+        throw new DestinationUnavailableError("unavailable", input.retryDelayMs ?? 30_000);
+      }
+      if (!allowed) throw new DestinationUnavailableError("paused", input.retryDelayMs ?? 30_000);
+    };
     const holdUncertain = (): DeliveryDecision => {
       input.operations.yieldClaim(claim.claim);
       return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
@@ -460,6 +593,9 @@ async function deliverApprovedArticle(
       draft: event.draft,
       approval: event.approval,
       ...(event.approvalKind ? { approvalKind: event.approvalKind } : {}),
+      ...(event.authorizationOutcome
+        ? { authorizationOutcome: event.authorizationOutcome, draftTargets: event.draftTargets }
+        : {}),
       ...(event.assessment ? { assessment: event.assessment } : {}),
       package: event.package,
       approvedAt: event.approvedAt,
@@ -478,7 +614,14 @@ async function deliverApprovedArticle(
     let deliveryMarkdown = markdown;
     let deliveryPublication = publication;
     if (intent.article) {
-      const original = await readApprovedContent(input.content, intent.article);
+      const original = await readApprovedContent(input.content, intent.article, input.operations);
+      assertDraftAuthorizationTarget(intent.article, destination);
+      if (
+        event.approvalKind === "owner-draft-rehearsal" &&
+        (!sameArtifact(intent.article.approval, event.approval) ||
+          intent.article.approvalKind !== event.approvalKind)
+      )
+        return holdUncertain();
       const originalHash =
         original.publication?.mode === "structured"
           ? original.publication.contentHash
@@ -519,6 +662,12 @@ async function deliverApprovedArticle(
       ));
     const preview = SavedPreviewSchema.parse(JSON.parse(await input.content.read(previewRef)));
     if (
+      deliveryArticle.approvalKind === "owner-draft-rehearsal" &&
+      JSON.stringify(preview.draftAuthorization) !==
+        JSON.stringify(assertDraftAuthorizationTarget(deliveryArticle, destination))
+    )
+      return holdUncertain();
+    if (
       preview.publication &&
       (!deliveryArticle.publication ||
         publicationManifestHash(preview.publication) !== deliveryArticle.publication.hash)
@@ -528,6 +677,7 @@ async function deliverApprovedArticle(
     // A previous or concurrently retained intent may have acted already. Its
     // original preview and timestamp, not the newer event's, drive reconciliation.
     if (priorIntent || rawIntent !== candidate || uncertain) {
+      await requireLive(deliveryArticle);
       const r = await destination.reconcile(key, {
         preview,
         ...(intent.at ? { intentAt: intent.at } : {}),
@@ -539,6 +689,7 @@ async function deliverApprovedArticle(
       if (r.delivered) delivered = r.delivered;
     }
     if (!delivered) {
+      await requireLive(deliveryArticle);
       input.operations.renew(claim.claim, 10 * 60_000);
       delivered = await destination.deliver(preview, key);
     }
@@ -546,11 +697,17 @@ async function deliverApprovedArticle(
       destination: destination.name,
       action: destination.action,
       ...delivered,
-      ...(deliveryArticle.approvalKind === "editorial-judgment"
+      ...(deliveryArticle.approvalKind && deliveryArticle.approvalKind !== "combined-verification"
         ? {
             approvalKind: deliveryArticle.approvalKind,
             approval: deliveryArticle.approval,
             assessment: deliveryArticle.assessment,
+          }
+        : {}),
+      ...(deliveryArticle.authorizationOutcome
+        ? {
+            authorizationOutcome: deliveryArticle.authorizationOutcome,
+            draftTarget: assertDraftAuthorizationTarget(deliveryArticle, destination),
           }
         : {}),
       draftHash: deliveryArticle.draft.hash,
@@ -588,6 +745,9 @@ export class SimulatedDestination implements DestinationAdapter {
   readonly supportsPublicationPayload = true;
   readonly deliveries: string[] = [];
   private failures: number;
+  get draftTarget(): DraftTarget | undefined {
+    return this.action === "draft" ? dummyDraftTarget(this.name) : undefined;
+  }
   constructor(
     readonly name: string,
     readonly action: string,
@@ -609,6 +769,9 @@ export class SimulatedDestination implements DestinationAdapter {
       body: `<!-- ${this.name} preview for ${data.publicationId}/${data.postId} -->\n${markdown}`,
       contentType: "text/markdown",
       ...(publication ? { publication } : {}),
+      ...(data.approvalKind === "owner-draft-rehearsal"
+        ? { draftAuthorization: assertDraftAuthorizationTarget(data, this) }
+        : {}),
     };
   }
   async deliver(_preview: DestinationPreview, key: string) {

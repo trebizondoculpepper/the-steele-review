@@ -34,6 +34,8 @@ Return bounded operational status without private endpoints or credentials. Clie
 
 Publish only the exact article version that passed verification. Preserve evidence provenance, safe retry behaviour, and reconciliation of uncertain publication outcomes. Never let untrusted input bypass verification or directly invoke the publisher.
 
+Explicit owner-authorized draft rehearsals are a separate, limited exception: one mechanically valid revision may be delivered as an **unpublished editable draft without subscriber email**, while its unresolved editorial findings and REVISE verdicts remain intact. A Git-backed exact-version owner authorization and matching typed durable operator binding are required; it is never a factual approval or a model-controlled switch. Only the two designated dummy destinations and one pinned Substack draft target may consume that authority. Destination capabilities, target identity and safe readback are checked independently of cached receipts and retries. Public publication and email actions must refuse it; ordinary automatic/public publication still requires exact-version verification.
+
 ## Review and incident handling
 
 Any concrete configuration leak or violation of these principles is a blocking review finding, even when tests pass. Findings identify the location and exposure category without quoting sensitive values. Reviewers must inspect relevant generated outputs and packaging behaviour, not only source text.

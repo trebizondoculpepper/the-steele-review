@@ -10,23 +10,33 @@ One approved article feeds any number of independent destinations (#262). Live d
 
 Registered in `src/events/registry.ts` under the messaging standard (`doc/architecture/20-messaging-contract.md`, #273). The runtime schema is `ArticleApprovedDataSchema` in `src/events/article-approved-event.ts`; a test checks that this table lists exactly its fields.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `publicationId` | slug | Publication of the source post. |
-| `postId` | slug | Source post within that publication. |
-| `draft` | artifact reference | The exact approved Markdown draft revision (repository, commit, path, `sha256:` hash). |
-| `approval` | artifact reference | The package verification report that approved exactly that draft. |
-| `approvalKind` | optional enum: `combined-verification` or `editorial-judgment` | Which boundary approved the draft. Absent only on legacy combined-verifier events. |
-| `assessment` | optional artifact reference | The saved assessor record when approval came from an editorial judgment; never a fabricated combined-verification report. |
-| `publication` | optional artifact reference | Exact versioned metadata/body payload for v2 verification; absent only on legacy body-only approvals. |
-| `package` | artifact reference | The evidence (writer) package the draft was written from. |
-| `approvedAt` | ISO 8601 date-time | The verifier's `verifiedAt`: when the approving verification ran, not when the event was recorded. It is fixed by the report, so re-recording the same approval yields the same event. Destination schedules count from it. |
+| Field                  | Type                                                                                     | Meaning                                                                                                                                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `publicationId`        | slug                                                                                     | Publication of the source post.                                                                                                                                                                                             |
+| `postId`               | slug                                                                                     | Source post within that publication.                                                                                                                                                                                        |
+| `draft`                | artifact reference                                                                       | The exact approved Markdown draft revision (repository, commit, path, `sha256:` hash).                                                                                                                                      |
+| `approval`             | artifact reference                                                                       | The package verification report that approved exactly that draft.                                                                                                                                                           |
+| `approvalKind`         | optional enum: `combined-verification`, `editorial-judgment`, or `owner-draft-rehearsal` | Exact-version authority; the owner kind is draft-only and never asserts factual approval. Absent only on legacy combined-verifier events.                                                                                   |
+| `authorizationOutcome` | V2 literal `owner-authorized-draft`                                                      | Honest owner rehearsal outcome; absent from all V1 verification events.                                                                                                                                                     |
+| `draftTargets`         | V2 ordered tuple                                                                         | Exactly dummy-a, dummy-b, then one Substack draft target; each pins an opaque identity and unpublished/no-email capability.                                                                                                 |
+| `assessment`           | optional artifact reference                                                              | The saved assessor record when approval came from an editorial judgment; never a fabricated combined-verification report.                                                                                                   |
+| `publication`          | optional artifact reference                                                              | Exact versioned metadata/body payload for v2 verification; absent only on legacy body-only approvals.                                                                                                                       |
+| `package`              | artifact reference                                                                       | The evidence (writer) package the draft was written from.                                                                                                                                                                   |
+| `approvedAt`           | ISO 8601 date-time                                                                       | The verifier's `verifiedAt`: when the approving verification ran, not when the event was recorded. It is fixed by the report, so re-recording the same approval yields the same event. Destination schedules count from it. |
 
 **Envelope:** CloudEvents 1.0; type `org.steele.article.approved.v1`; dataschema `urn:steele:schema:article-approved:v1`; source `urn:steele:publishing:approval`; subject `article/<publicationId>/<postId>`, which consumers check against the data; `time` equals `approvedAt`.
+
+Owner rehearsals use a separate V2 envelope: type `org.steele.article.draft-authorized.v2`, dataschema `urn:steele:schema:article-draft-authorized:v2`, source `urn:steele:publishing:owner-draft`. The existing publication subject/stream is unchanged. The legacy `approvedAt` field means the explicit authorization time in V2, not verification. Both data schemas export from the runtime definitions; a V2 authority cannot be inserted into a V1 envelope. Deploy V2-capable dummy-a, dummy-b and the selected one-event operator before emitting V2; continuous real publishing remains off. Older V1-only consumers must not receive this new mode as though it were a legacy approval.
 
 **Identity:** the event ID is `approvedArticleEventId(draft, approval)`, a hash of the exact draft and approval references. A different draft revision or a different approving report is a different event; the same pair is always the same event, and JetStream deduplicates it.
 
 **Emission condition:** only `recordApproval`, and only when the report's outcome is `approved`, its draft reference matches, and `approvalValidFor` confirms the approval covers the stored draft bytes. A rejected or unresolved verification emits nothing. The event goes into the outbox in the same step as the approval record.
+
+For the explicit V2 exception, `authorizeOwnerDraftRehearsal` independently validates the exact retained one-revision result, mechanical record, accepted writer bytes, metadata, package and complete assessment/judgment chain. Its operator request acknowledges remaining findings. It never calls a model or changes a REVISE record. A typed state binding rejects changed-input retries and competing requests for the same version; authorization completion and pending event are atomic. Delivery re-reads that durable authority and pins the same discriminator into intent, preview and receipt. Missing authority, substituted target scope and incompatible/public/email actions fail closed, including receipt reuse and original-intent reconciliation. The resulting status is owner-authorized draft delivery, not verified.
+
+V2 delivery also requires a live `DraftDeliveryControl` from the configuration handler. Every decision must compare the current stop/action policy and current target identity/capability with the pinned target; an adapter's old snapshot cannot approve itself. Missing/false control holds the event without spending delivery attempts. The shared consumer checks before cached receipts and again before reconciliation/creation; the Substack adapter independently re-reads after access preflight immediately before creating. No configuration or credential snapshot is added. Config-driven composition is separate workflow integration (#734/#735); until wired, the standalone selected operator and dummy services fail closed for V2. The ordinary V1 path retains its existing default.
+
+The Git/role composition and NATS tests are explicit integration fixtures, not fast unit tests. Run them deliberately with `npx vp test run integration/draft-rehearsal.test.ts integration/owner-draft-authorization.test.ts`; the NATS fixture additionally needs the test container runtime. Repository-wide slow-test selection is tracked separately in #720; this change does not alter CI/toolchain configuration.
 
 **Replay guarantees:** recording again is a no-op with the same ID. Consumers re-read the draft and report by reference (hash-verified) and re-check the approval before acting, so a stale or tampered event is terminated rather than delivered. The original post URL is not part of this event; it belongs to the pinned writer package (#276).
 
@@ -48,12 +58,12 @@ Adapters implement `DestinationAdapter`: `render` (own format and capabilities),
 `dispatchApprovedArticles` (`src/publishing/approval-dispatch.ts`) is the one path from a recorded approval to the publisher stream. It publishes every due `steele.v1.article.approved` outbox event from the state controller with its event ID as the JetStream message ID, marks it sent, and leaves a failed publish pending with the same ID for a later retry. Destinations consume only the stream. A production entry point (a periodic dispatch beside the article worker) belongs to #244.
 
 `test/workflow/two-sources-two-publishers.test.ts` proves the whole chain against real NATS and Restate containers with deterministic models:
+
 - a Substack source and a non-Substack fixture source each emit one captured-content event;
 - the bridge submits both to `ArticleRun`, and both drafts are verified;
 - the dispatcher publishes both approvals;
 - two independent simulated destinations each save a receipt per approved revision, one of them after a failed first attempt;
 - replaying a captured event and an approval event creates no new draft or delivery.
-
 
 ## Exact publication payloads (#457)
 
