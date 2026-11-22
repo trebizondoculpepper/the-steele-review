@@ -116,13 +116,16 @@ export async function assertEditorialBaseCurrent(
  * A later workflow must recheck the canonical base before its first revision;
  * revision commits retain their existing compare-and-swap conflict protection.
  */
-export async function readEditorialContinuation(input: {
-  request: unknown;
-  content: Pick<GitArtifactStore, "read" | "lookup" | "lookupAt">;
-  archive: Pick<GitArtifactStore, "read" | "lookup">;
-  operations: Pick<OperationStore, "articleAttempt">;
-  sourceMetadata?: ParsedSourceMetadata;
-}) {
+async function readSeed(
+  input: {
+    request: unknown;
+    content: Pick<GitArtifactStore, "read" | "lookup" | "lookupAt">;
+    archive: Pick<GitArtifactStore, "read" | "lookup">;
+    operations: Pick<OperationStore, "articleAttempt">;
+    sourceMetadata?: ParsedSourceMetadata;
+  },
+  currentBase: boolean,
+) {
   const parsed = EditorialContinuationInputSchema.safeParse(input.request);
   if (!parsed.success) throw new EditorialContinuationError("invalid-input");
   const request = parsed.data;
@@ -325,10 +328,11 @@ export async function readEditorialContinuation(input: {
       if (i === versions.length - 1)
         requireMatch(equal(judgment.publication, request.publication), "version-mismatch");
     }
-    await assertEditorialBaseCurrent(input.content, {
-      body: request.body,
-      metadata: request.metadata,
-    });
+    if (currentBase)
+      await assertEditorialBaseCurrent(input.content, {
+        body: request.body,
+        metadata: request.metadata,
+      });
     return {
       version: request.version,
       request,
@@ -369,4 +373,10 @@ export async function readEditorialContinuation(input: {
     throw error;
   }
 }
+/** Execution seed: validates the archived chain and requires that selected base is current. */
+export const readEditorialContinuation = (input: Parameters<typeof readSeed>[0]) =>
+  readSeed(input, true);
+/** Archived audit only. Never authorizes a new edit; a child must separately prove its own current base. */
+export const readEditorialContinuationHistory = (input: Parameters<typeof readSeed>[0]) =>
+  readSeed(input, false);
 export type ValidatedEditorialContinuation = Awaited<ReturnType<typeof readEditorialContinuation>>;
