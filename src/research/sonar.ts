@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
 import type { DiscoveryCapture, PartialDiscoveryBody } from "./discovery-data.js";
 import {
   DEFAULT_RESEARCH_MODEL,
@@ -63,36 +64,6 @@ export interface OpenRouterSonarConfig {
 const Limits = z.object({
   timeoutMs: z.number().int().min(1_000).max(900_000),
   maxOutputTokens: z.number().int().min(1).max(32_000),
-});
-
-const ResponseSchema = z.object({
-  model: z.string().optional(),
-  citations: z.array(z.string()).optional(),
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().nullable().optional(),
-          annotations: z
-            .array(
-              z.looseObject({
-                type: z.string().optional(),
-                url_citation: z.looseObject({ url: z.string() }).optional(),
-              }),
-            )
-            .optional(),
-        }),
-      }),
-    )
-    .min(1),
-  usage: z
-    .object({
-      cost: z.number().nonnegative().optional(),
-      prompt_tokens: z.number().int().nonnegative().optional(),
-      completion_tokens: z.number().int().nonnegative().optional(),
-      total_tokens: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
 });
 
 /** http(s) citation URLs in first-seen order, without duplicates. */
@@ -208,33 +179,21 @@ export class OpenRouterSonarClient implements SonarClient {
       encoding: "base64",
       transport: "complete",
     });
-    const text = bytes.toString("utf8");
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      throw new ModelProviderError("bad-response");
-    }
-    let parsed: z.infer<typeof ResponseSchema>;
-    try {
-      parsed = ResponseSchema.parse(payload);
-    } catch {
-      throw new ModelProviderError("bad-response");
-    }
-    const message = parsed.choices[0].message;
-    const report = message.content ?? "";
-    const annotated = (message.annotations ?? []).flatMap((a) =>
-      a.url_citation ? [a.url_citation.url] : [],
+    const replay = replaySonarDiscovery(bytes.toString("utf8"), this.model);
+    if (replay.validation !== "valid" || !replay.data) throw new ModelProviderError("bad-response");
+    const parsed = replay.data;
+    const report = parsed.report;
+    const all = citationUrls(
+      [...parsed.citations, ...parsed.annotationUrls],
+      Number.MAX_SAFE_INTEGER,
     );
-    if (report.trim().length === 0) throw new ModelProviderError("bad-response");
-    const all = citationUrls([...(parsed.citations ?? []), ...annotated], Number.MAX_SAFE_INTEGER);
     const kept = all.slice(0, 500);
     return {
       report,
       citations: kept,
       ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
       model: parsed.model ?? this.model,
-      ...(parsed.usage?.cost !== undefined ? { costUsd: parsed.usage.cost } : {}),
+      ...(parsed.usage?.costUsd !== undefined ? { costUsd: parsed.usage.costUsd } : {}),
     };
   }
 }

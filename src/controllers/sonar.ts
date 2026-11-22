@@ -1,36 +1,10 @@
-import { z } from "zod";
+import { replaySonarDiscovery } from "./sonar-discovery-replay.js";
 import type { DiscoveryProcessor } from "../research/discovery.js";
 import type { DiscoveryCapture, PartialDiscoveryBody } from "../research/discovery-data.js";
 import { ResearchModelSchema } from "../config/research-model.js";
 import { readCredential } from "../config/credentials.js";
 import { loadPromptFile } from "../prompt-files.js";
 import type { ResearchRequest } from "../research/job.js";
-
-const Reply = z.object({
-  model: z.string().optional(),
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.string().max(2_000_000),
-          annotations: z
-            .array(z.object({ url_citation: z.object({ url: z.string() }).optional() }))
-            .optional(),
-        }),
-      }),
-    )
-    .min(1),
-  citations: z.array(z.string()).optional(),
-  search_results: z.array(z.object({ url: z.string() })).optional(),
-  usage: z
-    .object({
-      cost: z.number().nonnegative().optional(),
-      prompt_tokens: z.number().int().nonnegative().optional(),
-      completion_tokens: z.number().int().nonnegative().optional(),
-      total_tokens: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
-});
 
 export class SonarError extends Error {
   constructor(
@@ -129,33 +103,19 @@ export function sonarFromEnv(config: {
       encoding: "base64",
       transport: "complete",
     });
-    const raw = bytes.toString("utf8");
-    let payload: unknown;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      throw new SonarError("invalid-report");
-    }
-    const reply = Reply.safeParse(payload);
-    const message = reply.success ? reply.data.choices[0]?.message : undefined;
-    if (!reply.success || !message || !message.content.trim())
-      throw new SonarError("invalid-report");
+    const replay = replaySonarDiscovery(bytes.toString("utf8"), model);
+    if (replay.validation !== "valid" || !replay.data) throw new SonarError("invalid-report");
+    const data = replay.data;
     const cited = [
-      ...(reply.data.citations ?? []),
-      ...(message.annotations ?? []).flatMap((entry) =>
-        entry.url_citation ? [entry.url_citation.url] : [],
-      ),
-      ...Array.from(
-        message.content.matchAll(/\]\((https?:\/\/[^\s)<>]+)\)/g),
-        (match) => match[1]!,
-      ),
+      ...data.citations,
+      ...data.annotationUrls,
+      ...Array.from(data.report.matchAll(/\]\((https?:\/\/[^\s)<>]+)\)/g), (match) => match[1]!),
     ];
-    const urls = cited.length ? cited : (reply.data.search_results ?? []).map(({ url }) => url);
     return {
-      model,
-      report: message.content,
-      citations: urls,
-      ...(reply.data.usage?.cost === undefined ? {} : { costUsd: reply.data.usage.cost }),
+      model: data.model,
+      report: data.report,
+      citations: cited.length ? cited : data.searchResultUrls,
+      ...(data.usage?.costUsd === undefined ? {} : { costUsd: data.usage.costUsd }),
     };
   };
   return Object.assign(run, {
