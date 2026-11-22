@@ -871,35 +871,97 @@ describe("single-item reingestion (#558)", () => {
     );
   });
 
-  it("reuses an existing transcript instead of transcribing again", async () => {
-    const first = setup({ collect: () => textResult("Spoken words.") });
+  /** A media post first collected with a transcript of upload `uploadId`. */
+  const mediaPost = (uploadId: string, acquiredAt = "2026-11-22T10:00:00.000Z") =>
+    ({
+      kind: "transcription-required",
+      item,
+      articleText: "Edited article body.",
+      media: { kind: "audio", url: "https://cdn.example/a.mp3", durationSeconds: 60 },
+      provenance: {
+        ...provenance,
+        acquiredAt,
+        originalMediaUploadId: uploadId,
+        originalMedium: "audio",
+      },
+    }) as never;
+  const firstWithTranscript = async (uploadId: string) => {
+    const first = setup({
+      collect: () => ({
+        ...textResult("Spoken words."),
+        provenance: { ...provenance, originalMediaUploadId: uploadId },
+      }),
+    });
     await first.worker.handle(message());
-    let transcriptions = 0;
-    const second = setup({
-      collect: () =>
-        ({
-          kind: "transcription-required",
-          item,
-          articleText: "Edited article body.",
-          media: { kind: "audio", url: "https://cdn.example/a.mp3", durationSeconds: 60 },
-          provenance,
-        }) as never,
+  };
+  const noTranscriber = () => {
+    const calls = { n: 0 };
+    return {
+      calls,
       transcriber: {
         transcribe: async () => {
-          transcriptions++;
+          calls.n++;
           throw new Error("must not transcribe");
         },
       },
-    });
+    };
+  };
+
+  it("reuses the transcript of the same media, with fresh article text and source provenance", async () => {
+    await firstWithTranscript("upload-1");
+    const t = noTranscriber();
+    const second = setup({ collect: () => mediaPost("upload-1"), transcriber: t.transcriber });
     requestReingest({ operations: second.operations, item, requestId: "refresh-3" });
     expect(await second.worker.handle(delivered(second.operations))).toBe("collected");
-    expect(transcriptions).toBe(0);
+    expect(t.calls.n).toBe(0);
     const record = JSON.parse(
       await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!),
     );
     // The fresh article body is combined with the reused transcript.
     expect(record.text).toBe("Edited article body.\n\nSpoken words.");
     expect(record.reingestion).toEqual({ requestId: "refresh-3" });
+    // Fresh source observations, transcript facts carried over.
+    expect(record.provenance).toMatchObject({
+      acquiredAt: "2026-11-22T10:00:00.000Z",
+      originalMedium: "audio",
+      method: "supplied-transcript",
+    });
+  });
+
+  it("never reuses a transcript from different or unverifiable media", async () => {
+    await firstWithTranscript("upload-1");
+    const t = noTranscriber();
+    const second = setup({ collect: () => mediaPost("upload-2"), transcriber: t.transcriber });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-6" });
+    expect(await second.worker.handle(delivered(second.operations))).toBe(
+      "transcription-unavailable",
+    );
+    expect(t.calls.n).toBe(0);
+    expect(
+      JSON.parse(await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!))
+        .text,
+    ).toBe("Spoken words.");
+  });
+
+  it("finishes the hand-off from its own committed version on a retry, without fetching", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({
+      collect: () => ({ kind: "unavailable", item, reason: "gone" }) as never,
+    });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-7" });
+    const m = delivered(second.operations);
+    const existing = (await second.store.existing(item))!;
+    await artifacts.revise(
+      collectionArtifactPath(item),
+      `${JSON.stringify({ ...existing.record, reingestion: { requestId: "refresh-7" } }, null, 2)}\n`,
+      existing.artifact.sha256,
+    );
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.collectCalls()).toBe(0);
+    expect(second.operations.operationStatus(reingestKey(item, "refresh-7"))?.status).toBe(
+      "completed",
+    );
   });
 
   it("completes an exhausted reingestion from its own committed version", async () => {

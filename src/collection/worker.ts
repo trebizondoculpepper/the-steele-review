@@ -108,6 +108,34 @@ export interface CollectionWorkerConfig {
 
 const encoder = new TextEncoder();
 
+/**
+ * True only when the archived transcript provably belongs to the media just
+ * observed: both records name the same upload identity (#558).
+ */
+function sameMedia(
+  previous: CollectionRecord,
+  acquired: { provenance: Record<string, unknown> },
+): boolean {
+  const before = previous.provenance.originalMediaUploadId;
+  const now = acquired.provenance.originalMediaUploadId;
+  return typeof before === "string" && typeof now === "string" && before === now;
+}
+
+/** Provenance fields that describe the transcript itself, not the source fetch. */
+const TRANSCRIPT_FIELDS = [
+  "method",
+  "transcriptionProvider",
+  "transcriptionModel",
+  "transcriptLanguage",
+  "machineGenerated",
+  "mediaKind",
+  "transcriptionConfidence",
+  "transcriptionComplete",
+] as const;
+function transcriptProvenance(p: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(TRANSCRIPT_FIELDS.filter((k) => k in p).map((k) => [k, p[k]]));
+}
+
 export class CollectionWorker {
   private readonly leaseMs: number;
   private readonly retryDelayMs: number;
@@ -258,6 +286,23 @@ export class CollectionWorker {
         await message.ack();
         return { result: "unavailable", item };
       }
+      // This request already committed its version before an interruption:
+      // complete the hand-off from it rather than fetching again.
+      if (previous && previous.record.reingestion?.requestId === reingestRequestId) {
+        try {
+          this.config.operations.complete(
+            claim,
+            previous.artifact,
+            this.eventsFor(causationId)(previous.artifact, previous.record),
+          );
+        } catch {
+          message.nak(this.retryDelayMs);
+          return { result: "retry", item };
+        }
+        await message.ack();
+        await this.dispatchPending(signal);
+        return { result: "already-collected", item };
+      }
       if (committed && !reingestRequestId) {
         try {
           await this.config.store.commit(claim, committed.record, (artifact) =>
@@ -303,6 +348,17 @@ export class CollectionWorker {
         };
       } else if (
         acquired.kind === "transcription-required" &&
+        previous?.record.supplied.transcript?.length &&
+        !sameMedia(previous.record, acquired)
+      ) {
+        // The archived transcript cannot be proved to belong to this media:
+        // never reuse speech from another recording, and never pay to
+        // retranscribe without an explicit decision.
+        this.config.store.fail(claim, "transcript-media-unverified", false);
+        await message.ack();
+        return { result: "transcription-unavailable", item };
+      } else if (
+        acquired.kind === "transcription-required" &&
         previous?.record.supplied.transcript?.length
       ) {
         // Reingestion never repeats paid transcription when the current
@@ -319,7 +375,13 @@ export class CollectionWorker {
           complete: t.complete,
           supplied: { transcript: t.supplied.transcript! },
           ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
-          provenance: { ...t.provenance },
+          // Fresh source observations from this fetch, plus only the
+          // transcript-specific facts of the reused transcript.
+          provenance: {
+            ...acquired.provenance,
+            ...transcriptProvenance(t.provenance),
+            method: t.provenance.method,
+          },
         };
       } else if (acquired.kind === "transcription-required") {
         if (!this.config.transcriber || acquired.media.kind !== "audio") {
