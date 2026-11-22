@@ -29,6 +29,8 @@ export interface RoleProbeReport {
   /** True only when every check is healthy. */
   ready: boolean;
   checks: Record<string, CheckState>;
+  /** Allowlisted facts a role adds (times and counts only). */
+  details?: Record<string, string | number>;
 }
 
 async function bounded(
@@ -61,6 +63,7 @@ export async function runRoleProbe(
   role: string,
   checks: RoleCheck[],
   timeoutMs = DEFAULT_CHECK_TIMEOUT_MS,
+  details?: Record<string, string | number>,
 ): Promise<RoleProbeReport> {
   const states = await Promise.all(
     checks.map(async (c) => [c.name, c.run ? await bounded(c.run, timeoutMs) : "not-configured"]),
@@ -72,5 +75,6 @@ export async function runRoleProbe(
     live: true,
     ready: Object.values(result).every((s) => s === "healthy"),
     checks: result,
+    ...(details && Object.keys(details).length > 0 ? { details } : {}),
   };
 }
