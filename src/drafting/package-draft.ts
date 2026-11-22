@@ -1037,6 +1037,8 @@ export async function draftFromPackage(input: {
       raw = captured.text;
       let parsed: PackageModelDraft | undefined;
       let parsedMd: MarkdownCandidate | undefined;
+      // A body the publisher cannot render needs a whole-article correction.
+      let undeliverableBody = false;
       let candidate: unknown;
       let candidateRef: ArtifactRef | undefined;
       let kind: DraftValidationKind | undefined;
@@ -1127,6 +1129,7 @@ export async function draftFromPackage(input: {
           markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
         } catch (error) {
           if (!(error instanceof UnsupportedMarkdownError)) throw error;
+          undeliverableBody = true;
           kind = "schema-validation";
           issues = [{ code: "custom", path: ["body"] }];
           lastProblems = [`body uses Markdown the publisher cannot render (${error.reason})`];
@@ -1164,7 +1167,7 @@ export async function draftFromPackage(input: {
           kind === "schema-validation" && (!fieldRepair || candidateRef)
             ? metadataFieldRepair(candidate, issues)
             : undefined;
-        if (fieldRepair && kind !== "evidence-validation") {
+        if (fieldRepair && kind !== "evidence-validation" && !undeliverableBody) {
           // A malformed, truncated or overbroad patch cannot replace preserved fields.
           fieldRepair = nextFieldRepair ?? {
             ...fieldRepair,

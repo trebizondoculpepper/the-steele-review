@@ -246,4 +246,16 @@ describe("Markdown writer output (#535 slice 2)", { timeout: 60_000 }, () => {
     const rendered = await content.read(out.draft);
     expect(() => markdownToProseMirror(rendered)).not.toThrow();
   });
+
+  it("leaves title-only repair when a merged title exposes an undeliverable body", async () => {
+    const fenced = "Intro.\n\n```\ncode\n```\n\nOutro.";
+    const provider = model(
+      doc(header({ title: "t".repeat(200) }), fenced),
+      JSON.stringify({ title: "A short title" }),
+      doc(header({ title: "A short title" })),
+    );
+    const out = await draft(provider);
+    expect(out.status).toBe("drafted");
+    expect(provider.calls).toBe(3);
+  });
 });
