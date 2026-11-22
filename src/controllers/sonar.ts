@@ -1,3 +1,4 @@
+import { assertResearchEffort, researchEffortFromEnv } from "../research/sonar.js";
 import { replaySonarDiscovery } from "./sonar-discovery-replay.js";
 import type { DiscoveryProcessor } from "../research/discovery.js";
 import type { DiscoveryCapture, PartialDiscoveryBody } from "../research/discovery-data.js";
@@ -42,6 +43,10 @@ export function sonarFromEnv(config: {
   maxTokens: number;
 }): SubjectResearchProvider {
   const model = ResearchModelSchema.parse(config.model);
+  // Explicit reasoning effort (#662): refused before any paid request when
+  // this model's route cannot honour it.
+  const effort = researchEffortFromEnv(process.env);
+  assertResearchEffort(model, effort);
   const key = readCredential("OPENROUTER_API_KEY", { required: true });
   const run: SubjectResearchProvider = async (request, capture) => {
     const signal = AbortSignal.timeout(config.timeoutMs);
@@ -56,6 +61,7 @@ export function sonarFromEnv(config: {
         body: JSON.stringify({
           model,
           max_tokens: config.maxTokens,
+          ...(effort ? { reasoning: { effort } } : {}),
           messages: [
             {
               role: "system",

@@ -35,6 +35,58 @@ export interface SonarReport {
   costUsd?: number;
 }
 
+/**
+ * Research reasoning effort (#662). OpenRouter's documented request shape is
+ * `reasoning: { effort }`; a model exposes effort selection only when its
+ * public metadata lists `reasoning.supported_efforts`. Values follow that doc.
+ */
+export const ReasoningEffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
+
+/**
+ * The recorded mapping of research models to the efforts their route accepts.
+ * Absent (or empty) means effort cannot be selected, so a configured effort is
+ * refused rather than sent and silently ignored.
+ *
+ * - perplexity/sonar-deep-research: OpenRouter metadata (GET /api/v1/models,
+ *   checked 2026-11-22) shows `reasoning: { mandatory: true }` with no
+ *   `supported_efforts`, i.e. "the model does not expose effort selection".
+ *   No default effort is documented, so none is claimed.
+ */
+export const RESEARCH_EFFORT_SUPPORT: Readonly<Record<string, readonly ReasoningEffort[]>> = {
+  "perplexity/sonar-deep-research": [],
+};
+
+export class ResearchEffortUnsupportedError extends Error {
+  constructor(readonly model: string) {
+    super(
+      `reasoning effort cannot be selected for ${model}: its route does not expose effort selection`,
+    );
+    this.name = "ResearchEffortUnsupportedError";
+  }
+}
+
+/** Refuse a configured effort the model's route cannot honour, before any request. */
+export function assertResearchEffort(model: string, effort: ReasoningEffort | undefined): void {
+  if (effort === undefined) return;
+  if (!(RESEARCH_EFFORT_SUPPORT[model] ?? []).includes(effort))
+    throw new ResearchEffortUnsupportedError(model);
+}
+
+/** `STEELE_RESEARCH_REASONING_EFFORT`, validated; empty or absent means not configured. */
+export function researchEffortFromEnv(
+  env: Record<string, string | undefined>,
+): ReasoningEffort | undefined {
+  const raw = env.STEELE_RESEARCH_REASONING_EFFORT;
+  if (raw === undefined || raw === "") return undefined;
+  const parsed = ReasoningEffortSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new Error(
+      `STEELE_RESEARCH_REASONING_EFFORT must be one of ${ReasoningEffortSchema.options.join(", ")}`,
+    );
+  return parsed.data;
+}
+
 export interface SonarClient {
   readonly model: string;
   readonly settings?: { model: string; timeoutMs: number; maxOutputTokens: number };
@@ -42,6 +94,8 @@ export interface SonarClient {
     timeoutMs: number;
     maxOutputTokens: number;
     maxResponseBytes: number;
+    /** Present only when an effort is configured (and supported). */
+    reasoningEffort?: ReasoningEffort;
   };
   research(
     prompt: { system: string; user: string },
@@ -58,6 +112,8 @@ export interface OpenRouterSonarConfig {
   timeoutMs: number;
   maxOutputTokens: number;
   maxResponseBytes?: number;
+  /** Explicit reasoning effort (#662); refused when the model cannot select it. */
+  reasoningEffort?: ReasoningEffort;
   fetch?: typeof fetch;
 }
 
@@ -98,6 +154,8 @@ export class OpenRouterSonarClient implements SonarClient {
       maxOutputTokens: config.maxOutputTokens,
     });
     this.model = ResearchModelSchema.parse(config.model ?? DEFAULT_SONAR_MODEL);
+    // Fails before any paid request when the route cannot honour the effort.
+    assertResearchEffort(this.model, config.reasoningEffort);
     const base = new URL(config.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL);
     if (base.protocol !== "https:" || base.username || base.password) {
       throw new Error("model provider base URL must be https without user info");
@@ -115,7 +173,22 @@ export class OpenRouterSonarClient implements SonarClient {
   }
 
   get discoveryParameters() {
-    return { ...this.limits, maxResponseBytes: this.config.maxResponseBytes ?? 4 * 1024 * 1024 };
+    return {
+      ...this.limits,
+      maxResponseBytes: this.config.maxResponseBytes ?? 4 * 1024 * 1024,
+      // Part of the discovery identity only when configured: omitted keeps
+      // existing identities unchanged.
+      ...(this.config.reasoningEffort ? { reasoningEffort: this.config.reasoningEffort } : {}),
+    };
+  }
+
+  /** Configured effort, or the provider's own (undocumented, so unknown) default. */
+  get reasoning():
+    | { configured: ReasoningEffort }
+    | { configured: null; providerDefault: "unknown" } {
+    return this.config.reasoningEffort
+      ? { configured: this.config.reasoningEffort }
+      : { configured: null, providerDefault: "unknown" };
   }
 
   async research(
@@ -146,6 +219,9 @@ export class OpenRouterSonarClient implements SonarClient {
             { role: "user", content: prompt.user },
           ],
           max_tokens: this.limits.maxOutputTokens,
+          ...(this.config.reasoningEffort
+            ? { reasoning: { effort: this.config.reasoningEffort } }
+            : {}),
           usage: { include: true },
         }),
         signal: combined,
@@ -257,6 +333,7 @@ export function sonarFromEnv(
     model: researchModel(env),
     timeoutMs: num("STEELE_RESEARCH_TIMEOUT_MS", DEFAULT_SONAR_TIMEOUT_MS),
     maxOutputTokens: num("STEELE_RESEARCH_MAX_OUTPUT_TOKENS", DEFAULT_SONAR_MAX_OUTPUT_TOKENS),
+    ...(researchEffortFromEnv(env) ? { reasoningEffort: researchEffortFromEnv(env)! } : {}),
     ...(env.OPENROUTER_BASE_URL ? { baseUrl: env.OPENROUTER_BASE_URL } : {}),
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
   });
