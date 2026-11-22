@@ -284,38 +284,42 @@ export class NatsController {
       throw new NatsPublishError("no-stream", false);
     }
     if (signal.aborted) return;
-    const messages = options?.once
-      ? await consumer.fetch({ max_messages: 1, expires: 1000 })
-      : await consumer.consume({ max_messages: 1 });
-    // The signal may have aborted while the subscription was being set up.
-    if (signal.aborted) {
-      await messages.close().catch(() => undefined);
-      return;
-    }
-    const stop = () => void messages.stop();
-    signal.addEventListener("abort", stop, { once: true });
-    try {
-      for await (const m of messages) {
-        const delivered: DeliveredMessage = {
-          data: m.data,
-          streamSequence: m.info.streamSequence,
-          deliveryCount: m.info.deliveryCount,
-          ack: () => confirmNatsAck(m),
-          nak: (delayMs) => m.nak(delayMs),
-          term: () => m.term(),
-          working: () => m.working(),
-        };
-        try {
-          await handler(delivered);
-        } catch {
-          m.nak(1_000);
-        }
-        if (signal.aborted) break;
+    // Empty fetch expiry is only a receive quantum, never a new caller deadline.
+    do {
+      const messages = options?.once
+        ? await consumer.fetch({ max_messages: 1, expires: 1000 })
+        : await consumer.consume({ max_messages: 1 });
+      // The signal may have aborted while the subscription was being set up.
+      if (signal.aborted) {
+        await messages.close().catch(() => undefined);
+        return;
       }
-    } finally {
-      signal.removeEventListener("abort", stop);
-      stop();
-    }
+      const stop = () => void messages.stop();
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        for await (const m of messages) {
+          const delivered: DeliveredMessage = {
+            data: m.data,
+            streamSequence: m.info.streamSequence,
+            deliveryCount: m.info.deliveryCount,
+            ack: () => confirmNatsAck(m),
+            nak: (delayMs) => m.nak(delayMs),
+            term: () => m.term(),
+            working: () => m.working(),
+          };
+          try {
+            await handler(delivered);
+          } catch {
+            m.nak(1_000);
+          }
+          if (options?.once) return;
+          if (signal.aborted) break;
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+        stop();
+      }
+    } while (options?.once && !signal.aborted);
   }
 
   /** JetStream manager for explicit provisioning tools; never used by publish(). */

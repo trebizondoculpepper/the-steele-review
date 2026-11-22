@@ -387,6 +387,56 @@ describe("selected publisher through real NATS", { timeout: 120000 }, () => {
     ).rejects.toThrow(/receipt/);
   });
 
+  it("waits across empty one-second fetches for selected delayed redelivery", async () => {
+    const selected = await approved(),
+      target = destination(true);
+    const first = await runSelectedPublisher({
+      selection: { eventId: selected.eventId, sequence: selected.sequence, waitMs: 4000 },
+      nats,
+      stream,
+      content,
+      operations,
+      destination: target.adapter,
+      owner: "test",
+      retryDelayMs: 1600,
+    });
+    expect(first).toMatchObject({ status: "stopped", reason: "pending" });
+    const began = Date.now();
+    const second = await run(selected, target);
+    expect(second).toMatchObject({ status: "delivered", consumer: first.consumer });
+    expect(Date.now() - began).toBeGreaterThan(1000);
+    expect(target.creates).toBe(1);
+  });
+
+  it("keeps the original total receive deadline while waiting for later redelivery", async () => {
+    const selected = await approved(),
+      target = destination(true);
+    const first = await runSelectedPublisher({
+      selection: { eventId: selected.eventId, sequence: selected.sequence, waitMs: 4000 },
+      nats,
+      stream,
+      content,
+      operations,
+      destination: target.adapter,
+      owner: "test",
+      retryDelayMs: 5000,
+    });
+    expect(first).toMatchObject({ status: "stopped", reason: "pending" });
+    const began = Date.now();
+    const second = await run({ ...selected, waitMs: 1200 }, target);
+    expect(second).toMatchObject({
+      status: "stopped",
+      reason: "timeout",
+      consumer: first.consumer,
+    });
+    expect(Date.now() - began).toBeGreaterThanOrEqual(1000);
+    expect(Date.now() - began).toBeLessThan(4500);
+    expect(target.creates).toBe(1);
+    expect(await nats.consumerPosition(stream, first.consumer)).toMatchObject({
+      ackFloorSequence: 0,
+    });
+  });
+
   it("reconciles an uncertain create on the same consumer/event without a second draft", async () => {
     const selected = await approved(),
       target = destination(true);
