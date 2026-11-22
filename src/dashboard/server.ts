@@ -33,6 +33,8 @@ export interface DashboardView {
   render(url: URL): Promise<string> | string;
   /** Hidden from navigation (detail pages reached by link). */
   hidden?: boolean;
+  /** Reload the page every N seconds (bounded polling for live pages, #479). */
+  refreshSeconds?: number;
 }
 
 const HTML_ESCAPES: Record<string, string> = {
@@ -108,7 +110,11 @@ function page(views: DashboardView[], current: DashboardView, body: string): str
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(current.title)} · Steele Review</title>
+<title>${escapeHtml(current.title)} · Steele Review</title>${
+    current.refreshSeconds && current.refreshSeconds >= 5 && current.refreshSeconds <= 3600
+      ? `\n<meta http-equiv="refresh" content="${Math.trunc(current.refreshSeconds)}">`
+      : ""
+  }
 <style>${STYLE}</style>
 </head>
 <body>

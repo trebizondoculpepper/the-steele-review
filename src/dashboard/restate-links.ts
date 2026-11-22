@@ -107,3 +107,73 @@ export async function restateRunLinksHtml(input: {
   }
   return `<h2>Workflow inspection</h2><p class="empty">Restate's own execution UI is an external, administrative view.</p><ul>${items.join("")}</ul><p><a href="${escapeHtml(input.links.home)}" rel="noopener noreferrer">Open the Restate UI</a></p>`;
 }
+
+/** An ArticleRun workflow key: `pub/post@<32 hex>`, optionally an attempt or recovery suffix. */
+const RUN_KEY =
+  /^([a-z0-9][a-z0-9-]{0,199})\/([a-z0-9][a-z0-9-]{0,199})@([0-9a-f]{32})(?:~[a-z0-9-]{1,80})*$/;
+
+/**
+ * Discover recent article runs from Restate's admin query API (#479), newest
+ * first, so the Activity page sees a run on any post, not only the newest
+ * articles. Each key's 32-character revision prefix is matched to the post's
+ * indexed revision to recover the exact source version; a run whose revision
+ * is not the indexed one is skipped rather than guessed. Read-only and
+ * bounded; failures yield an empty index (the page says discovery is limited).
+ */
+export function restateRunIndex(
+  adminUrl: string,
+  articles: {
+    find(publicationId: string, postId: string): Promise<{ sourceVersion: string } | undefined>;
+  },
+  options: { timeoutMs?: number; fetch?: typeof fetch } = {},
+): {
+  recent(
+    limit: number,
+  ): Promise<{ publicationId: string; postId: string; sourceVersion: string }[]>;
+} {
+  const f = options.fetch ?? fetch;
+  const base = adminUrl.replace(/\/+$/, "");
+  return {
+    async recent(limit) {
+      const n = Math.max(1, Math.min(Math.trunc(limit), 200));
+      let keys: string[];
+      try {
+        const res = await f(`${base}/query`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            // Unfinished runs first, then the most recently created.
+            query: `SELECT target_service_key AS key FROM sys_invocation WHERE target_service_name = 'ArticleRun' AND target_handler_name = 'run' ORDER BY (completed_at IS NULL) DESC, created_at DESC LIMIT ${n}`,
+          }),
+          signal: AbortSignal.timeout(options.timeoutMs ?? 5_000),
+        });
+        if (!res.ok) return [];
+        const body = (await res.json()) as { rows?: { key?: unknown }[] };
+        keys = (body.rows ?? [])
+          .map((r) => r.key)
+          .filter((k): k is string => typeof k === "string");
+      } catch {
+        return [];
+      }
+      const out: { publicationId: string; postId: string; sourceVersion: string }[] = [];
+      const seen = new Set<string>();
+      for (const key of keys) {
+        const m = RUN_KEY.exec(key);
+        if (!m) continue;
+        const [, publicationId, postId, prefix] = m as unknown as [string, string, string, string];
+        const id = `${publicationId}/${postId}@${prefix}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        let indexed;
+        try {
+          indexed = await articles.find(publicationId, postId);
+        } catch {
+          continue;
+        }
+        if (indexed && indexed.sourceVersion.slice(7, 39) === prefix)
+          out.push({ publicationId, postId, sourceVersion: indexed.sourceVersion });
+      }
+      return out;
+    },
+  };
+}
