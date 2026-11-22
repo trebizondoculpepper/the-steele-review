@@ -127,6 +127,22 @@ describe("saved selection (#596)", () => {
       [job(2), "in-flight"],
     ]);
 
+    // Two runs for the same article selecting at once cannot both spend
+    // the allowance: only one of the competing new jobs is admitted.
+    const fresh = { ...first, post: { publicationId: "pub", postId: "p3" } };
+    const [a, b] = await Promise.all([
+      selectAndSaveResearch(content, { ...fresh, candidates: ranked(job(7)), allowance: 1 }),
+      selectAndSaveResearch(content, {
+        ...fresh,
+        claimResult: await ref("claims/pub/p3/other.json"),
+        candidates: ranked(job(8)),
+        allowance: 1,
+      }),
+    ]);
+    expect(
+      [...a.record.decisions, ...b.record.decisions].filter((d) => d.decision === "new"),
+    ).toHaveLength(1);
+
     // Another article has its own allowance.
     const other = await selectAndSaveResearch(content, {
       ...first,

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { researchJobPath, writeOnce } from "./job.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import { researchJobPath } from "./job.js";
 
 /**
  * Research selection under a per-article allowance of NEW jobs (#596, #533).
@@ -20,9 +24,9 @@ import { researchJobPath, writeOnce } from "./job.js";
  *
  * The allowance is shared by every research round of one article: jobs
  * counted by earlier selections for the same post reduce what is left. Each
- * selection is saved write-once, keyed by the analysis and its candidates, so
- * a replay reads its own earlier decision and never spends the allowance
- * twice. Monetary spend is controlled outside (OpenRouter key limits); this
+ * selection is saved in the article's ledger, keyed by the analysis and its
+ * candidates, so a replay reads its own earlier decision and never spends the
+ * allowance twice. Monetary spend is controlled outside (OpenRouter key limits); this
  * counts jobs only and makes no cost claim.
  */
 export const RESEARCH_SELECTION_POLICY = "new-jobs-allowance-v1";
@@ -137,17 +141,31 @@ const plain = (r: ArtifactRef) => ({
   path: r.path,
   sha256: r.sha256,
 });
-const prefixFor = (post: { publicationId: string; postId: string }) =>
-  `librarian/research-allowance/${post.publicationId}/${post.postId}`;
-/** Bound on saved selections read per article. */
-export const MAX_ALLOWANCE_RECORDS = 1000;
+/**
+ * One revisable ledger per article holds every selection for it. Each
+ * selection is a compare-and-set revision of the ledger, so two runs for the
+ * same post (for example, different source versions at once) can never both
+ * spend the same remaining allowance: the loser re-reads and re-selects.
+ */
+export const ALLOWANCE_LEDGER_PREFIX = "librarian/research-allowance/";
+const ledgerPath = (post: { publicationId: string; postId: string }) =>
+  `${ALLOWANCE_LEDGER_PREFIX}${post.publicationId}/${post.postId}/ledger.json`;
+/** Bound on selections held per article. */
+export const MAX_ALLOWANCE_SELECTIONS = 200;
+const LedgerSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    selections: z.record(z.string().regex(/^[0-9a-f]{32}$/), AllowanceRecordSchema),
+  })
+  .strict();
+const STALE_RETRIES = 5;
 
 /**
  * Select and save, or return the selection already saved for exactly this
  * analysis and candidate set (a replay or retry).
  */
 export async function selectAndSaveResearch(
-  artifacts: Pick<GitArtifactStore, "list" | "lookup" | "read" | "write">,
+  artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise">,
   input: {
     post: { publicationId: string; postId: string };
     themeResult: ArtifactRef;
@@ -168,46 +186,52 @@ export async function selectAndSaveResearch(
     )
     .digest("hex")
     .slice(0, 32);
-  const path = `${prefixFor(input.post)}/${key}.json`;
-  const existing = await artifacts.lookup(path);
-  if (existing) {
-    return {
-      record: AllowanceRecordSchema.parse(JSON.parse(await artifacts.read(existing))),
-      ref: existing,
-    };
-  }
-  // Jobs counted by this article's earlier selections.
-  const counted = new Set<string>();
-  const paths = await artifacts.list(prefixFor(input.post), MAX_ALLOWANCE_RECORDS + 1);
-  if (paths.length > MAX_ALLOWANCE_RECORDS) throw new Error("research allowance history too long");
-  for (const p of paths) {
-    const ref = await artifacts.lookup(p);
-    if (!ref) continue;
-    // An unreadable record may hold counted jobs: fail rather than overspend.
-    const r = AllowanceRecordSchema.parse(JSON.parse(await artifacts.read(ref)));
-    for (const d of r.decisions) if (d.decision === "new") counted.add(d.jobId);
-  }
+  const path = ledgerPath(input.post);
   const reusable = new Set<string>();
   for (const c of input.candidates) {
     if (await artifacts.lookup(researchJobPath(c.jobId, "result"))) reusable.add(c.jobId);
   }
-  const selected = selectResearch(input.candidates, {
-    allowance: input.allowance,
-    reusable,
-    counted,
-  });
-  const ref = await writeOnce(artifacts as GitArtifactStore, path, {
-    schemaVersion: 1,
-    policy: RESEARCH_SELECTION_POLICY,
-    allowance: input.allowance,
-    themeResult: plain(input.themeResult),
-    claimResult: plain(input.claimResult),
-    remainingBefore: selected.remainingBefore,
-    decisions: selected.decisions,
-  });
-  // A concurrent attempt may have written first: the stored record decides.
-  return {
-    record: AllowanceRecordSchema.parse(JSON.parse(await artifacts.read(ref))),
-    ref,
-  };
+  for (let attempt = 0; ; attempt++) {
+    const current = await artifacts.lookup(path);
+    // An unreadable ledger may hold counted jobs: fail rather than overspend.
+    const ledger = current
+      ? LedgerSchema.parse(JSON.parse(await artifacts.read(current)))
+      : { schemaVersion: 1 as const, selections: {} };
+    const saved = ledger.selections[key];
+    if (saved && current) return { record: saved, ref: current };
+    if (Object.keys(ledger.selections).length >= MAX_ALLOWANCE_SELECTIONS)
+      throw new Error("research allowance history too long");
+    const counted = new Set<string>();
+    for (const r of Object.values(ledger.selections))
+      for (const d of r.decisions) if (d.decision === "new") counted.add(d.jobId);
+    const selected = selectResearch(input.candidates, {
+      allowance: input.allowance,
+      reusable,
+      counted,
+    });
+    const record = AllowanceRecordSchema.parse({
+      schemaVersion: 1,
+      policy: RESEARCH_SELECTION_POLICY,
+      allowance: input.allowance,
+      themeResult: plain(input.themeResult),
+      claimResult: plain(input.claimResult),
+      remainingBefore: selected.remainingBefore,
+      decisions: selected.decisions,
+    });
+    const next = { ...ledger, selections: { ...ledger.selections, [key]: record } };
+    try {
+      const ref = await artifacts.revise(
+        path,
+        `${JSON.stringify(next, null, 2)}\n`,
+        current ? current.sha256 : null,
+      );
+      return { record, ref };
+    } catch (error) {
+      // Another selection for this article committed first: re-read, re-select.
+      const stale =
+        error instanceof ArtifactStoreError &&
+        (error.code === "stale-revision" || error.code === "immutable-conflict");
+      if (!stale || attempt >= STALE_RETRIES) throw error;
+    }
+  }
 }
