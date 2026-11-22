@@ -1,3 +1,4 @@
+import { isCanonicalArticlePath } from "../drafting/article-identity.js";
 import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
 import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
@@ -329,6 +330,9 @@ export function articleStages(deps: {
     async verify(draft, pkg, sourceUrl) {
       if (!deps.models.verifier)
         return { approved: false, unavailable: "no verifier model configured" };
+      // Verification binds an exact write-once generation, never the in-place
+      // canonical article whose current content can move on (#580).
+      if (isCanonicalArticlePath(draft.path)) throw new StageError("verify", "draft-not-pinned");
       const metadata = await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
       const out = await verifyWithRevisions({
