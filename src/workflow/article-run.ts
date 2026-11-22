@@ -82,6 +82,11 @@ export interface ArticleRunInput {
    * rounds, with reused saved research free. Absent means the legacy prefix.
    */
   researchSelection?: "allowance-v1";
+  /**
+   * One targeted follow-up research round and reassessment (#597), chosen at
+   * submission. Requires allowance selection, whose allowance it shares.
+   */
+  researchFollowUp?: "one-round-v1";
   /** Serialized version selects a new journal sequence; absent means legacy. */
   editorial?: EditorialPolicy;
   operatorRequestId?: string;
@@ -100,7 +105,14 @@ export interface ArticleRunResult {
   draftMechanicalRun?: Ref;
   revisionMechanicalRun?: Ref;
   verification?: Ref;
-  research: { jobId: string; outcome: PinnedResearch["outcome"] }[];
+  research: {
+    jobId: string;
+    outcome: PinnedResearch["outcome"];
+    /** Research round (#597): 1, or 2 for the single follow-up round. */
+    round?: number;
+    /** Full research for a dossier, or targeted research for named claim gaps. */
+    mode?: "full" | "targeted";
+  }[];
   /** The approved-article event recorded for a verified draft (#262). */
   approvalEvent?: string;
   /** When this run reached a terminal outcome, for operators (#479). */
@@ -141,8 +153,21 @@ export interface ArticleStages {
    * as separately named durable steps instead of one coarse `research` step.
    */
   researchStages?: ResearchStages;
-  /** Librarian coverage from exactly the pinned research results. */
-  coverage(themes: Ref, claims: Ref, pinned: PinnedResearch[]): Promise<Ref>;
+  /**
+   * Librarian coverage from exactly the pinned research results. With
+   * `followUp`, targeted second-pass results in `pinned` are assessed too.
+   */
+  coverage(
+    themes: Ref,
+    claims: Ref,
+    pinned: PinnedResearch[],
+    options?: { followUp?: boolean },
+  ): Promise<Ref>;
+  /**
+   * Targeted follow-up requests (#597) for claims the pinned first round
+   * left without independent evidence. Empty when nothing needs a follow-up.
+   */
+  planFollowUp?(themes: Ref, claims: Ref, pinned: PinnedResearch[]): Promise<ResearchRequest[]>;
   package(coverage: Ref): Promise<{ ref: Ref; status: "ready" | "evidence-gap" }>;
   draft(
     pkg: Ref,
@@ -342,6 +367,7 @@ export const ArticleRunInputSchema = z
       .optional(),
     researchExecution: z.literal("staged").optional(),
     researchSelection: z.literal("allowance-v1").optional(),
+    researchFollowUp: z.literal("one-round-v1").optional(),
     editorial: EditorialPolicySchema.optional(),
     operatorRequestId: z
       .string()
@@ -379,6 +405,10 @@ export const ArticleRunInputSchema = z
       (input.researchRequestLimit !== undefined && !input.retainedResearchJobIds),
     "allowance selection needs a configured allowance and is not a retained recovery",
   )
+  .refine(
+    (input) => !input.researchFollowUp || input.researchSelection === "allowance-v1",
+    "a follow-up round shares the article allowance, so it needs allowance selection",
+  )
   .refine((input) => {
     if (!input.source) return true;
     const target = articleRunTarget(input.source.namespace, input.source.itemId);
@@ -396,6 +426,10 @@ export const PROGRESS_STAGES = [
   "select-research",
   "research",
   "coverage",
+  "plan-follow-up",
+  "select-follow-up",
+  "follow-up-research",
+  "reassess",
   "package",
   "draft",
   "verify",
@@ -493,81 +527,123 @@ export function articleRunWorkflow(stages: ArticleStages) {
         claims,
         research: [],
       };
-    // Which planned requests to dispatch. Legacy: the configured prefix.
-    // Allowance selection (#596): reused and in-flight jobs are free and only
-    // NEW jobs count against the article's allowance.
-    let commissioned = (i: number) =>
-      input.researchRequestLimit === undefined || i < input.researchRequestLimit;
-    if (input.researchSelection === "allowance-v1") {
-      if (!stages.selectResearch) throw new restate.TerminalError("research selection unavailable");
-      const decisions = await step("select-research", () =>
-        stages.selectResearch!(themes, claims, requests, input.researchRequestLimit!),
-      );
-      const by = new Map(decisions.map((d) => [d.jobId, d.decision]));
-      const first = new Map<string, number>();
-      requests.forEach((r, i) => {
-        const id = researchJobId(r);
-        if (!first.has(id)) first.set(id, i);
+    /**
+     * One research round: choose which requests to dispatch, dispatch them
+     * under the shared deadline, and pin what returned. Legacy runs take the
+     * configured prefix; allowance selection (#596) dispatches reused and
+     * in-flight jobs free and counts only NEW jobs against the article's
+     * allowance, shared by every round through the article's ledger.
+     */
+    const researchRound = async (
+      requests: ResearchRequest[],
+      names: { select: ProgressStage; research: ProgressStage },
+    ): Promise<PinnedResearch[]> => {
+      let commissioned = (i: number) =>
+        input.researchRequestLimit === undefined || i < input.researchRequestLimit;
+      if (input.researchSelection === "allowance-v1") {
+        if (!stages.selectResearch)
+          throw new restate.TerminalError("research selection unavailable");
+        const decisions = await step(names.select, () =>
+          stages.selectResearch!(themes, claims, requests, input.researchRequestLimit!),
+        );
+        const by = new Map(decisions.map((d) => [d.jobId, d.decision]));
+        const first = new Map<string, number>();
+        requests.forEach((r, i) => {
+          const id = researchJobId(r);
+          if (!first.has(id)) first.set(id, i);
+        });
+        commissioned = (i: number) => {
+          const id = researchJobId(requests[i]!);
+          const decision = by.get(id);
+          return first.get(id) === i && decision !== undefined && dispatched(decision);
+        };
+        for (const d of decisions)
+          logPipeline(input, `${names.select}`, d.decision, input.sourceVersion);
+      }
+      await mark(names.research, "running");
+      // Commission in librarian order. Restate limits concurrency separately.
+      const pending = new Map<
+        number,
+        restate.RestatePromise<{ i: number; job?: CommissionedJob }>
+      >();
+      requests.forEach((request, i) => {
+        if (!commissioned(i)) return;
+        const jobId = researchJobId(request);
+        pending.set(
+          i,
+          ctx
+            .scope(RESEARCH_SCOPE)
+            .serviceClient(Research)
+            // The contract named by the serialised input, never by current config.
+            [input.researchExecution === "staged" ? "runStaged" : "run"](
+              request,
+              restate.rpc.opts({
+                idempotencyKey: researchCallKey(jobId, input.recoveryGeneration ?? 0),
+                limitKey: "sonar",
+              }),
+            )
+            // A research call that fails terminally is pinned as a failed job,
+            // never allowed to fail the article run.
+            .map((job, failure) => (failure ? { i } : { i, job: job! })),
+        );
       });
-      commissioned = (i: number) => {
-        const id = researchJobId(requests[i]!);
-        const decision = by.get(id);
-        return first.get(id) === i && decision !== undefined && dispatched(decision);
-      };
-      for (const d of decisions)
-        logPipeline(input, "research-selection", d.decision, input.sourceVersion);
-    }
-    await mark("research", "running");
-    // Commission in librarian order. Restate limits concurrency separately.
-    const pending = new Map<number, restate.RestatePromise<{ i: number; job?: CommissionedJob }>>();
-    requests.forEach((request, i) => {
-      if (!commissioned(i)) return;
-      const jobId = researchJobId(request);
-      pending.set(
-        i,
-        ctx
-          .scope(RESEARCH_SCOPE)
-          .serviceClient(Research)
-          // The contract named by the serialised input, never by current config.
-          [input.researchExecution === "staged" ? "runStaged" : "run"](
-            request,
-            restate.rpc.opts({
-              idempotencyKey: researchCallKey(jobId, input.recoveryGeneration ?? 0),
-              limitKey: "sonar",
-            }),
-          )
-          // A research call that fails terminally is pinned as a failed job,
-          // never allowed to fail the article run.
-          .map((job, failure) => (failure ? { i } : { i, job: job! })),
-      );
-    });
-    const harvested = new Map<number, CommissionedJob | null>();
-    const remainingMs = deadline - (await ctx.date.now());
-    if (pending.size > 0 && remainingMs > 0) {
-      const timer = ctx
-        .sleep(remainingMs, "research-deadline")
-        .map(() => ({ i: -1, job: undefined }));
-      while (pending.size > 0) {
-        const next = await restate.RestatePromise.race([...pending.values(), timer]);
-        if (next.i === -1) break; // deadline reached: pin what we have
-        harvested.set(next.i, next.job ?? null);
-        pending.delete(next.i);
+      const harvested = new Map<number, CommissionedJob | null>();
+      const remainingMs = deadline - (await ctx.date.now());
+      if (pending.size > 0 && remainingMs > 0) {
+        const timer = ctx
+          .sleep(remainingMs, `${names.research}-deadline`)
+          .map(() => ({ i: -1, job: undefined }));
+        while (pending.size > 0) {
+          const next = await restate.RestatePromise.race([...pending.values(), timer]);
+          if (next.i === -1) break; // deadline reached: pin what we have
+          harvested.set(next.i, next.job ?? null);
+          pending.delete(next.i);
+        }
       }
-    }
-    await mark("research", "completed");
-    const pinned: PinnedResearch[] = requests.map((request, i) => {
-      const jobId = researchJobId(request);
-      if (!commissioned(i)) {
-        return { jobId, request, outcome: "not-commissioned" };
-      }
-      const job = harvested.get(i);
-      if (job) return { jobId, request, outcome: "finished", job };
-      return { jobId, request, outcome: job === null ? "failed" : "timed-out" };
-    });
-    for (const item of pinned) logPipeline(input, "research", item.outcome, input.sourceVersion);
-    const research = pinned.map((p) => ({ jobId: p.jobId, outcome: p.outcome }));
+      await mark(names.research, "completed");
+      const pinned: PinnedResearch[] = requests.map((request, i) => {
+        const jobId = researchJobId(request);
+        if (!commissioned(i)) return { jobId, request, outcome: "not-commissioned" };
+        const job = harvested.get(i);
+        if (job) return { jobId, request, outcome: "finished", job };
+        return { jobId, request, outcome: job === null ? "failed" : "timed-out" };
+      });
+      for (const item of pinned)
+        logPipeline(input, names.research, item.outcome, input.sourceVersion);
+      return pinned;
+    };
+    /** Full research builds or extends a dossier; targeted research closes named gaps. */
+    const mode = (r: ResearchRequest): "full" | "targeted" =>
+      r.origin === "theme" || r.pass > 1 ? "targeted" : "full";
+    const summary = (pinned: PinnedResearch[], round: number) =>
+      pinned.map((p) => ({ jobId: p.jobId, outcome: p.outcome, round, mode: mode(p.request) }));
 
-    const coverage = await step("coverage", () => stages.coverage(themes, claims, pinned));
+    const pinned = await researchRound(requests, {
+      select: "select-research",
+      research: "research",
+    });
+    let research = summary(pinned, 1);
+    let coverage = await step("coverage", () => stages.coverage(themes, claims, pinned));
+
+    // One follow-up round (#597): targeted research for claims the first
+    // round left unsupported, under the same allowance, then reassessment.
+    // Never a third round; remaining gaps stay explicit in the coverage.
+    if (input.researchFollowUp === "one-round-v1") {
+      if (!stages.planFollowUp) throw new restate.TerminalError("follow-up planning unavailable");
+      const followUps = await step("plan-follow-up", () =>
+        stages.planFollowUp!(themes, claims, pinned),
+      );
+      if (followUps.length > 0) {
+        const second = await researchRound(followUps, {
+          select: "select-follow-up",
+          research: "follow-up-research",
+        });
+        research = [...research, ...summary(second, 2)];
+        coverage = await step("reassess", () =>
+          stages.coverage(themes, claims, [...pinned, ...second], { followUp: true }),
+        );
+      }
+    }
     const pkg = await step("package", () => stages.package(coverage));
     if (pkg.status !== "ready") {
       return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };

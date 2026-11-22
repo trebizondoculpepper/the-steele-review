@@ -16,10 +16,14 @@ export function researchExecutionFromEnv(env: Record<string, string | undefined>
 /**
  * Allowance selection for new runs (#596): when an allowance is configured,
  * new runs count only NEW research jobs against it, shared across the
- * article's rounds. Serialised at submission like the execution contract.
+ * article's rounds, and get one targeted follow-up round with reassessment
+ * (#597). Serialised at submission like the execution contract.
  */
 export function researchSelectionFor(limit: number | undefined): {
   researchSelection?: "allowance-v1";
+  researchFollowUp?: "one-round-v1";
 } {
-  return limit === undefined ? {} : { researchSelection: "allowance-v1" };
+  return limit === undefined
+    ? {}
+    : { researchSelection: "allowance-v1", researchFollowUp: "one-round-v1" };
 }
