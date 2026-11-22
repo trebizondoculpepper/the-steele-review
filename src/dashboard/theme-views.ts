@@ -1,3 +1,4 @@
+import { proposalMappingKey, themeMappingPath } from "../research/theme-mappings.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
 import type { ResearchPort, ThemeResearchDoc } from "./research.js";
@@ -78,6 +79,16 @@ export function themeViews(themes?: ThemesPort, research?: ResearchPort): Dashbo
           `<a href="${escapeHtml(traceLink(r.publicationId, r.postId))}">${escapeHtml(`${r.publicationId}/${r.postId}`)}</a>`,
         ],
         ["Source revision", `<code>${escapeHtml(r.sourceVersion)}</code>`],
+        [
+          "Saved mapping",
+          // The exact mapping record this wording would use (#519); the
+          // detail page says so when no decision has been saved yet.
+          `<a href="/mappings/view?${escapeHtml(
+            new URLSearchParams({
+              path: themeMappingPath({ key: proposalMappingKey(r.title, r.description) }),
+            }).toString(),
+          )}">open the librarian's mapping for this wording</a>`,
+        ],
         [
           "Extraction",
           `${escapeHtml(r.modelVersion)} · <code>${escapeHtml(r.promptVersion)}</code> · ${escapeHtml(r.proposedAt)}`,
@@ -181,8 +192,7 @@ export function themeViews(themes?: ThemesPort, research?: ResearchPort): Dashbo
         return '<p class="empty">The content repository is not configured for the dashboard.</p>';
       const id = url.searchParams.get("id") ?? "";
       const found = await themes.canonicalDetail(id);
-      if (!found)
-        return '<p class="empty">Choose a canonical theme from the catalogue.</p>';
+      if (!found) return '<p class="empty">Choose a canonical theme from the catalogue.</p>';
       const { theme, coverage } = found;
       const dossier = coverage.dossier;
       const researchSummary = dossier
@@ -202,7 +212,10 @@ export function themeViews(themes?: ThemesPort, research?: ResearchPort): Dashbo
       let documentsNext: string | undefined;
       if (research) {
         try {
-          const listing = await research.forTheme(theme.id, url.searchParams.get("after") ?? undefined);
+          const listing = await research.forTheme(
+            theme.id,
+            url.searchParams.get("after") ?? undefined,
+          );
           documents = listing.docs;
           documentsState = listing.state;
           documentsNext = listing.next;
