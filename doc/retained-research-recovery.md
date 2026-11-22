@@ -33,3 +33,24 @@ compatibility error. Existing version-1 plans retain their serialized order,
 and every saved plan remains immutable. The retained-research prefix guard still
 refuses a plan that would select different jobs; do not bypass it by shuffling
 operator input or increasing the allowance.
+
+## Readable output limits are warnings (#755)
+
+For normal, still-unfinished whole-job and local-subject research, the
+`warning-v1` curation policy accepts nonempty report text only when the saved
+provider envelope is structurally valid, transport-complete and durably fenced,
+and its sole limitation is `length-limit`. The original discovery record stays
+`invalid/length-limit`: this is a curation policy, not a rewrite of that audit.
+Its exact reference accompanies the machine-readable `report-output-limit`
+warning in the report snapshot, manifest, result, coverage and writer package.
+The writer receives the warning; the research browser labels the partial result.
+Normal retrieval and independent passage checks still apply. Missing prose is
+never reconstructed, and the outcome stays `complete-with-gaps`.
+
+Terminal results and existing Restate outputs remain immutable, including older
+`failed/invalid-report` outcomes. Recover those through the explicit retained
+entry point above, which emits the same warning and creates a distinct result
+without another discovery call. This change adds no workflow steps or new
+scheduler. Existing completed steps and terminal invocations replay their saved
+results. Empty content, corrupt or unparseable transport, lost fences, resource
+limits and artifact failures do not qualify as a partial-report warning.

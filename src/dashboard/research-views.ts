@@ -91,7 +91,7 @@ export function researchViews(research?: ResearchPort): DashboardView[] {
       const rows = listing.rows
         .map(
           (r) =>
-            `<tr><td><a href="${escapeHtml(detailLink(r))}">${escapeHtml(r.title)}</a></td><td>${escapeHtml(KIND_LABEL[r.kind])}${r.outcome ? `<br><span class="empty">${escapeHtml(r.outcome)}</span>` : ""}</td><td>${r.subject ? escapeHtml(r.subject) : '<span class="empty">not recorded</span>'}</td><td>${r.date ? escapeHtml(r.date) : '<span class="empty">not recorded</span>'}</td><td>${cites(r)}</td></tr>`,
+            `<tr><td><a href="${escapeHtml(detailLink(r))}">${escapeHtml(r.title)}</a></td><td>${escapeHtml(KIND_LABEL[r.kind])}${r.outcome ? `<br><span class="empty">${escapeHtml(r.outcome)}${r.warnings?.length ? " — partial report warning" : ""}</span>` : ""}</td><td>${r.subject ? escapeHtml(r.subject) : '<span class="empty">not recorded</span>'}</td><td>${r.date ? escapeHtml(r.date) : '<span class="empty">not recorded</span>'}</td><td>${cites(r)}</td></tr>`,
         )
         .join("");
       return `${form}${notes}<p>Saved research documents, read-only. Raw reports are kept apart from librarian-curated dossiers; a report existing does not mean it answers every claim, and a cited source is not verified evidence.</p>
@@ -176,13 +176,16 @@ export function researchViews(research?: ResearchPort): DashboardView[] {
                   .join("")}</ul>`
           }`
         : "";
+      const warnings = d.warnings?.length
+        ? `<h2>Partial research warning</h2><ul>${d.warnings.map((w) => `<li>${escapeHtml(w.message)}</li>`).join("")}</ul>`
+        : "";
       const gaps = d.gaps?.length
         ? `<h2>Recorded gaps</h2><ul>${d.gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul>`
         : "";
       return `<p><a href="/research">All research</a></p>
 <h2>${escapeHtml(d.title)}</h2>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-${coverage}<h2>Citations</h2>${provenance}${citations}${gaps}
+${coverage}<h2>Citations</h2>${provenance}${citations}${warnings}${gaps}
 <h2>Saved text</h2><p class="empty">Shown as saved Markdown source; links in it are not followed.</p>
 <pre>${escapeHtml(d.text)}</pre>`;
     },

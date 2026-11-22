@@ -4,6 +4,7 @@ import {
   ResearchManifestSchema,
   ResearchRequestSchema,
   ResearchResultSchema,
+  type ResearchWarning,
   researchJobId,
 } from "../research/job.js";
 
@@ -80,6 +81,7 @@ export interface ResearchDocument {
   citations?: ResearchCitation[];
   omittedCitations?: number;
   gaps?: string[];
+  warnings?: ResearchWarning[];
   /** Dossier per-claim coverage: covering citation ids, or the recorded gap reason. */
   coverage?: (
     | { claimId: string; status: "covered"; citations: string[] }
@@ -308,7 +310,12 @@ export function savedResearch(content: Store): ResearchPort {
         ...(typeof report.omittedCitations === "number"
           ? { omittedCitations: report.omittedCitations }
           : {}),
-        ...(manifest.success ? { gaps: manifest.data.gaps } : {}),
+        ...(manifest.success
+          ? {
+              gaps: manifest.data.gaps,
+              ...(manifest.data.warnings?.length ? { warnings: manifest.data.warnings } : {}),
+            }
+          : {}),
         ...(problems.length ? { provenanceProblems: problems } : {}),
         text: report.report,
       };
@@ -339,7 +346,8 @@ export function savedResearch(content: Store): ResearchPort {
       let unreadable = 0;
       // A continuation cursor starts after this page's last job; the dossier is
       // listed once, on the first page.
-      const dossier = after === undefined ? await readAtHead("dossier/" + themeId + ".md") : undefined;
+      const dossier =
+        after === undefined ? await readAtHead("dossier/" + themeId + ".md") : undefined;
       if (dossier) {
         const d = parseDossier(dossier.content);
         docs.push({

@@ -18,6 +18,7 @@ import {
   RESEARCH_JOB_SCHEMA_VERSION,
   ResearchManifestSchema,
   ResearchResultSchema,
+  ResearchWarningsSchema,
   researchJobId,
   type ResearchManifest,
   type ResearchRequest,
@@ -283,6 +284,7 @@ export const CoverageRecordSchema = z
           outcome: z.string(),
           result: Ref.optional(),
           manifest: Ref.optional(),
+          warnings: ResearchWarningsSchema.optional(),
           /**
            * The exact claim batch of a targeted theme request (#658), so a
            * reassessment replays the same request instead of rebuilding it
@@ -1087,6 +1089,7 @@ export async function assessPostCoverage(input: {
             : job.status,
       ...(job.resultRef ? { result: toRef(job.resultRef) } : {}),
       ...(manifestRef ? { manifest: toRef(manifestRef) } : {}),
+      ...(manifest?.warnings?.length ? { warnings: manifest.warnings } : {}),
       ...(targetedClaims ? { targetedClaims } : {}),
     });
     return { job, assessed: assess(group, job, manifest) };

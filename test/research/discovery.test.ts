@@ -121,6 +121,59 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     });
     expect(calls).toBe(1);
   });
+  it("warning policy accepts only readable complete-transport length limits without altering retained discovery", async () => {
+    const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+      await capture(body("length"));
+      throw new ModelProviderError("bad-response");
+    });
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    const original = (await artifacts.lookup(`${path()}/result.json`))!;
+    const bytes = await artifacts.read(original);
+    const partial = await captureResearchDiscovery({
+      ...options(),
+      invoke,
+      partialReport: "warning-v1",
+    });
+    expect(partial.partial).toBe(true);
+    expect(partial.ref).toEqual(original);
+    expect(partial.data.report).toBe(data.report);
+    expect(await artifacts.read(original)).toBe(bytes);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    await expect(readResearchDiscovery(artifacts, original, operations)).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+  });
+  it.each([
+    ["{", "complete"],
+    [
+      JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }),
+      "complete",
+    ],
+    [body("length"), "incomplete"],
+    [body("length"), "resource-limit"],
+  ] as const)(
+    "warning policy never accepts unreadable or technically truncated responses %s/%s",
+    async (raw, transport) => {
+      const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+        await capture({
+          representation: "provider-json",
+          body: Buffer.from(raw).toString("base64"),
+          encoding: "base64",
+          transport,
+        });
+        throw new ModelProviderError("bad-response");
+      });
+      await expect(
+        captureResearchDiscovery({ ...options(), invoke, partialReport: "warning-v1" }),
+      ).rejects.toMatchObject({ code: "invalid-report" });
+      await expect(
+        captureResearchDiscovery({ ...options(), invoke, partialReport: "warning-v1" }),
+      ).rejects.toMatchObject({ code: "invalid-report" });
+      expect(invoke).toHaveBeenCalledTimes(1);
+    },
+  );
   it("never recalls after an ambiguous no-response failure", async () => {
     let calls = 0;
     const invoke = async () => {

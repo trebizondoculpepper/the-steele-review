@@ -794,6 +794,7 @@ export async function draftFromPackage(input: {
         ? { sourceContextRef: toRef(loaded.context.source.provenanceRef) }
         : {}),
     },
+    ...(pkg.researchWarnings?.length ? { researchWarnings: pkg.researchWarnings } : {}),
     themes: loaded.context.themes.proposals.map((t) => ({
       title: t.title,
       description: t.description,

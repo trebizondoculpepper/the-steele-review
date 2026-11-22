@@ -22,8 +22,10 @@ import {
 } from "../../src/research/retained-research-source.js";
 import { recoverRetainedResearch } from "../../src/research/retained-research.js";
 import { RESEARCH_PROMPT_VERSION, runResearchJob } from "../../src/research/runner.js";
-import { researchJobId, finishResearchJob } from "../../src/research/job.js";
+import { researchJobId, finishResearchJob, openResearchJob } from "../../src/research/job.js";
 import { assessPostCoverage, LexicalShortlister } from "../../src/research/librarian.js";
+import { savedResearch } from "../../src/dashboard/research.js";
+import { researchViews } from "../../src/dashboard/research-views.js";
 import { saveWriterPackage } from "../../src/drafting/writer-package.js";
 import { librarianFixtures, CLAIMS, TEXT, SHARED } from "./librarian-fixtures.js";
 const ref = (r: ArtifactRef) => ({
@@ -45,7 +47,7 @@ afterEach(async () => {
   operations.close();
   await rm(dir, { recursive: true, force: true });
 });
-async function seeded() {
+async function seeded(historicalFailure = true) {
   const fx = librarianFixtures(artifacts),
     a = await fx.analysis("post", CLAIMS);
   const theme = JSON.parse(await artifacts.read(a.themeResult));
@@ -138,19 +140,31 @@ async function seeded() {
       throw new ModelProviderError("bad-response");
     }),
   };
-  const failed = await runResearchJob({
-    artifacts,
-    operations,
-    request,
-    owner: "original",
-    sonar,
-    fetcher: {
-      fetch: async () => {
-        throw new Error("must not retrieve invalid discovery");
+  if (historicalFailure)
+    await openResearchJob({ artifacts, operations, request, owner: "original" });
+  // Historical failure is created through the legacy discovery contract;
+  // the new normal runner now curates this same readable response as partial.
+  await expect(
+    captureResearchDiscovery({
+      artifacts,
+      operations,
+      request,
+      processor,
+      owner: "original",
+      invoke: async (capture) => {
+        await sonar.research("", undefined, capture);
+        throw new Error("unreachable");
       },
-    },
-  });
-  expect(failed).toMatchObject({ result: { outcome: "failed", failure: "invalid-report" } });
+    }),
+  ).rejects.toMatchObject({ code: "invalid-report" });
+  if (historicalFailure)
+    await finishResearchJob({
+      artifacts,
+      operations,
+      jobId: researchJobId(request),
+      outcome: "failed",
+      failure: "invalid-report",
+    });
   const identity = discoveryIdentity(request, processor),
     discovery = (await artifacts.lookup(
       `research-discovery/${identity.requestId}/${identity.discoveryId}/result.json`,
@@ -182,6 +196,62 @@ function deps() {
   };
 }
 describe("retained incomplete research composition", { timeout: 60000 }, () => {
+  it("normal curation continues exact readable length-limited discovery to a warning package without another provider call", async () => {
+    const f = await seeded(false),
+      d = deps();
+    const discoveryBytes = await artifacts.read(f.discovery);
+    f.sonar.research.mockClear();
+    f.sonar.research.mockImplementation(async () => {
+      throw new Error("new discovery forbidden");
+    });
+    const coverage = await assessPostCoverage({
+      artifacts,
+      themeResult: f.themes,
+      claimResult: f.claims,
+      shortlister: new LexicalShortlister(),
+      commission: async (request) => {
+        const out = await runResearchJob({ ...d, request, sonar: f.sonar });
+        if (out.status !== "finished") throw new Error("unexpected busy");
+        return {
+          ...out,
+          resultRef: (await artifacts.lookup(`research-jobs/${out.jobId}/result.json`))!,
+        };
+      },
+    });
+    const pkg = await saveWriterPackage({ content: artifacts, coverage: coverage.ref });
+    expect(coverage.record.jobs[0]).toMatchObject({
+      outcome: "complete-with-gaps",
+      warnings: [{ code: "report-output-limit", discovery: ref(f.discovery) }],
+    });
+    expect(pkg.package.researchWarnings).toEqual(coverage.record.jobs[0]!.warnings);
+    expect(pkg.package.claims.find((c) => c.claimRecordId === "claim-treaty")).toMatchObject({
+      status: "covered",
+    });
+    expect(pkg.package.claims.find((c) => c.claimRecordId === "claim-payment")?.status).toBe("gap");
+    expect(f.sonar.research).not.toHaveBeenCalled();
+    expect(await artifacts.read(f.discovery)).toBe(discoveryBytes);
+    const result = JSON.parse(
+      await artifacts.read(
+        (await artifacts.lookup(`research-jobs/${researchJobId(f.request)}/result.json`))!,
+      ),
+    );
+    expect(result.warnings).toEqual(pkg.package.researchWarnings);
+    const reportRef = (await artifacts.lookup(
+      `research-jobs/${researchJobId(f.request)}/report.json`,
+    ))!;
+    const [, view] = researchViews(savedResearch(artifacts));
+    const html = await view!.render(
+      new URL(
+        `https://app.example/research/view?path=${encodeURIComponent(reportRef.path)}&at=${reportRef.commit}`,
+      ),
+    );
+    expect(html).toContain("Partial research warning");
+    expect(html).toContain("complete-with-gaps");
+
+    await runResearchJob({ ...d, request: f.request, sonar: f.sonar });
+    expect(f.sonar.research).not.toHaveBeenCalled();
+  });
+
   it("retrieves and independently checks retained annotations, then normal research/curation builds supported-only package with zero discovery calls", async () => {
     const f = await seeded(),
       d = deps(),
@@ -199,6 +269,9 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     if (recovered.status !== "recovered") throw new Error();
     expect(recovered.binding.jobId).not.toBe(researchJobId(f.request));
     expect(recovered.result.outcome).toBe("complete-with-gaps");
+    expect(recovered.result.warnings).toEqual([
+      expect.objectContaining({ code: "report-output-limit", discovery: ref(f.discovery) }),
+    ]);
     expect(d.fetcher.fetch).toHaveBeenCalledTimes(2);
     expect(d.judge.judge).toHaveBeenCalledTimes(1);
     const coverage = await assessPostCoverage({
@@ -225,6 +298,8 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     ).not.toBe("evidence-found");
     const pkg = await saveWriterPackage({ content: artifacts, coverage: coverage.ref });
     expect(pkg.package.status).toBe("ready");
+    expect(pkg.package.researchWarnings).toEqual(recovered.result.warnings);
+    expect(coverage.record.jobs[0]?.warnings).toEqual(recovered.result.warnings);
     expect(pkg.package.source.context).toEqual(ref(f.context));
     expect(f.sonar.research).not.toHaveBeenCalled();
     expect(await artifacts.read(f.failedResult)).toBe(old);
