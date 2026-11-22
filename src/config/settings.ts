@@ -68,6 +68,7 @@ const modelId = z
  * The registry. Defaults mirror the values the current entry points apply,
  * so adopting the registry changes no deployed behaviour.
  */
+export const DEFAULT_RESEARCH_MAX_TOKENS = 4000;
 export const RESEARCH_MAX_TOKENS = "STEELE_RESEARCH_MAX_TOKENS";
 export const ResearchMaxTokensSchema = int(1, 32_000);
 export const RESEARCH_TOKEN_SETTING: SettingSpec<number> = {
@@ -76,7 +77,7 @@ export const RESEARCH_TOKEN_SETTING: SettingSpec<number> = {
   description:
     "Maximum output tokens per new research request (1–32000). Read live before dispatch; existing reports remain reusable.",
   schema: ResearchMaxTokensSchema,
-  default: "4000",
+  default: String(DEFAULT_RESEARCH_MAX_TOKENS),
   sensitivity: "public",
   activation: "live",
 };

@@ -1,3 +1,4 @@
+import { ConfigurationError } from "../controllers/configuration.js";
 import { AppliedResearchTokensSchema } from "../config/research-tokens.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -560,6 +561,12 @@ export async function captureResearchDiscovery(input: {
       });
       // Interpretation below records invalid returned data; it is never a no-response retry.
     } else {
+      if (error instanceof ConfigurationError) {
+        // The configuration handler failed before the adapter sent anything.
+        // Do not turn this known local refusal into an ambiguous paid response.
+        input.operations.yieldClaim(claim.claim);
+        throw error;
+      }
       const code =
         error instanceof ModelProviderError &&
         ["credit-exhausted", "rate-limited", "unauthorised", "bad-request"].includes(error.code)

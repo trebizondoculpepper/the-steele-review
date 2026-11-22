@@ -1,3 +1,4 @@
+import { DEFAULT_RESEARCH_MAX_TOKENS } from "../config/settings.js";
 import {
   researchTokensFromConfiguration,
   type ResearchTokensReader,
@@ -33,7 +34,7 @@ import {
 
 export const DEFAULT_SONAR_MODEL = DEFAULT_RESEARCH_MODEL;
 export const DEFAULT_SONAR_TIMEOUT_MS = 180_000;
-export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = 4_000;
+export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = DEFAULT_RESEARCH_MAX_TOKENS;
 
 export interface SonarReport {
   report: string;

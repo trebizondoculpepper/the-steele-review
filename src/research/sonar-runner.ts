@@ -1,4 +1,5 @@
 import { reportPartialResearch } from "../observability/research-warning.js";
+import { ConfigurationError } from "../controllers/configuration.js";
 import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
@@ -137,6 +138,13 @@ export async function runSonarResearch(input: {
         : { costUsd: captured.data.usage.costUsd }),
     };
   } catch (error) {
+    if (
+      error instanceof ConfigurationError ||
+      (input.discover.liveTokens && error instanceof ArtifactStoreError)
+    ) {
+      input.operations.yieldClaim(job.claim);
+      throw error;
+    }
     if (error instanceof ResearchDiscoveryError && error.code === "busy") {
       input.operations.yieldClaim(job.claim);
       return { status: "busy", jobId: job.jobId };

@@ -1,4 +1,6 @@
 import { reportPartialResearch } from "../observability/research-warning.js";
+import { ConfigurationError } from "../controllers/configuration.js";
+import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import {
@@ -436,6 +438,13 @@ export async function runResearchJob(input: {
           : { costUsd: captured.data.usage.costUsd }),
       };
     } catch (error) {
+      if (
+        error instanceof ConfigurationError ||
+        (sonar.liveTokens && error instanceof ArtifactStoreError)
+      ) {
+        input.operations.yieldClaim(opened.claim);
+        throw error;
+      }
       if (error instanceof ResearchDiscoveryError && error.code === "busy") {
         input.operations.yieldClaim(opened.claim);
         return { status: "busy", jobId };

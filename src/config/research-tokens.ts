@@ -11,7 +11,7 @@ export const AppliedResearchTokensSchema = z
   .object({
     maxOutputTokens: ResearchMaxTokensSchema,
     source: z.enum(["environment", "file", "default"]),
-    revision: z.string().min(1).max(200),
+    revision: z.string().regex(/^config-sha256:[0-9a-f]{32}$/),
   })
   .strict();
 export type AppliedResearchTokens = z.infer<typeof AppliedResearchTokensSchema>;

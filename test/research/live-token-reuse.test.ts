@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vite-plus/test";
-import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import { ArtifactStoreError, GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { captureResearchDiscovery } from "../../src/research/discovery.js";
 import { RESEARCH_PROMPT_VERSION, runResearchJob } from "../../src/research/runner.js";
@@ -110,6 +110,191 @@ it(
       expect(JSON.stringify(returned.appliedTokens)).not.toContain("synthetic-settings.json");
       expect(fetcher.fetch).not.toHaveBeenCalled();
     } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(["configuration", "storage"] as const)(
+  "%s failure before dispatch remains retryable, not a paid-response uncertainty",
+  { timeout: 60000 },
+  async (failure) => {
+    const dir = await mkdtemp(join(tmpdir(), "live-token-refusal-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      await artifacts.initialise();
+      let raw =
+        failure === "configuration"
+          ? "sensitive malformed sentinel"
+          : JSON.stringify({ STEELE_RESEARCH_MAX_TOKENS: "12000" });
+      const request = {
+        schemaVersion: 1,
+        origin: "manual",
+        pass: 1,
+        subject: "Synthetic corrected settings",
+        claims: [],
+        corpusRefs: [],
+      };
+      const fetch = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "fixture/model",
+              choices: [{ message: { content: "A usable report." }, finish_reason: "stop" }],
+            }),
+          ),
+      );
+      const sonar = new OpenRouterSonarClient({
+        apiKey: "synthetic-test-key",
+        model: "fixture/model",
+        timeoutMs: 1000,
+        maxOutputTokens: 4000,
+        tokens: researchTokensFromConfiguration({
+          env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+          read: async () => raw,
+        }),
+        fetch,
+      });
+      const deps = {
+        artifacts,
+        operations,
+        request,
+        owner: "fixture",
+        sonar,
+        fetcher: {
+          fetch: async () => {
+            throw new Error("no citations");
+          },
+        },
+      };
+      if (failure === "storage")
+        vi.spyOn(artifacts, "list").mockRejectedValueOnce(new ArtifactStoreError("git-failed"));
+      await expect(runResearchJob(deps)).rejects.toMatchObject(
+        failure === "configuration" ? { category: "file-invalid" } : { code: "git-failed" },
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      expect(
+        await artifacts.lookup(`research-jobs/${researchJobId(request)}/result.json`),
+      ).toBeUndefined();
+      expect(
+        (await artifacts.list(`research-discovery/${researchJobId(request)}`, 50)).some((path) =>
+          path.endsWith("/uncertain.json"),
+        ),
+      ).toBe(false);
+      raw = JSON.stringify({ STEELE_RESEARCH_MAX_TOKENS: "12000" });
+      expect(await runResearchJob(deps)).toMatchObject({
+        status: "finished",
+        result: { outcome: "complete-with-gaps" },
+      });
+      await runResearchJob(deps);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(["local", "staged"] as const)(
+  "%s entry point preserves known pre-dispatch configuration refusal and safe retry",
+  { timeout: 60000 },
+  async (mode) => {
+    const dir = await mkdtemp(join(tmpdir(), "live-token-entry-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      await artifacts.initialise();
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-test-key");
+      let raw = "sensitive malformed sentinel";
+      const fetch = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "fixture/model",
+              choices: [{ message: { content: "A report." }, finish_reason: "stop" }],
+            }),
+          ),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const tokens = researchTokensFromConfiguration({
+        env: { STEELE_SETTINGS_FILE: "synthetic-settings.json" },
+        read: async () => raw,
+      });
+      const request = {
+        schemaVersion: 1 as const,
+        origin: "manual" as const,
+        pass: 1,
+        subject: `Synthetic ${mode} refusal`,
+        claims: [],
+        corpusRefs: [],
+      };
+      const fetcher = {
+        fetch: async () => {
+          throw new Error("no citations");
+        },
+      };
+      const local = (await import("../../src/controllers/sonar.js")).sonarFromEnv({
+        model: "fixture/model",
+        timeoutMs: 1000,
+        maxTokens: 4000,
+        tokens,
+      });
+      const sonar = new OpenRouterSonarClient({
+        apiKey: "synthetic-test-key",
+        model: "fixture/model",
+        timeoutMs: 1000,
+        maxOutputTokens: 4000,
+        tokens,
+        fetch,
+      });
+      const run =
+        mode === "local"
+          ? () =>
+              import("../../src/research/sonar-runner.js").then((m) =>
+                m.runSonarResearch({
+                  artifacts,
+                  operations,
+                  owner: "fixture",
+                  request,
+                  fetcher,
+                  discover: local,
+                }),
+              )
+          : () =>
+              import("../../src/research/staged-research.js").then((m) =>
+                m.discoverStage(
+                  {
+                    artifacts,
+                    operations,
+                    owner: "fixture",
+                    sonar,
+                    fetcher,
+                    limits: {
+                      maxSources: 1,
+                      maxAttempts: 1,
+                      timeoutMs: 1000,
+                      maxSourceChars: 1000,
+                    },
+                  },
+                  request,
+                ),
+              );
+      await expect(run()).rejects.toMatchObject({ category: "file-invalid" });
+      expect(fetch).not.toHaveBeenCalled();
+      raw = JSON.stringify({ STEELE_RESEARCH_MAX_TOKENS: "12000" });
+      await run();
+      await run();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(
+        (await artifacts.list(`research-discovery/${researchJobId(request)}`, 50)).some((path) =>
+          path.endsWith("/uncertain.json"),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
       operations.close();
       await rm(dir, { recursive: true, force: true });
     }

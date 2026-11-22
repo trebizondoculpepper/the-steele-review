@@ -197,7 +197,7 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     const appliedTokens = {
       maxOutputTokens: 4000,
       source: "file",
-      revision: "settings-sha256:synthetic",
+      revision: `config-sha256:${"a".repeat(32)}`,
     };
     const invoke = vi.fn(async (capture: DiscoveryCapture) => {
       await capture({

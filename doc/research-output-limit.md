@@ -41,3 +41,10 @@ move the existing configured value to the canonical setting and remove the forme
 environment knob. Preserve the current configured 12000; do not silently activate
 the default, increase provider spending limits, or create a second configuration
 copy. No runtime change is part of the source implementation.
+
+A handler refusal before transport is a known local configuration failure, not an
+ambiguous paid response. The discovery and job leases are yielded and bounded
+workflow retries may read a corrected file. No uncertain-response marker or failed
+research result is fabricated for that refusal. Operational failures selecting a
+saved response likewise remain retryable in the new live path. An actual ambiguous
+transport response retains the existing no-recall handling.

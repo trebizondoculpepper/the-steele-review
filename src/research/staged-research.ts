@@ -1,3 +1,5 @@
+import { ConfigurationError } from "../controllers/configuration.js";
+import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { WebAdapterError } from "../controllers/research-web.js";
@@ -110,6 +112,11 @@ export async function discoverStage(
     });
     return { kind: "discovered", discovery: plain(captured.ref) };
   } catch (error) {
+    if (
+      error instanceof ConfigurationError ||
+      (deps.sonar.liveTokens && error instanceof ArtifactStoreError)
+    )
+      throw error;
     // Credit exhaustion is not a verdict on the evidence (#407).
     if (isCreditExhausted(error)) return { kind: "failed", failure: "budget-exceeded" };
     if (error instanceof WebAdapterError && error.code === "credit-exhausted")
