@@ -108,6 +108,17 @@ remain permissible. Incomplete or mismatched evidence cannot authorize publicati
 Version policy inputs so a changed acceptance rule cannot silently reuse an older
 approval.
 
+Ordinary opinion does not need an explicit opinion label or a qualifier in every
+sentence. The judge should request a correction for a concrete material error in
+facts, quotation, paraphrase, attribution, certainty or scope, rather than for a
+missing qualifier alone. Conflating separate incidents or allegations can mislead
+and requires correction; an obvious evaluative judgment need not be rewritten as
+hedged prose. Opinion cannot disguise an invented factual premise. Prefer concise
+replacement or deletion to accumulating caveats. Within the roughly 900-word
+editorial target, prioritize claims the saved evidence can address; omission of an
+unresearched claim is not itself a fault unless the article claims exhaustive
+coverage. Keep the legacy combined verifier stable during this replacement.
+
 The console should retain each assessment and judgment, their reasons and the
 revision they concern, while preserving legacy combined reports. A terminal
 summary is not an additional model assessment.
@@ -132,3 +143,40 @@ Owner decisions recorded on #516, #522 and #535:
 
 These are implementation requirements and ordering decisions, not deployment or
 owner-browser acceptance evidence.
+
+## Next editorial end-to-end checkpoint
+
+After the assessor/judge corrections, exact-version approval integration (#580)
+and connected Restate editorial loop (#600) pass review, deploy the reviewed
+compatible build and rerun the same previously processed article through the
+normal pipeline. Preserve the original terminal attempt and exact source
+version; an intentional rerun needs its own durable request/attempt identity,
+while retries of that same request attach to the same attempt. Do not change the
+source version merely to manufacture a new run or clear failed state.
+
+Keep the configured research allowance unchanged, currently two new jobs. The
+normal librarian should reuse applicable saved mappings and evidence and may
+commission new work for remaining gaps within that allowance. The earlier
+zero-research/saved-package-only proposal is withdrawn for this checkpoint.
+Record actual evidence/job reuse separately from newly commissioned work; do not
+assume a repeated article automatically means no new research.
+
+Before submission, confirm no conflicting active work, preserve private runtime
+configuration, apply the reviewed configured-person attribution, and inspect
+saved source context plus actual writer input for author identity and basis,
+observed byline, original medium, supplied representation and dates. No new
+capture is required solely to repeat paid research. Refresh, when needed, remains
+a separate action from processing.
+
+Follow the new attempt through saved draft, assessment, judgment, bounded revision
+and exact-version approval. Prove both dummy destination receipts (#244), then
+perform the already authorized controlled real editable draft proof (#386),
+unpublished with subscriber email off and exact read-back. Reconcile uncertain
+side effects rather than creating another draft. Keep broad automatic publishing
+and unrelated backlog processing off. Retain unresolved findings on failure.
+
+Unrelated console features, Markdown writer output and the broader standalone
+research migration are not additional prerequisites for this editorial checkpoint.
+Report which researcher/librarian path actually ran; this checkpoint does not
+claim completion of their separate migration tickets. These are execution and
+acceptance requirements, not evidence that a deployment or trial has happened.
