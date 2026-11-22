@@ -185,3 +185,61 @@ describe("assessments browser (#642)", { timeout: 60_000 }, () => {
     expect(page.next).toBeDefined();
   });
 });
+
+describe("assessment document exact version (#642 follow-up)", { timeout: 60_000 }, () => {
+  it("reads the recorded document version, not the current path", async () => {
+    const doc = await content.write("assessments/pub/p1/pinned.md", "ORIGINAL FINDINGS");
+    await writeAssessment(
+      "pub",
+      "p1",
+      "7".repeat(32),
+      record({
+        state: "findings",
+        findings: 1,
+        document: {
+          repository: doc.repository,
+          commit: doc.commit,
+          path: doc.path,
+          hash: `sha256:${doc.sha256}`,
+        },
+      }),
+    );
+    // Simulate a store whose HEAD lookup cannot see this path: only the pinned
+    // read can resolve the document.
+    const pinnedOnly = {
+      list: content.list.bind(content),
+      // HEAD cannot see the document path; only the pinned read can.
+      lookup: async (target: string) =>
+        target === 'assessments/pub/p1/pinned.md' ? undefined : content.lookup(target),
+      lookupAt: content.lookupAt.bind(content),
+      read: content.read.bind(content),
+    };
+    const found = await savedAssessments(pinnedOnly as never).detail(
+      `assessments/pub/p1/${"7".repeat(32)}.json`,
+    );
+    expect(found?.document).toBe("ORIGINAL FINDINGS");
+    expect(found?.documentUnreadable).toBe(false);
+  });
+
+  it("refuses a document whose bytes no longer match the recorded hash", async () => {
+    const doc = await content.write("assessments/pub/p2/pinned.md", "ORIGINAL");
+    await writeAssessment(
+      "pub",
+      "p2",
+      "8".repeat(32),
+      record({
+        document: {
+          repository: doc.repository,
+          commit: doc.commit,
+          path: doc.path,
+          hash: `sha256:${"0".repeat(64)}`,
+        },
+      }),
+    );
+    const found = await savedAssessments(content).detail(
+      `assessments/pub/p2/${"8".repeat(32)}.json`,
+    );
+    expect(found?.document).toBeUndefined();
+    expect(found?.documentUnreadable).toBe(true);
+  });
+});

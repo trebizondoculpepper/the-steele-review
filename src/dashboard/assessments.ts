@@ -61,7 +61,7 @@ export interface AssessmentsPort {
   detail(path: string): Promise<AssessmentDetail | undefined>;
 }
 
-type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
+type Store = Pick<GitArtifactStore, "list" | "lookup" | "lookupAt" | "read">;
 
 export function savedAssessments(
   content: Store,
@@ -157,9 +157,20 @@ export function savedAssessments(
         deterministic = record.deterministicFindings;
         if (record.document) {
           try {
-            const docRef = await content.lookup(record.document.path);
-            if (docRef) document = await content.read(docRef);
-            else documentUnreadable = true;
+            // Read exactly the recorded version: a later write at the same path
+            // must never change what this assessment is said to have found.
+            const found = await content.lookupAt(
+              record.document.commit,
+              record.document.path,
+            );
+            if (
+              !found ||
+              `sha256:${found.ref.sha256}` !== record.document.hash
+            ) {
+              documentUnreadable = true;
+            } else {
+              document = found.content;
+            }
           } catch {
             documentUnreadable = true;
           }
