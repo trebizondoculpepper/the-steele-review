@@ -384,8 +384,15 @@ export function restateRuns(
   return {
     async status(post): Promise<RunState> {
       const normal = await read(articleRunKey(post));
-      const recorded =
-        attempts?.articleAttempts(post.publicationId, post.postId, post.sourceVersion, 10) ?? [];
+      let recorded: ReturnType<OperationStore["articleAttempts"]>;
+      try {
+        recorded =
+          attempts?.articleAttempts(post.publicationId, post.postId, post.sourceVersion, 10) ?? [];
+      } catch {
+        // Newer attempts cannot be discovered: the stable run's result may be
+        // stale, so the current status is unknown rather than that result.
+        return { state: "unavailable" };
+      }
       if (recorded.length) {
         const current = recorded[0]!;
         const selected = await read(current.workflowKey);
