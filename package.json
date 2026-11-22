@@ -42,7 +42,8 @@
     "article-run": "node --enable-source-maps dist/cli/article-run.js",
     "install-wake-hook": "node --enable-source-maps dist/cli/install-wake-hook.js",
     "verify-package-draft": "node --enable-source-maps dist/cli/verify-package-draft.js",
-    "telegram-session": "node --enable-source-maps dist/cli/telegram-session.js"
+    "telegram-session": "node --enable-source-maps dist/cli/telegram-session.js",
+    "recover-research": "node --enable-source-maps dist/cli/recover-research.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",

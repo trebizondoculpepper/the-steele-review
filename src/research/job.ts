@@ -27,11 +27,13 @@ export const RESEARCH_JOB_SCHEMA_VERSION = 1;
 
 const Ref = ArtifactReferenceSchema;
 const JobId = z.string().regex(/^research-[0-9a-f]{32}$/);
-export const RetainedResearchRecoverySchema = z.object({
-  version: z.literal("retained-length-limit-v1"),
-  discovery: Ref,
-  failedResult: Ref,
-}).strict();
+export const RetainedResearchRecoverySchema = z
+  .object({
+    version: z.literal("retained-length-limit-v1"),
+    discovery: Ref,
+    failedResult: Ref,
+  })
+  .strict();
 
 export const ResearchRequestSchema = z
   .object({
@@ -193,6 +195,16 @@ export function researchJobId(input: unknown): string {
     brief: r.brief ? r.brief.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
     pass: r.pass,
     previous: r.previousJobId ?? null,
+    ...(r.retainedRecovery
+      ? {
+          retainedRecovery: [
+            r.retainedRecovery.version,
+            refKey(r.retainedRecovery.discovery),
+            refKey(r.retainedRecovery.failedResult),
+            r.post?.sourceContext ? refKey(r.post.sourceContext) : null,
+          ],
+        }
+      : {}),
     post: r.post
       ? [
           r.post.publicationId,
