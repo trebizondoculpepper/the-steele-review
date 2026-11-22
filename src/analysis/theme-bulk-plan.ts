@@ -31,6 +31,11 @@ export type ProcessorIdentity = z.infer<typeof ProcessorIdentitySchema>;
 export interface SavedThemeExtraction {
   /** Exact source revision the saved result was produced from. */
   sourceVersion: string;
+  /**
+   * Stable source-post identity (`publicationId/postId`). Ranking counts
+   * distinct posts, so the same post supplied twice must not count twice.
+   */
+  postKey?: string;
   processor: ProcessorIdentity;
   /** False when the saved result could not be read or parsed. */
   readable: boolean;
@@ -133,9 +138,11 @@ export interface ThemeFrequency {
  * see what the extractor actually produced.
  */
 export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFrequency[] {
-  const byTheme = new Map<string, { titles: Map<string, number>; posts: Set<number> }>();
+  const byTheme = new Map<string, { titles: Map<string, number>; posts: Set<string> }>();
   results.forEach((result, index) => {
     if (!result.readable) return;
+    // Prefer the stable post identity; the index is only a fallback.
+    const postIdentity = result.postKey ?? `#${index}`;
     for (const title of result.titles) {
       const wording = normaliseThemeTitle(title);
       if (wording === "") continue;
@@ -143,9 +150,10 @@ export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFreque
       // ones stay separate rather than being merged by resemblance.
       const canonical = result.canonicalByTitle?.[title];
       const k = canonical ? `canonical:${canonical}` : wording;
-      const entry = byTheme.get(k) ?? { titles: new Map<string, number>(), posts: new Set<number>() };
+      const entry = byTheme.get(k) ?? { titles: new Map<string, number>(), posts: new Set<string>() };
       entry.titles.set(title, (entry.titles.get(title) ?? 0) + 1);
-      entry.posts.add(index);
+      entry.posts.add(postIdentity);
+
       byTheme.set(k, entry);
     }
   });

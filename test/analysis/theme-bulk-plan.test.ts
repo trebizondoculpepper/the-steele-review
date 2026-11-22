@@ -68,6 +68,15 @@ describe("theme-only bulk plan (#526)", () => {
     expect(ranked.some((r) => r.key === "chemtrails")).toBe(true);
   });
 
+  it("counts a post once even when its saved result is supplied twice", () => {
+    const ranked = rankThemeFrequency([
+      saved({ postKey: "pub/p1" }),
+      saved({ postKey: "pub/p1" }),
+      saved({ postKey: "pub/p2" }),
+    ]);
+    expect(ranked[0]).toMatchObject({ key: "weather modification", postCount: 2 });
+  });
+
   it("bounds one pass and reports truncation instead of silently covering less", () => {
     const plan = planThemeBulk({
       selection: [post("p1"), post("p2"), post("p3")],
