@@ -110,6 +110,13 @@ export const MarkdownCandidateSchema = ArticleHeaderSchema.extend({
 }).strict();
 export type MarkdownCandidate = z.infer<typeof MarkdownCandidateSchema>;
 
+/** Match the parser's body normalisation without stripping Markdown indentation. */
+function normaliseBody(text: string): string {
+  const body = text.replace(/\r\n?/g, "\n").replace(/^\n+/, "").replace(/\s+$/, "");
+  if (body.length > MAX_BODY_CHARS) throw new MarkdownArticleError("oversized-body");
+  return body;
+}
+
 /**
  * Structural split only: the header's JSON value (not yet schema-checked)
  * and the body. Delimiter, JSON syntax, duplicate-key and size errors are
@@ -131,12 +138,7 @@ export function splitMarkdownArticle(text: string): { header: unknown; body: str
   }
   const duplicate = firstDuplicateKey(headerText);
   if (duplicate !== undefined) throw new MarkdownArticleError("duplicate-header-key", duplicate);
-  const body = lines
-    .slice(close + 1)
-    .join("\n")
-    .replace(/^\n+/, "")
-    .replace(/\s+$/, "");
-  if (body.length > MAX_BODY_CHARS) throw new MarkdownArticleError("oversized-body");
+  const body = normaliseBody(lines.slice(close + 1).join("\n"));
   return { header, body: body.length > 0 ? `${body}\n` : "" };
 }
 
@@ -165,7 +167,9 @@ export function serialiseMarkdownArticle(article: MarkdownArticle): string {
   const pretty = JSON.stringify(header, null, 2);
   const json = pretty.length <= MAX_HEADER_CHARS ? pretty : JSON.stringify(header);
   if (json.length > MAX_HEADER_CHARS) throw new MarkdownArticleError("oversized-header");
-  return `${OPEN}\n${json}\n${CLOSE}\n\n${article.body.replace(/\s+$/, "")}\n`;
+  const body = normaliseBody(article.body);
+  if (body.trim().length === 0) throw new MarkdownArticleError("empty-body");
+  return `${OPEN}\n${json}\n${CLOSE}\n\n${body}\n`;
 }
 
 /**

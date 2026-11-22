@@ -55,6 +55,27 @@ describe("Markdown article format (#535)", () => {
     expect(parseMarkdownArticle(serialiseMarkdownArticle(article))).toEqual(article);
   });
 
+  it.each(["", " ", "\t\r\n  \n"])("refuses an empty body before serialising: %j", (body) => {
+    expect(code(() => serialiseMarkdownArticle({ header, body }))).toBe("empty-body");
+  });
+
+  it("refuses a just-oversized body before serialising", () => {
+    expect(
+      code(() => serialiseMarkdownArticle({ header, body: "x".repeat(MAX_BODY_CHARS + 1) })),
+    ).toBe("oversized-body");
+  });
+
+  it("round-trips the body size boundary and significant leading indentation", () => {
+    for (const body of ["x".repeat(MAX_BODY_CHARS), "    Indented Markdown.\n\n  More prose."]) {
+      const encoded = serialiseMarkdownArticle({ header, body });
+      expect(parseMarkdownArticle(encoded)).toEqual({ header, body: `${body}\n` });
+    }
+    // Match parser normalisation: CRLF and boundary newlines do not use body capacity.
+    expect(
+      parseMarkdownArticle(serialiseMarkdownArticle({ header, body: "\r\n  Body.\r\n" })).body,
+    ).toBe("  Body.\n");
+  });
+
   it("normalises CRLF line endings and a leading byte-order mark", () => {
     const parsed = parseMarkdownArticle(`﻿${doc("Line one.\nLine two.").replace(/\n/g, "\r\n")}`);
     expect(parsed.body).toBe("Line one.\nLine two.\n");
