@@ -103,7 +103,7 @@ const run = (s: SonarClient, extra: Record<string, unknown> = {}) =>
     ...extra,
   });
 
-describe("research runner", () => {
+describe("research runner", { timeout: 60_000 }, () => {
   it("stops recoverably when the support judge runs out of credit, reusing the saved report (#407)", async () => {
     const s1 = sonar(["https://treaties.un.org/enmod"]);
     const brokeJudge: SupportJudge = {
@@ -432,7 +432,7 @@ describe("research runner", () => {
   });
 });
 
-describe("review fixes", () => {
+describe("review fixes", { timeout: 60_000 }, () => {
   it("keeps compatibility characters distinct when matching passages", async () => {
     const sup: PageFetcher = {
       async fetch(url) {

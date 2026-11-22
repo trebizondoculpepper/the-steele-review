@@ -654,6 +654,28 @@ export class OperationStore {
     });
   }
 
+  /** Fence a returned research response against both stale ownership and an expired paid-call lease. */
+  renewResearchDiscovery(claim: OperationClaim, leaseMs: number): number {
+    if (
+      !claim.key.startsWith("research-discovery:") ||
+      !Number.isInteger(leaseMs) ||
+      leaseMs < 1000 ||
+      leaseMs > 20 * 60_000
+    )
+      throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      const expires = now + leaseMs;
+      this.db
+        .prepare("UPDATE operations SET lease_expires_at = ?, updated_at = ? WHERE key = ?")
+        .run(expires, now, claim.key);
+      return expires;
+    });
+  }
+
   /**
    * Record completion and pending downstream events in one transaction.
    * Call only after the artifact is durably committed. A repeated completion

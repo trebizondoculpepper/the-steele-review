@@ -1,10 +1,18 @@
+import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
+import { discoveryFromAdapterReport } from "./discovery-data.js";
+import { ModelProviderError } from "../controllers/openrouter.js";
 import {
   ArtifactStoreError,
   type ArtifactRef,
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
-import { SonarError, type SonarReport } from "../controllers/sonar.js";
+import {
+  SonarError,
+  SUBJECT_RESEARCH_PROMPT_VERSION,
+  type SubjectResearchProvider,
+  type SonarReport,
+} from "../controllers/sonar.js";
 import type { PageFetcher } from "./gap-research.js";
 import {
   CitationRecordSchema,
@@ -41,7 +49,7 @@ export async function runSonarResearch(input: {
   operations: OperationStore;
   owner: string;
   request: ResearchRequest;
-  discover: (request: ResearchRequest) => Promise<SonarReport>;
+  discover: SubjectResearchProvider;
   fetcher: PageFetcher;
 }): Promise<
   | { status: "busy"; jobId: string }
@@ -64,12 +72,68 @@ export async function runSonarResearch(input: {
   };
 
   let discovery: SonarReport;
+  let discoveryRef: ArtifactRef | undefined;
   try {
-    discovery = await input.discover(input.request);
+    const captured = await captureResearchDiscovery({
+      artifacts: input.artifacts,
+      operations: input.operations,
+      request: input.request,
+      owner: input.owner,
+      processor: input.discover.discoveryProcessor ?? {
+        version: "research-discovery-v1",
+        model: "adapter-unspecified",
+        promptVersion: SUBJECT_RESEARCH_PROMPT_VERSION,
+        parameters: {},
+      },
+      invoke: async (capture) => {
+        try {
+          return discoveryFromAdapterReport(await input.discover(input.request, capture));
+        } catch (error) {
+          if (error instanceof SonarError)
+            throw new ModelProviderError(
+              error.code === "budget-exceeded"
+                ? "credit-exhausted"
+                : error.code === "timeout"
+                  ? "timeout"
+                  : error.code === "invalid-report"
+                    ? "bad-response"
+                    : "unavailable",
+            );
+          throw error;
+        }
+      },
+    });
+    discoveryRef = captured.ref;
+    const cited = [
+      ...captured.data.citations,
+      ...captured.data.annotationUrls,
+      ...Array.from(captured.data.report.matchAll(/\]\((https?:\/\/[^\s)<>]+)\)/g), (m) => m[1]!),
+    ];
+    discovery = {
+      model: captured.data.model,
+      report: captured.data.report,
+      citations: cited.length ? cited : captured.data.searchResultUrls,
+      ...(captured.data.usage?.costUsd === undefined
+        ? {}
+        : { costUsd: captured.data.usage.costUsd }),
+    };
   } catch (error) {
+    if (error instanceof ResearchDiscoveryError && error.code === "busy") {
+      input.operations.yieldClaim(job.claim);
+      return { status: "busy", jobId: job.jobId };
+    }
     return finish({
       outcome: "failed",
-      failure: error instanceof SonarError ? error.code : "provider-error",
+      failure:
+        error instanceof ModelProviderError
+          ? error.code === "credit-exhausted"
+            ? "budget-exceeded"
+            : error.code === "timeout"
+              ? "timeout"
+              : "provider-error"
+          : error instanceof ResearchDiscoveryError && error.code === "invalid-report"
+            ? "invalid-report"
+            : "provider-error",
     });
   }
   const directory = `research-jobs/${job.jobId}`;
@@ -166,6 +230,7 @@ export async function runSonarResearch(input: {
   const manifest = ResearchManifestSchema.parse({
     schemaVersion: 1,
     jobId: job.jobId,
+    ...(discoveryRef ? { discovery: reference(discoveryRef) } : {}),
     report: reference(report),
     coveringNote: reference(note),
     citations,
