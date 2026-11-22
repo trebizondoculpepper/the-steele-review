@@ -57,6 +57,8 @@ export const LibrarianPlanSchema = z
           .object({
             canonicalThemeId: Id,
             action: DossierActionSchema,
+            /** Exact dossier revision assessed, when one exists. */
+            dossierRef: z.string().min(1).max(400).optional(),
             rationale: z.string().min(1).max(1000),
             gaps: z.array(z.string().min(1).max(500)).max(50),
           })
@@ -105,7 +107,14 @@ export interface PlanInputs {
   /** Canonical themes that already exist. */
   themes: Set<string>;
   /** Themes with a current dossier, and that dossier's per-claim coverage. */
-  dossiers: Map<string, { coverage: Map<string, "covered" | "gap"> }>;
+  dossiers: Map<
+    string,
+    {
+      coverage: Map<string, "covered" | "gap">;
+      /** Exact dossier artifact reference (repository@commit:path), when known. */
+      ref?: string;
+    }
+  >;
   now?: () => Date;
 }
 
@@ -167,17 +176,17 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       });
       continue;
     }
-    // A claim absent from the dossier's coverage is not covered by omission.
-    const uncovered = [
-      ...dossier.coverage.values(),
-      ...input.claims
-        .filter((c) => c.canonicalThemeId === mapping.canonicalThemeId)
-        .filter((c) => !dossier.coverage.has(c.claimRecordId))
-        .map(() => "gap" as const),
-    ].filter((c) => c === "gap").length;
+    // Count only this article's claims: a historical gap on another claim is
+    // not a gap for the piece being planned.
+    const uncovered = input.claims.filter(
+      (c) =>
+        c.canonicalThemeId === mapping.canonicalThemeId &&
+        dossier.coverage.get(c.claimRecordId) !== "covered",
+    ).length;
     dossiers.push({
       canonicalThemeId: mapping.canonicalThemeId,
       action: uncovered > 0 ? "enhance-existing" : "reuse-existing",
+      ...(dossier.ref ? { dossierRef: dossier.ref } : {}),
       rationale:
         uncovered > 0
           ? `existing dossier leaves ${uncovered} claim(s) without covering evidence`
@@ -186,7 +195,18 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
     });
   }
 
+  const resolvedThemes = new Set(mappings.map((m) => m.canonicalThemeId));
   const claims: LibrarianPlan["claims"] = input.claims.map((claim) => {
+    // A claim pointing at a theme this plan never resolved gets no coverage
+    // from that theme: it is unresolved work, not inherited evidence.
+    if (!resolvedThemes.has(claim.canonicalThemeId)) {
+      return {
+        claimRecordId: claim.claimRecordId,
+        canonicalThemeId: claim.canonicalThemeId,
+        coverage: "none" as const,
+        action: "research" as const,
+      };
+    }
     const dossier = input.dossiers.get(claim.canonicalThemeId);
     const coverage = dossier?.coverage.get(claim.claimRecordId) ?? (dossier ? "gap" : "none");
     return {
@@ -229,7 +249,7 @@ export function librarianPlanPath(
   const identity = JSON.stringify([
     plan.inputs.sourceVersion,
     plan.inputs.author ? [plan.inputs.author.name, plan.inputs.author.basis] : null,
-    plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps]),
+    plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps, d.dossierRef ?? null]),
     plan.mappings.map((m) => [m.proposalId, m.canonicalThemeId, m.source]).sort(),
     // The theme a claim belongs to is material even when its coverage and
     // action are unchanged by the reassignment.

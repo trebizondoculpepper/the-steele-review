@@ -193,6 +193,57 @@ describe("librarian assessment and plan (#595)", () => {
     expect(librarianPlanPath(base, before)).not.toBe(librarianPlanPath(base, after));
   });
 
+  it("counts gaps only from this article's claims", () => {
+    const mine = base.claims[0]!.claimRecordId;
+    const plan = planLibrarianAssessment({
+      ...base,
+      mappings: new Map([["t1", mapping("geoengineering")]]),
+      themes: new Set(["geoengineering"]),
+      dossiers: new Map([
+        [
+          "geoengineering",
+          {
+            coverage: new Map<string, "covered" | "gap">([
+              [mine, "covered"],
+              [`sha256:${"d".repeat(64)}`, "gap"], // historical, unrelated claim
+            ]),
+          },
+        ],
+      ]),
+    });
+    expect(plan.dossiers[0]).toMatchObject({ action: "reuse-existing" });
+  });
+
+  it("does not borrow coverage for a claim from an unresolved theme", () => {
+    const plan = planLibrarianAssessment({
+      ...base,
+      claims: [{ claimRecordId: base.claims[0]!.claimRecordId, canonicalThemeId: "some-other-theme" }],
+      mappings: new Map([["t1", mapping("geoengineering")]]),
+      themes: new Set(["geoengineering", "some-other-theme"]),
+      dossiers: new Map([["some-other-theme", { coverage: new Map([[base.claims[0]!.claimRecordId, "covered" as const]]) }]]),
+    });
+    expect(plan.claims[0]).toMatchObject({ coverage: "none", action: "research" });
+  });
+
+  it("pins the assessed dossier revision in the plan and its identity", () => {
+    const make = (ref: string) =>
+      planLibrarianAssessment({
+        ...base,
+        mappings: new Map([["t1", mapping("geoengineering")]]),
+        themes: new Set(["geoengineering"]),
+        dossiers: new Map([
+          [
+            "geoengineering",
+            { coverage: new Map([[base.claims[0]!.claimRecordId, "covered" as const]]), ref },
+          ],
+        ]),
+      });
+    const first = make("content@aaaa:dossiers/geoengineering.json");
+    const second = make("content@bbbb:dossiers/geoengineering.json");
+    expect(first.dossiers[0]!.dossierRef).toBe("content@aaaa:dossiers/geoengineering.json");
+    expect(librarianPlanPath(base, first)).not.toBe(librarianPlanPath(base, second));
+  });
+
   it("saves write-once so an earlier plan stays readable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-plan-"));
     await mkdir(join(dir, "c"));
