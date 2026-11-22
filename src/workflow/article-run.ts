@@ -180,6 +180,13 @@ export interface ResearchStages {
   ): Promise<{ kind: "discovered"; discovery: StageRef } | { kind: "failed"; failure: string }>;
   inventory(discovery: StageRef): Promise<StageRef>;
   retrieve(inventory: StageRef): Promise<{ retryable: number; creditExhausted?: true }>;
+  /** The inventory's fetch keys, in order (#593 per-URL steps). */
+  ids(inventory: StageRef): Promise<string[]>;
+  /** Retrieve one fetch key as its own named durable step. */
+  retrieveOne(
+    inventory: StageRef,
+    retrievalId: string,
+  ): Promise<{ retryable: boolean; creditExhausted?: true }>;
   assemble(discovery: StageRef, inventory: StageRef): Promise<CommissionedJob>;
   failed(request: ResearchRequest, failure: string): Promise<CommissionedJob>;
   /** A job already finished (terminal failure or result) is reused, never rerun. */
@@ -214,13 +221,24 @@ export async function runResearch(
     return ctx.run("research-failed", () => s.failed(request, failure));
   }
   const inventory = await ctx.run("research-inventory", () => s.inventory(found.discovery));
-  for (let round = 0; round < s.rounds; round++) {
-    const out = await ctx.run(`research-retrieve-${round}`, () => s.retrieve(inventory));
-    if (out.creditExhausted) {
-      return ctx.run("research-failed", () => s.failed(request, "budget-exceeded"));
+  // Each URL is its own named step, so every retrieval is visible and
+  // recoverable on its own; a failed URL never repeats completed ones.
+  let pendingIds = await ctx.run("research-ids", () => s.ids(inventory));
+  for (let round = 0; round < s.rounds && pendingIds.length > 0; round++) {
+    const retry: string[] = [];
+    for (const id of pendingIds) {
+      const out = await ctx.run(`research-retrieve-${id}-${round}`, () =>
+        s.retrieveOne(inventory, id),
+      );
+      if (out.creditExhausted) {
+        return ctx.run("research-failed", () => s.failed(request, "budget-exceeded"));
+      }
+      if (out.retryable) retry.push(id);
     }
-    if (out.retryable === 0) break;
-    if (round < s.rounds - 1) await ctx.sleep(s.roundDelayMs * 2 ** round);
+    pendingIds = retry;
+    if (pendingIds.length > 0 && round < s.rounds - 1) {
+      await ctx.sleep(s.roundDelayMs * 2 ** round);
+    }
   }
   return ctx.run("research-assemble", () => s.assemble(found.discovery, inventory));
 }

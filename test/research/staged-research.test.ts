@@ -12,6 +12,8 @@ import {
   finishFailedStage,
   inventoryStage,
   retrieveStage,
+  retrievalIds,
+  retrieveOneStage,
   type StagedResearchDeps,
 } from "../../src/research/staged-research.js";
 import { researchJobId } from "../../src/research/job.js";
@@ -85,6 +87,8 @@ function stagesFor(deps: StagedResearchDeps): ResearchStages {
     discover: (r) => discoverStage(deps, r),
     inventory: (d) => inventoryStage(deps, d),
     retrieve: (i) => retrieveStage(deps, i),
+    ids: (i) => retrievalIds(deps, i),
+    retrieveOne: (i, id) => retrieveOneStage(deps, i, id),
     assemble: (d, i) => assembleStage(deps, d, i),
     failed: (r, f) => finishFailedStage(deps, r, f as never),
     existing: (r) => existingJob(deps, r),
@@ -138,7 +142,7 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
       ...stages,
       researchStages: {
         ...stages.researchStages,
-        retrieve: async () => {
+        retrieveOne: async () => {
           throw new Error("crash");
         },
       },
@@ -153,7 +157,6 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
         "research-existing",
         "research-discover",
         "research-inventory",
-        "research-retrieve-0",
         "research-assemble",
       ]),
     );
@@ -193,7 +196,10 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
       request,
       "staged",
     );
-    expect(run.names).toContain("research-retrieve-1");
+    // Each URL is its own named step; only the flaky one has a second round.
+    const retrievals = run.names.filter((n) => n.startsWith("research-retrieve-"));
+    expect(retrievals.filter((n) => n.endsWith("-0"))).toHaveLength(2);
+    expect(retrievals.filter((n) => n.endsWith("-1"))).toHaveLength(1);
     // The adapter-only fake provenance always leaves a gap; both sources are archived.
     const manifest = JSON.parse(
       await artifacts.read((await artifacts.lookup(job.result!.manifest!.path))!),
@@ -234,6 +240,10 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
     expect(out.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
     expect(out.resultRef).toBeUndefined();
     expect(operations.pendingEventStatus(out.jobId)).toBeUndefined();
+    // An inspectable record of the stopped attempt, not a final result.
+    const attempts = await artifacts.list(`research-jobs/${out.jobId}/attempts`, 10);
+    expect(attempts).toHaveLength(1);
+    expect(await artifacts.lookup(`research-jobs/${out.jobId}/result.json`)).toBeUndefined();
   });
 
   it("keeps the legacy single step when staged research is not configured", async () => {

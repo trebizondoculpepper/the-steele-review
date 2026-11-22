@@ -319,6 +319,12 @@ export async function retrieveCitations(input: {
   /** Injectable for tests; real delays between retryable attempts otherwise. */
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /**
+   * Retrieve only these fetch keys (by retrieval ID), so each can run as its
+   * own durable workflow step (#593). The source limit still counts keys in
+   * inventory order, so filtering never changes which keys are attempted.
+   */
+  only?: ReadonlySet<string>;
 }): Promise<RetrievalSummary> {
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const random = input.random ?? Math.random;
@@ -344,6 +350,7 @@ export async function retrieveCitations(input: {
   const outcomes: RetrievalOutcome[] = [];
   const retryable: RetrievalSummary["retryable"] = [];
   for (const [index, { id, key }] of keys.entries()) {
+    if (input.only && !input.only.has(id)) continue;
     const outcomePath = `${dir}/retrievals/${id}.json`;
     const existing = await input.artifacts.lookup(outcomePath);
     if (existing) {
