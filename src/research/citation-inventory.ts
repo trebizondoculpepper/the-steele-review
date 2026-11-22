@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type { OperationStore } from "../controllers/operation-store.js";
 import { WebAdapterError } from "../controllers/research-web.js";
 import type { DiscoveryData } from "./discovery-data.js";
+import { readResearchDiscovery } from "./discovery.js";
 import type { PageFetcher } from "./gap-research.js";
 import { writeOnce } from "./job.js";
 
@@ -12,47 +14,54 @@ import { writeOnce } from "./job.js";
  *
  * Two named, deterministic stages after durable discovery (#590):
  *
- * 1. **Inventory.** URLs are taken from the exact saved discovery data:
- *    provider citations, annotation URLs, search-result URLs, and URLs
- *    extracted from the report text, each with its origin. Every distinct
- *    original URL keeps its own identity (anchors and fragments included);
- *    retrieval is keyed separately by a normalised fetch key (fragment
- *    removed), so one download can serve several citations without any cited
- *    section being lost or a source silently replaced.
- * 2. **Retrieval.** Each distinct fetch key is fetched through the existing
- *    public-page controller (public-host/DNS pinning, redirect policy, time
- *    and size bounds stay there) and gets its own saved outcome. A snapshot
- *    is saved before its outcome; one URL's failure never loses another's
- *    download. Transient failures retry a bounded number of times and are
- *    reported as retryable, not recorded as permanent; permanent outcomes are
- *    recorded once. Entries beyond the configured limit are recorded as not
- *    attempted. A resume reads the saved inventory, never a rebuilt list.
+ * 1. **Inventory.** URLs come only from the exact, accepted saved discovery,
+ *    read through #590's typed reader (never caller-supplied data): provider
+ *    citations, annotation URLs, search-result URLs and URLs in the report
+ *    text, each with its origin. Every distinct original URL keeps its own
+ *    identity (anchors included); retrieval is keyed separately by a
+ *    normalised fetch key (fragment removed), so one download can serve
+ *    several citations without a cited section being lost or a source
+ *    silently replaced. Oversized URLs and entries beyond the bound are
+ *    recorded, never a reason for the stage to fail.
+ * 2. **Retrieval.** Each fetch key is fetched through the existing
+ *    public-page controller and gets its own saved, schema-validated
+ *    outcome. Snapshots are validated on write and on adoption and must
+ *    match their key. Transient failures, including this stage's own
+ *    deadline, retry a bounded number of times and are reported as
+ *    retryable, never recorded as permanent. Storage failures are not
+ *    mistaken for fetch failures. A resume reads the saved inventory.
  */
 
-export const CITATION_INVENTORY_VERSION = "citation-inventory-v1";
+export const CITATION_INVENTORY_VERSION = "citation-inventory-v2";
 const Ref = ArtifactReferenceSchema;
+/** Bound on one URL as stored and fetched. */
+export const MAX_URL_CHARS = 4000;
+/** Bound on inventory entries; anything beyond is counted, not stored. */
+export const MAX_INVENTORY_ENTRIES = 20_000;
 
 export const CitationOriginSchema = z
   .object({
     kind: z.enum(["provider-citation", "annotation", "search-result", "report-text"]),
-    /** Position within that origin's list (report-text: order of appearance). */
     index: z.number().int().min(0),
   })
   .strict();
 
 export const CitationEntrySchema = z
   .object({
-    /** Stable identity of the original cited URL (exact string). */
+    /** Stable identity of the full original cited URL string. */
     id: z.string().regex(/^cite-[0-9a-f]{24}$/),
-    originalUrl: z.string().max(4000),
+    /** The original URL; truncated (and flagged) only when it exceeds the bound. */
+    originalUrl: z.string().max(MAX_URL_CHARS),
+    originalUrlTruncated: z.literal(true).optional(),
     origins: z.array(CitationOriginSchema).min(1).max(100),
-    /** Normalised fetch key, or absent when the URL is not a fetchable public https/http URL. */
-    retrievalKey: z.string().max(4000).optional(),
+    retrievalKey: z.string().max(MAX_URL_CHARS).optional(),
     retrievalId: z
       .string()
       .regex(/^fetch-[0-9a-f]{24}$/)
       .optional(),
-    invalidReason: z.enum(["not-a-url", "unsupported-scheme", "credentials-in-url"]).optional(),
+    invalidReason: z
+      .enum(["not-a-url", "unsupported-scheme", "credentials-in-url", "too-long"])
+      .optional(),
   })
   .strict();
 export type CitationEntry = z.infer<typeof CitationEntrySchema>;
@@ -62,10 +71,26 @@ export const CitationInventorySchema = z
     schemaVersion: z.literal(1),
     extractor: z.literal(CITATION_INVENTORY_VERSION),
     discovery: Ref,
-    entries: z.array(CitationEntrySchema).max(20_000),
+    entries: z.array(CitationEntrySchema).max(MAX_INVENTORY_ENTRIES),
+    /** Distinct URLs beyond the entry bound: recorded as a count, never dropped silently. */
+    omittedEntries: z.number().int().min(0),
   })
   .strict();
 export type CitationInventory = z.infer<typeof CitationInventorySchema>;
+
+export const CitationSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    retrievalKey: z.string().max(MAX_URL_CHARS),
+    url: z.string().max(MAX_URL_CHARS * 2),
+    title: z.string().max(2000),
+    publisher: z.string().max(500).optional(),
+    publishedAt: z.string().max(100).optional(),
+    truncated: z.boolean(),
+    text: z.string().max(2_000_000),
+  })
+  .strict();
+export type CitationSnapshot = z.infer<typeof CitationSnapshotSchema>;
 
 export const RetrievalOutcomeSchema = z
   .object({
@@ -95,17 +120,43 @@ const fromRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
   path: r.path,
   sha256: r.hash.replace(/^sha256:/, ""),
 });
+const sameRef = (a: z.infer<typeof Ref>, b: z.infer<typeof Ref>) =>
+  a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash;
 
-/** URLs written in the report text, in order, with trailing punctuation trimmed. */
+/**
+ * URLs written in the report text, in order. Trailing prose punctuation and
+ * unbalanced closing brackets are trimmed; balanced parentheses inside a URL
+ * (for example `Mercury_(planet)`) are kept.
+ */
 export function urlsInReport(report: string): string[] {
-  const found = report.match(/https?:\/\/[^\s<>"'`)\]]+/g) ?? [];
-  return found.map((u) => u.replace(/[.,;:!?]+$/, ""));
+  const found = report.match(/https?:\/\/[^\s<>"'`]+/g) ?? [];
+  return found.map((raw) => {
+    let u = raw;
+    for (;;) {
+      const last = u.at(-1);
+      if (last && ".,;:!?".includes(last)) {
+        u = u.slice(0, -1);
+        continue;
+      }
+      if (last === ")" || last === "]") {
+        const open = last === ")" ? "(" : "[";
+        const opens = u.split(open).length - 1;
+        const closes = u.split(last).length - 1;
+        if (closes > opens) {
+          u = u.slice(0, -1);
+          continue;
+        }
+      }
+      return u;
+    }
+  });
 }
 
 /** The fetch key for an original URL: the same resource without its fragment. */
 export function retrievalKeyFor(
   url: string,
 ): { key: string } | { invalid: NonNullable<CitationEntry["invalidReason"]> } {
+  if (url.length > MAX_URL_CHARS) return { invalid: "too-long" };
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -117,22 +168,33 @@ export function retrievalKeyFor(
   }
   if (parsed.username || parsed.password) return { invalid: "credentials-in-url" };
   parsed.hash = "";
-  return { key: parsed.toString() };
+  const key = parsed.toString();
+  // Normalisation can lengthen a URL (percent-encoding): still bounded.
+  return key.length > MAX_URL_CHARS ? { invalid: "too-long" } : { key };
 }
 
-/** Build the deduplicated inventory deterministically from saved discovery data. */
-export function buildCitationInventory(data: DiscoveryData): CitationEntry[] {
+/** Build the deduplicated inventory deterministically from accepted discovery data. */
+export function buildCitationInventory(data: DiscoveryData): {
+  entries: CitationEntry[];
+  omittedEntries: number;
+} {
   const byUrl = new Map<string, CitationEntry>();
+  let omittedEntries = 0;
   const add = (url: string, kind: z.infer<typeof CitationOriginSchema>["kind"], index: number) => {
     const existing = byUrl.get(url);
     if (existing) {
       if (existing.origins.length < 100) existing.origins.push({ kind, index });
       return;
     }
+    if (byUrl.size >= MAX_INVENTORY_ENTRIES) {
+      omittedEntries++;
+      return;
+    }
     const key = retrievalKeyFor(url);
     byUrl.set(url, {
       id: `cite-${sha(url).slice(0, 24)}`,
-      originalUrl: url.slice(0, 4000),
+      originalUrl: url.slice(0, MAX_URL_CHARS),
+      ...(url.length > MAX_URL_CHARS ? { originalUrlTruncated: true as const } : {}),
       origins: [{ kind, index }],
       ...("key" in key
         ? { retrievalKey: key.key, retrievalId: `fetch-${sha(key.key).slice(0, 24)}` }
@@ -143,28 +205,62 @@ export function buildCitationInventory(data: DiscoveryData): CitationEntry[] {
   data.annotationUrls.forEach((u, i) => add(u, "annotation", i));
   data.searchResultUrls.forEach((u, i) => add(u, "search-result", i));
   urlsInReport(data.report).forEach((u, i) => add(u, "report-text", i));
-  return [...byUrl.values()];
+  return { entries: [...byUrl.values()], omittedEntries };
 }
 
-/** Save (or reuse) the inventory for one exact saved discovery result. */
+/** Reads accepted discovery data for an exact saved result; throws on rejection. */
+export type DiscoveryReader = (result: ArtifactRef) => Promise<DiscoveryData>;
+
+/** The production reader: #590's typed, acceptance-checked boundary. */
+export function acceptedDiscoveryReader(
+  artifacts: GitArtifactStore,
+  operations: Pick<OperationStore, "researchDiscoveryAccepted">,
+): DiscoveryReader {
+  return async (result) => (await readResearchDiscovery(artifacts, result, operations)).data;
+}
+
+export class CitationInventoryError extends Error {
+  constructor(readonly code: "discovery-rejected" | "inventory-mismatch") {
+    super(`citation inventory: ${code}`);
+    this.name = "CitationInventoryError";
+  }
+}
+
+/**
+ * Save (or reuse) the inventory for one exact saved discovery result. The
+ * URLs come only from that accepted discovery; a rejected, quarantined or
+ * unreadable discovery stops here with no provider call.
+ */
 export async function saveCitationInventory(input: {
   artifacts: GitArtifactStore;
-  /** The discovery `result.json` reference the data was read from. */
+  /** The discovery `result.json` reference. */
   discovery: ArtifactRef;
-  data: DiscoveryData;
+  readDiscovery: DiscoveryReader;
 }): Promise<{ ref: ArtifactRef; inventory: CitationInventory }> {
   const dir = input.discovery.path.replace(/\/result\.json$/, "");
   const path = `${dir}/citations/inventory.json`;
   const saved = await input.artifacts.lookup(path);
   if (saved) {
     const inventory = CitationInventorySchema.parse(JSON.parse(await input.artifacts.read(saved)));
+    // A reused inventory must belong to exactly this discovery result.
+    if (!sameRef(inventory.discovery, toRef(input.discovery))) {
+      throw new CitationInventoryError("inventory-mismatch");
+    }
     return { ref: saved, inventory };
   }
+  let data: DiscoveryData;
+  try {
+    data = await input.readDiscovery(input.discovery);
+  } catch {
+    throw new CitationInventoryError("discovery-rejected");
+  }
+  const built = buildCitationInventory(data);
   const inventory = CitationInventorySchema.parse({
     schemaVersion: 1,
     extractor: CITATION_INVENTORY_VERSION,
     discovery: toRef(input.discovery),
-    entries: buildCitationInventory(input.data),
+    entries: built.entries,
+    omittedEntries: built.omittedEntries,
   });
   const ref = await writeOnce(input.artifacts, path, inventory);
   return {
@@ -188,6 +284,22 @@ export interface RetrievalSummary {
 }
 
 const PERMANENT_UNSUPPORTED = new Set(["redirected", "unsupported-content"]);
+
+/** Fetch one key with this stage's own deadline, which is always a retryable timeout. */
+async function fetchOnce(fetcher: PageFetcher, key: string, timeoutMs: number) {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), timeoutMs);
+  try {
+    return { page: await fetcher.fetch(key, deadline.signal) };
+  } catch (error) {
+    if (deadline.signal.aborted) return { error: new WebAdapterError("timeout") };
+    if (error instanceof WebAdapterError) return { error };
+    // Only fetch failures reach here: storage happens outside this call.
+    return { error: new WebAdapterError("unavailable") };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Retrieve every fetch key of a saved inventory, each independently. Reads
@@ -237,49 +349,65 @@ export async function retrieveCitations(input: {
       await record({ ...base, status: "not-attempted", reason: "source-limit", attempts: 0 });
       continue;
     }
-    // A snapshot saved before a crash is the retrieval: never fetch again.
+    // A snapshot retained before a crash is adopted only if it is a valid
+    // snapshot of exactly this key; otherwise it is kept for diagnosis and
+    // never presented as archived evidence.
     const snapshotPath = `${dir}/snapshots/${id}.json`;
     const savedSnapshot = await input.artifacts.lookup(snapshotPath);
     if (savedSnapshot) {
-      await record({ ...base, status: "archived", attempts: 0, snapshot: toRef(savedSnapshot) });
+      let valid = false;
+      try {
+        const snap = CitationSnapshotSchema.parse(
+          JSON.parse(await input.artifacts.read(savedSnapshot)),
+        );
+        valid = snap.retrievalKey === key;
+      } catch {
+        valid = false;
+      }
+      await record(
+        valid
+          ? { ...base, status: "archived", attempts: 0, snapshot: toRef(savedSnapshot) }
+          : { ...base, status: "unavailable", reason: "invalid-retained-snapshot", attempts: 0 },
+      );
       continue;
     }
     let attempts = 0;
+    let page: Awaited<ReturnType<PageFetcher["fetch"]>> | undefined;
     let last: WebAdapterError | undefined;
-    for (; attempts < input.limits.maxAttempts;) {
+    while (attempts < input.limits.maxAttempts) {
       attempts++;
-      try {
-        const signal = AbortSignal.timeout(input.limits.timeoutMs);
-        const page = await input.fetcher.fetch(key, signal);
-        const text = page.text.slice(0, input.limits.maxSourceChars);
-        const snapshot = await writeOnce(input.artifacts, snapshotPath, {
+      const out = await fetchOnce(input.fetcher, key, input.limits.timeoutMs);
+      if ("page" in out) {
+        page = out.page;
+        last = undefined;
+        break;
+      }
+      last = out.error;
+      if (last.code === "credit-exhausted") throw last; // not a verdict on the source
+      if (!last.retryable) break;
+    }
+    // Storage happens outside the fetch: its failures propagate, never retried as fetches.
+    if (page) {
+      const text = page.text.slice(0, input.limits.maxSourceChars);
+      const snapshot = await writeOnce(
+        input.artifacts,
+        snapshotPath,
+        CitationSnapshotSchema.parse({
           schemaVersion: 1,
           retrievalKey: key,
           url: page.url,
-          title: page.title,
-          ...(page.publisher ? { publisher: page.publisher } : {}),
-          ...(page.publishedAt ? { publishedAt: page.publishedAt } : {}),
+          title: page.title.slice(0, 2000),
+          ...(page.publisher ? { publisher: page.publisher.slice(0, 500) } : {}),
+          ...(page.publishedAt ? { publishedAt: page.publishedAt.slice(0, 100) } : {}),
           truncated: page.text.length > text.length,
           text,
-        });
-        await record({ ...base, status: "archived", attempts, snapshot: toRef(snapshot) });
-        last = undefined;
-        break;
-      } catch (error) {
-        last =
-          error instanceof WebAdapterError
-            ? error
-            : error instanceof Error && error.name === "TimeoutError"
-              ? new WebAdapterError("timeout")
-              : new WebAdapterError("unavailable");
-        if (last.code === "credit-exhausted") throw last; // not a verdict on the source
-        if (!last.retryable) break;
-      }
+        }),
+      );
+      await record({ ...base, status: "archived", attempts, snapshot: toRef(snapshot) });
+      continue;
     }
-    if (outcomes.at(-1)?.retrievalId === id) continue; // archived above
     if (!last) continue;
     if (last.retryable) {
-      // Transient: report it, never record it as a permanent outcome.
       retryable.push({ retrievalId: id, reason: last.code });
       continue;
     }
@@ -294,16 +422,10 @@ export async function retrieveCitations(input: {
   return { outcomes, retryable };
 }
 
-/** Read a saved snapshot by its exact reference. */
+/** Read a saved snapshot by its exact reference, validated. */
 export async function readCitationSnapshot(
   artifacts: Pick<GitArtifactStore, "read">,
   snapshot: z.infer<typeof Ref>,
-) {
-  return JSON.parse(await artifacts.read(fromRef(snapshot))) as {
-    retrievalKey: string;
-    url: string;
-    title: string;
-    text: string;
-    truncated: boolean;
-  };
+): Promise<CitationSnapshot> {
+  return CitationSnapshotSchema.parse(JSON.parse(await artifacts.read(fromRef(snapshot))));
 }
