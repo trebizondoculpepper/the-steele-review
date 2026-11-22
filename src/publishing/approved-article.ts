@@ -190,7 +190,7 @@ export class UncertainDeliveryError extends Error {
  */
 export class DestinationUnavailableError extends Error {
   constructor(
-    readonly reason: "auth-expired" | "rate-limited" | "unavailable",
+    readonly reason: "auth-expired" | "rate-limited" | "unavailable" | "paused",
     readonly retryAfterMs: number,
   ) {
     super(`destination unavailable: ${reason}`);
@@ -241,6 +241,14 @@ export interface DestinationSchedule {
   delayMs: number;
 }
 
+/** Fresh configuration-handler decision; no configuration is copied or cached here.
+ * The handler must check current stop/action policy AND the target's current
+ * identity/capability, so a stale adapter cannot approve its own old snapshot.
+ */
+export interface DraftDeliveryControl {
+  allow(target: DraftTarget): Promise<boolean>;
+}
+
 export type DeliveryDecision =
   | { action: "ack"; outcome: "delivered" | "reused"; receipt: ArtifactRef }
   | {
@@ -248,6 +256,7 @@ export type DeliveryDecision =
       delayMs: number;
       reason:
         | "unsupported-payload"
+        | "paused"
         | "scheduled"
         | "busy"
         | "retry"
@@ -450,6 +459,7 @@ export async function handleApprovedArticle(input: {
   schedule: DestinationSchedule;
   content: GitArtifactStore;
   operations: OperationStore;
+  deliveryControl?: DraftDeliveryControl;
   owner: string;
   now?: () => Date;
   retryDelayMs?: number;
@@ -487,7 +497,9 @@ async function deliverApprovedArticle(
   let publication: PublicationPayload | undefined;
   try {
     const checked = await readApprovedContent(input.content, event, input.operations);
-    assertDraftAuthorizationTarget(event, input.destination);
+    const target = assertDraftAuthorizationTarget(event, input.destination);
+    if (target && !(await input.deliveryControl?.allow(target)))
+      return { action: "nak", reason: "paused", delayMs: input.retryDelayMs ?? 30_000 };
     markdown = checked.markdown;
     publication = checked.publication;
   } catch (error) {
@@ -554,6 +566,17 @@ async function deliverApprovedArticle(
     return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
 
   try {
+    const requireLive = async (article: ArticleApprovedData) => {
+      const target = assertDraftAuthorizationTarget(article, destination);
+      if (!target) return;
+      let allowed: boolean | undefined;
+      try {
+        allowed = await input.deliveryControl?.allow(target);
+      } catch {
+        throw new DestinationUnavailableError("unavailable", input.retryDelayMs ?? 30_000);
+      }
+      if (!allowed) throw new DestinationUnavailableError("paused", input.retryDelayMs ?? 30_000);
+    };
     const holdUncertain = (): DeliveryDecision => {
       input.operations.yieldClaim(claim.claim);
       return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
@@ -654,6 +677,7 @@ async function deliverApprovedArticle(
     // A previous or concurrently retained intent may have acted already. Its
     // original preview and timestamp, not the newer event's, drive reconciliation.
     if (priorIntent || rawIntent !== candidate || uncertain) {
+      await requireLive(deliveryArticle);
       const r = await destination.reconcile(key, {
         preview,
         ...(intent.at ? { intentAt: intent.at } : {}),
@@ -665,6 +689,7 @@ async function deliverApprovedArticle(
       if (r.delivered) delivered = r.delivered;
     }
     if (!delivered) {
+      await requireLive(deliveryArticle);
       input.operations.renew(claim.claim, 10 * 60_000);
       delivered = await destination.deliver(preview, key);
     }

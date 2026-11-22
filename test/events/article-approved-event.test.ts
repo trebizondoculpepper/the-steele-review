@@ -34,7 +34,7 @@ describe("article approved contract (#274)", () => {
       "utf8",
     );
     const section = doc.slice(doc.indexOf("### Event contract"), doc.indexOf("**Envelope:**"));
-    const documented = [...section.matchAll(/^\| `(\w+)` \|/gm)].map((m) => m[1]).sort();
+    const documented = [...section.matchAll(/^\|\s+`(\w+)`\s+\|/gm)].map((m) => m[1]).sort();
     expect(documented).toEqual(Object.keys(ArticleApprovedDataSchema.shape).sort());
     expect(doc).toContain(ARTICLE_APPROVED_EVENT_TYPE_V1);
   });

@@ -8,6 +8,7 @@ import {
   type DestinationAdapter,
   type DestinationPreview,
   type ReconcileContext,
+  type DraftDeliveryControl,
 } from "../approved-article.js";
 import type { ArticleApprovedData } from "../../events/article-approved-event.js";
 import type { PublicationPayload } from "../../drafting/publication-payload.js";
@@ -57,6 +58,8 @@ export interface SubstackDestinationOptions {
    * an already-rendered intent, because the preview pins the chosen ID.
    */
   bylineId?: string;
+  /** Reads the live configuration handler before any new owner-draft effect. */
+  deliveryControl?: DraftDeliveryControl;
 }
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
@@ -81,8 +84,11 @@ function receiptFor(
 export class SubstackDraftDestination implements DestinationAdapter {
   readonly name: string;
   readonly action = "draft";
-  private readonly options: Required<Omit<SubstackDestinationOptions, "name" | "bylineId">>;
+  private readonly options: Required<
+    Omit<SubstackDestinationOptions, "name" | "bylineId" | "deliveryControl">
+  >;
   private readonly bylineId: string | undefined;
+  private readonly deliveryControl: DraftDeliveryControl | undefined;
 
   constructor(
     private readonly client: Pick<SubstackClient, "createDraft" | "getDraft" | "listDrafts"> &
@@ -94,6 +100,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       throw new Error("substack: invalid byline id");
     }
     this.bylineId = options.bylineId;
+    this.deliveryControl = options.deliveryControl;
     this.options = {
       authRetryMs: options.authRetryMs ?? 15 * 60_000,
       rateLimitRetryMs: options.rateLimitRetryMs ?? 5 * 60_000,
@@ -137,6 +144,16 @@ export class SubstackDraftDestination implements DestinationAdapter {
         Object.hasOwn(draft, "email_sent_at") &&
         draft.email_sent_at === null)
     );
+  }
+  private async requireLive(preview: DestinationPreview) {
+    if (!preview.draftAuthorization) return;
+    let allowed: boolean | undefined;
+    try {
+      allowed = await this.deliveryControl?.allow(preview.draftAuthorization);
+    } catch {
+      throw new DestinationUnavailableError("unavailable", this.options.unavailableRetryMs);
+    }
+    if (!allowed) throw new DestinationUnavailableError("paused", this.options.unavailableRetryMs);
   }
 
   render({
@@ -209,6 +226,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
 
   async deliver(preview: DestinationPreview, _key: string) {
     if (!this.validScope(preview)) throw new Error("substack: draft authorization target mismatch");
+    await this.requireLive(preview);
     const p = PreviewBodySchema.parse(JSON.parse(preview.body));
     // Preflight: a read with no side effects, so an expired session is found
     // before anything is created.
@@ -219,6 +237,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       throw error;
     }
     let id: string;
+    await this.requireLive(preview);
     try {
       ({ id } = await this.client.createDraft({
         title: p.title,
@@ -260,6 +279,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
   > {
     if (!context) return "unknown";
     if (!this.validScope(context.preview)) return "unknown";
+    await this.requireLive(context.preview);
     const p = PreviewBodySchema.parse(JSON.parse(context.preview.body));
     const intentAt = context.intentAt ? Date.parse(context.intentAt) : NaN;
     const found: SubstackDraft[] = [];

@@ -14,6 +14,7 @@ import {
   readDestinationDeliveryProof,
   assertDraftAuthorizationTarget,
   type DestinationAdapter,
+  type DraftDeliveryControl,
 } from "./approved-article.js";
 import { runPublisherService, type SelectedPublisherResult } from "./publisher-service.js";
 
@@ -31,7 +32,8 @@ export class SelectedPublisherError extends Error {
       | "selection-mismatch"
       | "not-dispatched"
       | "dummy-proof-missing"
-      | "ack-without-receipt",
+      | "ack-without-receipt"
+      | "delivery-paused",
   ) {
     super(`selected publisher: ${code}`);
     this.name = "SelectedPublisherError";
@@ -45,6 +47,7 @@ export async function runSelectedPublisher(input: {
   stream: string;
   content: GitArtifactStore;
   operations: OperationStore;
+  deliveryControl?: DraftDeliveryControl;
   destination: DestinationAdapter;
   owner: string;
   delayMs?: number;
@@ -74,7 +77,9 @@ export async function runSelectedPublisher(input: {
   )
     throw new SelectedPublisherError("selection-mismatch");
   await readApprovedContent(input.content, article, input.operations);
-  assertDraftAuthorizationTarget(article, input.destination);
+  const target = assertDraftAuthorizationTarget(article, input.destination);
+  if (target && !(await input.deliveryControl?.allow(target)))
+    throw new SelectedPublisherError("delivery-paused");
   const { eventId: _eventId, ...approved } = article;
   if (!(await readDummyDeliveryProof(input.content, approved, input.operations)))
     throw new SelectedPublisherError("dummy-proof-missing");

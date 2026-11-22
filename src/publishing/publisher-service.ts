@@ -6,6 +6,7 @@ import {
   handleApprovedArticle,
   readDestinationDeliveryProof,
   type DestinationAdapter,
+  type DraftDeliveryControl,
 } from "./approved-article.js";
 import { parseArticleApprovedEvent } from "../events/article-approved-event.js";
 import type { ArtifactRef } from "../controllers/artifact-store.js";
@@ -37,6 +38,7 @@ export async function runPublisherService(input: {
   destination: DestinationAdapter;
   content: GitArtifactStore;
   operations: OperationStore;
+  deliveryControl?: DraftDeliveryControl;
   owner: string;
   delayMs: number;
   retryDelayMs: number;
@@ -87,6 +89,7 @@ export async function runPublisherService(input: {
           schedule: { delayMs: input.delayMs },
           content: input.content,
           operations,
+          ...(input.deliveryControl ? { deliveryControl: input.deliveryControl } : {}),
           owner: input.owner,
           retryDelayMs: input.retryDelayMs,
         });

@@ -24,7 +24,7 @@ import { readRetainedDraftRehearsal } from "../../src/drafting/draft-rehearsal.j
 import { writeOnce } from "../../src/research/job.js";
 import { ARTICLE_APPROVED_SUBJECT } from "../../src/events/article-approved-event.js";
 import { retainedRehearsalFixture } from "./draft-rehearsal-fixtures.js";
-import type { SubstackDraft, NewDraft } from "../../src/publishing/substack/client.js";
+import { localDraftDestination } from "./draft-destination-fixture.js";
 
 let dir: string, content: GitArtifactStore, operations: OperationStore;
 beforeEach(async () => {
@@ -38,37 +38,6 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-export function localDraftDestination() {
-  const records: SubstackDraft[] = [],
-    calls = { create: 0, get: 0, list: 0 };
-  const client = {
-    draftTargetIdentity: `sha256:${"f".repeat(64)}`,
-    createDraft: async (input: NewDraft) => {
-      calls.create++;
-      const draft = {
-        id: String(records.length + 1),
-        draft_title: input.title,
-        draft_subtitle: input.subtitle ?? "",
-        draft_body: JSON.stringify(input.body),
-        is_published: false,
-        email_sent_at: null,
-      };
-      records.push(draft);
-      return { id: draft.id };
-    },
-    getDraft: async (id: string) => {
-      calls.get++;
-      const found = records.find((r) => r.id === id);
-      if (!found) throw new Error("synthetic absent draft");
-      return found;
-    },
-    listDrafts: async () => {
-      calls.list++;
-      return [...records];
-    },
-  };
-  return { client, records, calls, destination: new SubstackDraftDestination(client) };
-}
 const complete = (f: Awaited<ReturnType<typeof retainedRehearsalFixture>>) => ({
   read: async () => ({
     state: "completed" as const,
@@ -114,6 +83,7 @@ describe(
           schedule: { delayMs: 0 },
           content,
           operations,
+          deliveryControl: real.control,
           owner: "synthetic-owner",
         });
       for (const destination of destinations.slice(0, 2))
@@ -125,6 +95,7 @@ describe(
               schedule: { delayMs: 0 },
               content,
               operations,
+              deliveryControl: real.control,
               owner: "dummy-owner",
             })
           ).action,
@@ -132,6 +103,21 @@ describe(
       expect(await readDummyDeliveryProof(content, article, operations)).toBeDefined();
       expect((await deliver()).action).toBe("ack");
       expect(real.calls.create).toBe(1);
+      const beforePause = { ...real.calls };
+      expect(
+        await handleApprovedArticle({
+          payload: pending.payload,
+          destination: real.destination,
+          schedule: { delayMs: 0 },
+          content,
+          operations,
+          owner: "no-control",
+        }),
+      ).toMatchObject({ action: "nak", reason: "paused" });
+      real.policy.allowed = false;
+      expect(await deliver()).toMatchObject({ action: "nak", reason: "paused" });
+      expect(real.calls).toEqual(beforePause);
+      real.policy.allowed = true;
       expect((await deliver()).action).toBe("ack");
       expect(real.calls.create).toBe(1);
       const receiptRef = await readDestinationDeliveryProof(
@@ -234,6 +220,7 @@ describe(
         schedule: { delayMs: 0 },
         content,
         operations,
+        deliveryControl: real.control,
         owner: "synthetic",
       };
       expect(await handleApprovedArticle(input)).toMatchObject({

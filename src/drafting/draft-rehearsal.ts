@@ -36,30 +36,31 @@ const Stored = ArtifactReferenceSchema.omit({ hash: true })
   .extend({ sha256: z.string().regex(/^[a-f0-9]{64}$/) })
   .strict();
 const Version = z.object({ draft: Stored, metadata: Stored }).strict();
-const Summary = z.object({
-  version: z.literal("editorial-judge-recovery-history-v1"),
-  workflowKey: z.string(),
-  input: JudgeRecoveryRunInputSchema,
-  outcome: z.literal("rejected"),
-  approvalState: z.literal("absent"),
-  draft: Stored,
-  metadata: Stored,
-  newCounts: z.object({
-    revisionAttempts: z.literal(1),
-    revisions: z.literal(1),
-    assessments: z.number().int().min(1),
-    judgments: z.number().int().min(1),
-  }),
-  editorial: z.object({
-    initial: Version,
-    revisions: z.array(Version).length(1),
-    revisionAttempts: z.literal(1),
-    assessments: z.array(Stored).min(1).max(6),
-    judgments: z.array(Stored).min(1).max(6),
-    mechanicalRuns: z.array(Stored).length(1),
-    terminal: z.literal("unresolved"),
-  }),
-});
+const summarySchema = () =>
+  z.object({
+    version: z.literal("editorial-judge-recovery-history-v1"),
+    workflowKey: z.string(),
+    input: JudgeRecoveryRunInputSchema,
+    outcome: z.literal("rejected"),
+    approvalState: z.literal("absent"),
+    draft: Stored,
+    metadata: Stored,
+    newCounts: z.object({
+      revisionAttempts: z.literal(1),
+      revisions: z.literal(1),
+      assessments: z.number().int().min(1),
+      judgments: z.number().int().min(1),
+    }),
+    editorial: z.object({
+      initial: Version,
+      revisions: z.array(Version).length(1),
+      revisionAttempts: z.literal(1),
+      assessments: z.array(Stored).min(1).max(6),
+      judgments: z.array(Stored).min(1).max(6),
+      mechanicalRuns: z.array(Stored).length(1),
+      terminal: z.literal("unresolved"),
+    }),
+  });
 export class DraftRehearsalError extends Error {
   constructor(
     readonly code:
@@ -86,7 +87,7 @@ export async function readRetainedDraftRehearsal(input: {
   const request = OwnerDraftRequestSchema.parse(input.request),
     { content } = input;
   const read = async (ref: ArtifactReference) => JSON.parse(await content.read(artifactRef(ref)));
-  const summary = Summary.parse(await read(request.parent.summary));
+  const summary = summarySchema().parse(await read(request.parent.summary));
   const eq = (stored: z.infer<typeof Stored>, selected: ArtifactReference) =>
     sameArtifact(artifactReference(stored), selected);
   requireEvidence(
