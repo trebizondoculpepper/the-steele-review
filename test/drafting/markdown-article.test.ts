@@ -101,4 +101,21 @@ describe("Markdown article format (#535)", () => {
       "oversized-body",
     );
   });
+
+  it("round-trips a large valid provenance section within the header bound", () => {
+    const big: ArticleHeader = {
+      title: "Title",
+      subtitle: "Subtitle",
+      excerpt: "Excerpt",
+      provenance: {
+        responses: Array.from({ length: 50 }, (_, i) => ({
+          claimRecordId: `claim-${String(i).padStart(58, "0")}`,
+          verdict: "supported" as const,
+          evidence: Array.from({ length: 20 }, (_, j) => j),
+        })),
+      },
+    };
+    const article = { header: big, body: "Body.\n" };
+    expect(parseMarkdownArticle(serialiseMarkdownArticle(article))).toEqual(article);
+  });
 });

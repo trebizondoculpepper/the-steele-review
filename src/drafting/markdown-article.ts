@@ -139,7 +139,12 @@ export function serialiseMarkdownArticle(article: MarkdownArticle): string {
   const header = ArticleHeaderSchema.parse(article.header);
   // `JSON.stringify` escapes line breaks, so the header can never contain a
   // bare closing delimiter line.
-  return `${OPEN}\n${JSON.stringify(header, null, 2)}\n${CLOSE}\n\n${article.body.replace(/\s+$/, "")}\n`;
+  // Readable when it fits; compact otherwise, so every valid header the
+  // parser accepts also serialises within the parser's own size bound.
+  const pretty = JSON.stringify(header, null, 2);
+  const json = pretty.length <= MAX_HEADER_CHARS ? pretty : JSON.stringify(header);
+  if (json.length > MAX_HEADER_CHARS) throw new MarkdownArticleError("oversized-header");
+  return `${OPEN}\n${json}\n${CLOSE}\n\n${article.body.replace(/\s+$/, "")}\n`;
 }
 
 /**
