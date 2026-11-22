@@ -300,3 +300,81 @@ it.each(["local", "staged"] as const)(
     }
   },
 );
+
+it(
+  "local live selection yields archive-failed without terminalizing a job, then retries one genuine dispatch",
+  { timeout: 60000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "live-selector-refusal-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      await artifacts.initialise();
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-test-key");
+      const fetch = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "fixture/model",
+              choices: [{ message: { content: "A retained-safe report." }, finish_reason: "stop" }],
+            }),
+          ),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const read = vi.fn(async () => JSON.stringify({ STEELE_RESEARCH_MAX_TOKENS: "12000" }));
+      const tokens = researchTokensFromConfiguration({
+        env: { STEELE_CONFIG_PATH: "synthetic-settings.json" },
+        read,
+      });
+      const local = (await import("../../src/controllers/sonar.js")).sonarFromEnv({
+        model: "fixture/model",
+        timeoutMs: 1000,
+        maxTokens: 4000,
+        tokens,
+      });
+      const request = {
+        schemaVersion: 1 as const,
+        origin: "manual" as const,
+        pass: 1,
+        subject: "Synthetic selector retry",
+        claims: [],
+        corpusRefs: [],
+      };
+      const { runSonarResearch } = await import("../../src/research/sonar-runner.js");
+      const run = () =>
+        runSonarResearch({
+          artifacts,
+          operations,
+          owner: "fixture",
+          request,
+          discover: local,
+          fetcher: {
+            fetch: async () => {
+              throw new Error("no source retrieval expected");
+            },
+          },
+        });
+      const scan = vi
+        .spyOn(artifacts, "list")
+        .mockResolvedValueOnce(Array.from({ length: 201 }, (_, index) => `synthetic-${index}`));
+      await expect(run()).rejects.toMatchObject({ code: "archive-failed" });
+      expect(operations.operationStatus(`research:${researchJobId(request)}`)).toBeUndefined();
+      expect(operations.operationStatus(`research-run:${researchJobId(request)}`)?.status).toBe(
+        "released",
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      scan.mockRestore();
+      expect((await run()).status).toBe("finished");
+      await run();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

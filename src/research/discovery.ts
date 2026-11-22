@@ -292,16 +292,27 @@ async function savedDispatchIdentity(
     descriptors++;
     const ref = await artifacts.lookup(path);
     if (!ref) throw new ResearchDiscoveryError("archive-failed");
-    const saved = z
-      .object({
-        schemaVersion: z.literal(1),
-        request: ResearchRequestSchema,
-        processor: DiscoveryProcessorSchema,
-        requestId: z.string(),
-        discoveryId: z.string(),
-      })
-      .strict()
-      .parse(JSON.parse(await artifacts.read(ref)));
+    let saved: {
+      schemaVersion: 1;
+      request: z.infer<typeof ResearchRequestSchema>;
+      processor: DiscoveryProcessor;
+      requestId: string;
+      discoveryId: string;
+    };
+    try {
+      saved = z
+        .object({
+          schemaVersion: z.literal(1),
+          request: ResearchRequestSchema,
+          processor: DiscoveryProcessorSchema,
+          requestId: z.string(),
+          discoveryId: z.string(),
+        })
+        .strict()
+        .parse(JSON.parse(await artifacts.read(ref)));
+    } catch {
+      throw new ResearchDiscoveryError("archive-failed");
+    }
     const identity = discoveryIdentity(saved.request, saved.processor);
     if (
       saved.requestId !== identity.requestId ||

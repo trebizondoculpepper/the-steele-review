@@ -140,7 +140,9 @@ export async function runSonarResearch(input: {
   } catch (error) {
     if (
       error instanceof ConfigurationError ||
-      (input.discover.liveTokens && error instanceof ArtifactStoreError)
+      (input.discover.liveTokens &&
+        (error instanceof ArtifactStoreError ||
+          (error instanceof ResearchDiscoveryError && error.code === "archive-failed")))
     ) {
       input.operations.yieldClaim(job.claim);
       throw error;

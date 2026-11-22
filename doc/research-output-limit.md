@@ -48,3 +48,12 @@ workflow retries may read a corrected file. No uncertain-response marker or fail
 research result is fabricated for that refusal. Operational failures selecting a
 saved response likewise remain retryable in the new live path. An actual ambiguous
 transport response retains the existing no-recall handling.
+
+Retained dispatch selection deliberately requires the same exact parsed request
+form as the saved descriptor, in addition to matching the canonical research ID.
+A whitespace/Unicode-equivalent spelling may share a job ID, but it must not
+silently replace the model-facing request of an unfinished captured attempt.
+Such a mismatch yields retryable `archive-failed` without a settings read or
+provider dispatch; retry with the retained original request. Existing descriptors,
+raw responses and legacy identities remain unchanged. Completed whole-job reuse
+still follows its existing canonical identity rules.

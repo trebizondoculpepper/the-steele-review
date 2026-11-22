@@ -305,6 +305,62 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     });
     expect(calls).toBe(1);
   });
+  it.each(["syntax", "schema"])(
+    "classifies a transient retained descriptor %s failure without dispatch",
+    async (mode) => {
+      const identity = discoveryIdentity(request, processor);
+      const descriptorPath = `${path()}/input.json`;
+      await artifacts.write(descriptorPath, JSON.stringify({ schemaVersion: 1, ...identity }));
+      const originalRead = artifacts.read.bind(artifacts);
+      const read = vi
+        .spyOn(artifacts, "read")
+        .mockImplementationOnce(async (ref) =>
+          ref.path === descriptorPath
+            ? mode === "syntax"
+              ? "{"
+              : JSON.stringify({ schemaVersion: 1 })
+            : originalRead(ref),
+        );
+      const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+        await capture(body());
+        return data;
+      });
+      await expect(
+        captureResearchDiscovery({ ...options(), reuseSavedAttempt: true, invoke }),
+      ).rejects.toMatchObject({ code: "archive-failed" });
+      expect(invoke).not.toHaveBeenCalled();
+      read.mockRestore();
+      await captureResearchDiscovery({ ...options(), reuseSavedAttempt: true, invoke });
+      expect(invoke).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("holds an equivalent spelling without changing the saved model-facing descriptor or buying another response", async () => {
+    const invoke = vi.fn(async (capture: DiscoveryCapture) => {
+      await capture(body());
+      return data;
+    });
+    await captureResearchDiscovery({ ...options(), invoke });
+    const descriptor = (await artifacts.lookup(`${path()}/input.json`))!;
+    const bytes = await artifacts.read(descriptor);
+    const equivalent = { ...request, subject: "Synthetic  public subject" };
+    expect(discoveryIdentity(equivalent, processor).requestId).toBe(
+      discoveryIdentity(request, processor).requestId,
+    );
+    await expect(
+      captureResearchDiscovery({
+        ...options(),
+        request: equivalent,
+        reuseSavedAttempt: true,
+        invoke,
+      }),
+    ).rejects.toMatchObject({ code: "archive-failed" });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(await artifacts.read(descriptor)).toBe(bytes);
+    expect(
+      (await captureResearchDiscovery({ ...options(), reuseSavedAttempt: true, invoke })).reused,
+    ).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
   it("recovers a fenced durable response after interruption before result commit without a provider call", async () => {
     let calls = 0;
     const invoke = async (capture: DiscoveryCapture) => {
