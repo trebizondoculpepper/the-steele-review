@@ -79,3 +79,31 @@ with subsequent review and any remaining edit. If inner history persistence
 fails, the outer diagnostic preserves known latest work and any known approval
 event while marking the inner summary unavailable. That operational outcome is
 neither a fabricated rejection nor proof that no approval side effect occurred.
+
+## Denied-judge operational checkpoint
+
+`readEditorialRecoveryCheckpoint` is a read-only validator for a failed
+continuation that retained a complete assessment and a known authorization
+rejection with no returned judge document. It pins the failed continuation's
+exact summary, original immutable intent, current body and publication fields,
+assessment, failed judgment, and capture manifest/input. Returned, late,
+ambiguous or differently configured tasks are not eligible. This denial has no
+returned-body fence: it requires a completed known-denial capture with no raw
+response, completion header, late-response marker or response fence. An
+interrupted or quarantined response is not a denial checkpoint. The
+original model-facing request and lineage stay unchanged; a later execution
+contract must use a distinct explicit recovery generation and independently
+verify the exact failed parent's authoritative completion.
+
+The reader derives spent and remaining edits from the original frozen allowance
+and recorded version/pass counts. It neither renews an old deadline nor grants
+extra edits. A separate versioned execution contract owns any new bounded window
+and can start by judging the saved assessment without regenerating paid work.
+
+Approval reconciliation checks the exact event identity of this failed judgment,
+and refuses an existing or uncertain state/outbox entry. This is not a global
+claim that no other judgment ever approved the same body. Authoritative parent
+completion, the exact unchanged canonical base, and normal version-bound
+approval/delivery controls remain required before execution. The archived
+ArticleRun-history reader used here is audit-only and does not itself authorize
+a new edit from that obsolete base.

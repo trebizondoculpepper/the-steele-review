@@ -13,7 +13,7 @@ import {
 import { rethrowCreditExhausted, isCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { writeOnce } from "../research/job.js";
-import { AssessmentRecordSchema } from "./article-assessment.js";
+import { AssessmentRecordSchema, type AssessmentRecord } from "./article-assessment.js";
 import { readPublicationPayload, sameArtifact } from "./publication-payload.js";
 import { promptIdentity } from "./prompt-identity.js";
 
@@ -90,81 +90,16 @@ export function readDecision(document: string): "approve" | "revise" | undefined
   return parseJudgmentDocument(document)?.decision;
 }
 
-export async function judgeAssessment(input: {
-  content: GitArtifactStore;
-  /** The saved assessment record (#598) to judge. */
-  assessment: ArtifactRef;
-  judge: ExtractionModelProvider;
-  attemptId?: string;
+/** Read-only deterministic preparation of the exact judge task, shared by denial recovery. */
+export async function readJudgmentTask(input: {
+  content: Pick<GitArtifactStore, "read">;
+  assessment: AssessmentRecord;
   history?: JudgmentHistory;
-  retainOperationalFailure?: boolean;
-  retainedAttempts?: () => ArtifactReference[];
-  retainedAttemptReuses?: () => Array<boolean | null>;
   prompt?: ExtractionPrompt;
-  now?: () => Date;
-}): Promise<JudgmentOutcome> {
+}) {
+  const assessment = AssessmentRecordSchema.parse(input.assessment);
+  const history = JudgmentHistorySchema.parse(input.history ?? []);
   const prompt = input.prompt ?? DEFAULT_JUDGE_PROMPT;
-  const now = () => (input.now ?? (() => new Date()))().toISOString();
-  let assessment;
-  try {
-    assessment = AssessmentRecordSchema.parse(
-      JSON.parse(await input.content.read(input.assessment)),
-    );
-  } catch {
-    return { status: "unavailable", reason: "assessment-unreadable" };
-  }
-  let history: JudgmentHistory;
-  try {
-    history = JudgmentHistorySchema.parse(input.history ?? []);
-  } catch {
-    return { status: "unavailable", reason: "judgment-history-invalid" };
-  }
-  const promptId = promptIdentity(prompt.version, prompt.instructions);
-  const pub = assessment.body.path.split("/");
-  const dir = `judgments/${pub[1] ?? "unknown"}/${pub[2] ?? "unknown"}`;
-  const key = sha(
-    JSON.stringify([
-      "judgment-v1",
-      ...(input.attemptId ? [input.attemptId] : []),
-      toRef(input.assessment),
-      assessment.body,
-      assessment.publication,
-      input.judge.modelVersion,
-      promptId,
-      ...(history.length ? [history] : []),
-    ]),
-  ).slice(0, 32);
-  const recordPath = `${dir}/${key}.json`;
-  const saved = await input.content.lookup(recordPath);
-  if (saved) {
-    const record = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(saved)));
-    return { status: "judged", record, ref: saved, reused: true };
-  }
-
-  const persist = async (record: JudgmentRecord) => {
-    const ref = await writeOnce(
-      input.content,
-      recordPath,
-      JudgmentRecordSchema.parse({
-        ...record,
-        ...(input.attemptId ? { attemptId: input.attemptId } : {}),
-        ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
-        ...(input.retainedAttemptReuses
-          ? { retainedAttemptReuses: input.retainedAttemptReuses() }
-          : {}),
-      }),
-    );
-    const persisted = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(ref)));
-    return { status: "judged" as const, record: persisted, ref, reused: false };
-  };
-  const base = {
-    schemaVersion: JUDGMENT_SCHEMA_VERSION,
-    assessment: toRef(input.assessment),
-    ...(history.length ? { history } : {}),
-    body: assessment.body,
-    publication: assessment.publication,
-  } as const;
-
   // Deterministic gates: an incomplete or mismatched assessment, or a
   // deterministic quotation/citation fault, can never approve.
   const gates: string[] = [];
@@ -249,11 +184,10 @@ export async function judgeAssessment(input: {
       break;
     }
   }
-  const blockingDeterministic = assessment.deterministicFindings.length > 0;
 
   // Nothing to judge: record the gated state without calling the model.
   if (gates.length > 0 || article === undefined || findings === undefined || !publication) {
-    return persist({ ...base, decision: "none", state: "gated", gates, decidedAt: now() });
+    return { gates, request: undefined };
   }
 
   const user = JSON.stringify({
@@ -263,16 +197,100 @@ export async function judgeAssessment(input: {
     deterministicFindings: assessment.deterministicFindings,
     ...(priorGuidance.length ? { priorJudgmentGuidance: priorGuidance } : {}),
   });
+  return { gates, request: { system: prompt.instructions, user, maxOutputChars: 40_000 } };
+}
+
+export async function judgeAssessment(input: {
+  content: GitArtifactStore;
+  /** The saved assessment record (#598) to judge. */
+  assessment: ArtifactRef;
+  judge: ExtractionModelProvider;
+  attemptId?: string;
+  history?: JudgmentHistory;
+  retainOperationalFailure?: boolean;
+  retainedAttempts?: () => ArtifactReference[];
+  retainedAttemptReuses?: () => Array<boolean | null>;
+  prompt?: ExtractionPrompt;
+  now?: () => Date;
+}): Promise<JudgmentOutcome> {
+  const prompt = input.prompt ?? DEFAULT_JUDGE_PROMPT;
+  const now = () => (input.now ?? (() => new Date()))().toISOString();
+  let assessment;
+  try {
+    assessment = AssessmentRecordSchema.parse(
+      JSON.parse(await input.content.read(input.assessment)),
+    );
+  } catch {
+    return { status: "unavailable", reason: "assessment-unreadable" };
+  }
+  let history: JudgmentHistory;
+  try {
+    history = JudgmentHistorySchema.parse(input.history ?? []);
+  } catch {
+    return { status: "unavailable", reason: "judgment-history-invalid" };
+  }
+  const promptId = promptIdentity(prompt.version, prompt.instructions);
+  const pub = assessment.body.path.split("/");
+  const dir = `judgments/${pub[1] ?? "unknown"}/${pub[2] ?? "unknown"}`;
+  const key = sha(
+    JSON.stringify([
+      "judgment-v1",
+      ...(input.attemptId ? [input.attemptId] : []),
+      toRef(input.assessment),
+      assessment.body,
+      assessment.publication,
+      input.judge.modelVersion,
+      promptId,
+      ...(history.length ? [history] : []),
+    ]),
+  ).slice(0, 32);
+  const recordPath = `${dir}/${key}.json`;
+  const saved = await input.content.lookup(recordPath);
+  if (saved) {
+    const record = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(saved)));
+    return { status: "judged", record, ref: saved, reused: true };
+  }
+
+  const persist = async (record: JudgmentRecord) => {
+    const ref = await writeOnce(
+      input.content,
+      recordPath,
+      JudgmentRecordSchema.parse({
+        ...record,
+        ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+        ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+        ...(input.retainedAttemptReuses
+          ? { retainedAttemptReuses: input.retainedAttemptReuses() }
+          : {}),
+      }),
+    );
+    const persisted = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(ref)));
+    return { status: "judged" as const, record: persisted, ref, reused: false };
+  };
+  const base = {
+    schemaVersion: JUDGMENT_SCHEMA_VERSION,
+    assessment: toRef(input.assessment),
+    ...(history.length ? { history } : {}),
+    body: assessment.body,
+    publication: assessment.publication,
+  } as const;
+
+  const { gates, request } = await readJudgmentTask({
+    content: input.content,
+    assessment,
+    history,
+    prompt,
+  });
+  const blockingDeterministic = assessment.deterministicFindings.length > 0;
+  if (!request)
+    return persist({ ...base, decision: "none", state: "gated", gates, decidedAt: now() });
   const documentPath = `${dir}/${key}.md`;
   const retained = await input.content.lookup(documentPath);
   let raw: string | undefined = retained ? await input.content.read(retained) : undefined;
   let operationalFailure: "credit-exhausted" | undefined;
   if (raw === undefined) {
     try {
-      raw = await input.judge.complete(
-        { system: prompt.instructions, user, maxOutputChars: 40_000 },
-        AbortSignal.timeout(180_000),
-      );
+      raw = await input.judge.complete(request, AbortSignal.timeout(180_000));
     } catch (error) {
       rethrowEditorialStorageError(error);
       if (input.retainOperationalFailure && isCreditExhausted(error))
