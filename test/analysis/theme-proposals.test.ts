@@ -10,6 +10,7 @@ import {
   parseThemeProposalResult,
   proposalId,
   proposeThemes,
+  themeProposalPath,
 } from "../../src/analysis/theme-proposals.js";
 import { saveSourceContext, sourceContextFor } from "../../src/content/source-context.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
@@ -144,6 +145,18 @@ describe("proposeThemes", () => {
       sourceContext: second,
     });
     expect(a.status).toBe("proposed");
+    if (a.status !== "proposed") throw new Error(a.status);
+    expect(
+      await content.lookup(
+        themeProposalPath(
+          post,
+          source.sourceVersion,
+          provider.modelVersion,
+          DEFAULT_THEME_PROPOSAL_PROMPT.version,
+          first,
+        ),
+      ),
+    ).toEqual(a.ref);
     expect(b.status).toBe("proposed");
     expect(again).toMatchObject({ status: "proposed", reused: true });
     expect(provider.calls).toHaveLength(2);

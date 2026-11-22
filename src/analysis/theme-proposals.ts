@@ -144,7 +144,7 @@ export function themeProposalPath(
   sourceVersion: string,
   modelVersion: string,
   promptVersion: string,
-  sourceContextIdentity?: string,
+  sourceContext?: ArtifactRef,
 ): string {
   const key = createHash("sha256")
     .update(
@@ -152,7 +152,7 @@ export function themeProposalPath(
         THEME_PROPOSALS_SCHEMA_VERSION,
         modelVersion,
         promptVersion,
-        ...(sourceContextIdentity ? [sourceContextIdentity] : []),
+        ...(sourceContext ? [JSON.stringify(contextArtifactReference(sourceContext))] : []),
       ]),
     )
     .digest("hex")
@@ -236,7 +236,7 @@ export async function proposeThemes(input: {
     input.source.sourceVersion,
     input.provider.modelVersion,
     prompt.version,
-    input.sourceContext ? JSON.stringify(contextArtifactReference(input.sourceContext)) : undefined,
+    input.sourceContext,
   );
   const existing = await input.artifacts.lookup(path);
   if (existing) {

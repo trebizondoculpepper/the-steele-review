@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { PackageInputError, saveWriterPackage } from "../../src/drafting/writer-package.js";
+import { saveSourceContext, sourceContextFor } from "../../src/content/source-context.js";
 import { DossierStore } from "../../src/research/dossier.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
-import { CLAIMS, SHARED, librarianFixtures } from "../research/librarian-fixtures.js";
+import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -40,6 +41,77 @@ async function coverageFor(
 }
 
 describe("writer evidence package (#148)", { timeout: 60_000 }, () => {
+  it("preserves and validates an upstream source-context without an optional archive connection", async () => {
+    const coverage = await coverageFor(() => ({
+      passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+    }));
+    const record = JSON.parse(await content.read(coverage.ref));
+    const source = { ...record.source, sha256: record.source.hash.slice(7) };
+    const value = sourceContextFor(
+      {
+        item: {
+          publicationId: "pub",
+          postId: "p1",
+          url: "https://pub.example/p/p1",
+          title: "Captured title",
+        },
+        ingestionReason: "backfill",
+        text: TEXT,
+        complete: true,
+        supplied: { transcriptDocument: "spoken" },
+        provenance: {
+          sourceUrl: "https://pub.example/p/p1",
+          acquiredAt: "2026-01-01T00:00:00Z",
+          method: "supplied-transcript",
+          originalMedium: "video",
+        },
+      },
+      source,
+      {
+        status: "resolved",
+        author: "Configured Author",
+        basis: "source-configured",
+        sourceMetadataVersion: "registry-v1",
+      },
+    );
+    const context = await saveSourceContext(content, value);
+    const ref = {
+      repository: context.repository,
+      commit: context.commit,
+      path: context.path,
+      hash: `sha256:${context.sha256}`,
+    };
+    const updated = await content.write(
+      "fixtures/coverage-context.json",
+      JSON.stringify({ ...record, sourceContext: ref }),
+    );
+    const result = await saveWriterPackage({ content, coverage: updated });
+    expect(result.package.source).toMatchObject({
+      context: ref,
+      originalUrl: value.source.url,
+      title: value.source.title,
+    });
+    const wrong = await saveSourceContext(content, {
+      ...value,
+      source: { ...value.source, postId: "another-post" },
+    });
+    const wrongCoverage = await content.write(
+      "fixtures/coverage-wrong-context.json",
+      JSON.stringify({
+        ...record,
+        sourceContext: {
+          ...ref,
+          commit: wrong.commit,
+          path: wrong.path,
+          hash: `sha256:${wrong.sha256}`,
+        },
+      }),
+    );
+    await expect(saveWriterPackage({ content, coverage: wrongCoverage })).rejects.toMatchObject({
+      code: "mismatch",
+    });
+  });
+
   it("pins source, analysis and dossiers, keeping covered claims and explicit gaps", async () => {
     const { ref } = await coverageFor(() => ({
       passages: [{ claimRecordId: "claim-treaty", url: SHARED }],

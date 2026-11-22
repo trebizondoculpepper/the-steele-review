@@ -265,17 +265,32 @@ export async function buildWriterPackage(input: {
     title?: string;
     context?: z.infer<typeof ArtifactReferenceSchema>;
   } = {};
+  const sourceRef: ArtifactRef = { ...record.source, sha256: record.source.hash.slice(7) };
+  const upstream = record.sourceContext ?? claims.sourceContext ?? themes.sourceContext;
+  if (upstream) {
+    const context = toArtifactRef(upstream);
+    const pinned = await readSourceContext(
+      input.content,
+      context,
+      sourceRef,
+      themes.sourceVersion,
+      record.post,
+    );
+    original = {
+      context: toRefRecord(context),
+      originalUrl: pinned.source.url,
+      title: pinned.source.title,
+    };
+  }
   if (input.archive) {
     const captured = CollectionRecordSchema.safeParse(
       JSON.parse(await readPinned(input.archive, record.source, "source post")),
     );
     if (!captured.success) throw new PackageInputError("source context is invalid");
     if (captured.success) {
-      const sourceRef: ArtifactRef = { ...record.source, sha256: record.source.hash.slice(7) };
       const attribution =
         input.resolveAuthor?.(captured.data.item) ??
         recordedSourceAttribution(claims.extraction.attribution);
-      const upstream = record.sourceContext ?? claims.sourceContext ?? themes.sourceContext;
       let context: ArtifactRef;
       if (upstream) {
         context = toArtifactRef(upstream);
