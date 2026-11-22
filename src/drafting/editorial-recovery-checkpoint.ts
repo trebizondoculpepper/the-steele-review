@@ -296,7 +296,14 @@ export async function readEditorialRecoveryCheckpoint(input: {
         const guidance = parseJudgmentDocument(
           await input.content.read(artifactRef(judgment.document!)),
         );
-        requireMatch(guidance?.decision === "revise", "chain-mismatch");
+        requireMatch(
+          guidance &&
+            (guidance.decision === "revise" ||
+              (guidance.decision === "approve" &&
+                judgment.gates.includes("deterministic-fault-blocks-approval") &&
+                assessment.deterministicFindings.length > 0)),
+          "chain-mismatch",
+        );
         history.push({
           judgment: judgmentRef,
           assessment: assessmentRef,

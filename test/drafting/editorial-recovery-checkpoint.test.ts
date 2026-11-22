@@ -16,7 +16,11 @@ import {
   readPublicationPayload,
 } from "../../src/drafting/publication-payload.js";
 import { readEditorialRecoveryCheckpoint } from "../../src/drafting/editorial-recovery-checkpoint.js";
-import { continuationParentFixture, REVISE } from "../workflow/editorial-continuation-fixtures.js";
+import {
+  continuationParentFixture,
+  REVISE,
+  APPROVE,
+} from "../workflow/editorial-continuation-fixtures.js";
 import { parseJudgmentDocument } from "../../src/drafting/judgment-document.js";
 import { WRITER } from "../publishing/approval-fixtures.js";
 let dir: string, content: GitArtifactStore, operations: OperationStore;
@@ -31,7 +35,7 @@ afterEach(async () => {
   operations.close();
   await rm(dir, { recursive: true, force: true });
 });
-async function fixture(spent = 1) {
+async function fixture(spent = 1, override = false) {
   const parent = await continuationParentFixture(content, operations);
   const policy = { version: "assess-judge-v1" as const, maxRevisions: 2, deadlineMs: 120000 };
   const prepared = await prepareEditorialContinuation({
@@ -81,11 +85,32 @@ async function fixture(spent = 1) {
       modelVersion: "synthetic/judge",
       complete: async () => {
         calls.judge++;
-        if (calls.judge < spent) return REVISE;
+        if (calls.judge < spent) return override ? APPROVE : REVISE;
         throw new ModelProviderError("unauthorised");
       },
     },
   });
+  if (override) {
+    const assess = stages.assess.bind(stages);
+    stages.assess = async (...args) => {
+      const result = await assess(...args);
+      if (calls.assessor !== 1) return result;
+      const record = JSON.parse(await content.read(result.ref));
+      record.deterministicFindings = [
+        {
+          passage: "Synthetic scope fault",
+          reason: "The retained source does not support this scope.",
+        },
+      ];
+      return {
+        ...result,
+        ref: await content.write(
+          `assessments/pub/p1/override-${hash(record)}.json`,
+          JSON.stringify(record),
+        ),
+      };
+    };
+  }
   const edited = await stages.revise(
     { draft: artifactRef(parent.request.body), metadata: artifactRef(parent.request.metadata) },
     artifactRef(parent.request.package),
@@ -444,5 +469,33 @@ describe("operational recovery checkpoint", { timeout: 120000 }, () => {
       f.request.body.hash.slice(7),
     );
     await expect(f.read()).rejects.toThrow("stale-base");
+  });
+  it("accepts a deterministic effective REVISE override, but refuses an ungated or unrelated-gate APPROVE", async () => {
+    const f = await fixture(2, true);
+    const firstRef = f.raw.editorial.judgments[0];
+    const first = JSON.parse(await content.read(firstRef));
+    expect(first.decision).toBe("revise");
+    expect(first.gates).toContain("deterministic-fault-blocks-approval");
+    expect(parseJudgmentDocument(await content.read(artifactRef(first.document)))?.decision).toBe(
+      "approve",
+    );
+    expect((await f.read()).remainingEdits).toBe(0);
+    for (const gates of [[], ["unrelated-gate"]]) {
+      const patched = new Proxy(content, {
+        get(target, key) {
+          if (key === "read")
+            return async (ref: Parameters<GitArtifactStore["read"]>[0]) => {
+              const raw = await target.read(ref);
+              return ref.path === firstRef.path
+                ? JSON.stringify({ ...JSON.parse(raw), gates })
+                : raw;
+            };
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      await expect(f.read({ content: patched })).rejects.toThrow("chain-mismatch");
+    }
+    expect(f.calls).toEqual({ writer: 2, assessor: 2, judge: 2 });
   });
 });
