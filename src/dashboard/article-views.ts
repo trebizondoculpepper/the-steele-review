@@ -19,6 +19,7 @@ import {
   type ArchivedArticle,
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
+import { explainTrace, renderExplanation } from "./trace-explain.js";
 import type { ThemesPort } from "./themes.js";
 import type { AssessmentsPort } from "./assessments.js";
 import type { JudgmentsPort } from "./judgments.js";
@@ -413,7 +414,23 @@ function renderClaims(claims: ArticleClaims | undefined): string {
 }
 
 export function renderTrace(t: ArticleTrace): string {
+  const explanation = renderExplanation(
+    explainTrace({
+      ...t,
+      recoveryAvailable: isCreditBlocked(t.reason),
+      ...(t.recovery
+        ? {
+            recovery: {
+              summary: t.recovery.summary,
+              ...(t.recovery.outcome ? { outcome: t.recovery.outcome } : {}),
+              ...(t.recovery.verification ? { verification: t.recovery.verification } : {}),
+            },
+          }
+        : {}),
+    }),
+  );
   const reviewLink = `<p><a href="/reviews?publication=${encodeURIComponent(t.post.publicationId)}&post=${encodeURIComponent(t.post.postId)}">Verifier history</a> · <a href="/assessments?${new URLSearchParams({ post: `${t.post.publicationId}/${t.post.postId}` }).toString()}">Assessor attempts</a> · <a href="/judgments?${new URLSearchParams({ post: `${t.post.publicationId}/${t.post.postId}` }).toString()}">Judgments</a></p>`;
+
   const facts = [
     ["Publication", escapeHtml(t.post.publicationId)],
     ["Post", escapeHtml(t.post.postId)],
@@ -545,7 +562,7 @@ export function renderTrace(t: ArticleTrace): string {
             ? ""
             : `<div class="wrap"><table><thead><tr><th>Destination</th><th>Action</th><th>State</th><th>Delivered</th><th>Link</th></tr></thead><tbody>${receiptRows}</tbody></table></div>`
         }`;
-  return `${isCreditBlocked(t.reason) ? creditWarning(1) : ""}${reviewLink}<p><a href="/articles">All articles</a> · <a href="/drafts?${escapeHtml(new URLSearchParams({ publication: t.post.publicationId, post: t.post.postId }).toString())}">All saved drafts for this post</a></p>
+  return `${explanation}${isCreditBlocked(t.reason) ? creditWarning(1) : ""}${reviewLink}<p><a href="/articles">All articles</a> · <a href="/drafts?${escapeHtml(new URLSearchParams({ publication: t.post.publicationId, post: t.post.postId }).toString())}">All saved drafts for this post</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
 <h2>Stages</h2>
 <div class="wrap"><table><thead><tr><th>Stage</th><th>State</th><th>Detail</th></tr></thead><tbody>${stages}</tbody></table></div>
