@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 
 import {
   planSettingsSave,
@@ -97,6 +97,21 @@ async function saveNow(
   if (decision.status !== "accepted")
     return { decision, version: savedFileVersion(current, input.salt) };
 
+  // Retain the revision being replaced before it is overwritten, so a save can
+  // be inspected and rolled back without relying on the filesystem's history.
+  const previousVersion = savedFileVersion(current, input.salt);
+  try {
+    await mkdir(`${path}.revisions`, { recursive: true, mode: 0o700 });
+    await writeFile(`${path}.revisions/${previousVersion}.json`, JSON.stringify(current, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    // An existing revision file is fine (same content); anything else means the
+    // previous state could not be retained, so refuse the save.
+    if ((error as { code?: string }).code !== "EEXIST") throw new SettingsFileError("write-failed");
+  }
+
   // Unique per call: a shared PID-based name lets two saves collide.
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
@@ -118,4 +133,81 @@ async function saveNow(
     throw new SettingsFileError("write-failed");
   }
   return { decision, version: decision.version };
+}
+
+
+/** Saved revisions of a configuration file, newest version name first. */
+export async function listSettingsRevisions(path: string): Promise<string[]> {
+  try {
+    const names = await readdir(`${path}.revisions`);
+    return names.filter((n) => n.endsWith(".json")).sort().reverse();
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return [];
+    throw new SettingsFileError("unreadable");
+  }
+}
+
+export type RestoreResult =
+  | { status: "restored"; version: string; previousVersion: string }
+  | { status: "rejected"; reason: "stale-version" | "unknown-revision"; version: string };
+
+/**
+ * Restore a retained revision.
+ *
+ * The operator must present the version currently on disk: restoring over a
+ * configuration they never saw would silently discard someone else's change.
+ */
+export async function restoreSettingsRevision(
+  path: string,
+  input: { version: string; expectedVersion: string; salt: string; now?: () => Date },
+): Promise<RestoreResult> {
+  return serialize(path, async () => {
+    const current = await readSettingsFile(path);
+    const currentVersion = savedFileVersion(current, input.salt);
+    if (currentVersion !== input.expectedVersion)
+      return { status: "rejected", reason: "stale-version", version: currentVersion };
+
+    let content: Record<string, string>;
+    try {
+      const raw = await readFile(`${path}.revisions/${input.version}.json`, "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+        throw new Error("invalid");
+      content = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v !== "string") throw new Error("invalid");
+        content[k] = v;
+      }
+    } catch {
+      return { status: "rejected", reason: "unknown-revision", version: currentVersion };
+    }
+
+    // Keep the state being replaced, then swap atomically.
+    try {
+      await writeFile(
+        `${path}.revisions/${currentVersion}.json`,
+        JSON.stringify(current, null, 2) + "\n",
+        { mode: 0o600, flag: "wx" },
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EEXIST") throw new SettingsFileError("write-failed");
+    }
+    const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+    try {
+      await writeFile(temporary, JSON.stringify(content, null, 2) + "\n", { mode: 0o600 });
+      await rename(temporary, path);
+    } catch {
+      throw new SettingsFileError("write-failed");
+    }
+    const at = (input.now ?? (() => new Date()))().toISOString();
+    await writeFile(`${path}.audit.log`, `${at}\trestore\t${input.version}\n`, {
+      flag: "a",
+      mode: 0o600,
+    });
+    return {
+      status: "restored",
+      version: savedFileVersion(content, input.salt),
+      previousVersion: currentVersion,
+    };
+  });
 }
