@@ -42,6 +42,7 @@ export const JudgmentRecordSchema = z
     attemptId: z.string().min(1).max(500).optional(),
     operationalFailure: z.literal("credit-exhausted").optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
+    retainedAttemptReuses: z.array(z.boolean().nullable()).max(10).optional(),
     /** The disposition; `none` whenever approval or revision could not be decided. */
     decision: z.enum(["approve", "revise", "none"]),
     state: z.enum(["decided", "gated", "malformed", "provider-failed"]),
@@ -120,6 +121,7 @@ export async function judgeAssessment(input: {
   attemptId?: string;
   retainOperationalFailure?: boolean;
   retainedAttempts?: () => ArtifactReference[];
+  retainedAttemptReuses?: () => Array<boolean | null>;
   prompt?: ExtractionPrompt;
   now?: () => Date;
 }): Promise<JudgmentOutcome> {
@@ -162,6 +164,9 @@ export async function judgeAssessment(input: {
         ...record,
         ...(input.attemptId ? { attemptId: input.attemptId } : {}),
         ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+        ...(input.retainedAttemptReuses
+          ? { retainedAttemptReuses: input.retainedAttemptReuses() }
+          : {}),
       }),
     );
     const persisted = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(ref)));
@@ -250,6 +255,9 @@ export async function judgeAssessment(input: {
       gates: [],
       ...(input.attemptId ? { attemptId: input.attemptId } : {}),
       ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+      ...(input.retainedAttemptReuses
+        ? { retainedAttemptReuses: input.retainedAttemptReuses() }
+        : {}),
       ...(operationalFailure ? { operationalFailure } : {}),
       judge,
       decidedAt: now(),

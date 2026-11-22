@@ -809,7 +809,7 @@ export class OperationStore {
       throw new OperationStoreError("invalid-input");
     const rows = this.db
       .prepare(
-        "SELECT artifact FROM operations WHERE key LIKE ? AND status = 'completed' ORDER BY created_at DESC, key DESC LIMIT ?",
+        "SELECT artifact FROM operations WHERE key LIKE ? AND status = 'completed' ORDER BY updated_at DESC, key DESC LIMIT ?",
       )
       .all(`article-attempt:${publicationId}/${postId}:%`, 50) as Array<{ artifact: string }>;
     return rows

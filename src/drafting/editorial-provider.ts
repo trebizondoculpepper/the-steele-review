@@ -20,10 +20,15 @@ export function durableEditorialProvider(input: {
   context: ArtifactReference[];
   promptVersion: string;
   recoveryId?: string;
-}): ExtractionModelProvider & { retainedAttempts(): ArtifactReference[] } {
+}): ExtractionModelProvider & {
+  retainedAttempts(): ArtifactReference[];
+  retainedAttemptReuses(): Array<boolean | null>;
+} {
   const retained: ArtifactReference[] = [];
+  const reuses: Array<boolean | null> = [];
   return {
     retainedAttempts: () => [...retained],
+    retainedAttemptReuses: () => [...reuses],
     modelVersion: input.provider.modelVersion,
     async complete(request, signal) {
       let captured: CapturedWriterAttempt;
@@ -36,15 +41,18 @@ export function durableEditorialProvider(input: {
           signal,
         });
       } catch (error) {
-        if (error instanceof WriterAttemptError && error.artifact)
+        if (error instanceof WriterAttemptError && error.artifact) {
+          reuses.push(error.reused ?? null);
           retained.push({
             repository: error.artifact.repository,
             commit: error.artifact.commit,
             path: error.artifact.path,
             hash: `sha256:${error.artifact.sha256}`,
           });
+        }
         throw error;
       }
+      reuses.push(captured.reused);
       retained.push({
         repository: captured.ref.repository,
         commit: captured.ref.commit,

@@ -92,6 +92,7 @@ export function editorialStages(deps: {
         assessor: provider,
         attemptId,
         retainedAttempts: provider.retainedAttempts,
+        retainedAttemptReuses: provider.retainedAttemptReuses,
         retainOperationalFailure: true,
       });
       if (out.status !== "assessed") throw new StageError("editorial", out.reason);
@@ -124,6 +125,7 @@ export function editorialStages(deps: {
         judge: provider,
         attemptId,
         retainedAttempts: provider.retainedAttempts,
+        retainedAttemptReuses: provider.retainedAttemptReuses,
         retainOperationalFailure: true,
       });
       if (out.status !== "judged") throw new StageError("editorial", out.reason);

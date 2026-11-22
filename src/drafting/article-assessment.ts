@@ -47,6 +47,7 @@ export const AssessmentRecordSchema = z
     attemptId: z.string().min(1).max(500).optional(),
     operationalFailure: z.literal("credit-exhausted").optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
+    retainedAttemptReuses: z.array(z.boolean().nullable()).max(10).optional(),
     state: z.enum(["findings", "no-faults", "incomplete", "malformed", "provider-failed"]),
     /** Number of `## Finding` sections in a complete document. */
     findings: z.number().int().min(0).optional(),
@@ -117,6 +118,7 @@ export async function assessArticle(input: {
   attemptId?: string;
   retainOperationalFailure?: boolean;
   retainedAttempts?: () => ArtifactReference[];
+  retainedAttemptReuses?: () => Array<boolean | null>;
   prompt?: ExtractionPrompt;
   now?: () => Date;
 }): Promise<AssessmentOutcome> {
@@ -203,6 +205,9 @@ export async function assessArticle(input: {
     schemaVersion: ASSESSMENT_SCHEMA_VERSION,
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
     ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+    ...(input.retainedAttemptReuses
+      ? { retainedAttemptReuses: input.retainedAttemptReuses() }
+      : {}),
     state: verdict.state,
     ...(operationalFailure ? { operationalFailure } : {}),
     ...("findings" in verdict && verdict.findings !== undefined

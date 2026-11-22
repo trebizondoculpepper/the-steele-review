@@ -85,6 +85,7 @@ export class WriterAttemptError extends Error {
   constructor(
     readonly code: "archive-failed" | "busy" | "interrupted",
     readonly artifact?: ArtifactRef,
+    readonly reused?: boolean,
   ) {
     super(`writer attempt ${code}`);
     this.name = "WriterAttemptError";
@@ -236,7 +237,7 @@ export async function captureWriterAttempt(input: {
     try {
       if (input.purpose) {
         const fence = await input.content.lookup(`${dir}/fence.json`);
-        if (!fence) throw new WriterAttemptError("interrupted");
+        if (!fence) throw new WriterAttemptError("interrupted", rawRef, true);
         const proof = JSON.parse(await input.content.read(fence));
         if (proof.attemptId !== id || proof.raw.hash !== `sha256:${rawRef.sha256}`)
           throw new WriterAttemptError("interrupted");
@@ -246,6 +247,8 @@ export async function captureWriterAttempt(input: {
     } catch (error) {
       throw new WriterAttemptError(
         error instanceof OperationStoreError && error.code === "busy" ? "busy" : "interrupted",
+        manifestRef,
+        true,
       );
     }
     return { manifest, ref: manifestRef, text: await input.content.read(rawRef), reused: true };
@@ -328,7 +331,7 @@ export async function captureWriterAttempt(input: {
           raw: ref(captured),
           lateResponse: true,
         });
-        throw new WriterAttemptError("interrupted", late);
+        throw new WriterAttemptError("interrupted", late, false);
       }
     }
     const manifest = WriterAttemptManifestSchema.parse({

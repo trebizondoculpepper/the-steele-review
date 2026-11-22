@@ -1,3 +1,4 @@
+import { DEFAULT_EDITORIAL_POLICY } from "../../src/workflow/editorial-contract.js";
 import { researchCallKey } from "../../src/workflow/article-run.js";
 import { createHash } from "node:crypto";
 import * as clients from "@restatedev/restate-sdk-clients";
@@ -67,7 +68,31 @@ const pinnedByPost = new Map<string, PinnedResearch[]>();
 const plans = new Map<string, string[]>();
 const researchSubjects: string[] = [];
 
+const editorialCalls = { prepare: 0, assess: 0, judge: 0, revise: 0, approve: 0 };
 const stages: ArticleStages = {
+  editorial: {
+    prepare: async (draft) => {
+      editorialCalls.prepare++;
+      return { draft, metadata: ref(draft.path + ".json") };
+    },
+    assess: async (version) => {
+      editorialCalls.assess++;
+      return { ref: ref(`assessments/${version.draft.path}.json`), state: "no-faults" };
+    },
+    judge: async (assessment) => {
+      editorialCalls.judge++;
+      return { ref: ref(`judgments/${assessment.path}`), decision: "approve", state: "decided" };
+    },
+    revise: async () => {
+      editorialCalls.revise++;
+      throw new Error("no revision expected");
+    },
+    approve: async () => {
+      editorialCalls.approve++;
+      return { eventId: "editorial-approved-once" };
+    },
+  },
+  saveEditorialSummary: async () => ref("editorial-loops/summary.json"),
   themes: async (post) => {
     calls.themes++;
     if (post.postId === "incomplete") throw new StageError("source", "incomplete-capture");
@@ -176,7 +201,47 @@ const input = (postId: string): ArticleRunInput => ({
 });
 
 describe("unattended article run on Restate (#243)", () => {
+  it("keeps old serialized inputs on legacy steps and journals the explicit new editorial contract once", async () => {
+    const before = { ...editorialCalls };
+    const verificationBefore = calls.verify;
+    const old = ingress.workflowClient(Workflow, articleRunKey(input("legacy-contract")));
+    await old.workflowSubmit(input("legacy-contract"));
+    expect((await old.workflowAttach()).outcome).toBe("verified");
+    expect(editorialCalls).toEqual(before);
+    expect(calls.verify).toBe(verificationBefore + 1);
+    const request = {
+      ...input("new-editorial-contract"),
+      editorial: DEFAULT_EDITORIAL_POLICY,
+      operatorRequestId: "fixture-explicit-request",
+    };
+    const current = ingress.workflowClient(Workflow, articleRunKey(request));
+    await current.workflowSubmit(request);
+    const result = await current.workflowAttach();
+    expect(result).toMatchObject({
+      outcome: "verified",
+      approvalEvent: "editorial-approved-once",
+      editorial: {
+        version: "assess-judge-v1",
+        terminal: "approved",
+        assessments: [expect.any(Object)],
+        judgments: [expect.any(Object)],
+      },
+    });
+    await current.workflowSubmit(request).catch(() => undefined);
+    await current.workflowAttach();
+    expect(editorialCalls).toEqual({
+      prepare: before.prepare + 1,
+      assess: before.assess + 1,
+      judge: before.judge + 1,
+      revise: before.revise,
+      approve: before.approve + 1,
+    });
+    expect(calls.verify).toBe(verificationBefore + 1);
+  });
+
   it("pins full and partial research at the deadline, records the slow job as a gap, and drafts once", async () => {
+    const beforeDraft = calls.draft,
+      beforeVerify = calls.verify;
     plans.set("one", ["full-a", "partial-b", "slow-c"]);
     const key = articleRunKey(input("one"));
     const wf = ingress.workflowClient(Workflow, key);
@@ -196,8 +261,8 @@ describe("unattended article run on Restate (#243)", () => {
       outcome: "finished",
       job: { result: { outcome: "complete-with-gaps" } },
     });
-    expect(calls.draft).toBe(1);
-    expect(calls.verify).toBe(1);
+    expect(calls.draft).toBe(beforeDraft + 1);
+    expect(calls.verify).toBe(beforeVerify + 1);
   }, 120_000);
 
   it("never lets a late result change the pinned writer input", async () => {

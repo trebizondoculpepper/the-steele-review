@@ -16,7 +16,11 @@ import {
   publicationManifestHash,
   type PublicationPayload,
 } from "../drafting/publication-payload.js";
-import { readApprovalEvidence, type ApprovalKind } from "./approval-evidence.js";
+import {
+  readApprovalEvidence,
+  ApprovalEvidenceError,
+  type ApprovalKind,
+} from "./approval-evidence.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
   ArticleApprovedDataSchema,
@@ -136,6 +140,9 @@ export const DeliveryReceiptSchema = z
       .optional(),
     /** Manifest actually used for this delivery; retained unchanged on identical-content reuse. */
     publication: ArtifactReferenceSchema.optional(),
+    approvalKind: z.enum(["combined-verification", "editorial-judgment"]).optional(),
+    approval: ArtifactReferenceSchema.optional(),
+    assessment: ArtifactReferenceSchema.optional(),
     draftHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
@@ -366,7 +373,8 @@ async function deliverApprovedArticle(
       error instanceof z.ZodError ||
       error instanceof SyntaxError ||
       error instanceof PublicationPayloadError ||
-      error instanceof ApprovalError
+      error instanceof ApprovalError ||
+      error instanceof ApprovalEvidenceError
     ) {
       return { action: "term", reason: "approval-mismatch" };
     }
@@ -424,6 +432,8 @@ async function deliverApprovedArticle(
       postId: event.postId,
       draft: event.draft,
       approval: event.approval,
+      ...(event.approvalKind ? { approvalKind: event.approvalKind } : {}),
+      ...(event.assessment ? { assessment: event.assessment } : {}),
       package: event.package,
       approvedAt: event.approvedAt,
       ...(event.publication ? { publication: event.publication } : {}),
@@ -509,6 +519,13 @@ async function deliverApprovedArticle(
       destination: destination.name,
       action: destination.action,
       ...delivered,
+      ...(deliveryArticle.approvalKind === "editorial-judgment"
+        ? {
+            approvalKind: deliveryArticle.approvalKind,
+            approval: deliveryArticle.approval,
+            assessment: deliveryArticle.assessment,
+          }
+        : {}),
       draftHash: deliveryArticle.draft.hash,
       ...(publicationHash ? { publicationHash } : {}),
       ...(deliveryArticle.publication ? { publication: deliveryArticle.publication } : {}),
