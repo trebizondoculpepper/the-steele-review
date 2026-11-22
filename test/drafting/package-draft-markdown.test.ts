@@ -6,6 +6,10 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { deterministicIssues } from "../../src/drafting/package-verify.js";
 import { PackageDraftMetadataSchema, draftFromPackage } from "../../src/drafting/package-draft.js";
+import { DraftAttemptDiagnosticSchema } from "../../src/drafting/draft-diagnostics.js";
+import { MechanicalRecordSchema } from "../../src/drafting/mechanical-record.js";
+import { artifactRef } from "../../src/drafting/publication-payload.js";
+import { markdownToProseMirror } from "../../src/publishing/substack/prosemirror.js";
 import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/writer-package.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
 import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
@@ -246,6 +250,57 @@ describe("Markdown writer output (#535 slice 2)", { timeout: 60_000 }, () => {
     const rendered = await content.read(out.draft);
     expect(() => markdownToProseMirror(rendered)).not.toThrow();
   });
+
+  it.each([
+    "The relation x<y is established.",
+    '<script>alert("untrusted")</script>',
+    "A source quotes [an unsafe link](javascript:alert(1)).",
+  ])(
+    "stops immutable source formatting failures without buying a writer correction: %s",
+    async (passage) => {
+      const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(await packageRef())));
+      const evidence = pkg.claims.find((c) => c.claimRecordId === "claim-treaty")!.evidence[0]!;
+      evidence.passage = passage;
+      const ref = await content.write(
+        "writer-packages/pub/p1/awkward-source.json",
+        JSON.stringify(pkg),
+      );
+      const original = await content.read(ref);
+      expect(() => markdownToProseMirror(BODY)).not.toThrow();
+      const provider = model(doc());
+      const out = await draft(provider, ref);
+      expect(out).toMatchObject({
+        status: "failed",
+        reason: "application-format-failed",
+        validationFailure: "application-format",
+        problems: ["application-format-failed"],
+      });
+      expect(provider.calls).toBe(1);
+      if (out.status !== "failed") return;
+      const diagnostic = DraftAttemptDiagnosticSchema.parse(
+        JSON.parse(await content.read(out.diagnostics![0]!)),
+      );
+      expect(diagnostic).toMatchObject({
+        kind: "application-format",
+        issues: [{ code: "custom", path: [] }],
+      });
+      const mechanical = MechanicalRecordSchema.parse(
+        JSON.parse(await content.read(out.mechanicalRun!)),
+      );
+      expect(mechanical.outcome).toBe("application-format-failed");
+      expect(mechanical.turns).toHaveLength(1);
+      // The returned writer bytes and pinned evidence stay intact for application repair.
+      const manifest = JSON.parse(await content.read(artifactRef(diagnostic.writerAttempt!)));
+      expect(await content.read(artifactRef(manifest.raw))).toBe(doc());
+      expect(await content.read(ref)).toBe(original);
+      const replay = model(doc());
+      expect(await draft(replay, ref)).toMatchObject({
+        status: "failed",
+        reason: "application-format-failed",
+      });
+      expect(replay.calls).toBe(0);
+    },
+  );
 
   it("leaves title-only repair when a merged title exposes an undeliverable body", async () => {
     const fenced = "Intro.\n\n```\ncode\n```\n\nOutro.";

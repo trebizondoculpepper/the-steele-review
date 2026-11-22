@@ -9,6 +9,7 @@ export const DraftValidationKindSchema = z.enum([
   "schema-validation",
   "truncated-output",
   "evidence-validation",
+  "application-format",
 ]);
 export type DraftValidationKind = z.infer<typeof DraftValidationKindSchema>;
 
