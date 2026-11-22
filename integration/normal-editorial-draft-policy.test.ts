@@ -87,6 +87,13 @@ it(
           return "No faults found.\nEND OF ASSESSMENT";
         },
       };
+      const writer = {
+        modelVersion: "synthetic/normal-writer",
+        complete: async () => {
+          calls.writer++;
+          return WRITER;
+        },
+      };
       const realStages = articleStages({
         content,
         archive: parent.archive as GitArtifactStore,
@@ -106,13 +113,7 @@ it(
               throw new Error("no extraction dispatch");
             },
           },
-          writer: {
-            modelVersion: "synthetic/normal-writer",
-            complete: async () => {
-              calls.writer++;
-              return WRITER;
-            },
-          },
+          writer,
           verifier: {
             modelVersion: "synthetic/normal-judge",
             complete: async () => {
@@ -302,6 +303,9 @@ it(
           STEELE_EDITORIAL_DEADLINE_MS: "120000",
         }),
       );
+      // This separate attempt uses a fresh synthetic generation. A cached historical
+      // canonical generation must not be rolled back over the first attempt's revision.
+      writer.modelVersion = "synthetic/file-edit-writer";
       const originalJudge = stages.editorial!.judge;
       stages.editorial!.judge = async (...args) => {
         const judged = await originalJudge(...args);

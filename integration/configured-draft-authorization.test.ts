@@ -17,7 +17,7 @@ import {
   recordArticleAttempt,
   articleAttemptHash,
 } from "../src/workflow/article-attempt.js";
-import { artifactReference, artifactRef } from "../src/drafting/publication-payload.js";
+import { artifactReference } from "../src/drafting/publication-payload.js";
 import { authorizeConfiguredDraft } from "../src/publishing/configured-draft-authorization.js";
 import { readApprovalEvidence } from "../src/publishing/approval-evidence.js";
 import { handleApprovedArticle, SimulatedDestination } from "../src/publishing/approved-article.js";
@@ -209,5 +209,28 @@ it(
       ).action,
     ).toBe("term");
     expect(real.calls.create).toBe(1);
+    const current = (await content.lookup(checkpoint.metadata.path))!;
+    const editedMetadata = JSON.parse(await content.read(current));
+    editedMetadata.draftedAt = "2026-02-01T00:00:00.000Z";
+    await content.revise(current.path, JSON.stringify(editedMetadata), current.sha256);
+    const staleAttempt = recordArticleAttempt(operations, normal.input, "normal-stale-proof");
+    await expect(
+      authorizeConfiguredDraft({
+        ...args,
+        checkpoint: {
+          ...checkpoint,
+          input: staleAttempt.input,
+          inputHash: articleAttemptHash(staleAttempt.input),
+          workflowKey: staleAttempt.identity.workflowKey,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "stale-base" });
+    expect(
+      operations.ownerDraftIntent(
+        normal.input.publicationId,
+        normal.input.postId,
+        "normal-stale-proof",
+      ),
+    ).toBeUndefined();
   },
 );

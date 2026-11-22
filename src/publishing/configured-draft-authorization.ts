@@ -1,3 +1,4 @@
+import { EditorialContinuationError } from "../drafting/editorial-continuation.js";
 import { WriterRecoveryGuardError } from "../drafting/writer-attempts.js";
 import { ArticleRunInputSchema } from "../workflow/article-run.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
@@ -66,13 +67,21 @@ export async function authorizeConfiguredDraft(input: {
     (existing.requestHash !== requestHash || existing.versionIdentity !== versionIdentity)
   )
     throw new ConfiguredDraftEvidenceError();
-  if (!existing)
-    await readConfiguredDraftEvidence({
-      request,
-      content: input.content,
-      operations: input.operations,
-      requireCurrent: true,
-    });
+  const assertCurrent = async () => {
+    try {
+      await readConfiguredDraftEvidence({
+        request,
+        content: input.content,
+        operations: input.operations,
+        requireCurrent: true,
+      });
+    } catch (error) {
+      if (error instanceof EditorialContinuationError && error.code === "stale-base")
+        throw new WriterRecoveryGuardError("stale-base");
+      throw error;
+    }
+  };
+  if (!existing) await assertCurrent();
   const binding = input.operations.recordOwnerDraftIntent({
     ...checked.post,
     requestId: request.requestId,
@@ -113,12 +122,7 @@ export async function authorizeConfiguredDraft(input: {
     for (const target of destinations)
       if (!(await input.deliveryControl.allow(target)))
         throw new WriterRecoveryGuardError("policy-changed");
-    await readConfiguredDraftEvidence({
-      request,
-      content: input.content,
-      operations: input.operations,
-      requireCurrent: true,
-    });
+    await assertCurrent();
     input.operations.completeOwnerDraftAuthorization({
       binding,
       authorization: artifactReference(ref),
