@@ -56,15 +56,20 @@ Implementation: #590 discovery, #591 inventory/retrieval, #592 assembly,
    need targeted additions, with exact inputs and reasons.
 2. **Select:** apply a small deterministic prioritization policy to the saved plan.
    Record selected/deferred tasks and stable tie-breaks. The configured allowance
-   currently targets two new research jobs per article across its rounds; replay
-   must not spend the allowance again. OpenRouter's external key limit controls
-   monetary spend; this is not a new internal monetary-budget system.
+   is one configuration setting, currently two new research jobs per article
+   across its rounds; replay must not spend the allowance again. Existing research,
+   including a reused author dossier, consumes no job. New author research uses
+   this same allowance, with no separate allocation. A later limit of one uses
+   the same selector with a changed configuration value. OpenRouter's external key
+   limit controls monetary spend; this is not a new internal monetary-budget system.
 3. **Dispatch:** submit selected tasks through the shared research workflow,
    distinguishing new dossier research from targeted enhancement and reusing
    adequate existing or in-flight work.
 4. **Reassess:** curate returned evidence through the dossier controller and assess
    claim coverage again. A completed job is not sufficient evidence by itself.
-   Bound rounds and retain gaps when preparing the writer's versioned brief or
+   Allow an initial research round and at most one follow-up research round,
+   sharing the article allowance. Reassess the follow-up results without dispatching
+   a third round. Retain gaps when preparing the writer's versioned brief or
    recording an unresolved/limited outcome under the existing readiness policy.
 
 The exact initial priority ranking remains an implementation proposal for review.
@@ -110,3 +115,20 @@ summary is not an additional model assessment.
 Implementation: #598 assessor, #599 judge and #600 editorial orchestration,
 under #141; history integration remains #499. Deterministic tests establish
 contracts and replay behavior, not that a model will always follow feedback.
+
+## Console and writer sequencing
+
+Owner decisions recorded on #516, #522 and #535:
+
+- A canonical-theme detail page uses the stable theme ID and lists research files
+  whose contents can be opened. Proposal pages link through saved mappings; an
+  unmatched proposal explicitly remains unmapped.
+- Overview's running-work display consumes the same typed activity source as the
+  Activity page. Implement the shared source (#479) before its Overview consumer
+  (#522), rather than introducing a second liveness source.
+- Finish the assessor/judge editorial loop (#598–#600) before changing writer
+  output to Markdown/front matter (#535). Preserve bounded field-only mechanical
+  repair, response retention and exact-version approval through the format change.
+
+These are implementation requirements and ordering decisions, not deployment or
+owner-browser acceptance evidence.
