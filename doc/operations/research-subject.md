@@ -21,3 +21,17 @@ npm run research-subject -- --subject 'Example research subject' \
 ```
 
 Retrieval is bounded separately. The completion event remains in the local outbox for dispatch. The manual run requires no broker connection.
+
+## Submitting to the shared workflow (#594)
+
+`research-subject` now submits to the Restate `Research` service by default, rather than running research in its own process. It uses the same scope, shared `sonar` concurrency limit and request/execution path as article research. It needs `RESTATE_INGRESS_URL` and the content store settings.
+
+- **Returns:** the job ID and invocation ID at once, plus a Restate UI link when `STEELE_RESTATE_UI_URL` is set.
+- **Repeats:** the call key is the stable job ID, so a repeated submission attaches to the same invocation (`already submitted`) and never buys another discovery.
+- **Saved work:** a job whose result is already saved, including results from earlier standalone manual runs, is reported and not resubmitted. `--reprocess <n>` submits again under a distinct, stable key.
+- **`--wait <ms>`:** waits for the job, bounded. If the wait ends first, the invocation keeps running in Restate. Check it later with `--status`, which reads the saved result only and never submits.
+- **`--dossier <id>`:** needs `--wait`, so the finished job can be attached.
+- **Model and timeout:** these belong to the worker in this mode, so `--model` and `--timeout-ms` are refused unless you use `--local`.
+- **`--local`:** keeps the previous in-process behaviour, with model and timeout options and dossier attachment.
+
+Staged or legacy execution follows `STEELE_RESEARCH_STAGED`, exactly as for new article runs.
