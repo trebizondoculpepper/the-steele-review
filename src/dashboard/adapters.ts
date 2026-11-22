@@ -55,8 +55,13 @@ export function indexArticles(
       // Tie-break on stable source identity so a page boundary cannot repeat or
       // skip a row when several posts share a publication date.
       const order = sort === "newest" ? "desc" : "asc";
+      // A date sentinel rather than `_last`/`_first`: Elasticsearch sorts
+      // missing dates there using a 64-bit integer that JavaScript cannot
+      // round-trip through a JSON cursor, which would corrupt paging for
+      // undated articles.
+      const missingDate = sort === "newest" ? "9999-12-31T23:59:59.999Z" : "0001-01-01T00:00:00.000Z";
       const esSort = [
-        { publishedAt: { order, missing: sort === "newest" ? "_last" : "_first" } },
+        { publishedAt: { order, missing: missingDate } },
         { publicationId: { order: "asc" } },
         { postId: { order: "asc" } },
       ];

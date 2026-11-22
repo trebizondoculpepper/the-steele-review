@@ -36,6 +36,12 @@ describe("article paging and date sort (#508)", () => {
       expect(page.entries).toHaveLength(1);
       const esSort = calls[0]!.sort as Array<Record<string, { order: string }>>;
       expect(esSort[0]!.publishedAt!.order).toBe(order);
+      // A date sentinel, not _last/_first: the latter is a 64-bit integer that
+      // cannot round-trip through a JSON cursor for undated articles.
+      const missing = (esSort[0] as unknown as { publishedAt: { missing: string } }).publishedAt
+        .missing;
+      expect(missing).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(Number.isSafeInteger(Number(missing))).toBe(false);
       // Tie-break keeps a page boundary from repeating or skipping rows.
       expect(esSort[1]).toEqual({ publicationId: { order: "asc" } });
       expect(esSort[2]).toEqual({ postId: { order: "asc" } });
