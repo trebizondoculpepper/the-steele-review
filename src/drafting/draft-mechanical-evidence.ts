@@ -7,7 +7,16 @@ import {
   modelCitationProblems,
   renderPackageDraft,
   PackageDraftMetadataSchema,
+  markdownEvidenceView,
+  markdownCitationIssues,
+  renderMarkdownDraft,
 } from "./package-draft.js";
+import {
+  MARKDOWN_ARTICLE_FORMAT,
+  MarkdownArticleError,
+  MarkdownCandidateSchema,
+  splitMarkdownArticle,
+} from "./markdown-article.js";
 import type { WriterPackage } from "./writer-package.js";
 import { MechanicalRecordSchema } from "./mechanical-record.js";
 import { WriterAttemptManifestSchema } from "./writer-attempts.js";
@@ -73,14 +82,37 @@ export async function readDraftMechanicalEvidence(input: {
   requireEvidence(accepted);
   const text = await content.read(artifactRef(turn.candidate ?? attempt.raw!));
   let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    raw = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-  }
-  const candidate = ModelDraftSchema.parse(raw);
+  const isMarkdown = metadata.format === MARKDOWN_ARTICLE_FORMAT;
+  if (isMarkdown && !turn.candidate) {
+    let split: ReturnType<typeof splitMarkdownArticle>;
+    try {
+      split = splitMarkdownArticle(text);
+    } catch (error) {
+      if (error instanceof MarkdownArticleError) throw new DraftMechanicalEvidenceError();
+      throw error;
+    }
+    requireEvidence(
+      split.header && typeof split.header === "object" && !Array.isArray(split.header),
+    );
+    raw = { ...(split.header as Record<string, unknown>), body: split.body };
+  } else
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      raw = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    }
+  const candidate = isMarkdown ? MarkdownCandidateSchema.parse(raw) : ModelDraftSchema.parse(raw);
   requireEvidence(
-    draftProblems(pkg, candidate).length === 0 && modelCitationProblems(candidate).length === 0,
+    draftProblems(
+      pkg,
+      isMarkdown
+        ? markdownEvidenceView(MarkdownCandidateSchema.parse(candidate))
+        : ModelDraftSchema.parse(candidate),
+    ).length === 0 &&
+      (isMarkdown
+        ? markdownCitationIssues(MarkdownCandidateSchema.parse(candidate))
+        : modelCitationProblems(ModelDraftSchema.parse(candidate))
+      ).length === 0,
   );
   requireEvidence(
     JSON.stringify(metadata.fields) ===
@@ -90,7 +122,9 @@ export async function readDraftMechanicalEvidence(input: {
         excerpt: candidate.excerpt,
       }),
   );
-  const markdown = renderPackageDraft(pkg, candidate, input.sourceUrl);
+  const markdown = isMarkdown
+    ? renderMarkdownDraft(pkg, MarkdownCandidateSchema.parse(candidate), input.sourceUrl)
+    : renderPackageDraft(pkg, ModelDraftSchema.parse(candidate), input.sourceUrl);
   requireEvidence(markdown === input.markdown);
   return { markdown, candidate };
 }

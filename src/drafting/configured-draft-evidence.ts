@@ -135,8 +135,7 @@ export async function readConfiguredDraftEvidence(input: {
     );
     const versionMetadata = PackageDraftMetadataSchema.parse(await read(version.metadata));
     requireEvidence(
-      !versionMetadata.format &&
-        versionMetadata.mechanicalRun &&
+      versionMetadata.mechanicalRun &&
         sameArtifact(versionMetadata.package, request.package) &&
         sameArtifact(versionMetadata.source, pkg.source.artifact) &&
         versionMetadata.sourceContext &&
@@ -198,8 +197,7 @@ export async function readConfiguredDraftEvidence(input: {
   }
   const metadata = PackageDraftMetadataSchema.parse(await read(request.metadata));
   requireEvidence(
-    !metadata.format &&
-      metadata.mechanicalRun &&
+    metadata.mechanicalRun &&
       sameArtifact(metadata.mechanicalRun, checkpoint.mechanicalRun) &&
       sameArtifact(metadata.package, request.package) &&
       sameArtifact(metadata.source, pkg.source.artifact) &&

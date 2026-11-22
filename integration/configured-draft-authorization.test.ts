@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { beforeEach, afterEach, expect, it } from "vite-plus/test";
+import { beforeEach, afterEach, expect, it, vi } from "vite-plus/test";
 import { GitArtifactStore, ArtifactStoreError } from "../src/controllers/artifact-store.js";
 import { OperationStore } from "../src/controllers/operation-store.js";
 import {
@@ -30,13 +30,14 @@ beforeEach(async () => {
   operations = new OperationStore({ path: join(dir, "state.sqlite") });
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   operations.close();
   await rm(dir, { recursive: true, force: true });
 });
-it(
-  "normal policy proof issues honest draft-only authority and shared consumers preserve exact targets",
+it.each(["json", "markdown"] as const)(
+  "normal %s policy proof issues honest draft-only authority and shared consumers preserve exact targets",
   { timeout: 240000 },
-  async () => {
+  async (format) => {
     const parent = await continuationParentFixture(content, operations, 0, { modern: true });
     const normal = recordArticleAttempt(
       operations,
@@ -44,11 +45,17 @@ it(
       "normal-policy-fixture",
     );
     const pkg = JSON.parse(await content.read(parent.pkgRef));
+    vi.stubEnv("STEELE_WRITER_FORMAT", format);
+    const json = JSON.parse(WRITER);
+    const markdown = `---json\n${JSON.stringify({ title: json.title, subtitle: json.subtitle, excerpt: json.excerpt, provenance: { responses: json.responses.map(({ text: _text, ...response }: { text: string; claimRecordId: string; verdict: string; evidence: number[] }) => response) } })}\n---\n\n${json.summary}\n\n${json.responses.map((response: { text: string }) => response.text).join("\n\n")}`;
     const stages = editorialStages({
       content,
       operations,
       archive: parent.archive,
-      writer: { modelVersion: "synthetic/normal-writer", complete: async () => WRITER },
+      writer: {
+        modelVersion: "synthetic/normal-writer",
+        complete: async () => (format === "markdown" ? markdown : WRITER),
+      },
       assessor: {
         modelVersion: "synthetic/normal-assessor",
         complete: async () => "No faults found.\nEND OF ASSESSMENT",
