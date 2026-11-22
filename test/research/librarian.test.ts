@@ -1047,6 +1047,9 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
       judge: accept,
     });
     expect(researchJobId(again.requests[0]!)).toBe(researchJobId(first.requests[0]!));
+  });
+});
+
 describe("mappings first (#531)", { timeout: 60_000 }, () => {
   it("reuses a newly established theme for compatible wording on another post without a decision", async () => {
     const r = researcher(() => ({ passages: [] }));
