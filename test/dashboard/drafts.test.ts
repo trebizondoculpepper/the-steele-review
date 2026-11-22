@@ -3,6 +3,7 @@ import {
   artifactReference,
   artifactRef,
 } from "../../src/drafting/publication-payload.js";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -356,11 +357,11 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     const inventory = draftInventory(content);
     const page = await inventory.page({ publicationId: "pub", postId: "p1" });
     const byTitle = new Map(page.entries.map((e) => [e.title, e]));
-    expect(byTitle.get("First version")?.article).toMatchObject({ version: 1, current: false });
+    // One row per logical article, showing its current version; older
+    // generations appear only in its history. The legacy draft stays separate.
+    expect(page.entries.map((e) => e.title).sort()).toEqual(["Legacy draft", "Third version"]);
     expect(byTitle.get("Third version")?.article).toMatchObject({ version: 3, current: true });
     expect(byTitle.get("Legacy draft")?.article).toBeUndefined();
-    // The older version keeps its own approval; the current one is not approved.
-    expect(byTitle.get("First version")?.status).toBe("approved");
     expect(byTitle.get("Third version")?.status).toBe("unverified");
 
     const id = byTitle.get("Third version")!.article!.id;
@@ -370,6 +371,8 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
       [2, false],
       [3, true],
     ]);
+    // The older version keeps its own approval; it does not carry over.
+    expect(history?.versions[0]!.entry.status).toBe("approved");
 
     const [, , articleView] = draftViews(inventory);
     const html = await articleView!.render(
@@ -431,6 +434,84 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     // The title-only revision shows the commit that holds its new title.
     expect(h.versions[1]!.commit).toBe(v2.metadata.commit);
     expect(h.versions[1]!.commit).not.toBe(v1.body.commit);
+  });
+
+  it("keeps a committed version readable after its generation files are removed", async () => {
+    const article = { publicationId: "pub", postId: "p3" };
+    const d = await saveDraft("p3", "# Kept body\n", "Kept title");
+    const generation = { draft: d.md, metadata: (await content.lookup(d.metadata))! };
+    await report("p3", ref(d.md), "approved", d.metadata);
+    const v1 = await commitArticleRevision({ content, article, generation, base: "current" });
+    if (v1.status === "conflict") throw new Error("conflict");
+    // Remove the generation files from the branch after the commit.
+    // The content repository is bare: drop the paths through a temporary index.
+    const env = { ...process.env, GIT_INDEX_FILE: join(dir, "remove-index") };
+    const git = (...args: string[]) =>
+      new Promise<string>((resolve, reject) =>
+        execFile("git", ["-C", dir, ...args], { env }, (e, out) =>
+          e ? reject(e) : resolve(out.trim()),
+        ),
+      );
+    await git("read-tree", "HEAD");
+    await git("rm", "-q", "--cached", d.md.path, d.metadata);
+    const tree = await git("write-tree");
+    const commit = await git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit-tree",
+      tree,
+      "-p",
+      "HEAD",
+      "-m",
+      "remove generation",
+    );
+    await git("update-ref", "HEAD", commit);
+    await rm(env.GIT_INDEX_FILE, { force: true });
+    expect(await content.lookup(d.metadata)).toBeUndefined();
+
+    const inventory = draftInventory(content);
+    const [row] = (await inventory.page({ publicationId: "pub", postId: "p3" })).entries;
+    expect(row).toMatchObject({
+      title: "Kept title",
+      status: "approved",
+      article: { version: 1, current: true },
+    });
+    const h = (await inventory.article("pub", "p3", row!.article!.id))!;
+    expect(h.versions[0]!.entry).toMatchObject({ title: "Kept title", status: "approved" });
+    const found = await inventory.text(d.metadata);
+    expect(found?.markdown).toBe("# Kept body\n");
+    expect(found?.entry.article).toMatchObject({ version: 1, current: true });
+  });
+
+  it("keeps later pages reachable when the skip bound is reached", async () => {
+    // A long run of rows that are not shown on their own: every storage page
+    // is hidden, so the bounded skip must hand back a cursor, not end.
+    let n = 0;
+    const paths = (after?: string) => {
+      const start = after ? Number(after.split("/")[2]!.slice(1)) + 1 : 0;
+      return Array.from(
+        { length: DRAFT_PAGE * 2 },
+        (_, i) => `articles/pub/p${String(start + i).padStart(6, "0")}/${"0".repeat(32)}.json`,
+      );
+    };
+    const fake = {
+      list: async (prefix: string, _limit: number, after?: string) => {
+        n++;
+        return prefix === "articles" ? paths(after) : [];
+      },
+      lookup: async () => undefined,
+      read: async () => "",
+      lookupAt: async () => undefined,
+    };
+    const hideAll = {
+      states: async (ps: string[]) => new Map(ps.map((p) => [p, "trashed" as const])),
+    };
+    const page = await draftInventory(fake as never, undefined, hideAll).page({});
+    expect(page.entries).toEqual([]);
+    expect(page.next).toBeDefined();
+    expect(n).toBeGreaterThan(0);
   });
 
   it("returns nothing for an unknown or malformed article id", async () => {
