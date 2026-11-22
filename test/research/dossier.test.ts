@@ -116,12 +116,26 @@ describe("DossierStore", () => {
 
 describe("artifact immutability is preserved", () => {
   it("keeps write-once paths write-once and dossiers out of the immutable API", async () => {
-    await artifacts.write("substack/pub/post/collected.json", "{}");
+    const capture = await artifacts.write("substack/pub/post/collected.json", "{}");
+    // Owner-authorised reingestion (#558): a capture record may be revised in
+    // place, but only against its exact current version.
     await expect(artifacts.revise("substack/pub/post/collected.json", "{1}", null)).rejects.toThrow(
+      "stale-revision",
+    );
+    const revised = await artifacts.revise(
+      "substack/pub/post/collected.json",
+      "{1}",
+      capture.sha256,
+    );
+    expect((await artifacts.lookupAt(capture.commit, capture.path))?.content).toBe("{}");
+    expect(revised.commit).not.toBe(capture.commit);
+    // Every other archived source artifact stays write-once.
+    await artifacts.write("substack/pub/post/media.json", "{}");
+    await expect(artifacts.revise("substack/pub/post/media.json", "{1}", null)).rejects.toThrow(
       "invalid-path",
     );
     await expect(artifacts.write("dossier/x.md", "x")).rejects.toThrow("invalid-path");
-    await expect(artifacts.write("substack/pub/post/collected.json", "changed")).rejects.toThrow(
+    await expect(artifacts.write("substack/pub/post/media.json", "changed")).rejects.toThrow(
       "immutable-conflict",
     );
   });

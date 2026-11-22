@@ -99,11 +99,27 @@ const REVISABLE_CLAIM_RECORD = /^claims\/claim-[0-9a-f]{32}\.json$/;
 const REVISABLE_ARTICLE =
   /^articles\/[a-z0-9][a-z0-9-]{0,254}\/[a-z0-9][a-z0-9-]{0,254}\/article-[0-9a-f]{24}\/article\.(md|json)$/;
 
+/**
+ * Captured-source records (#558): created write-once by collection as before,
+ * and additionally revisable in place by the deliberate single-item
+ * reingestion operation, which commits a new version at the same stable path
+ * (Git keeps every earlier version at its commit). Owner-authorised for this
+ * operation only; no other archived source artifact is revisable.
+ */
+const REVISABLE_CAPTURE =
+  /^substack\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/[a-z0-9][a-z0-9-]{0,254}\/collected\.json$/;
+
+/** Revisable paths that may also be created write-once through `write()`. */
+function isWritableAndRevisable(path: string): boolean {
+  return REVISABLE_CAPTURE.test(path);
+}
+
 export function isRevisablePath(path: string): boolean {
   return (
     REVISABLE_PREFIXES.some((p) => path.startsWith(p)) ||
     REVISABLE_CLAIM_RECORD.test(path) ||
-    REVISABLE_ARTICLE.test(path)
+    REVISABLE_ARTICLE.test(path) ||
+    REVISABLE_CAPTURE.test(path)
   );
 }
 
@@ -288,8 +304,11 @@ export class GitArtifactStore {
     expectedSha256?: string,
   ): Promise<ArtifactRef> {
     assertArtifactPath(path);
-    // Revisable documents never go through the write-once path.
-    if (isRevisablePath(path)) throw new ArtifactStoreError("invalid-path");
+    // Revisable documents never go through the write-once path, except
+    // capture records, whose first version is still created write-once.
+    if (isRevisablePath(path) && !isWritableAndRevisable(path)) {
+      throw new ArtifactStoreError("invalid-path");
+    }
     if (Buffer.byteLength(content, "utf8") > this.maxBytes) {
       throw new ArtifactStoreError("too-large");
     }

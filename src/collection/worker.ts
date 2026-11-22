@@ -20,6 +20,7 @@ import {
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { MediaCandidate, TranscriptionJob } from "../transcription/adapter.js";
 import type { CollectionRecord, CollectionStore } from "./collection-store.js";
+import { reingestKey } from "./collection-store.js";
 
 /**
  * Collection worker: consumes validated discovery events (live and backfill
@@ -178,10 +179,12 @@ export class CollectionWorker {
     let item: SubstackItem;
     let reason: IngestionReason;
     let causationId: string;
+    let reingestRequestId: string | undefined;
     try {
       const event = parseDiscoveryEvent(new TextDecoder().decode(message.data));
-      const { ingestionReason, ...rest } = event.data!;
+      const { ingestionReason, reingestRequestId: requestId, ...rest } = event.data!;
       item = rest;
+      reingestRequestId = requestId;
       reason = ingestionReason;
       causationId = event.id;
     } catch {
@@ -189,10 +192,19 @@ export class CollectionWorker {
       return { result: "invalid-event" };
     }
 
-    const claimResult = await this.config.store.begin(item, this.config.owner, this.leaseMs, {
-      maxAttempts: this.config.maxAttempts,
-      eventsFor: this.eventsFor(causationId),
-    });
+    // A deliberate reingestion (#558) runs under its own request operation;
+    // ordinary discovery of an already-collected post still does nothing.
+    const claimResult = reingestRequestId
+      ? this.config.operations.claim(
+          reingestKey(item, reingestRequestId),
+          this.config.owner,
+          this.leaseMs,
+          this.config.maxAttempts,
+        )
+      : await this.config.store.begin(item, this.config.owner, this.leaseMs, {
+          maxAttempts: this.config.maxAttempts,
+          eventsFor: this.eventsFor(causationId),
+        });
     if (claimResult.kind === "completed") {
       await message.ack();
       await this.dispatchPending(signal);
@@ -224,7 +236,14 @@ export class CollectionWorker {
         message.nak(this.retryDelayMs);
         return { result: "retry", item };
       }
-      if (committed) {
+      // Reingestion replaces the current record and needs one to replace.
+      const previous = reingestRequestId ? committed : undefined;
+      if (reingestRequestId && !previous) {
+        this.config.store.fail(claim, "nothing-to-reingest", false);
+        await message.ack();
+        return { result: "unavailable", item };
+      }
+      if (committed && !reingestRequestId) {
         try {
           await this.config.store.commit(claim, committed.record, (artifact) =>
             this.eventsFor(causationId)(artifact, committed.record),
@@ -266,6 +285,24 @@ export class CollectionWorker {
           },
           ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
           provenance: { ...acquired.provenance },
+        };
+      } else if (
+        acquired.kind === "transcription-required" &&
+        previous?.record.supplied.transcript?.length
+      ) {
+        // Reingestion never repeats paid transcription when the current
+        // record already holds a transcript of this item: reuse it, with its
+        // recorded provenance.
+        const t = previous.record;
+        method = t.provenance.method;
+        record = {
+          item: { ...item, author: acquired.item.author },
+          ingestionReason: reason,
+          text: t.text,
+          complete: t.complete,
+          supplied: { transcript: t.supplied.transcript! },
+          ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
+          provenance: { ...t.provenance },
         };
       } else if (acquired.kind === "transcription-required") {
         if (!this.config.transcriber || acquired.media.kind !== "audio") {
@@ -347,9 +384,15 @@ export class CollectionWorker {
       }
 
       try {
-        await this.config.store.commit(claim, record, (artifact) =>
-          this.eventsFor(causationId)(artifact, record),
-        );
+        if (previous) {
+          await this.config.store.reingest(claim, record, previous.artifact.sha256, (artifact) =>
+            this.eventsFor(causationId)(artifact, record),
+          );
+        } else {
+          await this.config.store.commit(claim, record, (artifact) =>
+            this.eventsFor(causationId)(artifact, record),
+          );
+        }
       } catch {
         // Nothing was recorded as complete; temporary media is released and the
         // input is redelivered later.

@@ -26,6 +26,15 @@ export type IngestionReason = z.infer<typeof IngestionReasonSchema>;
 
 export const DiscoveryEventDataSchema = SubstackItemSchema.extend({
   ingestionReason: IngestionReasonSchema,
+  /**
+   * Set only for a deliberate single-item reingestion (#558): the stable
+   * request identity the collector runs it under. Ordinary discovery omits it.
+   */
+  reingestRequestId: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{0,99}$/)
+    .optional()
+    .describe("Stable request ID of a deliberate single-item reingestion; absent for discovery."),
 }).meta({
   title: "SourceDetectedV1",
   description:
@@ -48,6 +57,8 @@ export interface DiscoveryEventOptions {
   causationId?: string;
   /** Stable logical producer URI; must not name a private host. */
   source?: string;
+  /** Deliberate single-item reingestion request (#558). */
+  reingestRequestId?: string;
 }
 
 export interface DiscoveryEventDeps {
@@ -77,6 +88,7 @@ export function createDiscoveryEvent(
   const data = DiscoveryEventDataSchema.parse({
     ...SubstackItemSchema.parse(item),
     ingestionReason: options.reason,
+    ...(options.reingestRequestId ? { reingestRequestId: options.reingestRequestId } : {}),
   });
   const extensions: Record<string, string> = { postcorrelationid: postCorrelationId(data) };
   if (options.correlationId !== undefined) {

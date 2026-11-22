@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { CollectionStore, collectionKey } from "../../src/collection/collection-store.js";
+import {
+  CollectionStore,
+  collectionArtifactPath,
+  collectionKey,
+  reingestKey,
+} from "../../src/collection/collection-store.js";
+import { requestReingest } from "../../src/collection/reingest.js";
 import {
   CollectionWorker,
   type CollectorPort,
@@ -798,4 +804,106 @@ describe.skipIf(!natsUrl)("CollectionWorker with JetStream", () => {
       await nats.close();
     }
   }, 30_000);
+});
+
+describe("single-item reingestion (#558)", () => {
+  /** The pending reingestion event as the collector would receive it. */
+  const delivered = (operations: OperationStore) => {
+    const due = operations.duePendingEvents(10).filter((e) => e.eventId.startsWith("reingest-"));
+    return message("backfill", new TextEncoder().encode(due[0]!.payload));
+  };
+
+  it("revises a previously collected record in place, keeping the old version", async () => {
+    const first = setup({ collect: () => textResult("Original text.") });
+    expect(await first.worker.handle(message())).toBe("collected");
+    const before = (await artifacts.lookup(collectionArtifactPath(item)))!;
+
+    // New provenance from the current processor; the text is unchanged.
+    const second = setup({
+      collect: () => ({
+        ...textResult("Original text."),
+        item: { ...item, author: "A Byline" },
+      }),
+    });
+    expect(
+      requestReingest({ operations: second.operations, item, requestId: "refresh-1" }),
+    ).toMatchObject({
+      outcome: "requested",
+    });
+    expect(await second.worker.handle(delivered(second.operations))).toBe("collected");
+
+    const after = (await artifacts.lookup(collectionArtifactPath(item)))!;
+    expect(after.path).toBe(before.path);
+    expect(after.commit).not.toBe(before.commit);
+    expect(after.sha256).not.toBe(before.sha256);
+    // The new record carries the new byline; the old version still reads its bytes.
+    expect(JSON.parse(await artifacts.read(after)).item.author).toBe("A Byline");
+    const old = await artifacts.lookupAt(before.commit, before.path);
+    expect(JSON.parse(old!.content).item.author).toBeUndefined();
+    // Downstream handoff points at the new exact version.
+    const capturedEvent = second.captured.find(
+      (c) => JSON.parse(c.body).data?.artifact?.commit === after.commit,
+    );
+    expect(capturedEvent).toBeDefined();
+  });
+
+  it("does not repeat a request, and ordinary discovery stays idempotent", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-2" });
+    expect(
+      requestReingest({ operations: second.operations, item, requestId: "refresh-2" }),
+    ).toMatchObject({
+      outcome: "already-requested",
+    });
+    const m = delivered(second.operations);
+    await second.worker.handle(m);
+    const calls = second.collectCalls();
+    // Redelivery of the same request does no second fetch.
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.collectCalls()).toBe(calls);
+    // An ordinary discovery duplicate does nothing at all.
+    expect(await second.worker.handle(message("live"))).toBe("already-collected");
+    expect(second.collectCalls()).toBe(calls);
+    expect(second.operations.operationStatus(reingestKey(item, "refresh-2"))?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("reuses an existing transcript instead of transcribing again", async () => {
+    const first = setup({ collect: () => textResult("Spoken words.") });
+    await first.worker.handle(message());
+    let transcriptions = 0;
+    const second = setup({
+      collect: () =>
+        ({
+          kind: "transcription-required",
+          item,
+          articleText: "",
+          media: { kind: "audio", url: "https://cdn.example/a.mp3", durationSeconds: 60 },
+          provenance,
+        }) as never,
+      transcriber: {
+        transcribe: async () => {
+          transcriptions++;
+          throw new Error("must not transcribe");
+        },
+      },
+    });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-3" });
+    expect(await second.worker.handle(delivered(second.operations))).toBe("collected");
+    expect(transcriptions).toBe(0);
+    const record = JSON.parse(
+      await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!),
+    );
+    expect(record.text).toBe("Spoken words.");
+  });
+
+  it("refuses to reingest a post that was never collected", async () => {
+    const w = setup({});
+    requestReingest({ operations: w.operations, item, requestId: "refresh-4" });
+    expect(await w.worker.handle(delivered(w.operations))).toBe("unavailable");
+    expect(await artifacts.lookup(collectionArtifactPath(item))).toBeUndefined();
+  });
 });

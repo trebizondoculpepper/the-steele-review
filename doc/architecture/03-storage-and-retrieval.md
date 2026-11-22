@@ -73,3 +73,18 @@ PDB's `GitService` and `GitHubService` provide a reference pattern: a compositio
 Inspection of the application source at `e4bb40f` found Git process execution confined to `src/controllers/artifact-store.ts`; there is no identified scattered-command change to revert. Preserve that implementation and its immutable artifact semantics. Remove any proposed runbook or entry-point workaround that would introduce direct archive Git commands outside it. Add missing archive capabilities to the typed controller, with focused controller tests, instead of teaching each worker Git.
 
 If extracting a lower-level typed Git service becomes necessary, keep it private to the artifact controller, inject its transport for tests, and preserve hash verification, atomic reference updates and existing failure categories. Do not replace the archive with PDB's read-only checkout API: archive writes require additional capabilities. Treat any future bypass as a blocking architectural finding.
+
+## Single-item reingestion (#558, owner-authorised)
+
+Captured-source records (`substack/<publication>/<post>/collected.json`) are still created write-once by collection. As an explicit, owner-authorised exception, they may also be **revised in place** by the deliberate single-item reingestion operation:
+
+- **How to run it:** `reingest-item --post-id <slug> --request-id <slug>` records a `reingest:` operation and its discovery event in one state transaction.
+- **What the collector does:**
+  - fetches fresh source;
+  - reuses an existing transcript rather than transcribing again;
+  - rebuilds the record with the current schema and processors;
+  - commits it at the **same path** with an expected-version check, then records completion together with the text-ready and captured-content events for the new exact commit.
+- **Idempotence:** a repeated request id does nothing new, and ordinary discovery of an already-collected post still does nothing.
+- **History:** Git keeps every earlier version, and existing commit, path and hash references still read their original bytes. No sibling document or separate history log is created, and no other archived source artifact becomes revisable.
+
+When the text is unchanged the text-derived `sourceVersion` stays the same. Carrying a context version into theme, claim and run identities, so downstream analysis is redone for a changed capture, is the follow-up slice tracked on #558.

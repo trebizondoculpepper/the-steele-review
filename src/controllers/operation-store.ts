@@ -536,6 +536,38 @@ export class OperationStore {
   }
 
   /**
+   * Request a new operation together with the event that starts it, in one
+   * transaction (#558). A repeated request (same key or event ID) changes
+   * nothing and reports `already-requested`, so a duplicate command cannot
+   * start the work twice. The operation starts released, ready to be claimed.
+   */
+  requestOperation(
+    key: string,
+    event: PendingEventInput,
+    maxAttempts = 5,
+  ): { kind: "requested" } | { kind: "already-requested"; status: string } {
+    if (!Key.safeParse(key).success || !event.eventId || !event.subject) {
+      throw new OperationStoreError("invalid-input");
+    }
+    return this.transaction(() => {
+      const prior = this.db
+        .prepare("SELECT operation_key FROM pending_events WHERE event_id = ?")
+        .get(event.eventId) as { operation_key: string } | undefined;
+      if (prior && prior.operation_key !== key) throw new OperationStoreError("event-conflict");
+      const row = this.row(key);
+      if (row) return { kind: "already-requested" as const, status: row.status };
+      const now = this.now();
+      this.db
+        .prepare(
+          "INSERT INTO operations (key, status, owner, lease_expires_at, attempts, max_attempts, updated_at) VALUES (?, 'released', NULL, NULL, 0, ?, ?)",
+        )
+        .run(key, maxAttempts, now);
+      this.insertEvents(key, [event], now);
+      return { kind: "requested" as const };
+    });
+  }
+
+  /**
    * Hand a claim back without counting it as a failed attempt, for work that
    * made progress and will continue on a later delivery. Fenced like other
    * transitions. Attempt numbers stay monotonic (they are the fencing token);
