@@ -526,7 +526,9 @@ export function mergeCoverage(
 }
 
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
-type RequestPlanEntry = { mode: "full" } | { mode: "targeted"; batches: string[][] };
+type RequestPlanEntry =
+  | { mode: "full" }
+  | { mode: "targeted"; batches: string[][]; question?: string };
 const RequestPlanSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -538,6 +540,8 @@ const RequestPlanSchema = z
           .object({
             mode: z.literal("targeted"),
             batches: z.array(z.array(z.string()).max(100)).max(100),
+            /** The rendered question, so a later prompt edit never changes this plan's requests. */
+            question: z.string().min(1).max(4000).optional(),
           })
           .strict(),
       ]),
@@ -938,8 +942,9 @@ export async function assessPostCoverage(input: {
      * provenance in the coverage record instead).
      */
     targeted = false,
+    question?: string,
   ) => {
-    const request = buildRequest(dossierId, group, pass, previousJobId, targeted);
+    const request = buildRequest(dossierId, group, pass, previousJobId, targeted, question);
     return commissionAndAssess(
       dossierId,
       group,
@@ -954,6 +959,7 @@ export async function assessPostCoverage(input: {
     pass: number,
     previousJobId: string | undefined,
     targeted: boolean,
+    question?: string,
   ): ResearchRequest {
     return {
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
@@ -969,7 +975,7 @@ export async function assessPostCoverage(input: {
           themeIds: [dossierId],
         })),
       question: targeted
-        ? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId)
+        ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
         : pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
@@ -1051,6 +1057,7 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
+        question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
       });
     } else {
       planned.set(dossierId, { mode: "full" });
@@ -1070,7 +1077,7 @@ export async function assessPostCoverage(input: {
       const byKey = new Map(all.map((c) => [c.key, c]));
       for (const batch of entry.batches) {
         const group = batch.map((k) => byKey.get(k)).filter((c): c is AcceptedClaim => !!c);
-        if (group.length > 0) await enhanceGroup(dossierId, group);
+        if (group.length > 0) await enhanceGroup(dossierId, group, entry.question);
       }
     } else {
       const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
@@ -1085,8 +1092,8 @@ export async function assessPostCoverage(input: {
     return out;
   }
 
-  async function enhanceGroup(dossierId: string, group: AcceptedClaim[]) {
-    const targeted = await run(dossierId, group, 1, undefined, true);
+  async function enhanceGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+    const targeted = await run(dossierId, group, 1, undefined, true, question);
     for (const claim of group) {
       // Replaying the identical request must not replace evidence found since.
       if (outcomes.get(claim.key)?.reused) continue;

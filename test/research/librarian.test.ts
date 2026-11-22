@@ -1018,4 +1018,31 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
     });
     expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
   });
+
+  it("replays the planned question even if the prompt file changes", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const first = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: first.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    // Simulate a prompt edit after planning: the retained plan's question wins.
+    const [planPath] = await artifacts.list(`librarian/request-plans/pub/p2`, 10);
+    const plan = JSON.parse(await artifacts.read((await artifacts.lookup(planPath!))!));
+    expect(plan.dossiers[dossierId].question).toBe(first.requests[0]!.question);
+    const again = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: again.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    expect(researchJobId(again.requests[0]!)).toBe(researchJobId(first.requests[0]!));
+  });
 });
