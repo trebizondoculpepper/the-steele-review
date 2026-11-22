@@ -1,5 +1,7 @@
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
+import type { ResearchState } from "../research/theme-coverage.js";
+import { dossierPath } from "../research/dossier.js";
 
 /** Read-only Themes pages (#493). */
 
@@ -44,7 +46,7 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
         listing.next !== undefined
           ? `<p><a href="/themes?${escapeHtml(new URLSearchParams({ ...(query ? { q: query } : {}), after: listing.next }).toString())}">Continue</a> — saved extractions are listed in storage order, a page at a time.</p>`
           : "<p>End of the saved extractions.</p>";
-      return `${search}${notes}<p>Extractor proposals, one per saved post extraction. Similar titles from different posts stay separate; they are not canonical themes. <a href="/themes/catalogue">Canonical catalogue</a></p>
+      return `${search}${notes}<p>Extractor proposals, one per saved post extraction. Similar titles from different posts stay separate; they are not canonical themes. <a href="/themes/catalogue">Canonical themes</a></p>
 <div class="wrap"><table><thead><tr><th>Title</th><th>Description</th><th>Post</th><th>Extracted</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;
     },
   };
@@ -91,26 +93,116 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
     },
   };
 
+  const coverageOptions: Array<{ value: string; label: string }> = [
+    { value: "", label: "All research coverage" },
+    { value: "unresearched", label: "Unresearched" },
+    { value: "partially-researched", label: "Partially researched" },
+    { value: "researched", label: "Researched" },
+  ];
+  const coverageParam = (url: URL): ResearchState | undefined => {
+    const raw = url.searchParams.get("coverage") ?? "";
+    return raw === "unresearched" || raw === "partially-researched" || raw === "researched"
+      ? raw
+      : undefined;
+  };
+
+  const expressCoverage = (state: ResearchState) =>
+    state === "unresearched"
+      ? '<span class="s-pending">unresearched</span>'
+      : state === "partially-researched"
+        ? '<span class="s-pending">partially researched</span>'
+        : '<span class="s-done">researched</span>';
+
   const catalogue: DashboardView = {
     path: "/themes/catalogue",
     title: "Canonical themes",
     hidden: true,
-    async render() {
+    async render(url) {
       if (!themes)
         return '<p class="empty">The content repository is not configured for the dashboard.</p>';
-      const c = await themes.catalogue();
-      if (c.state === "unavailable")
-        return '<p class="empty">The canonical catalogue is unavailable right now.</p>';
-      if (c.themes.length === 0)
-        return '<p class="empty">No canonical catalogue has been saved.</p>';
-      return `<p><a href="/themes">All extractor proposals</a></p><p>Librarian-owned canonical themes.</p>
-<div class="wrap"><table><thead><tr><th>Name</th><th>Definition</th><th>Origin</th><th>Aliases</th></tr></thead><tbody>${c.themes
+      const query = (url.searchParams.get("q") ?? "").slice(0, 200);
+      const coverage = coverageParam(url);
+      const after = url.searchParams.get("after") ?? undefined;
+      const listing = await themes.canonical({
+        ...(query ? { query } : {}),
+        ...(coverage ? { coverage } : {}),
+        ...(after ? { after } : {}),
+      });
+      const form = `<form method="get" action="/themes/catalogue"><label>Filter titles and descriptions <input name="q" value="${escapeHtml(query)}" maxlength="200"></label> <label>Coverage <select name="coverage">${coverageOptions
         .map(
-          (t) =>
-            `<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.definition)}</td><td>${escapeHtml(t.origin)}</td><td>${escapeHtml(t.aliases.join(", "))}</td></tr>`,
+          (o) =>
+            `<option value="${o.value}"${(coverage ?? "") === o.value ? " selected" : ""}>${o.label}</option>`,
         )
-        .join("")}</tbody></table></div>`;
+        .join("")}</select></label> <button>Filter</button></form>`;
+      if (listing.state === "unavailable")
+        return `${form}<p class="empty">Canonical themes are unavailable right now.</p>`;
+      const notes = [
+        listing.partial
+          ? "This page reached its scan bound; continue to reach the rest of the catalogue."
+          : "",
+        listing.unreadable ? `${listing.unreadable} canonical theme(s) could not be read.` : "",
+      ]
+        .filter(Boolean)
+        .map((n) => `<p class="empty">${escapeHtml(n)}</p>`)
+        .join("");
+      if (listing.rows.length === 0 && listing.next === undefined) {
+        return `${form}${notes}<p class="empty">${query || coverage ? "No canonical themes match this filter." : "No canonical themes have been established yet."}</p>`;
+      }
+      const rows = listing.rows
+        .map((r) => {
+          const link = `/themes/canonical/view?${new URLSearchParams({ id: r.id }).toString()}`;
+          const research = r.dossier
+            ? `${expressCoverage(r.state)} · ${r.dossier.covered} covered / ${r.dossier.gaps} gap(s)`
+            : `${expressCoverage(r.state)} · <span class="empty">no research yet</span>`;
+          return `<tr><td><a href="${escapeHtml(link)}">${escapeHtml(r.title)}</a><br><code>${escapeHtml(r.id)}</code></td><td>${r.description ? escapeHtml(r.description) : '<span class="empty">no description saved</span>'}</td><td>${research}</td></tr>`;
+        })
+        .join("");
+      const params = new URLSearchParams({
+        ...(query ? { q: query } : {}),
+        ...(coverage ? { coverage } : {}),
+        ...(listing.next ? { after: listing.next } : {}),
+      });
+      const next =
+        listing.next !== undefined
+          ? `<p><a href="/themes/catalogue?${escapeHtml(params.toString())}">Continue</a></p>`
+          : "<p>End of the canonical catalogue.</p>";
+      return `${form}${notes}<p>Librarian-established canonical topics, including those with no research yet. <a href="/themes">Extractor proposals</a></p>
+<div class="wrap"><table><thead><tr><th>Canonical theme</th><th>Description</th><th>Research coverage</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;
     },
   };
-  return [list, detail, catalogue];
+
+  const canonicalDetail: DashboardView = {
+    path: "/themes/canonical/view",
+    title: "Canonical theme",
+    hidden: true,
+    async render(url) {
+      if (!themes)
+        return '<p class="empty">The content repository is not configured for the dashboard.</p>';
+      const id = url.searchParams.get("id") ?? "";
+      const found = await themes.canonicalDetail(id);
+      if (!found)
+        return '<p class="empty">Choose a canonical theme from the catalogue.</p>';
+      const { theme, coverage } = found;
+      const dossier = coverage.dossier;
+      const research = dossier
+        ? `<p>${expressCoverage(coverage.state)} — ${dossier.covered} covered claim(s), ${dossier.gaps} gap(s), ${dossier.citations} citation(s).</p>
+<p><a href="/research/view?${escapeHtml(new URLSearchParams({ path: dossierPath(theme.id), at: dossier.commit }).toString())}">Read the research documents</a> · dossier <code>${escapeHtml(dossier.hash.slice(0, 19))}…</code></p>`
+        : `<p>${expressCoverage(coverage.state)} — no research has been saved for this theme yet. It still exists as an established topic.</p>`;
+      const mapped = found.proposals.length
+        ? `<div class="wrap"><table><thead><tr><th>Proposal wording</th><th>Scope</th><th>Decided</th><th>Provenance</th></tr></thead><tbody>${found.proposals
+            .map(
+              (p) =>
+                `<tr><td>${escapeHtml(p.proposal)}${p.description ? `<br><span class="empty">${escapeHtml(p.description)}</span>` : ""}</td><td>${p.scope ? escapeHtml(p.scope) : '<span class="empty">global</span>'}</td><td>${escapeHtml(p.decidedAt.slice(0, 10))}</td><td>${escapeHtml(p.decidedBy.publicationId)}/${escapeHtml(p.decidedBy.postId)}<br><span class="empty">${escapeHtml(p.rationale)}</span></td></tr>`,
+            )
+            .join("")}</tbody></table></div>`
+        : '<p class="empty">No saved librarian mapping targets this theme yet.</p>';
+      return `<p><a href="/themes/catalogue">All canonical themes</a> · <a href="/themes">Extractor proposals</a></p>
+<h1>${escapeHtml(theme.title)}</h1>
+<p><code>${escapeHtml(theme.id)}</code></p>
+${theme.description ? `<p>${escapeHtml(theme.description)}</p>` : ""}
+<h2>Research</h2>${research}
+<h2>Mapped proposal wording</h2><p class="empty">Proposals remain distinct; this is the librarian's saved mapping, not UI string merging.</p>${found.proposalsPartial ? '<p class="empty">The mapping scan was incomplete.</p>' : ""}${mapped}`;
+    },
+  };
+  return [list, detail, catalogue, canonicalDetail];
 }

@@ -2,6 +2,13 @@ import type { GitArtifactStore } from "../controllers/artifact-store.js";
 import { CatalogueSchema, CATALOGUE_PATH } from "../analysis/theme-catalogue.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
+import { ThemeStore, type CanonicalTheme as CanonicalThemeRecord } from "../research/theme-store.js";
+import { themeCoverage, type ResearchState, type ThemeCoverage } from "../research/theme-coverage.js";
+import { dossierPath } from "../research/dossier.js";
+import {
+  ThemeMappingSchema,
+  ThemeMappingSupersessionSchema,
+} from "../research/theme-mappings.js";
 
 /**
  * Saved themes for the dashboard (#493). Read-only, through the artifact
@@ -14,6 +21,57 @@ import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
  */
 
 export const THEME_RESULT_SCAN = 200;
+/** Canonical catalogue page and bounded per-request scan (#517). */
+export const CANONICAL_PAGE = 25;
+export const CANONICAL_SCAN = 500;
+const CANONICAL_LIST_PAGE = 100;
+/** Bound on librarian mappings examined for one theme detail. */
+const MAPPING_SCAN = 500;
+const MAPPING_LIST_PAGE = 100;
+
+/**
+ * Latest redirect per mapping key, built once from saved supersessions. UI
+ * resolution never inspects proposal wording itself: the librarian owns it.
+ */
+async function supersessionRedirects(
+  content: Store,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let after: string | undefined;
+  let scanned = 0;
+  for (let page = 0; page < 10; page++) {
+    let paths: string[];
+    try {
+      paths = await content.list("librarian/theme-mappings/supersessions", MAPPING_LIST_PAGE, after);
+    } catch {
+      break;
+    }
+    if (paths.length === 0) break;
+    for (const path of paths) {
+      after = path;
+      if (scanned++ >= MAPPING_SCAN) return out;
+      try {
+        const ref = await content.lookup(path);
+        if (!ref) continue;
+        const parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(await content.read(ref)));
+        if (!parsed.success) continue;
+        const s = parsed.data;
+        const key = `${s.key}\u0000${s.scope ?? ""}`;
+        const existing = out.get(key);
+        const existingAt = existing ? (out.get(`${key}\u0000at`) ?? s.decidedAt) : "";
+        // Oldest-to-newest is not guaranteed by list order; keep the latest.
+        if (!existing || s.decidedAt >= existingAt) {
+          out.set(key, s.to);
+          out.set(`${key}\u0000at`, s.decidedAt);
+        }
+      } catch {
+        // Skip unreadable supersessions.
+      }
+    }
+    if (paths.length < MAPPING_LIST_PAGE) break;
+  }
+  return out;
+}
 export const THEME_PAGE = 25;
 /** Artifact paths requested per listing call while scanning. */
 const THEME_LIST_PAGE = 50;
@@ -77,10 +135,56 @@ export interface CanonicalTheme {
   aliases: string[];
 }
 
+/** One canonical theme row with its actual research coverage (#517). */
+export interface CanonicalThemeRow {
+  id: string;
+  title: string;
+  description?: string;
+  createdAt: string;
+  state: ResearchState;
+  /** Present only when the theme has a saved dossier. */
+  dossier?: { commit: string; hash: string; path: string; covered: number; gaps: number; citations: number };
+}
+
+export interface CanonicalListing {
+  state: "ok" | "unavailable";
+  rows: CanonicalThemeRow[];
+  next?: string;
+  /** True when the bounded scan was exhausted before the catalogue was. */
+  partial: boolean;
+  unreadable: number;
+}
+
+export interface MappedProposal {
+  proposal: string;
+  description?: string;
+  scope?: string;
+  decidedAt: string;
+  decidedBy: { publicationId: string; postId: string };
+  rationale: string;
+}
+
+export interface CanonicalDetail {
+  theme: CanonicalThemeRecord;
+  coverage: ThemeCoverage;
+  /** Proposals the librarian mapped to this theme's current identity. */
+  proposals: MappedProposal[];
+  /** True when the mapping scan bound was reached. */
+  proposalsPartial: boolean;
+}
+
 export interface ThemesPort {
   list(options: { query?: string; after?: string }): Promise<ThemeListing>;
   detail(result: string, id: string): Promise<ThemeDetail | undefined>;
   catalogue(): Promise<{ state: "ok" | "unavailable" | "none"; themes: CanonicalTheme[] }>;
+  /** Librarian-established canonical themes, researched or not (#517). */
+  canonical(filter: {
+    query?: string;
+    coverage?: ResearchState;
+    after?: string;
+  }): Promise<CanonicalListing>;
+  /** One canonical theme with real coverage and mapped proposals. */
+  canonicalDetail(id: string): Promise<CanonicalDetail | undefined>;
   /** Proposals saved for exactly this post revision; never a newer result. */
   forPost(
     post: { publicationId: string; postId: string },
@@ -215,6 +319,131 @@ export function savedThemes(
       if (unreadable > 0) return { state: "partial", themes };
       if (!matchedResult) return { state: partial ? "partial" : "not-analysed", themes: [] };
       return { state: partial ? "partial" : "ok", themes };
+    },
+
+    async canonical(filter) {
+      const q = filter.query?.trim().toLowerCase();
+      const store = new ThemeStore(content as never);
+      const rows: CanonicalThemeRow[] = [];
+      let unreadable = 0;
+      let partial = false;
+      let cursor = filter.after;
+      let exhausted = false;
+      let scanned = 0;
+      // Bounded, resumable scan over the canonical prefix: the caller's cursor
+      // reaches the entire catalogue without loading it in one request.
+      while (rows.length < CANONICAL_PAGE && scanned < CANONICAL_SCAN) {
+        let paths: string[];
+        try {
+          paths = await store.listPage(CANONICAL_LIST_PAGE, cursor);
+        } catch {
+          return { state: "unavailable", rows: [], partial: false, unreadable: 0 };
+        }
+        if (paths.length === 0) {
+          exhausted = true;
+          break;
+        }
+        for (const path of paths) {
+          cursor = path;
+          scanned++;
+          const id = /^canonical-themes\/([^/]+)\.json$/.exec(path)?.[1];
+          if (!id) continue;
+          const coverage = await themeCoverage(content as never, id).catch(() => undefined);
+          if (!coverage) {
+            unreadable++;
+            continue;
+          }
+          const { theme } = coverage;
+          const matches =
+            !q ||
+            theme.title.toLowerCase().includes(q) ||
+            (theme.description ?? "").toLowerCase().includes(q);
+          if (!matches) continue;
+          if (filter.coverage && coverage.state !== filter.coverage) continue;
+          rows.push({
+            id: theme.id,
+            title: theme.title,
+            ...(theme.description ? { description: theme.description } : {}),
+            createdAt: theme.createdAt,
+            state: coverage.state,
+            ...(coverage.dossier
+              ? {
+                  dossier: {
+                    commit: coverage.dossier.commit,
+                    hash: coverage.dossier.hash,
+                    path: dossierPath(theme.id),
+                    covered: coverage.dossier.covered,
+                    gaps: coverage.dossier.gaps,
+                    citations: coverage.dossier.citations,
+                  },
+                }
+              : {}),
+          });
+          if (rows.length >= CANONICAL_PAGE || scanned >= CANONICAL_SCAN) break;
+        }
+      }
+      if (!exhausted && (scanned >= CANONICAL_SCAN || cursor !== undefined)) {
+        // Either the scan bound was hit or the page stopped with more to read.
+        partial = scanned >= CANONICAL_SCAN;
+      }
+      return {
+        state: "ok",
+        rows,
+        ...(exhausted ? {} : { next: cursor }),
+        partial,
+        unreadable,
+      };
+    },
+
+    async canonicalDetail(id) {
+      const coverage = await themeCoverage(content as never, id).catch(() => undefined);
+      if (!coverage) return undefined;
+      const redirects = await supersessionRedirects(content).catch(() => new Map<string, string>());
+      const proposals: MappedProposal[] = [];
+      let proposalsPartial = false;
+      let after: string | undefined;
+      let scanned = 0;
+      for (let page = 0; page < 10; page++) {
+        let paths: string[];
+        try {
+          paths = await content.list("librarian/theme-mappings", MAPPING_LIST_PAGE, after);
+        } catch {
+          break;
+        }
+        if (paths.length === 0) break;
+        for (const path of paths) {
+          after = path;
+          if (!/^librarian\/theme-mappings\/(?:global|scope-[^/]+)\/[^/]+\.json$/.test(path)) continue;
+          scanned++;
+          if (scanned >= MAPPING_SCAN) {
+            proposalsPartial = true;
+            break;
+          }
+          try {
+            const ref = await content.lookup(path);
+            if (!ref) continue;
+            const parsed = ThemeMappingSchema.safeParse(JSON.parse(await content.read(ref)));
+            if (!parsed.success) continue;
+            const mapping = parsed.data;
+            const key = `${mapping.key}\u0000${mapping.scope ?? ""}`;
+            const target = redirects.get(key) ?? mapping.canonicalThemeId;
+            if (target !== coverage.theme.id) continue;
+            proposals.push({
+              proposal: mapping.proposal,
+              ...(mapping.description ? { description: mapping.description } : {}),
+              ...(mapping.scope ? { scope: mapping.scope } : {}),
+              decidedAt: mapping.decidedAt,
+              decidedBy: mapping.decidedBy,
+              rationale: mapping.rationale,
+            });
+          } catch {
+            // An unreadable mapping is omitted, never guessed.
+          }
+        }
+        if (proposalsPartial || paths.length < MAPPING_LIST_PAGE) break;
+      }
+      proposals.sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
+      return { theme: coverage.theme, coverage, proposals, proposalsPartial };
     },
 
     async detail(result, id) {
