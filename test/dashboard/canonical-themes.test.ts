@@ -284,3 +284,33 @@ describe("canonical mapping resolution (#517)", { timeout: 60_000 }, () => {
     expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Offset wording"]);
   });
 });
+
+describe("legacy catalogue transition (#517)", { timeout: 60_000 }, () => {
+  it("keeps the earlier detected catalogue separately accessible", async () => {
+    await content.revise(
+      "catalogue/themes.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        themes: [
+          {
+            id: "masts",
+            name: "Phone masts",
+            definition: "Health claims about masts.",
+            aliases: ["mast syndrome"],
+            origin: "detected",
+          },
+        ],
+      }),
+      null,
+    );
+    // No canonical-theme records exist yet: the new page must not pretend the
+    // old, still-consumed catalogue vanished.
+    const empty = await render("/themes/catalogue");
+    expect(empty).toContain("No canonical themes have been established yet");
+    expect(empty).toContain('href="/themes/catalogue/legacy"');
+
+    const legacy = await render("/themes/catalogue/legacy");
+    expect(legacy).toContain("Phone masts");
+    expect(legacy).toContain("not the librarian's canonical authority");
+  });
+});

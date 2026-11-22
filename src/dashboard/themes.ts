@@ -444,6 +444,7 @@ export function savedThemes(
         try {
           paths = await content.list("librarian/theme-mappings", MAPPING_LIST_PAGE, after);
         } catch {
+          proposalsPartial = true;
           break;
         }
         if (paths.length === 0) break;
@@ -472,7 +473,9 @@ export function savedThemes(
               rationale: mapping.rationale,
             });
           } catch {
-            // An unreadable mapping is omitted, never guessed.
+            // An unreadable mapping is omitted, never guessed, and its absence
+            // is not presented as authoritative.
+            proposalsPartial = true;
           }
         }
         if (proposalsPartial || paths.length < MAPPING_LIST_PAGE) break;

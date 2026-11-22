@@ -146,7 +146,7 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
         .map((n) => `<p class="empty">${escapeHtml(n)}</p>`)
         .join("");
       if (listing.rows.length === 0 && listing.next === undefined) {
-        return `${form}${notes}<p class="empty">${query || coverage ? "No canonical themes match this filter." : "No canonical themes have been established yet."}</p>`;
+        return `${form}${notes}<p class="empty">${query || coverage ? "No canonical themes match this filter." : "No canonical themes have been established yet. The earlier detected catalogue is still available."}</p>${query || coverage ? "" : '<p><a href="/themes/catalogue/legacy">Legacy detected catalogue</a></p>'}`;
       }
       const rows = listing.rows
         .map((r) => {
@@ -204,5 +204,26 @@ ${theme.description ? `<p>${escapeHtml(theme.description)}</p>` : ""}
 <h2>Mapped proposal wording</h2><p class="empty">Proposals remain distinct; this is the librarian's saved mapping, not UI string merging.</p>${found.proposalsPartial ? '<p class="empty">The mapping scan was incomplete.</p>' : ""}${mapped}`;
     },
   };
-  return [list, detail, catalogue, canonicalDetail];
+  const legacyCatalogue: DashboardView = {
+    path: "/themes/catalogue/legacy",
+    title: "Legacy detected catalogue",
+    hidden: true,
+    async render() {
+      if (!themes)
+        return '<p class="empty">The content repository is not configured for the dashboard.</p>';
+      const c = await themes.catalogue();
+      if (c.state === "unavailable")
+        return '<p class="empty">The legacy catalogue is unavailable right now.</p>';
+      if (c.themes.length === 0)
+        return '<p><a href="/themes/catalogue">Canonical themes</a></p><p class="empty">No legacy catalogue has been saved.</p>';
+      return `<p><a href="/themes/catalogue">Canonical themes</a></p><p class="empty">The earlier detected catalogue, kept readable while canonical identities are established; it is not the librarian's canonical authority.</p>
+<div class="wrap"><table><thead><tr><th>Name</th><th>Definition</th><th>Origin</th><th>Aliases</th></tr></thead><tbody>${c.themes
+        .map(
+          (t) =>
+            `<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.definition)}</td><td>${escapeHtml(t.origin)}</td><td>${escapeHtml(t.aliases.join(", "))}</td></tr>`,
+        )
+        .join("")}</tbody></table></div>`;
+    },
+  };
+  return [list, detail, catalogue, canonicalDetail, legacyCatalogue];
 }
