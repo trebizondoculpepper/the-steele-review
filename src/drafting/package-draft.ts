@@ -1,3 +1,4 @@
+import { editorialLineageRefs, type EditorialLineage } from "../content/editorial-lineage.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
@@ -40,7 +41,7 @@ import { ModelProviderError } from "../controllers/openrouter.js";
 import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { promptIdentity } from "./prompt-identity.js";
-import { rethrowCreditExhausted } from "../observability/provider-condition.js";
+
 import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 
 /**
@@ -391,6 +392,30 @@ const toArtifactRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
   sha256: r.hash.replace(/^sha256:/, ""),
 });
 
+/** Retain a partial mechanical run without mislabelling a domain guard as a provider failure. */
+export class DraftGuardStop extends Error {
+  constructor(
+    readonly failure: unknown,
+    readonly retention: {
+      mechanicalRun?: ArtifactRef;
+      retainedAttempts: ArtifactRef[];
+      diagnostics: ArtifactRef[];
+    },
+  ) {
+    super("writer domain guard stopped");
+  }
+}
+/** Same operational credit category, with the already-durable attempt references. */
+export class DraftCreditStop extends ModelProviderError {
+  constructor(
+    readonly mechanicalRun: ArtifactRef,
+    readonly writerAttempts: ArtifactRef[],
+    readonly diagnostics: ArtifactRef[],
+  ) {
+    super("credit-exhausted");
+  }
+}
+
 export type PackageDraftOutcome =
   | {
       status: "drafted";
@@ -476,6 +501,10 @@ export async function draftFromPackage(input: {
   };
   /** Exact saved inputs behind editorial feedback; not model-generated references. */
   revisionInputs?: ArtifactRef[];
+  /** Explicit continuation only; absent preserves all legacy generation identities. */
+  lineage?: EditorialLineage;
+  /** Domain guard outside provider execution, after completed-generation reuse. */
+  beforeNewGeneration?: () => Promise<void>;
   /** Revision instructions; defaults to the editable package-revision.md. */
   revisionInstructions?: string;
   now?: () => Date;
@@ -526,6 +555,7 @@ export async function draftFromPackage(input: {
               ...(input.previousDraft?.metadataRef ? [toRef(input.previousDraft.metadataRef)] : []),
             ]
           : []),
+        ...(input.lineage ? [editorialLineageRefs(input.lineage).map(toRef)] : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
         ...(pinnedUrl ? [] : [sourceUrl]),
       ]),
@@ -573,6 +603,8 @@ export async function draftFromPackage(input: {
   const legacyDraft = await input.content.lookup(`${legacyRepairedBase}.md`);
   const legacyMeta = await input.content.lookup(`${legacyRepairedBase}.json`);
   if (legacyDraft && legacyMeta) return cached(legacyDraft, legacyMeta);
+
+  if (input.beforeNewGeneration) await input.beforeNewGeneration();
 
   const user = JSON.stringify({
     post: {
@@ -718,6 +750,19 @@ export async function draftFromPackage(input: {
         : correction
           ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
           : user;
+      if (input.beforeNewGeneration) {
+        try {
+          await input.beforeNewGeneration();
+        } catch (error) {
+          throw new DraftGuardStop(error, {
+            ...(mechanical.turns.length
+              ? { mechanicalRun: await saveMechanicalRecord(input.content, mechanical) }
+              : {}),
+            retainedAttempts: writerAttempts,
+            diagnostics,
+          });
+        }
+      }
       let captured: CapturedWriterAttempt;
       try {
         captured = await captureWriterAttempt({
@@ -808,7 +853,7 @@ export async function draftFromPackage(input: {
         mechanical.outcome = "provider-failed";
         mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
         if (providerError === "credit-exhausted")
-          rethrowCreditExhausted(new ModelProviderError("credit-exhausted"));
+          throw new DraftCreditStop(mechanicalRun, writerAttempts, diagnostics);
         // Correction turns require an actual retained response, never an
         // ambiguous transport failure or an automatic provider retry.
         break;

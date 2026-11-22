@@ -1,3 +1,6 @@
+import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
+import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
+import { restateParentCompletion } from "../controllers/editorial-continuation-ingress.js";
 import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
 /**
  * Restate worker for unattended article runs (#243).
@@ -92,22 +95,26 @@ function main(): number {
   let stages;
   let sonar;
   let writer;
+  let continuation;
   try {
     sonar = sonarFromEnv();
     writer = openRouterFromEnv({ env: { ...process.env, STEELE_MODEL: writerModel(process.env) } });
     const sourceMetadata = sourceMetadataFromEnv(process.env);
+    const archive = new GitArtifactStore({
+      repoPath: c.STEELE_ARCHIVE_PATH,
+      repository: c.STEELE_ARCHIVE_REPOSITORY,
+    });
+    const content = new GitArtifactStore({
+      repoPath: c.STEELE_CONTENT_PATH,
+      repository: c.STEELE_CONTENT_REPOSITORY,
+    });
+    const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
     stages = articleStages({
       ...(sourceMetadata ? { sourceMetadata } : {}),
       mechanicalPolicy: writerMechanicalPolicy(process.env),
-      archive: new GitArtifactStore({
-        repoPath: c.STEELE_ARCHIVE_PATH,
-        repository: c.STEELE_ARCHIVE_REPOSITORY,
-      }),
-      content: new GitArtifactStore({
-        repoPath: c.STEELE_CONTENT_PATH,
-        repository: c.STEELE_CONTENT_REPOSITORY,
-      }),
-      operations: new OperationStore({ path: c.STEELE_STATE_PATH }),
+      archive,
+      content,
+      operations,
       models: {
         themes: model("STEELE_MODEL_THEMES"),
         claims: model("STEELE_MODEL_CLAIMS"),
@@ -132,6 +139,15 @@ function main(): number {
       ...(history ? { history } : {}),
       owner: `article-worker@${hostname()}:${process.pid}`,
     });
+    continuation = editorialContinuationWorkflow({
+      content,
+      archive,
+      operations,
+      sourceMetadata,
+      stages: stages.editorial!,
+      configuredPolicy: editorialPolicyFromEnv(process.env),
+      parentCompletion: restateParentCompletion(process.env.RESTATE_INGRESS_URL),
+    });
   } catch (error) {
     if (error instanceof SourceMetadataError) {
       console.error(`article-worker: source metadata ${error.code}`);
@@ -141,7 +157,7 @@ function main(): number {
     return 2;
   }
   restate.serve({
-    services: [articleRunWorkflow(stages), researchService(stages)],
+    services: [articleRunWorkflow(stages), researchService(stages), continuation],
     port: c.STEELE_ARTICLE_WORKER_PORT,
   });
   console.log(

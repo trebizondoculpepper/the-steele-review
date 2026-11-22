@@ -1,3 +1,4 @@
+import type { EditorialLineage } from "../content/editorial-lineage.js";
 import type { JudgmentHistory } from "../content/judgment-history.js";
 import { z } from "zod";
 import type { Ref } from "./article-run.js";
@@ -38,12 +39,14 @@ export interface EditorialStages {
     pkg: Ref,
     attemptId: string,
     recoveryId?: string,
+    lineage?: EditorialLineage,
   ): Promise<{ ref: Ref; state: string; operationalFailure?: string }>;
   judge(
     assessment: Ref,
     attemptId: string,
     recoveryId?: string,
     history?: JudgmentHistory,
+    lineage?: EditorialLineage,
   ): Promise<{
     ref: Ref;
     decision: "approve" | "revise" | "none";
@@ -57,11 +60,13 @@ export interface EditorialStages {
     number: number,
     sourceUrl: string,
     recoveryId?: string,
+    lineage?: EditorialLineage,
   ): Promise<{
     version?: EditorialVersion;
     failure?: string;
     mechanicalRun?: Ref;
     diagnostics?: Ref[];
+    retainedAttempts?: Ref[];
   }>;
   approve(judgment: Ref): Promise<{ eventId: string }>;
 }
@@ -73,6 +78,8 @@ export interface EditorialHistory {
   revisions: EditorialVersion[];
   mechanicalRuns: Ref[];
   diagnostics: Ref[];
+  retainedWriterAttempts?: Ref[];
+  revisionAttempts?: number;
   terminal: "approved" | "unresolved" | "operational-stop" | "deadline";
   summary: Ref;
 }

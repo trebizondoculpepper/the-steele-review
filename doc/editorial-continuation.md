@@ -44,3 +44,38 @@ Only approval of its exact publication payload can enter the existing approval
 outbox and delivery path. Old approvals never transfer. The continuation does
 not enable a publisher or drain a backlog; dummy proof and controlled real draft
 delivery remain separate operational gates.
+
+## Operator entrypoint and reconnect
+
+The `editorial-continue` CLI accepts `--input <seed.json>` and a stable
+`--request-id`, with optional bounded `--wait-ms` and `--json` output. Its
+versioned `EditorialContinuation` workflow is separate from ArticleRun. The CLI
+validates flags and the bounded seed file before recording an intent or making
+an ingress request. `RESTATE_INGRESS_URL` is private runtime configuration for
+the read-only parent-completion check and CLI submission. Missing continuation
+configuration fails this workflow closed without disabling existing ArticleRun
+handlers.
+
+A new intent pins the exact seed and configured policy in Git and the typed
+state controller before submission. Repeating the same request attaches to that
+intent, including its frozen policy, even if configuration changes or the
+continuation has already replaced its original canonical base. Reusing the
+request ID with another seed is a conflict. An uncertain submission response
+must be retried with the same request ID; an observation timeout does not cancel
+the durable workflow.
+
+The parent-completion and initial base checks form a journaled preflight.
+Subsequent replay uses that recorded preflight and existing retained-response
+recovery instead of rejecting the continuation's own successful edit as stale.
+Before genuinely new writer work, the expected current body and metadata are
+checked again; canonical writes retain their existing compare-and-swap guard.
+This does not claim to enumerate all other active writers. A concurrent change
+fails closed at the base check or commit guard.
+
+Each summary records the immutable parent, separate prior/new counts, every
+known new role/version reference, mechanical runs and retained writer attempts.
+The first seed edit consumes one revision turn and shares the same deadline
+with subsequent review and any remaining edit. If inner history persistence
+fails, the outer diagnostic preserves known latest work and any known approval
+event while marking the inner summary unavailable. That operational outcome is
+neither a fabricated rejection nor proof that no approval side effect occurred.

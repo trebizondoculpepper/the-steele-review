@@ -890,6 +890,83 @@ export class OperationStore {
     };
   }
 
+  /** Stable explicit continuation intent, not a claim that its workflow completed. */
+  recordEditorialContinuation(input: {
+    publicationId: string;
+    postId: string;
+    sourceVersion: string;
+    requestId: string;
+    inputHash: string;
+    intent: ArtifactReference;
+    parentSummary: ArtifactReference;
+  }) {
+    const parsed = z
+      .object({
+        publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        requestId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+        inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+        intent: ArtifactReferenceSchema,
+        parentSummary: ArtifactReferenceSchema,
+      })
+      .strict()
+      .parse(input);
+    const workflowKey = `${parsed.publicationId}/${parsed.postId}~editorial-${createHash("sha256").update(parsed.requestId).digest("hex").slice(0, 16)}`;
+    const value = { ...parsed, workflowKey, recordedAt: new Date(this.now()).toISOString() };
+    const saved = this.reconcileCompleted(
+      `editorial-continuation-intent:${parsed.publicationId}/${parsed.postId}:${parsed.requestId}`,
+      value,
+      [],
+    ) as typeof value;
+    if (
+      saved.inputHash !== parsed.inputHash ||
+      saved.workflowKey !== workflowKey ||
+      saved.sourceVersion !== parsed.sourceVersion ||
+      JSON.stringify(saved.intent) !== JSON.stringify(parsed.intent) ||
+      JSON.stringify(saved.parentSummary) !== JSON.stringify(parsed.parentSummary)
+    )
+      throw new OperationStoreError("invalid-input");
+    return saved;
+  }
+
+  /** Exact lookup before CLI live-base validation, including retries after this intent's own edit. */
+  editorialContinuationAttempt(
+    publicationId: string,
+    postId: string,
+    requestId: string,
+  ):
+    | {
+        workflowKey: string;
+        requestId: string;
+        sourceVersion: string;
+        inputHash: string;
+        intent: ArtifactReference;
+        parentSummary: ArtifactReference;
+        recordedAt: string;
+      }
+    | undefined {
+    if (
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(requestId)
+    )
+      throw new OperationStoreError("invalid-input");
+    const row = this.row(`editorial-continuation-intent:${publicationId}/${postId}:${requestId}`);
+    if (row?.status !== "completed") return undefined;
+    return z
+      .object({
+        workflowKey: z.string().min(1).max(1000),
+        requestId: z.literal(requestId),
+        sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+        intent: ArtifactReferenceSchema,
+        parentSummary: ArtifactReferenceSchema,
+        recordedAt: z.iso.datetime(),
+      })
+      .parse(JSON.parse(row.artifact!));
+  }
+
   /** Bounded operator-attempt discovery for the exact source revision; never exposes raw state or SQL. */
   articleAttempts(
     publicationId: string,
