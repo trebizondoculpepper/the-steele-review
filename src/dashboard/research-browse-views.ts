@@ -57,7 +57,7 @@ export function researchBrowseViews(research?: ResearchPort): DashboardView[] {
         : "";
       if (page.rows.length === 0) {
         const filtered = q || Object.values(f).some(Boolean);
-        return `${form}${notes}<p class="empty">${filtered ? "No saved documents match this search." : "No research documents have been saved yet."}</p>`;
+        return `${form}${notes}<p class="empty">${filtered ? "No saved documents match this search." : "No research documents have been saved yet."}</p>${next}`;
       }
       return `${form}${notes}<p>Dossiers, imported reports and generated job reports are separate kinds and never promoted into each other. Opening a row reads exactly the shown commit; a citation or summary is not evidence that a claim is true.</p>
 <div class="wrap"><table><thead><tr><th>Document</th><th>Kind</th><th>Subject</th><th>Date</th><th>Version</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;

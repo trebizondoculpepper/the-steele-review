@@ -71,7 +71,8 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
       let unreadable = 0;
       let complete = true;
       let lastConsumed: string | undefined;
-      while (rows.length < query.limit) {
+      let examined = 0;
+      while (rows.length < query.limit && examined < RESEARCH_BROWSE_SCAN) {
         let page;
         try {
           page = await research.list({
@@ -93,6 +94,7 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
         }
         unreadable += page.unreadable;
         for (const row of page.rows) {
+          examined++;
           cursor = row.path;
           lastConsumed = row.path;
           if (wantedSubject && !(row.subject ?? "").toLowerCase().includes(wantedSubject)) continue;
@@ -105,12 +107,13 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
             ...(row.subject ? { subject: row.subject } : {}),
             ...(row.date ? { date: row.date } : {}),
           });
-          if (rows.length >= query.limit) break;
+          if (rows.length >= query.limit || examined >= RESEARCH_BROWSE_SCAN) break;
         }
-        if (rows.length >= query.limit) break;
+        if (rows.length >= query.limit || examined >= RESEARCH_BROWSE_SCAN) break;
         if (!page.next) break;
         cursor = page.next;
       }
+      if (examined >= RESEARCH_BROWSE_SCAN && rows.length < query.limit) complete = false;
       // Sort applies within the returned page; the reader's stable listing
       // order is what pagination and cursors follow.
       const sortKey = (r: ResearchBrowseRow) =>
