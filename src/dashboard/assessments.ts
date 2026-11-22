@@ -16,7 +16,10 @@ import {
 export const ASSESSMENT_PAGE = 20;
 export const ASSESSMENT_SCAN = 200;
 const LIST_PAGE = 50;
-const RECORD = /^assessments\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\.json$/;
+// Successful attempts sit directly under the post; provider failures are kept
+// under `<key>.failed/<attempt>.json` by the producer.
+const RECORD =
+  /^assessments\/([^/]+)\/([^/]+)\/([0-9a-f]{32})(?:\.failed\/[0-9a-f]{16})?\.json$/;
 
 export interface AssessmentRow {
   path: string;

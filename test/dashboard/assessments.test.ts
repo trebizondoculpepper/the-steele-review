@@ -65,7 +65,11 @@ describe("assessments browser (#642)", { timeout: 60_000 }, () => {
     );
     await writeAssessment("pub", "p3", "3".repeat(32), record({ state: "incomplete", findings: undefined }));
     await writeAssessment("pub", "p4", "4".repeat(32), record({ state: "malformed", findings: undefined }));
-    await writeAssessment("pub", "p5", "5".repeat(32), record({ state: "provider-failed", findings: undefined }));
+    // Provider failures use the producer's `<key>.failed/<attempt>.json` layout.
+    await content.write(
+      `assessments/pub/p5/${"5".repeat(32)}.failed/${"a".repeat(16)}.json`,
+      JSON.stringify(record({ state: "provider-failed", findings: undefined })),
+    );
     const listing = await savedAssessments(content).list({});
     expect(listing.rows.map((r) => r.state).sort()).toEqual([
       "findings",
@@ -79,6 +83,12 @@ describe("assessments browser (#642)", { timeout: 60_000 }, () => {
       deterministicFindings: 1,
       assessorModel: "fake/assessor-2",
       hasDocument: false,
+    });
+    // A provider-failure record is listed and openable at its real path.
+    const failed = listing.rows.find((r) => r.state === "provider-failed")!;
+    expect(failed.path).toContain(".failed/");
+    expect(await savedAssessments(content).detail(failed.path)).toMatchObject({
+      row: { state: "provider-failed" },
     });
   });
 
