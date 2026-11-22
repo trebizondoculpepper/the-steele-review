@@ -1,3 +1,4 @@
+import { parseJudgmentDocument, emptyGuidance } from "../drafting/judgment-document.js";
 import { reportCreditExhausted } from "../observability/provider-condition.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import type { GitArtifactStore, ArtifactRef } from "../controllers/artifact-store.js";
@@ -106,7 +107,7 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async judge(assessment, attemptId, recoveryId) {
+    async judge(assessment, attemptId, recoveryId, history) {
       if (!deps.judge) throw new StageError("editorial", "judge-unconfigured");
       const record = AssessmentRecordSchema.parse(JSON.parse(await deps.content.read(assessment)));
       const provider = durableEditorialProvider({
@@ -115,13 +116,14 @@ export function editorialStages(deps: {
         purpose: "judge",
         package: artifactRef(record.package),
         source: record.source,
-        context: [record.body, record.publication],
+        context: [record.body, record.publication, ...(history?.map((x) => x.judgment) ?? [])],
         promptVersion: DEFAULT_JUDGE_PROMPT.version,
         recoveryId,
       });
       const out = await judgeAssessment({
         content: deps.content,
         assessment,
+        ...(history?.length ? { history } : {}),
         judge: provider,
         attemptId,
         retainedAttempts: provider.retainedAttempts,
@@ -157,12 +159,20 @@ export function editorialStages(deps: {
       const assessment = AssessmentRecordSchema.parse(
         JSON.parse(await deps.content.read(artifactRef(decision.assessment))),
       );
-      const guidance = JSON.stringify({
-        judgment: await deps.content.read(artifactRef(decision.document)),
-        decision: decision.decision,
-        gates: decision.gates,
-        deterministicFindings: assessment.deterministicFindings,
-      });
+      const guidance = parseJudgmentDocument(
+        await deps.content.read(artifactRef(decision.document)),
+      );
+      if (!guidance) throw new StageError("editorial", "revision-guidance-incomplete");
+      const feedback = [
+        ...(!emptyGuidance(guidance.requiredCorrections)
+          ? [{ passage: "Required editorial corrections", reason: guidance.requiredCorrections }]
+          : []),
+        ...assessment.deterministicFindings,
+        ...(decision.gates.length
+          ? [{ passage: "Deterministic editorial gates", reason: decision.gates.join("; ") }]
+          : []),
+      ];
+      if (!feedback.length) throw new StageError("editorial", "revision-guidance-empty");
       const out = await draftFromPackage({
         ...deps,
         package: pkg,
@@ -176,7 +186,20 @@ export function editorialStages(deps: {
           ...(loaded.meta.fields ? { fields: loaded.meta.fields } : {}),
         },
         revisionInputs: [version.metadata, judgment, artifactRef(decision.assessment)],
-        revision: { number, feedback: [{ passage: "Editorial judgment", reason: guidance }] },
+        revision: {
+          number,
+          feedback,
+          ...(!emptyGuidance(guidance.acceptedMinorObservations)
+            ? {
+                observations: [
+                  {
+                    passage: "Accepted minor observations",
+                    reason: guidance.acceptedMinorObservations,
+                  },
+                ],
+              }
+            : {}),
+        },
       });
       if (out.status !== "drafted")
         return {

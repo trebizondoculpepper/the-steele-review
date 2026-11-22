@@ -1,9 +1,15 @@
+import { JudgmentHistorySchema, type JudgmentHistory } from "../content/judgment-history.js";
+import { parseJudgmentDocument } from "./judgment-document.js";
 import { rethrowEditorialStorageError } from "./editorial-provider.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import { type ArtifactReference, ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { rethrowCreditExhausted, isCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { writeOnce } from "../research/job.js";
@@ -52,6 +58,7 @@ export const JudgmentRecordSchema = z
     /** The judge's Markdown reasons and recommendations, retained as received. */
     document: Ref.optional(),
     assessment: Ref,
+    history: JudgmentHistorySchema.optional(),
     body: Ref,
     publication: Ref,
     judge: z.object({ model: z.string(), promptVersion: z.string() }).strict().optional(),
@@ -78,40 +85,9 @@ const toRef = (r: ArtifactRef) => ({
   hash: `sha256:${r.sha256}`,
 });
 
-/** The text of one `## <name>` section, or undefined when the section is absent. */
-function section(document: string, name: string): string | undefined {
-  const lines = document.split(/\r?\n/);
-  const start = lines.findIndex((l) => l.trim().toLowerCase() === `## ${name}`.toLowerCase());
-  if (start < 0) return undefined;
-  const end = lines.findIndex((l, i) => i > start && /^##\s/.test(l.trim()));
-  return lines
-    .slice(start + 1, end < 0 ? undefined : end)
-    .filter((l) => !/^DECISION:/.test(l.trim()))
-    .join("\n")
-    .trim();
-}
-const NONE = /^none\.?$/i;
-
-/**
- * The decision, only from a complete judgement: a valid final decision line
- * AND the required sections with substance. Reasons must say something; a
- * revision must carry at least one actual correction; accepted minor
- * observations may be "None." but must be present. A bare marker, or empty
- * sections, is no decision.
- */
+/** Legacy public decision reader uses the same complete section parser as revision handoff. */
 export function readDecision(document: string): "approve" | "revise" | undefined {
-  const last = document.trim().split(/\r?\n/).at(-1)?.trim();
-  const decision =
-    last === "DECISION: APPROVE" ? "approve" : last === "DECISION: REVISE" ? "revise" : undefined;
-  if (!decision) return undefined;
-  const reasons = section(document, "Reasons");
-  const corrections = section(document, "Required corrections");
-  const minor = section(document, "Accepted minor observations");
-  if (!reasons || NONE.test(reasons)) return undefined;
-  if (corrections === undefined || minor === undefined || minor === "") return undefined;
-  if (decision === "revise" && (corrections === "" || NONE.test(corrections))) return undefined;
-  if (decision === "approve" && corrections === "") return undefined;
-  return decision;
+  return parseJudgmentDocument(document)?.decision;
 }
 
 export async function judgeAssessment(input: {
@@ -120,6 +96,7 @@ export async function judgeAssessment(input: {
   assessment: ArtifactRef;
   judge: ExtractionModelProvider;
   attemptId?: string;
+  history?: JudgmentHistory;
   retainOperationalFailure?: boolean;
   retainedAttempts?: () => ArtifactReference[];
   retainedAttemptReuses?: () => Array<boolean | null>;
@@ -136,6 +113,12 @@ export async function judgeAssessment(input: {
   } catch {
     return { status: "unavailable", reason: "assessment-unreadable" };
   }
+  let history: JudgmentHistory;
+  try {
+    history = JudgmentHistorySchema.parse(input.history ?? []);
+  } catch {
+    return { status: "unavailable", reason: "judgment-history-invalid" };
+  }
   const promptId = promptIdentity(prompt.version, prompt.instructions);
   const pub = assessment.body.path.split("/");
   const dir = `judgments/${pub[1] ?? "unknown"}/${pub[2] ?? "unknown"}`;
@@ -148,6 +131,7 @@ export async function judgeAssessment(input: {
       assessment.publication,
       input.judge.modelVersion,
       promptId,
+      ...(history.length ? [history] : []),
     ]),
   ).slice(0, 32);
   const recordPath = `${dir}/${key}.json`;
@@ -176,6 +160,7 @@ export async function judgeAssessment(input: {
   const base = {
     schemaVersion: JUDGMENT_SCHEMA_VERSION,
     assessment: toRef(input.assessment),
+    ...(history.length ? { history } : {}),
     body: assessment.body,
     publication: assessment.publication,
   } as const;
@@ -216,6 +201,54 @@ export async function judgeAssessment(input: {
   } catch {
     gates.push("publication-unreadable");
   }
+  const priorGuidance = [];
+  for (const item of history) {
+    try {
+      const prior = JudgmentRecordSchema.parse(
+        JSON.parse(await input.content.read(fromRef(item.judgment))),
+      );
+      const priorAssessment = AssessmentRecordSchema.parse(
+        JSON.parse(await input.content.read(fromRef(item.assessment))),
+      );
+      const { payload } = await readPublicationPayload(input.content, prior.publication);
+      if (
+        prior.state !== "decided" ||
+        prior.decision !== "revise" ||
+        !prior.document ||
+        !sameArtifact(prior.assessment, item.assessment) ||
+        !sameArtifact(prior.body, item.body) ||
+        !sameArtifact(priorAssessment.body, item.body) ||
+        !sameArtifact(priorAssessment.publication, prior.publication) ||
+        !sameArtifact(priorAssessment.package, assessment.package) ||
+        !sameArtifact(priorAssessment.source, assessment.source) ||
+        JSON.stringify(priorAssessment.sourceContext ?? null) !==
+          JSON.stringify(assessment.sourceContext ?? null) ||
+        item.body.repository !== assessment.body.repository ||
+        item.body.path !== assessment.body.path ||
+        !sameArtifact(payload.body, item.body) ||
+        !sameArtifact(payload.metadata, item.metadata)
+      )
+        throw new Error("history-mismatch");
+      const document = await input.content.read(fromRef(prior.document)),
+        guidance = parseJudgmentDocument(document);
+      if (!guidance) throw new Error("history-incomplete");
+      priorGuidance.push({
+        ...item,
+        effectiveDecision: prior.decision,
+        deterministicGates: prior.gates,
+        requiredCorrections: guidance.requiredCorrections,
+        acceptedMinorObservations: guidance.acceptedMinorObservations,
+      });
+    } catch (error) {
+      if (
+        error instanceof ArtifactStoreError &&
+        ["git-failed", "concurrent-update", "interrupted-commit"].includes(error.code)
+      )
+        throw error;
+      gates.push("judgment-history-unreadable-or-mismatched");
+      break;
+    }
+  }
   const blockingDeterministic = assessment.deterministicFindings.length > 0;
 
   // Nothing to judge: record the gated state without calling the model.
@@ -228,6 +261,7 @@ export async function judgeAssessment(input: {
     publication,
     findings,
     deterministicFindings: assessment.deterministicFindings,
+    ...(priorGuidance.length ? { priorJudgmentGuidance: priorGuidance } : {}),
   });
   const documentPath = `${dir}/${key}.md`;
   const retained = await input.content.lookup(documentPath);
