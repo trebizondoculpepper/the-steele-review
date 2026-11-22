@@ -81,20 +81,23 @@ Separate evidence assessment from the decision about whether to continue:
 
 - The **assessor** records findings about the exact publication payload, including
   title, subtitle, excerpt and body, against its pinned source and evidence.
-  Findings identify passage/location, category, reason/evidence and suggested
-  severity. A malformed, incomplete or failed assessment is not an empty list
-  of faults. The assessor does not issue the authoritative approval decision.
-- The **judge** records approval, targeted revision or bounded unresolved stop,
-  with its assessment reference, policy identity and reasons. Approval names the
-  exact publication version; an edit needs a fresh assessment and judgment.
+  Findings describe what is wrong and where, with reasons/evidence, in a readable
+  document; Markdown is acceptable. Keep exact identity and completion metadata
+  alongside it. A malformed, incomplete or failed assessment is not an empty list
+  of faults. The assessor neither recommends repairs nor decides approval.
+- The **judge** reviews the article and findings, then approves or recommends
+  specific changes for revision. Save its assessment reference, policy/prompt
+  identity, reasons and required changes separately. Approval names the exact
+  publication version; an edit needs a fresh assessment and judgment.
 - Restate coordinates saved assessment, judgment and optional writer revision.
   Mechanical output repair remains a separate writer subloop. Preserve writing's
   independence from assessment, bounded editorial attempts and the existing
   exact-version approval/outbox/publishing boundary.
 
-A deterministic judge using the current substantive/minor policy is the proposed
-starting implementation, not an agreed numeric acceptance threshold. Fault count
-alone cannot decide materiality. Misquotes, wrong citations and material factual
+The judge may use a separately prompted model to interpret findings and recommend
+changes. Fixed version, completion and attempt gates stay deterministic. The
+earlier rule-based-only judge was a suggestion, not an owner requirement. Fault
+count alone cannot decide materiality. Misquotes, wrong citations and material factual
 errors remain blocking; clearly distinguishable opinion and minor stylistic notes
 remain permissible. Incomplete or mismatched evidence cannot authorize publication.
 Version policy inputs so a changed acceptance rule cannot silently reuse an older
