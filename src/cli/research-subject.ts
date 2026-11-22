@@ -169,7 +169,8 @@ const SubmitConfig = z.object({
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
   STEELE_RESTATE_UI_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
 });
-const Count = z.coerce.number().int().min(0).max(100);
+// A reprocess is a later pass of the same request; passes are bounded at 5.
+const Count = z.coerce.number().int().min(1).max(4);
 const WaitMs = z.coerce.number().int().min(1_000).max(3_600_000);
 
 /**

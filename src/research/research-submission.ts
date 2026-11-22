@@ -39,7 +39,6 @@ export interface ResearchIngressPort {
 
 export function restateResearchIngress(ingressUrl: string): ResearchIngressPort {
   const ingress = clients.connect({ url: ingressUrl });
-  const sends = new Map<string, clients.Send<CommissionedJob>>();
   return {
     async send(handler, request, idempotencyKey) {
       const client = ingress
@@ -53,19 +52,23 @@ export function restateResearchIngress(ingressUrl: string): ResearchIngressPort 
           signal: AbortSignal.timeout(10_000),
         } as never),
       )) as clients.Send<CommissionedJob>;
-      sends.set(send.invocationId, send);
       return { invocationId: send.invocationId, status: send.status };
     },
     async attach(invocationId, signal) {
-      const send =
-        sends.get(invocationId) ??
-        ({ invocationId, status: "Accepted" } as clients.Send<CommissionedJob>);
-      return Promise.race([
-        ingress.result(send),
-        new Promise<never>((_, reject) =>
-          signal.addEventListener("abort", () => reject(new Error("wait-timeout")), { once: true }),
-        ),
-      ]);
+      // Attach over plain HTTP so the client-side request is aborted when the
+      // wait ends; the durable invocation itself is never cancelled.
+      let res: Response;
+      try {
+        res = await fetch(
+          `${ingressUrl.replace(/\/+$/, "")}/restate/invocation/${encodeURIComponent(invocationId)}/attach`,
+          { headers: { accept: "application/json" }, signal },
+        );
+      } catch (error) {
+        if (signal.aborted) throw new Error("wait-timeout");
+        throw error;
+      }
+      if (!res.ok) throw new Error(`attach failed (HTTP ${res.status})`);
+      return (await res.json()) as CommissionedJob;
     },
   };
 }
@@ -103,10 +106,22 @@ export async function submitManualResearch(input: {
   /** Builds a Restate UI link for an invocation, when configured. */
   inspect?: (invocationId: string) => string | undefined;
 }): Promise<SubmissionOutcome> {
-  const jobId = researchJobId(input.request);
   const reprocess = input.reprocess ?? 0;
-  // Saved terminal work is reported, never silently repeated.
-  if (reprocess === 0) {
+  // Reprocessing is a new durable job, not a new call to the old one: a later
+  // pass linked to the original job, so earlier artifacts stay untouched and
+  // the worker cannot reuse the old result.
+  const request: ResearchRequest =
+    reprocess > 0
+      ? {
+          ...input.request,
+          pass: input.request.pass + reprocess,
+          previousJobId: researchJobId(input.request),
+        }
+      : input.request;
+  const jobId = researchJobId(request);
+  // Saved terminal work is reported, never silently repeated (this applies to
+  // a reprocessed job too, so repeating `--reprocess n` never reruns it).
+  {
     const saved = await input.artifacts.lookup(researchJobPath(jobId, "result"));
     if (saved) {
       const result = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(saved)));
@@ -116,9 +131,9 @@ export async function submitManualResearch(input: {
   const handler: "run" | "runStaged" = input.staged ? "runStaged" : "run";
   const sent = await input.ingress.send(
     handler,
-    input.request,
+    request,
     // The same call key as article research: one job, one paid run.
-    researchCallKey(jobId, reprocess),
+    researchCallKey(jobId),
   );
   const link = input.inspect?.(sent.invocationId);
   const base = {

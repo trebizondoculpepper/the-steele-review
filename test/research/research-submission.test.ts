@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -6,6 +7,7 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { researchJobId } from "../../src/research/job.js";
 import type { CommissionedJob } from "../../src/research/librarian.js";
 import {
+  restateResearchIngress,
   submitManualResearch,
   type ResearchIngressPort,
 } from "../../src/research/research-submission.js";
@@ -131,7 +133,12 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
       reprocess: 1,
     });
     expect(re).toMatchObject({ kind: "submitted" });
-    expect(ingress.sent[0]!.key).toBe(`${jobId}:recovery-1`);
+    // A new durable job: a later pass linked to the original, never the old job's key.
+    const reJobId = researchJobId({ ...request, pass: 2, previousJobId: jobId });
+    expect(re).toMatchObject({ jobId: reJobId });
+    expect(ingress.sent[0]!.key).toBe(reJobId);
+    // The original result is untouched.
+    expect(await artifacts.lookup(`research-jobs/${jobId}/result.json`)).toBeDefined();
   });
 
   it("waits for the finished job when asked", async () => {
@@ -167,5 +174,33 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     });
     expect(again).toMatchObject({ repeated: true });
     expect(ingress.invocations.size).toBe(1);
+  });
+});
+
+describe("restate research ingress adapter (#594)", { timeout: 15_000 }, () => {
+  it("aborts the attachment request when the wait ends, without hanging", async () => {
+    const sockets = new Set<import("node:net").Socket>();
+    let attached = "";
+    const server = createServer((req) => {
+      attached = req.url ?? "";
+      // Never answer: a long-running job.
+    });
+    server.on("connection", (s) => sockets.add(s));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as import("node:net").AddressInfo;
+    try {
+      const started = Date.now();
+      await expect(
+        restateResearchIngress(`http://127.0.0.1:${port}`).attach(
+          "inv_abcdefghij1",
+          AbortSignal.timeout(200),
+        ),
+      ).rejects.toThrow("wait-timeout");
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(attached).toBe("/restate/invocation/inv_abcdefghij1/attach");
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });

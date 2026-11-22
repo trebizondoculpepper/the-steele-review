@@ -28,7 +28,7 @@ Retrieval is bounded separately. The completion event remains in the local outbo
 
 - **Returns:** the job ID and invocation ID at once, plus a Restate UI link when `STEELE_RESTATE_UI_URL` is set.
 - **Repeats:** the call key is the stable job ID, so a repeated submission attaches to the same invocation (`already submitted`) and never buys another discovery.
-- **Saved work:** a job whose result is already saved, including results from earlier standalone manual runs, is reported and not resubmitted. `--reprocess <n>` submits again under a distinct, stable key.
+- **Saved work:** a job whose result is already saved, including results from earlier standalone manual runs, is reported and not resubmitted. `--reprocess <n>` (1 to 4) submits a new durable job: a later pass of the same request, linked to the original job. Earlier results stay untouched, and repeating the same `--reprocess n` reports that job rather than rerunning it.
 - **`--wait <ms>`:** waits for the job, bounded. If the wait ends first, the invocation keeps running in Restate. Check it later with `--status`, which reads the saved result only and never submits.
 - **`--dossier <id>`:** needs `--wait`, so the finished job can be attached.
 - **Model and timeout:** these belong to the worker in this mode, so `--model` and `--timeout-ms` are refused unless you use `--local`.
