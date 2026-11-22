@@ -110,6 +110,8 @@ export interface ClaimsPort {
    * its recorded hash and source version; undefined when it cannot be proved.
    */
   sourceText(row: ClaimRow): Promise<string | undefined>;
+  /** Every row of one saved extraction, for the shared claim browser. */
+  rowsFor?(result: string): Promise<ClaimRow[] | undefined>;
   /** Saved claim occurrences for exactly this post revision; never another. */
   forPost(
     post: { publicationId: string; postId: string },
@@ -261,6 +263,8 @@ export function savedClaims(content: Store, archive?: Archive): ClaimsPort {
   };
 
   return {
+    rowsFor: readResult,
+
     async forPost(post, sourceVersion) {
       const prefix = `claim-extractions/${post.publicationId}/${post.postId}`;
       let paths: string[];
