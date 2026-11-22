@@ -125,6 +125,23 @@ export function claimCollection(
           listing = path;
           if (!/^claim-extractions\/[^/]+\/[^/]+\/[^/]+\.json$/.test(path)) continue;
           examined++;
+          let artifact: CollectionRow["artifact"];
+          try {
+            const ref = await content.lookup(path);
+            if (!ref) {
+              unreadable++;
+              continue;
+            }
+            artifact = {
+              repository: ref.repository,
+              commit: ref.commit,
+              path: ref.path,
+              hash: `sha256:${ref.sha256}`,
+            };
+          } catch {
+            unreadable++;
+            continue;
+          }
           let all;
           try {
             all = await claims.rowsFor(path);
@@ -150,30 +167,10 @@ export function claimCollection(
             if (postFilter && row.postId !== postFilter) continue;
             if (theme && !row.themes.some((th) => th.id === theme)) continue;
             if (kind && row.kind !== kind) continue;
-            let artifact: CollectionRow["artifact"] | undefined;
-            try {
-              const ref = await content.lookup(path);
-              if (ref) {
-                artifact = {
-                  repository: ref.repository,
-                  commit: ref.commit,
-                  path: ref.path,
-                  hash: `sha256:${ref.sha256}`,
-                };
-              }
-            } catch {
-              // Reported through the row limitation below.
-            }
             rows.push({
               id: `${row.result}#${row.category}:${row.index}`,
               summary: row.statement ?? `${row.category} entry ${row.index}`,
-              artifact: artifact ?? {
-                repository: "content",
-                commit: "0".repeat(40),
-                path: row.result,
-                hash: `sha256:${"0".repeat(64)}`,
-              },
-              ...(artifact ? {} : { limitations: ["The saved extraction could not be read."] }),
+              artifact,
               row,
             });
             if (lastPath !== path) beforeLast = priorPath;

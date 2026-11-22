@@ -60,7 +60,10 @@ export function claimBrowseViews(
         .map((r) => {
           const c = r.row;
           const detail = `/claims/view?${new URLSearchParams({ result: c.result, category: c.category, index: String(c.index) }).toString()}`;
-          return `<tr><td><a href="${escapeHtml(detail)}">${escapeHtml(c.statement ?? `${c.category} entry ${c.index}`)}</a>${c.passage ? `<br><blockquote>${escapeHtml(c.passage.slice(0, 300))}</blockquote>` : ""}</td><td>${badge(c.category)}${c.kind ? ` <span class="empty">${escapeHtml(c.kind)}</span>` : ""}</td><td>${escapeHtml(c.publicationId)}/${escapeHtml(c.postId)}${c.claimRecordId ? `<br><code>${escapeHtml(c.claimRecordId)}</code>` : ""}</td><td><code>${escapeHtml(r.artifact.commit.slice(0, 12))}</code><br><span class="empty">${escapeHtml(r.artifact.hash.slice(0, 19))}…</span></td></tr>`;
+          const limitations = r.limitations?.length
+            ? `<br><span class="empty">${escapeHtml(r.limitations.join("; "))}</span>`
+            : "";
+          return `<tr><td><a href="${escapeHtml(detail)}">${escapeHtml(c.statement ?? `${c.category} entry ${c.index}`)}</a>${c.passage ? `<br><blockquote>${escapeHtml(c.passage.slice(0, 300))}</blockquote>` : ""}${limitations}</td><td>${badge(c.category)}${c.kind ? ` <span class="empty">${escapeHtml(c.kind)}</span>` : ""}</td><td>${escapeHtml(c.publicationId)}/${escapeHtml(c.postId)}${c.claimRecordId ? `<br><code>${escapeHtml(c.claimRecordId)}</code>` : ""}</td><td><code>${escapeHtml(r.artifact.commit.slice(0, 12))}</code><br><span class="empty">${escapeHtml(r.artifact.hash.slice(0, 19))}…</span></td></tr>`;
         })
         .join("");
       const params = new URLSearchParams(url.searchParams);
