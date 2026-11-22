@@ -759,6 +759,71 @@ export class OperationStore {
     );
   }
 
+  /** Record one intentional article rerun before its external submission. */
+  recordArticleAttempt(input: {
+    publicationId: string;
+    postId: string;
+    sourceVersion: string;
+    requestId: string;
+    inputHash: string;
+    workflowKey: string;
+  }): { workflowKey: string; requestId: string; sourceVersion: string; recordedAt: string } {
+    const parsed = z
+      .object({
+        publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        requestId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+        inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+        workflowKey: z.string().min(1).max(700),
+      })
+      .strict()
+      .parse(input);
+    const key = `article-attempt:${parsed.publicationId}/${parsed.postId}:${parsed.requestId}`;
+    const value = { ...parsed, recordedAt: new Date(this.now()).toISOString() };
+    const saved = this.reconcileCompleted(key, value, []) as typeof value;
+    if (
+      saved.inputHash !== parsed.inputHash ||
+      saved.workflowKey !== parsed.workflowKey ||
+      saved.sourceVersion !== parsed.sourceVersion
+    )
+      throw new OperationStoreError("invalid-input");
+    return saved;
+  }
+
+  /** Bounded operator-attempt discovery for the exact source revision; never exposes raw state or SQL. */
+  articleAttempts(
+    publicationId: string,
+    postId: string,
+    sourceVersion: string,
+    limit = 10,
+  ): Array<{ workflowKey: string; requestId: string; sourceVersion: string; recordedAt: string }> {
+    if (
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
+      !/^sha256:[0-9a-f]{64}$/.test(sourceVersion) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 50
+    )
+      throw new OperationStoreError("invalid-input");
+    const rows = this.db
+      .prepare(
+        "SELECT artifact FROM operations WHERE key LIKE ? AND status = 'completed' ORDER BY created_at DESC, key DESC LIMIT ?",
+      )
+      .all(`article-attempt:${publicationId}/${postId}:%`, 50) as Array<{ artifact: string }>;
+    return rows
+      .map((row) => JSON.parse(row.artifact))
+      .filter((value) => value.sourceVersion === sourceVersion)
+      .slice(0, limit)
+      .map((value) => ({
+        workflowKey: value.workflowKey,
+        requestId: value.requestId,
+        sourceVersion: value.sourceVersion,
+        recordedAt: value.recordedAt,
+      }));
+  }
+
   /** Fence a returned editorial response against both stale ownership and an expired paid-call lease. */
   renewEditorialCapture(claim: OperationClaim, leaseMs: number): number {
     if (
@@ -841,7 +906,12 @@ export class OperationStore {
       }
       if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now)
         throw new OperationStoreError("busy");
-      if (!row || row.status !== "claimed") throw new OperationStoreError("not-owner");
+      if (
+        !row ||
+        (row.status !== "claimed" &&
+          !(row.status === "failed" && row.error_code === "writer-capture-incomplete"))
+      )
+        throw new OperationStoreError("not-owner");
       this.db
         .prepare(
           "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",

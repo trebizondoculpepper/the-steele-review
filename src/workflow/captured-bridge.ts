@@ -1,4 +1,5 @@
 import { researchExecutionFromEnv } from "./research-execution.js";
+import { DEFAULT_EDITORIAL_POLICY } from "./editorial-contract.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
@@ -56,6 +57,7 @@ export function articleRunInputFor(
   return {
     ...target,
     sourceVersion: event.sourceVersion,
+    editorial: DEFAULT_EDITORIAL_POLICY,
     sourceUrl: event.originalUrl,
     researchDeadlineMs,
     ...researchExecutionFromEnv(),

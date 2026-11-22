@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import { type ArtifactReference, ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { rethrowCreditExhausted } from "../observability/provider-condition.js";
+import { rethrowCreditExhausted, isCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { writeOnce } from "../research/job.js";
 import { AssessmentRecordSchema } from "./article-assessment.js";
@@ -40,6 +40,7 @@ export const JudgmentRecordSchema = z
   .object({
     schemaVersion: z.literal(JUDGMENT_SCHEMA_VERSION),
     attemptId: z.string().min(1).max(500).optional(),
+    operationalFailure: z.literal("credit-exhausted").optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
     /** The disposition; `none` whenever approval or revision could not be decided. */
     decision: z.enum(["approve", "revise", "none"]),
@@ -117,6 +118,7 @@ export async function judgeAssessment(input: {
   assessment: ArtifactRef;
   judge: ExtractionModelProvider;
   attemptId?: string;
+  retainOperationalFailure?: boolean;
   retainedAttempts?: () => ArtifactReference[];
   prompt?: ExtractionPrompt;
   now?: () => Date;
@@ -224,6 +226,7 @@ export async function judgeAssessment(input: {
   const documentPath = `${dir}/${key}.md`;
   const retained = await input.content.lookup(documentPath);
   let raw: string | undefined = retained ? await input.content.read(retained) : undefined;
+  let operationalFailure: "credit-exhausted" | undefined;
   if (raw === undefined) {
     try {
       raw = await input.judge.complete(
@@ -231,7 +234,9 @@ export async function judgeAssessment(input: {
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
-      rethrowCreditExhausted(error);
+      if (input.retainOperationalFailure && isCreditExhausted(error))
+        operationalFailure = "credit-exhausted";
+      else rethrowCreditExhausted(error);
       raw = undefined;
     }
   }
@@ -243,6 +248,9 @@ export async function judgeAssessment(input: {
       decision: "none",
       state: "provider-failed",
       gates: [],
+      ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+      ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+      ...(operationalFailure ? { operationalFailure } : {}),
       judge,
       decidedAt: now(),
     });

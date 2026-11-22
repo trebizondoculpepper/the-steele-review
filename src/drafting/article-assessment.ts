@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
 import { type ArtifactReference, ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { rethrowCreditExhausted } from "../observability/provider-condition.js";
+import { rethrowCreditExhausted, isCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { writeOnce } from "../research/job.js";
 import { artifactReference } from "./publication-payload.js";
@@ -45,6 +45,7 @@ export const AssessmentRecordSchema = z
   .object({
     schemaVersion: z.literal(ASSESSMENT_SCHEMA_VERSION),
     attemptId: z.string().min(1).max(500).optional(),
+    operationalFailure: z.literal("credit-exhausted").optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
     state: z.enum(["findings", "no-faults", "incomplete", "malformed", "provider-failed"]),
     /** Number of `## Finding` sections in a complete document. */
@@ -114,6 +115,7 @@ export async function assessArticle(input: {
   metadata: ArtifactRef;
   assessor: ExtractionModelProvider;
   attemptId?: string;
+  retainOperationalFailure?: boolean;
   retainedAttempts?: () => ArtifactReference[];
   prompt?: ExtractionPrompt;
   now?: () => Date;
@@ -173,6 +175,7 @@ export async function assessArticle(input: {
   const documentPath = `${dir}/${key}.md`;
   const retained = await input.content.lookup(documentPath);
   let raw: string | undefined = retained ? await input.content.read(retained) : undefined;
+  let operationalFailure: "credit-exhausted" | undefined;
   if (raw === undefined) {
     try {
       raw = await input.assessor.complete(
@@ -180,7 +183,9 @@ export async function assessArticle(input: {
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
-      rethrowCreditExhausted(error); // waits for credit; never flattened (#407)
+      if (input.retainOperationalFailure && isCreditExhausted(error))
+        operationalFailure = "credit-exhausted";
+      else rethrowCreditExhausted(error); // waits for credit; never flattened (#407)
       raw = undefined;
     }
   }
@@ -199,6 +204,7 @@ export async function assessArticle(input: {
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
     ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
     state: verdict.state,
+    ...(operationalFailure ? { operationalFailure } : {}),
     ...("findings" in verdict && verdict.findings !== undefined
       ? { findings: verdict.findings }
       : {}),

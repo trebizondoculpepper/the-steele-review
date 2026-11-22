@@ -56,7 +56,7 @@ export interface RecentArticlesPort {
   }): Promise<ArticlePage>;
 }
 
-export type RunState =
+export type RunState = (
   | { state: "not-started" }
   | {
       state: "running";
@@ -70,7 +70,11 @@ export type RunState =
       recovery?: RunState;
     }
   | { state: "unavailable" }
-  | { state: "not-configured" };
+  | { state: "not-configured" }
+) & {
+  workflowKey?: string;
+  attempts?: Array<{ workflowKey: string; requestId: string; recordedAt: string }>;
+};
 
 /** Content for one saved draft (markdown, untrusted) and its exact hash. */
 export interface DraftView {
@@ -196,6 +200,8 @@ export function editorialOutcomeOf(outcome: ArticleRunFinal["outcome"]): Editori
 export interface ArticleTrace {
   post: { publicationId: string; postId: string };
   correlationId: string;
+  workflowKey?: string;
+  attempts?: Array<{ workflowKey: string; requestId: string; recordedAt: string }>;
   sourceVersion?: string;
   summary: RunSummary;
   /** What the workflow concluded editorially; `none` for failures and pending work. */
@@ -619,6 +625,8 @@ export async function traceArticle(input: {
 
   return {
     post,
+    ...(run.workflowKey ? { workflowKey: run.workflowKey } : {}),
+    ...(run.attempts ? { attempts: run.attempts } : {}),
     correlationId: postCorrelationId(post),
     ...(sourceVersion ? { sourceVersion } : {}),
     ...summary,

@@ -23,7 +23,7 @@ export interface ApprovalEvidence {
 }
 export class ApprovalEvidenceError extends Error {
   constructor() {
-    super("approval does not match the exact assessed article");
+    super("approval does not match the draft");
   }
 }
 
@@ -36,6 +36,8 @@ export async function readApprovalEvidence(
   const raw = JSON.parse(await content.read(ref));
   if (kind === "combined-verification") {
     const report = PackageVerificationReportSchema.parse(raw);
+    if (report.outcome !== "approved")
+      throw new Error("approval rejected: report does not approve the draft");
     const markdown = await content.read(artifactRef(report.draft));
     const loaded =
       report.schemaVersion === 2

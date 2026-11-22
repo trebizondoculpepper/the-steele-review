@@ -1,4 +1,5 @@
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
+import { DEFAULT_EDITORIAL_POLICY } from "../workflow/editorial-contract.js";
 import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
@@ -49,6 +50,7 @@ export async function prepareArticleInput(
     return ArticleRunInputSchema.parse({
       ...target,
       sourceVersion: revision,
+      editorial: DEFAULT_EDITORIAL_POLICY,
       sourceUrl: record.item.url,
       researchDeadlineMs: deps.researchDeadlineMs,
       researchRequestLimit: deps.researchRequestLimit,

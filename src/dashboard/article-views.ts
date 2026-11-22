@@ -406,6 +406,7 @@ export function renderTrace(t: ArticleTrace): string {
     ["Publication", escapeHtml(t.post.publicationId)],
     ["Post", escapeHtml(t.post.postId)],
     ["Correlation ID", `<code>${escapeHtml(t.correlationId)}</code>`],
+    ...(t.workflowKey ? [["Current workflow", `<code>${escapeHtml(t.workflowKey)}</code>`]] : []),
     ["Revision", t.sourceVersion ? `<code>${escapeHtml(t.sourceVersion)}</code>` : "unknown"],
     ["Workflow", badge(t.summary)],
     [

@@ -1,3 +1,4 @@
+import { reportCreditExhausted } from "../observability/provider-condition.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import type { GitArtifactStore, ArtifactRef } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
@@ -91,9 +92,18 @@ export function editorialStages(deps: {
         assessor: provider,
         attemptId,
         retainedAttempts: provider.retainedAttempts,
+        retainOperationalFailure: true,
       });
       if (out.status !== "assessed") throw new StageError("editorial", out.reason);
-      return { ref: out.ref, state: out.record.state };
+      if (out.record.operationalFailure)
+        reportCreditExhausted(loaded.pkg.post, "assess", loaded.pkg.source.sourceVersion);
+      return {
+        ref: out.ref,
+        state: out.record.state,
+        ...(out.record.operationalFailure
+          ? { operationalFailure: out.record.operationalFailure }
+          : {}),
+      };
     },
     async judge(assessment, attemptId, recoveryId) {
       if (!deps.judge) throw new StageError("editorial", "judge-unconfigured");
@@ -114,9 +124,22 @@ export function editorialStages(deps: {
         judge: provider,
         attemptId,
         retainedAttempts: provider.retainedAttempts,
+        retainOperationalFailure: true,
       });
       if (out.status !== "judged") throw new StageError("editorial", out.reason);
-      return { ref: out.ref, decision: out.record.decision, state: out.record.state };
+      if (out.record.operationalFailure)
+        reportCreditExhausted(
+          { publicationId: record.body.path.split("/")[1], postId: record.body.path.split("/")[2] },
+          "judge",
+        );
+      return {
+        ref: out.ref,
+        decision: out.record.decision,
+        state: out.record.state,
+        ...(out.record.operationalFailure
+          ? { operationalFailure: out.record.operationalFailure }
+          : {}),
+      };
     },
     async revise(version, pkg, judgment, number, sourceUrl) {
       const loaded = await bound(version, pkg);
@@ -129,7 +152,15 @@ export function editorialStages(deps: {
         !sameArtifact(decision.publication, artifactReference(loaded.publication.ref))
       )
         throw new StageError("editorial", "revision-guidance-mismatch");
-      const guidance = await deps.content.read(artifactRef(decision.document));
+      const assessment = AssessmentRecordSchema.parse(
+        JSON.parse(await deps.content.read(artifactRef(decision.assessment))),
+      );
+      const guidance = JSON.stringify({
+        judgment: await deps.content.read(artifactRef(decision.document)),
+        decision: decision.decision,
+        gates: decision.gates,
+        deterministicFindings: assessment.deterministicFindings,
+      });
       const out = await draftFromPackage({
         ...deps,
         package: pkg,

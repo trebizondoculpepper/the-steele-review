@@ -48,6 +48,11 @@ export async function runEditorialLoop(input: {
       ),
     );
     assessments.push(assessment.ref);
+    if (assessment.operationalFailure) {
+      terminal = "operational-stop";
+      reason = `assessment: ${assessment.operationalFailure}`;
+      break;
+    }
     if (await expired()) {
       terminal = "deadline";
       reason = "editorial deadline reached";
@@ -58,6 +63,11 @@ export async function runEditorialLoop(input: {
       input.stages.judge(assessment.ref, `${input.attemptId}:judgment:${round}`, input.recoveryId),
     );
     judgments.push(judgment.ref);
+    if (judgment.operationalFailure) {
+      terminal = "operational-stop";
+      reason = `judgment: ${judgment.operationalFailure}`;
+      break;
+    }
     if (await expired()) {
       terminal = "deadline";
       reason = "editorial deadline reached";

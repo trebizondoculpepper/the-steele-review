@@ -25,12 +25,17 @@ export interface EditorialStages {
     pkg: Ref,
     attemptId: string,
     recoveryId?: string,
-  ): Promise<{ ref: Ref; state: string }>;
+  ): Promise<{ ref: Ref; state: string; operationalFailure?: string }>;
   judge(
     assessment: Ref,
     attemptId: string,
     recoveryId?: string,
-  ): Promise<{ ref: Ref; decision: "approve" | "revise" | "none"; state: string }>;
+  ): Promise<{
+    ref: Ref;
+    decision: "approve" | "revise" | "none";
+    state: string;
+    operationalFailure?: string;
+  }>;
   revise(
     version: EditorialVersion,
     pkg: Ref,

@@ -1,3 +1,4 @@
+import type { OperationStore } from "../controllers/operation-store.js";
 import { readPublicationPayload, sameArtifact } from "../drafting/publication-payload.js";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
@@ -84,6 +85,7 @@ export function indexArticles(
         : [{ match_all: {} }];
       const filter = publicationId ? [{ term: { publicationId } }] : [];
       const hits = await search.search(index, { bool: { must, filter } }, {
+
         size: limit,
         sort: esSort,
         ...(searchAfter ? { searchAfter } : {}),
@@ -344,7 +346,11 @@ export function contentReceipts(
 }
 
 /** ArticleRun status for an exact revision, read through Restate ingress. */
-export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPort {
+export function restateRuns(
+  ingressUrl: string,
+  timeoutMs = 5_000,
+  attempts?: Pick<OperationStore, "articleAttempts">,
+): RunStatusPort {
   const ingress = clients.connect({ url: ingressUrl });
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
@@ -373,6 +379,16 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
   return {
     async status(post): Promise<RunState> {
       const normal = await read(articleRunKey(post));
+      const recorded =
+        attempts?.articleAttempts(post.publicationId, post.postId, post.sourceVersion, 10) ?? [];
+      if (recorded.length) {
+        const current = recorded[0]!;
+        return {
+          ...(await read(current.workflowKey)),
+          workflowKey: current.workflowKey,
+          attempts: recorded,
+        };
+      }
       // A credit-stopped run may have an explicit recovery (#480): show the
       // original failure and the recovery state together, never one as the other.
       if (normal.state === "finished" && isCreditBlocked(normal.result.reason)) {
