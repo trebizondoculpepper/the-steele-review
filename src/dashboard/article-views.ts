@@ -417,6 +417,7 @@ export function renderTrace(t: ArticleTrace): string {
   const explanation = renderExplanation(
     explainTrace({
       ...t,
+      // Recovery is offered only for the failure kind the action supports.
       recoveryAvailable: isCreditBlocked(t.reason),
       ...(t.recovery
         ? {

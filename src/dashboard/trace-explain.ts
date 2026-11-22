@@ -28,6 +28,12 @@ type Input = Pick<
    * it.
    */
   recoveryAvailable?: boolean;
+  /** The recorded recovery run for this revision, when one was started. */
+  recovery?: {
+    summary: "completed" | "failed" | "pending" | "not-started" | "unknown";
+    outcome?: string;
+    verification?: { outcome: string };
+  };
 };
 
 const stageLabel = (stage: string): string => stage.replace(/-/g, " ");
@@ -53,6 +59,41 @@ function failedStage(stages: Input["stages"]): { stage: string; detail?: string 
 
 export function explainTrace(t: Input): TraceExplanation {
   const failed = failedStage(t.stages);
+
+  // A run that has a recorded recovery is described by the recovery: the
+  // original failure is history, not the current state.
+  if (t.recovery) {
+    const r = t.recovery;
+    if (r.summary === "pending")
+      return {
+        status: "Recovery is running for this revision after the original run stopped.",
+        next: "Wait for the recovery to finish; completed stage results are reused.",
+      };
+    if (r.summary === "failed")
+      return {
+        status: "Recovery failed as well, so this revision still has no verified draft.",
+        stoppedReason: r.outcome ?? "the recovery run stopped",
+        next: "Inspect both runs before attempting anything further; recovery is not re-offered automatically.",
+      };
+    if (r.summary === "completed") {
+      const approved = r.verification?.outcome === "approved" || r.outcome === "verified";
+      const rejected = r.verification?.outcome === "rejected" || r.outcome === "rejected";
+      if (approved)
+        return {
+          status: "Recovered: the original failure was followed by a recovery that was verified and approved.",
+          next: "Delivery is handled by the publisher; check receipts for the exact recovered draft.",
+        };
+      if (rejected)
+        return {
+          status: "Recovery completed, but verification rejected the recovered draft.",
+          next: "Request a revision addressing the verifier's specific passages and reasons.",
+        };
+      return {
+        status: "Recovery completed without a verified draft.",
+        next: "Inspect the recovery's verification and decide whether to redraft.",
+      };
+    }
+  }
 
   if (t.summary === "pending") {
     const stage = currentStage(t.stages);

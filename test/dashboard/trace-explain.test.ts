@@ -77,6 +77,41 @@ describe("article trace explanation (#525)", () => {
     expect(e.next).toMatch(/not evidence that the run stopped/);
   });
 
+  it("leads with the recovery when one was recorded", () => {
+    const recovered = explainTrace({
+      ...base,
+      summary: "failed",
+      editorial: "none",
+      reason: "claims: credit-exhausted",
+      recovery: { summary: "completed", outcome: "verified", verification: { outcome: "approved" } },
+    });
+    expect(recovered.status).toMatch(/Recovered/);
+    expect(recovered.status).not.toMatch(/^Failed/);
+    const running = explainTrace({
+      ...base,
+      summary: "failed",
+      editorial: "none",
+      recovery: { summary: "pending" },
+    });
+    expect(running.status).toMatch(/Recovery is running/);
+    const failedRecovery = explainTrace({
+      ...base,
+      summary: "failed",
+      editorial: "none",
+      recovery: { summary: "failed", outcome: "draft-failed" },
+    });
+    expect(failedRecovery.status).toMatch(/Recovery failed/);
+    expect(failedRecovery.stoppedReason).toBe("draft-failed");
+  });
+
+  it("never promises recovery for a failure it cannot recover", () => {
+    for (const reason of ["draft-failed", "claims: provider-failed", "invalid-input"]) {
+      const e = explainTrace({ ...base, summary: "failed", editorial: "none", reason });
+      expect(e.next).toMatch(/Recovery is not available/);
+      expect(e.next).not.toMatch(/nothing already done is repeated/);
+    }
+  });
+
   it("escapes rendered text", () => {
     const html = renderExplanation(
       explainTrace({ ...base, summary: "failed", editorial: "none", reason: "<script>x</script>" }),
