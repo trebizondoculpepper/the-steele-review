@@ -86,7 +86,7 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     };
     const first = await captureResearchDiscovery({ ...options(), invoke });
     expect(first.data).toEqual(data);
-    expect((await readResearchDiscovery(artifacts, first.ref)).data).toEqual(data); // Invalid URLs, duplicates and whitespace have not been interpreted away.
+    expect((await readResearchDiscovery(artifacts, first.ref, operations)).data).toEqual(data); // Invalid URLs, duplicates and whitespace have not been interpreted away.
     const second = await captureResearchDiscovery({ ...options(), invoke });
     expect(second.reused).toBe(true);
     expect(second.ref).toEqual(first.ref);
@@ -268,10 +268,10 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     const ra = await a;
     expect(ra.data.report).toBe("Report A");
     expect(rb.data.report).toBe("Report B");
-    expect((await readResearchDiscovery(artifacts, ra.ref)).data.citations).toEqual([
+    expect((await readResearchDiscovery(artifacts, ra.ref, operations)).data.citations).toEqual([
       "https://source.example/a",
     ]);
-    expect((await readResearchDiscovery(artifacts, rb.ref)).data.citations).toEqual([
+    expect((await readResearchDiscovery(artifacts, rb.ref, operations)).data.citations).toEqual([
       "https://source.example/b",
     ]);
     for (const result of [ra, rb]) {
@@ -317,7 +317,7 @@ describe("durable research discovery", { timeout: 60000 }, () => {
       "fixtures/misbound-discovery.json",
       JSON.stringify({ ...result, requestId: "research-" + "0".repeat(32) }),
     );
-    await expect(readResearchDiscovery(artifacts, forged)).rejects.toMatchObject({
+    await expect(readResearchDiscovery(artifacts, forged, operations)).rejects.toMatchObject({
       code: "archive-failed",
     });
     const selected = selectDiscoveryData(
@@ -467,7 +467,7 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     });
     expect(calls).toBe(1);
     const result = await artifacts.lookup(`${path()}/result.json`);
-    await expect(readResearchDiscovery(artifacts, result!)).rejects.toMatchObject({
+    await expect(readResearchDiscovery(artifacts, result!, operations)).rejects.toMatchObject({
       code: "quarantined",
     });
   });
@@ -486,6 +486,32 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     });
     clock += 2000;
     expect((await captureResearchDiscovery({ ...options(), invoke })).reused).toBe(true);
+    expect(calls).toBe(1);
+  });
+  it("cannot accept after a crash between state rejection and the Git quarantine marker", async () => {
+    const write = artifacts.write.bind(artifacts);
+    vi.spyOn(artifacts, "write").mockImplementation(async (...args) => {
+      if (args[0].endsWith("/quarantined.json")) throw new Error("synthetic marker interruption");
+      return write(...args);
+    });
+    let calls = 0;
+    const invoke = async (capture: DiscoveryCapture) => {
+      calls++;
+      await capture(body());
+      clock += 2000;
+      return data;
+    };
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "archive-failed",
+    });
+    expect(await artifacts.lookup(`${path()}/quarantined.json`)).toBeUndefined();
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "quarantined",
+    });
+    const result = await artifacts.lookup(`${path()}/result.json`);
+    await expect(readResearchDiscovery(artifacts, result!, operations)).rejects.toMatchObject({
+      code: "quarantined",
+    });
     expect(calls).toBe(1);
   });
 });

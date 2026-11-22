@@ -201,9 +201,15 @@ function interpretDiscovery(
 }
 
 /** Hash-verified, identity-bound reader for subsequent research stages; never interprets legacy report-only jobs as complete discovery. */
-export async function readResearchDiscovery(artifacts: GitArtifactStore, reference: ArtifactRef) {
+export async function readResearchDiscovery(
+  artifacts: GitArtifactStore,
+  reference: ArtifactRef,
+  acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
+) {
   try {
     const result = DiscoveryResultSchema.parse(JSON.parse(await artifacts.read(reference)));
+    if (!acceptance.researchDiscoveryAccepted(result.discoveryId, ref(reference)))
+      throw new ResearchDiscoveryError("quarantined");
     if (result.outcome !== "captured")
       throw new ResearchDiscoveryError(
         result.outcome === "quarantined" ? "quarantined" : "invalid-report",
@@ -357,7 +363,7 @@ export async function captureResearchDiscovery(input: {
       throw new ResearchDiscoveryError("quarantined", { result, returned });
     try {
       if (held) input.operations.completeResearchDiscovery(held, ref(result));
-      else input.operations.reconcileCompleted(key, { discovery: ref(result) }, []);
+      else input.operations.reconcileResearchDiscovery(discoveryId, ref(result));
     } catch (error) {
       const lost = error instanceof OperationStoreError && error.code === "not-owner";
       if (held && lost)

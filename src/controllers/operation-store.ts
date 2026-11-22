@@ -686,24 +686,77 @@ export class OperationStore {
     )
       throw new OperationStoreError("invalid-input");
     const artifact = { discovery: valid.data };
-    return this.transaction(() => {
+    const outcome = this.transaction(() => {
       const now = this.now(),
         row = this.row(claim.key);
       if (row?.status === "completed") {
         const existing = JSON.parse(row.artifact ?? "null");
         if (JSON.stringify(existing) !== JSON.stringify(artifact))
           throw new OperationStoreError("invalid-input");
-        return existing;
+        return { accepted: true, artifact: existing };
       }
-      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
-        throw new OperationStoreError("not-owner");
+      if (!this.holds(row, claim)) return { accepted: false };
+      if ((row?.lease_expires_at ?? 0) <= now) {
+        // Commit rejection before returning an error: a crash cannot erase this quarantine.
+        this.db
+          .prepare(
+            "UPDATE operations SET status = 'failed', owner = NULL, lease_expires_at = NULL, error_code = 'discovery-quarantined', updated_at = ? WHERE key = ?",
+          )
+          .run(now, claim.key);
+        return { accepted: false };
+      }
       this.db
         .prepare(
           "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
         )
         .run(JSON.stringify(artifact), now, claim.key);
+      return { accepted: true, artifact };
+    });
+    if (!outcome.accepted) throw new OperationStoreError("not-owner");
+    return outcome.artifact;
+  }
+
+  /** Reconcile only a fenced discovery whose prior owner vanished, never a rejected capture. */
+  reconcileResearchDiscovery(discoveryId: string, result: ArtifactReference): unknown {
+    if (!/^discovery-[0-9a-f]{32}$/.test(discoveryId))
+      throw new OperationStoreError("invalid-input");
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (!valid.success || !valid.data.path.endsWith(`/${discoveryId}/result.json`))
+      throw new OperationStoreError("invalid-input");
+    const key = `research-discovery:${discoveryId}`,
+      artifact = { discovery: valid.data };
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return existing;
+      }
+      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now)
+        throw new OperationStoreError("busy");
+      if (!row || row.status !== "claimed") throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, key);
       return artifact;
     });
+  }
+
+  /** Narrow read port: a Git candidate alone is not authoritative discovery acceptance. */
+  researchDiscoveryAccepted(discoveryId: string, result: ArtifactReference): boolean {
+    if (!/^discovery-[0-9a-f]{32}$/.test(discoveryId)) return false;
+    const parsed = ArtifactReferenceSchema.safeParse(result);
+    if (!parsed.success) return false;
+    const row = this.row(`research-discovery:${discoveryId}`);
+    return (
+      row?.status === "completed" &&
+      JSON.stringify(JSON.parse(row.artifact ?? "null")) ===
+        JSON.stringify({ discovery: parsed.data })
+    );
   }
 
   /**
