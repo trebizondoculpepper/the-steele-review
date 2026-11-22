@@ -887,7 +887,11 @@ export class OperationStore {
   }
 
   /** Reconcile only a fenced editorial call whose prior owner vanished, never a rejected capture. */
-  reconcileEditorialCapture(captureId: string, result: ArtifactReference): unknown {
+  reconcileEditorialCapture(
+    captureId: string,
+    result: ArtifactReference,
+    dispatched?: OperationClaim,
+  ): unknown {
     if (!/^editorial-attempt-[0-9a-f]{32}$/.test(captureId))
       throw new OperationStoreError("invalid-input");
     const valid = ArtifactReferenceSchema.safeParse(result);
@@ -904,7 +908,10 @@ export class OperationStore {
           throw new OperationStoreError("invalid-input");
         return existing;
       }
-      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now)
+      if (dispatched && (dispatched.key !== key || !this.holds(row, dispatched))) {
+        if (row?.status !== "completed") throw new OperationStoreError("not-owner");
+      }
+      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now && !dispatched)
         throw new OperationStoreError("busy");
       if (
         !row ||

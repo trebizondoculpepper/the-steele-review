@@ -1,7 +1,11 @@
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import type { OperationStore } from "../controllers/operation-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import { OperationStoreError, type OperationStore } from "../controllers/operation-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import {
   captureWriterAttempt,
@@ -68,4 +72,15 @@ export function durableEditorialProvider(input: {
       return captured.text;
     },
   };
+}
+
+/** Storage/control failures are retryable workflow work, never provider findings. */
+export function rethrowEditorialStorageError(error: unknown): void {
+  if (
+    (error instanceof WriterAttemptError &&
+      (error.code === "archive-failed" || error.code === "busy")) ||
+    error instanceof ArtifactStoreError ||
+    error instanceof OperationStoreError
+  )
+    throw error;
 }

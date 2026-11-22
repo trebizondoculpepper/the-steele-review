@@ -1,3 +1,5 @@
+import { editorialAttemptIdentity } from "../../src/workflow/editorial-attempt-identity.js";
+import { OperationStoreError } from "../../src/controllers/operation-store.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +37,11 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 async function seeded(
-  options: { assessor?: () => Promise<string>; writer?: (request: any) => Promise<string> } = {},
+  options: {
+    assessor?: () => Promise<string>;
+    writer?: (request: any) => Promise<string>;
+    judge?: () => Promise<string>;
+  } = {},
 ) {
   const report = PackageVerificationReportSchema.parse(
     JSON.parse(await content.read(await approvedReport(content))),
@@ -49,7 +55,7 @@ async function seeded(
       modelVersion: "fake/assessor",
       complete: options.assessor ?? (async () => "No faults found.\nEND OF ASSESSMENT"),
     },
-    judge: { modelVersion: "fake/judge", complete: async () => APPROVE },
+    judge: { modelVersion: "fake/judge", complete: options.judge ?? (async () => APPROVE) },
     writer: {
       modelVersion: "fake/editorial-writer",
       complete: options.writer ?? (async () => WRITER),
@@ -221,6 +227,112 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
         await expect(failing.approve(out.ref)).rejects.toThrow();
       }
       expect(operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)).toHaveLength(0);
+    },
+  );
+  it.each(["assessor", "judge"])(
+    "recovers dashboard-shaped credit stop at %s using new role path and capture token",
+    async (role) => {
+      let blocked = true;
+      const call = vi.fn(async () => {
+        if (blocked) throw new ModelProviderError("credit-exhausted", 402);
+        return role === "assessor" ? "No faults found.\nEND OF ASSESSMENT" : APPROVE;
+      });
+      const f = await seeded(role === "assessor" ? { assessor: call } : { judge: call });
+      const input = {
+        publicationId: "pub",
+        postId: "p1",
+        sourceVersion: `sha256:${"a".repeat(64)}`,
+        sourceUrl: "https://pub.example.com/p/p1",
+        researchDeadlineMs: 1000,
+      };
+      const original = editorialAttemptIdentity(input),
+        recovery = editorialAttemptIdentity({ ...input, recoveryGeneration: 1 });
+      expect(recovery.attemptId).not.toBe(original.attemptId);
+      expect(recovery.recoveryId).toMatch(/^dashboard-recovery-/);
+      const assessment =
+        role === "judge" ? await f.stages.assess(f.version, f.pkg, "saved-assessment") : undefined;
+      const invoke = (identity: typeof original) =>
+        role === "assessor"
+          ? f.stages.assess(f.version, f.pkg, identity.attemptId, identity.recoveryId)
+          : f.stages.judge(assessment!.ref, identity.attemptId, identity.recoveryId);
+      const failed = await invoke(original);
+      expect(failed.operationalFailure).toBe("credit-exhausted");
+      blocked = false;
+      const returned = await invoke(recovery);
+      expect(returned.state).toBe(role === "assessor" ? "no-faults" : "decided");
+      expect(returned.ref.path).not.toBe(failed.ref.path);
+      const stored = JSON.parse(await content.read(returned.ref));
+      expect(stored.retainedAttempts).toHaveLength(1);
+      expect(stored.attemptId).toBe(recovery.attemptId);
+      expect((await invoke(recovery)).ref).toEqual(returned.ref);
+      expect(call).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["assessor", "judge"])(
+    "retries actual retained-response manifest failure through %s without another paid call",
+    async (role) => {
+      const call = vi.fn(async () =>
+        role === "assessor" ? "No faults found.\nEND OF ASSESSMENT" : APPROVE,
+      );
+      const f = await seeded(role === "assessor" ? { assessor: call } : { judge: call });
+      const assessment =
+        role === "judge" ? await f.stages.assess(f.version, f.pkg, "saved-assessment") : undefined;
+      const originalWrite = content.write.bind(content);
+      let blocked = false;
+      vi.spyOn(content, "write").mockImplementation(async (...args) => {
+        if (
+          !blocked &&
+          args[0].startsWith("editorial-attempts/") &&
+          args[0].endsWith("/manifest.json")
+        ) {
+          blocked = true;
+          throw new Error("synthetic capture storage failure");
+        }
+        return originalWrite(...args);
+      });
+      const invoke = () =>
+        role === "assessor"
+          ? f.stages.assess(f.version, f.pkg, "storage-retry")
+          : f.stages.judge(assessment!.ref, "storage-retry");
+      await expect(invoke()).rejects.toMatchObject({ code: "archive-failed" });
+      const returned = await invoke();
+      expect(returned.state).toBe(role === "assessor" ? "no-faults" : "decided");
+      expect(call).toHaveBeenCalledTimes(1);
+      const stored = JSON.parse(await content.read(returned.ref));
+      expect(stored.retainedAttemptReuses).toEqual([true]);
+    },
+  );
+
+  it.each(["fence", "state-completion"])(
+    "replays actual post-response %s failure through assessor with no recall",
+    async (point) => {
+      const call = vi.fn(async () => "No faults found.\nEND OF ASSESSMENT");
+      const f = await seeded({ assessor: call });
+      let blocked = false;
+      if (point === "fence") {
+        const original = content.write.bind(content);
+        vi.spyOn(content, "write").mockImplementation(async (...args) => {
+          if (!blocked && args[0].endsWith("/fence.json")) {
+            blocked = true;
+            throw new Error("synthetic fence storage failure");
+          }
+          return original(...args);
+        });
+      } else {
+        const original = operations.completeEditorialCapture.bind(operations);
+        vi.spyOn(operations, "completeEditorialCapture").mockImplementation((...args) => {
+          if (!blocked) {
+            blocked = true;
+            throw new OperationStoreError("busy");
+          }
+          return original(...args);
+        });
+      }
+      const invoke = () => f.stages.assess(f.version, f.pkg, "post-response-retry");
+      await expect(invoke()).rejects.toMatchObject({ code: "archive-failed" });
+      expect((await invoke()).state).toBe("no-faults");
+      expect(call).toHaveBeenCalledTimes(1);
     },
   );
 });

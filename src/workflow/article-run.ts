@@ -1,4 +1,5 @@
 import type { StageRef } from "../research/staged-research.js";
+import { editorialAttemptIdentity } from "./editorial-attempt-identity.js";
 import { runEditorialLoop } from "./editorial-loop.js";
 import type { EditorialStages, EditorialHistory, EditorialPolicy } from "./editorial-contract.js";
 import { EditorialPolicySchema } from "./editorial-contract.js";
@@ -483,8 +484,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         draft: drafted.ref,
         package: pkg.ref,
         sourceUrl: input.sourceUrl,
-        attemptId: input.operatorRequestId ?? articleRunKey(input),
-        recoveryId: input.operatorRequestId,
+        ...editorialAttemptIdentity(input),
         now: () => ctx.date.now(),
         step: runStep,
         progress: async (phase, round) => {

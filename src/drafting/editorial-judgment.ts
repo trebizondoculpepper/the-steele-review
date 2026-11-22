@@ -1,3 +1,4 @@
+import { rethrowEditorialStorageError } from "./editorial-provider.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
@@ -239,6 +240,7 @@ export async function judgeAssessment(input: {
         AbortSignal.timeout(180_000),
       );
     } catch (error) {
+      rethrowEditorialStorageError(error);
       if (input.retainOperationalFailure && isCreditExhausted(error))
         operationalFailure = "credit-exhausted";
       else rethrowCreditExhausted(error);

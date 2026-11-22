@@ -115,7 +115,7 @@ export function editorialStages(deps: {
         purpose: "judge",
         package: artifactRef(record.package),
         source: record.source,
-        context: [artifactReference(assessment), record.body, record.publication],
+        context: [record.body, record.publication],
         promptVersion: DEFAULT_JUDGE_PROMPT.version,
         recoveryId,
       });
