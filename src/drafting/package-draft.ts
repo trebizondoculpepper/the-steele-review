@@ -1,3 +1,7 @@
+import {
+  markdownToProseMirror,
+  UnsupportedMarkdownError,
+} from "../publishing/substack/prosemirror.js";
 import { editorialLineageRefs, type EditorialLineage } from "../content/editorial-lineage.js";
 import {
   MARKDOWN_ARTICLE_FORMAT,
@@ -1113,6 +1117,19 @@ export async function draftFromPackage(input: {
               : []),
             ...markers,
           ].slice(0, 30); // the diagnostic contract records at most 30 issues
+        }
+      }
+      // Only after the evidence checks pass (rendering needs valid indices).
+      // A Markdown body must be deliverable: check the rendered article with
+      // the destination's own strict converter before any verification (#535).
+      if (!kind && parsedMd) {
+        try {
+          markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
+        } catch (error) {
+          if (!(error instanceof UnsupportedMarkdownError)) throw error;
+          kind = "schema-validation";
+          issues = [{ code: "custom", path: ["body"] }];
+          lastProblems = [`body uses Markdown the publisher cannot render (${error.reason})`];
         }
       }
       if (kind) {

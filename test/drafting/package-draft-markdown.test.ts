@@ -82,15 +82,14 @@ const header = (over: Record<string, unknown> = {}) => ({
 const BODY = [
   'The post says a treaty bans weather weapons and that a "56 million" payment funded an attack.',
   "",
-  "---",
+  "## What the treaty says",
   "",
-  "The ENMOD Convention does prohibit hostile environmental modification — that part is right.",
+  "> The ENMOD Convention prohibits hostile environmental modification.",
   "",
-  "```",
-  "---",
-  "```",
+  "That part is right — Ünïcödé and “curly quotes” survive intact.",
   "",
-  "No record of the payment was found, so it stays unresolved.",
+  "- No record of the payment was found.",
+  "- So it stays unresolved.",
 ].join("\n");
 const doc = (h: unknown = header(), body = BODY) => `---json\n${JSON.stringify(h)}\n---\n\n${body}`;
 
@@ -228,11 +227,23 @@ describe("Markdown writer output (#535 slice 2)", { timeout: 60_000 }, () => {
     expect(() => writerFormatFromEnv({ STEELE_WRITER_FORMAT: "yaml" })).toThrow(/json or markdown/);
   });
 
-  it("keeps significant leading indentation in the body", async () => {
-    const indented = "    quotedCode();\n    more();\n\nThen prose.";
-    const out = await draft(model(doc(header(), indented)));
+  it("keeps the body's text exactly, including leading spaces inside a paragraph", async () => {
+    const body = "  Leading spaces stay.\n\nThen prose.";
+    const out = await draft(model(doc(header(), body)));
     expect(out.status).toBe("drafted");
     if (out.status !== "drafted") return;
-    expect(await content.read(out.draft)).toContain(indented);
+    expect(await content.read(out.draft)).toContain(body);
+  });
+
+  it("sends Markdown the publisher cannot render back for correction before verification", async () => {
+    const fenced = "Intro.\n\n```\ncode\n```\n\nOutro.";
+    const provider = model(doc(header(), fenced), doc());
+    const out = await draft(provider);
+    expect(out.status).toBe("drafted");
+    expect(provider.calls).toBe(2);
+    if (out.status !== "drafted") return;
+    const { markdownToProseMirror } = await import("../../src/publishing/substack/prosemirror.js");
+    const rendered = await content.read(out.draft);
+    expect(() => markdownToProseMirror(rendered)).not.toThrow();
   });
 });
