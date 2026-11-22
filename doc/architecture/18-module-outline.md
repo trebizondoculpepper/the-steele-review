@@ -2,6 +2,12 @@
 
 Agreed discussion outline, 2026-11-19. This describes responsibilities and handoffs, not implementation completion or detailed contracts. Automatic coordination remains subsequent work; stages can be triggered manually in the single proof-of-concept system. There is no separate demo/production deployment requirement.
 
+The [durable research and editorial review design](19-durable-research-and-editorial-review.md)
+records the 2026-11-22 refinement: staged Restate research and librarian work,
+and separate assessor findings and judge decisions. It supersedes the combined
+verifier role below as a target design; current implementation may still use the
+combined contract.
+
 | Module | Responsibility and output |
 | --- | --- |
 | Discoverer | Poll subscribed feeds and announce each item seen. Repeated discovery is expected. Include enough source identity to fetch it. |
