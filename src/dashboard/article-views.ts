@@ -19,6 +19,7 @@ import {
   type ArchivedArticle,
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
+import { refetchLink } from "./refetch.js";
 import { explainTrace, renderExplanation } from "./trace-explain.js";
 import type { ThemesPort } from "./themes.js";
 import type { AssessmentsPort } from "./assessments.js";
@@ -49,6 +50,8 @@ export interface ArticleViewDeps {
   canTrigger?: boolean;
   /** Recovery of a stopped run is configured (#480). */
   canRecover?: boolean;
+  /** Deliberate single-source re-fetch is configured (#770). */
+  canRefetch?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
   /** Links to Restate's own execution UI (#561), from private configuration. */
@@ -236,20 +239,25 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         }</p>`;
       const rowsHtml = await Promise.all(
         visible.map(async ({ article: a, summary }) => {
-          const action = deps.canTrigger
-            ? `<td>${
-                /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
-                  ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
-                  : "Revision unavailable"
-              }</td>`
-            : "";
+          const actions: string[] = [];
+          if (deps.canTrigger)
+            actions.push(
+              /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
+                ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
+                : "Revision unavailable",
+            );
+          if (deps.canRefetch && deps.actionOrigin)
+            actions.push(
+              `<a href="${escapeHtml(refetchLink(deps.actionOrigin, a))}">Re-fetch source</a>`,
+            );
+          const action = actions.length ? `<td>${actions.join(" · ")}</td>` : "";
           return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
       return `<p>Showing ${visible.length} archived article${visible.length === 1 ? "" : "s"}${
         filter === "all" ? "" : ` with status “${escapeHtml(filter)}”`
       }, ${sort === "newest" ? "newest" : "oldest"} first. Run status is for the archived revision.</p>
-<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
+<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger || deps.canRefetch ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}${
         deps.restate
           ? `<p><a href="${escapeHtml(deps.restate.links.home)}" rel="noopener noreferrer">Open the Restate workflow UI</a> <span class="empty">(external, administrative)</span></p>`
@@ -291,6 +299,13 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         deps.canTrigger && t.sourceVersion
           ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
+      // Deliberate re-fetch of this one captured source (#770).
+      const refetch =
+        deps.canRefetch && deps.actionOrigin
+          ? `<p><a href="${escapeHtml(
+              refetchLink(deps.actionOrigin, post),
+            )}">Re-fetch source</a> <span class="empty">(asks the collector for fresh text)</span></p>`
+          : "";
       // A run stopped on provider credit can be recovered explicitly (#480).
       const recovery =
         deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
@@ -308,7 +323,12 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         inspection = await restateRunLinksHtml({ ...deps.restate, runs });
       }
       return (
-        trigger + recovery + renderTrace(t) + renderEditorialTimeline(timeline, post) + inspection
+        trigger +
+        refetch +
+        recovery +
+        renderTrace(t) +
+        renderEditorialTimeline(timeline, post) +
+        inspection
       );
     },
   };
