@@ -218,3 +218,69 @@ describe("canonical themes browser (#517)", { timeout: 60_000 }, () => {
     );
   });
 });
+
+describe("canonical mapping resolution (#517)", { timeout: 60_000 }, () => {
+  it("follows a redirect chain to the current canonical identity", async () => {
+    await theme("c", "Final topic");
+    const catalogue = new ThemeMappingCatalogue(content);
+    await catalogue.record({
+      proposal: "Chained wording",
+      canonicalThemeId: "a",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: decideBy,
+      rationale: "initial",
+    });
+    // Record B→C before A→B; the newest-event-per-proposal shortcut would
+    // resolve A→B and miss C.
+    await catalogue.supersede({
+      proposal: "Chained wording",
+      from: "b",
+      to: "c",
+      reason: "merge",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: decideBy,
+    });
+    await catalogue.supersede({
+      proposal: "Chained wording",
+      from: "a",
+      to: "b",
+      reason: "rename",
+      decidedAt: "2026-01-03T00:00:00Z",
+      decidedBy: decideBy,
+    });
+    const detail = await savedThemes(content).canonicalDetail("c");
+    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Chained wording"]);
+    expect(await savedThemes(content).canonicalDetail("a")).toBeUndefined();
+  });
+
+  it("orders supersession timestamps by instant, not text", async () => {
+    await theme("later", "Later target");
+    const catalogue = new ThemeMappingCatalogue(content);
+    await catalogue.record({
+      proposal: "Offset wording",
+      canonicalThemeId: "start",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: decideBy,
+      rationale: "initial",
+    });
+    // 23:00Z is later than 00:30+02:00 (22:30Z), though it sorts earlier as text.
+    await catalogue.supersede({
+      proposal: "Offset wording",
+      from: "start",
+      to: "earlier",
+      reason: "earlier correction",
+      decidedAt: "2026-01-02T00:30:00+02:00",
+      decidedBy: decideBy,
+    });
+    await catalogue.supersede({
+      proposal: "Offset wording",
+      from: "start",
+      to: "later",
+      reason: "later correction",
+      decidedAt: "2026-01-01T23:00:00Z",
+      decidedBy: decideBy,
+    });
+    const detail = await savedThemes(content).canonicalDetail("later");
+    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Offset wording"]);
+  });
+});

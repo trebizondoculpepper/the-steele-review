@@ -30,48 +30,81 @@ const MAPPING_SCAN = 500;
 const MAPPING_LIST_PAGE = 100;
 
 /**
- * Latest redirect per mapping key, built once from saved supersessions. UI
- * resolution never inspects proposal wording itself: the librarian owns it.
+ * Saved supersession graph, built once for one detail page. Redirects are
+ * followed by their `from` identity (never collapsed to one event per
+ * proposal), newest event per source wins by parsed instant, and the result
+ * reports whether the scan was complete. This mirrors the catalogue's
+ * cycle-safe resolution so the browser cannot assign a proposal to a theme the
+ * librarian's own lookup would not.
  */
-async function supersessionRedirects(
-  content: Store,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+interface SupersessionGraph {
+  bySource: Map<string, { to: string; at: number; decidedAt: string }[]>;
+  complete: boolean;
+}
+
+async function supersessionGraph(content: Store): Promise<SupersessionGraph> {
+  const bySource = new Map<string, { to: string; at: number; decidedAt: string }[]>();
+  let complete = true;
   let after: string | undefined;
   let scanned = 0;
   for (let page = 0; page < 10; page++) {
     let paths: string[];
     try {
-      paths = await content.list("librarian/theme-mappings/supersessions", MAPPING_LIST_PAGE, after);
+      paths = await content.list(
+        "librarian/theme-mappings/supersessions",
+        MAPPING_LIST_PAGE,
+        after,
+      );
     } catch {
+      complete = false;
       break;
     }
     if (paths.length === 0) break;
     for (const path of paths) {
       after = path;
-      if (scanned++ >= MAPPING_SCAN) return out;
+      if (scanned++ >= MAPPING_SCAN) return { bySource, complete: false };
       try {
         const ref = await content.lookup(path);
-        if (!ref) continue;
-        const parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(await content.read(ref)));
-        if (!parsed.success) continue;
-        const s = parsed.data;
-        const key = `${s.key}\u0000${s.scope ?? ""}`;
-        const existing = out.get(key);
-        const existingAt = existing ? (out.get(`${key}\u0000at`) ?? s.decidedAt) : "";
-        // Oldest-to-newest is not guaranteed by list order; keep the latest.
-        if (!existing || s.decidedAt >= existingAt) {
-          out.set(key, s.to);
-          out.set(`${key}\u0000at`, s.decidedAt);
+        if (!ref) {
+          complete = false;
+          continue;
         }
+        const parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(await content.read(ref)));
+        if (!parsed.success) continue; // malformed record: skipped, not guessed
+        const s = parsed.data;
+        const key = `${s.key}\u0000${s.scope ?? ""}\u0000${s.from}`;
+        const list = bySource.get(key) ?? [];
+        list.push({ to: s.to, at: Date.parse(s.decidedAt), decidedAt: s.decidedAt });
+        bySource.set(key, list);
       } catch {
-        // Skip unreadable supersessions.
+        complete = false;
       }
     }
     if (paths.length < MAPPING_LIST_PAGE) break;
   }
-  return out;
+  return { bySource, complete };
 }
+
+/** Cycle-safe redirect chain for one mapping, newest-event-per-source. */
+function resolveCanonical(
+  mapping: { key: string; scope?: string; canonicalThemeId: string },
+  graph: SupersessionGraph,
+): string {
+  let current = mapping.canonicalThemeId;
+  const seen = new Set([current]);
+  for (let hops = 0; hops < 20; hops++) {
+    const events = graph.bySource.get(`${mapping.key}\u0000${mapping.scope ?? ""}\u0000${current}`);
+    if (!events || events.length === 0) return current;
+    const newest = [...events].sort((a, b) =>
+      a.at === b.at ? b.decidedAt.localeCompare(a.decidedAt) : b.at - a.at,
+    )[0]!;
+    if (seen.has(newest.to)) return current;
+    seen.add(newest.to);
+    current = newest.to;
+  }
+  return current;
+}
+
 export const THEME_PAGE = 25;
 /** Artifact paths requested per listing call while scanning. */
 const THEME_LIST_PAGE = 50;
@@ -398,7 +431,10 @@ export function savedThemes(
     async canonicalDetail(id) {
       const coverage = await themeCoverage(content as never, id).catch(() => undefined);
       if (!coverage) return undefined;
-      const redirects = await supersessionRedirects(content).catch(() => new Map<string, string>());
+      const graph = await supersessionGraph(content).catch(() => ({
+        bySource: new Map(),
+        complete: false,
+      }));
       const proposals: MappedProposal[] = [];
       let proposalsPartial = false;
       let after: string | undefined;
@@ -425,8 +461,7 @@ export function savedThemes(
             const parsed = ThemeMappingSchema.safeParse(JSON.parse(await content.read(ref)));
             if (!parsed.success) continue;
             const mapping = parsed.data;
-            const key = `${mapping.key}\u0000${mapping.scope ?? ""}`;
-            const target = redirects.get(key) ?? mapping.canonicalThemeId;
+            const target = resolveCanonical(mapping, graph);
             if (target !== coverage.theme.id) continue;
             proposals.push({
               proposal: mapping.proposal,
@@ -443,7 +478,12 @@ export function savedThemes(
         if (proposalsPartial || paths.length < MAPPING_LIST_PAGE) break;
       }
       proposals.sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
-      return { theme: coverage.theme, coverage, proposals, proposalsPartial };
+      return {
+        theme: coverage.theme,
+        coverage,
+        proposals,
+        proposalsPartial: proposalsPartial || !graph.complete,
+      };
     },
 
     async detail(result, id) {
