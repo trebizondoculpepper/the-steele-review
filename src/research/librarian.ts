@@ -685,6 +685,37 @@ async function saveDossier(
  * call) and re-derives the same coverage; a job still running is reported as
  * `pending` and its claims are left out of the dossier until a later run.
  */
+/** Validate the complete analysis association before any planning mutation. */
+export async function readCoverageAnalysis(
+  artifacts: GitArtifactStore,
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+) {
+  const themes: ThemeProposalResult = parseThemeProposalResult(
+    JSON.parse(await artifacts.read(themeResult)),
+  );
+  const claimRecord = ClaimExtractionRecordSchema.parse(
+    JSON.parse(await artifacts.read(claimResult)),
+  );
+  const post = { publicationId: themes.post.publicationId, postId: themes.post.postId };
+  if (
+    claimRecord.post.publicationId !== post.publicationId ||
+    claimRecord.post.postId !== post.postId
+  ) {
+    throw new Error("theme and claim results belong to different posts");
+  }
+  if (
+    claimRecord.themeResult &&
+    claimRecord.themeResult !== `${themeResult.commit}:${themeResult.path}`
+  ) {
+    throw new Error("claim result was extracted against a different theme result");
+  }
+  if (claimRecord.sourceVersion !== themes.sourceVersion) {
+    throw new Error("theme and claim results describe different source versions");
+  }
+  return { themes, claimRecord, post };
+}
+
 export async function assessPostCoverage(input: {
   artifacts: GitArtifactStore;
   themeResult: ArtifactRef;
@@ -704,28 +735,11 @@ export async function assessPostCoverage(input: {
 }): Promise<{ record: CoverageRecord; ref: ArtifactRef }> {
   const now = (input.now ?? (() => new Date()))().toISOString();
   const judge = input.judge ?? new ThresholdJudge();
-  const themes: ThemeProposalResult = parseThemeProposalResult(
-    JSON.parse(await input.artifacts.read(input.themeResult)),
+  const { themes, claimRecord, post } = await readCoverageAnalysis(
+    input.artifacts,
+    input.themeResult,
+    input.claimResult,
   );
-  const claimRecord = ClaimExtractionRecordSchema.parse(
-    JSON.parse(await input.artifacts.read(input.claimResult)),
-  );
-  const post = { publicationId: themes.post.publicationId, postId: themes.post.postId };
-  if (
-    claimRecord.post.publicationId !== post.publicationId ||
-    claimRecord.post.postId !== post.postId
-  ) {
-    throw new Error("theme and claim results belong to different posts");
-  }
-  if (
-    claimRecord.themeResult &&
-    claimRecord.themeResult !== `${input.themeResult.commit}:${input.themeResult.path}`
-  ) {
-    throw new Error("claim result was extracted against a different theme result");
-  }
-  if (claimRecord.sourceVersion !== themes.sourceVersion) {
-    throw new Error("theme and claim results describe different source versions");
-  }
   const dossiers = new DossierStore(input.artifacts);
   const summaries: DossierSummary[] = [];
   const existing = new Map<string, StoredDossier>();
@@ -1374,25 +1388,38 @@ export async function analysedBefore(
   themeResult: ArtifactRef,
   claimResult: ArtifactRef,
 ): Promise<boolean> {
-  const paths = await artifacts.list(
-    `librarian/coverage/${post.publicationId}/${post.postId}`,
-    1000,
+  const planKey = createHash("sha256")
+    .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  const plan = await artifacts.lookup(
+    `librarian/request-plans/${post.publicationId}/${post.postId}/${planKey}.json`,
   );
-  for (const path of paths) {
-    const ref = await artifacts.lookup(path);
-    if (!ref) continue;
-    const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
-    if (!parsed.success) continue;
-    const r = parsed.data;
-    if (
-      r.themeResult.commit === themeResult.commit &&
-      r.themeResult.path === themeResult.path &&
-      r.claimResult.commit === claimResult.commit &&
-      r.claimResult.path === claimResult.path
-    )
-      return true;
+  if (plan) {
+    RequestPlanSchema.parse(JSON.parse(await artifacts.read(plan)));
+    return true;
   }
-  return false;
+  const prefix = `librarian/coverage/${post.publicationId}/${post.postId}`;
+  let after: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const paths = await artifacts.list(prefix, 1000, after);
+    for (const path of paths) {
+      const ref = await artifacts.lookup(path);
+      if (!ref) continue;
+      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+      if (!parsed.success) throw new Error("analysis history record invalid");
+      const r = parsed.data;
+      const exact = (saved: z.infer<typeof Ref>, supplied: ArtifactRef) =>
+        saved.repository === supplied.repository &&
+        saved.commit === supplied.commit &&
+        saved.path === supplied.path &&
+        saved.hash === `sha256:${supplied.sha256}`;
+      if (exact(r.themeResult, themeResult) && exact(r.claimResult, claimResult)) return true;
+    }
+    if (paths.length < 1000) return false;
+    after = paths.at(-1);
+  }
+  throw new Error("analysis history scan incomplete");
 }
 
 export function rankResearchRequests(requests: ResearchRequest[]): RankedResearchRequest[] {
@@ -1451,4 +1478,59 @@ export async function saveResearchSelection(
       })),
     },
   );
+}
+
+/** Read the write-once selection as authority, never substitute a recomputed ranking. */
+export async function readResearchSelection(
+  artifacts: GitArtifactStore,
+  ref: ArtifactRef,
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  proposed: RankedResearchRequest[],
+  ordering: "ranked" | "original",
+): Promise<ResearchRequest[]> {
+  const saved = z
+    .object({
+      schemaVersion: z.literal(1),
+      themeResult: Ref,
+      claimResult: Ref,
+      ordering: z.enum(["ranked", "original"]),
+      candidates: z
+        .array(
+          z
+            .object({
+              rank: z.number().int().positive(),
+              jobId: z.string().min(1),
+              origin: z.string().min(1),
+              themeIds: z.array(z.string()),
+              claimsNeedingEvidence: z.number().int().nonnegative(),
+              rationale: z.string(),
+            })
+            .strict(),
+        )
+        .max(1000),
+    })
+    .strict()
+    .parse(JSON.parse(await artifacts.read(ref)));
+  const exact = (a: z.infer<typeof Ref>, b: ArtifactRef) =>
+    a.repository === b.repository &&
+    a.commit === b.commit &&
+    a.path === b.path &&
+    a.hash === `sha256:${b.sha256}`;
+  const byId = new Map(proposed.map((r) => [r.jobId, r.request]));
+  if (
+    !exact(saved.themeResult, themeResult) ||
+    !exact(saved.claimResult, claimResult) ||
+    saved.ordering !== ordering ||
+    byId.size !== proposed.length ||
+    saved.candidates.length !== byId.size ||
+    new Set(saved.candidates.map((c) => c.jobId)).size !== byId.size
+  )
+    throw new Error("research selection binding mismatch");
+  return saved.candidates.map((candidate, index) => {
+    const request = byId.get(candidate.jobId);
+    if (!request || candidate.rank !== index + 1 || candidate.origin !== request.origin)
+      throw new Error("research selection candidate mismatch");
+    return request;
+  });
 }
