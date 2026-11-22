@@ -40,10 +40,13 @@ export const ResearchRequestSchema = z
     schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
     /**
      * `extraction`: derived from a saved analysis, with exact post, analysis
-     * and claim references. `manual`: an operator's subject and optional brief
+     * and claim references. `theme` (#658): targeted enhancement of an
+     * established theme's saved research, identified by the theme and the
+     * claims needing evidence only, never by a post or byline.
+     * `manual`: an operator's subject and optional brief
      * (#218), with its own stable input identity.
      */
-    origin: z.enum(["extraction", "manual"]),
+    origin: z.enum(["extraction", "manual", "theme"]),
     /** Manual requests: the human-provided subject. */
     subject: z.string().trim().min(1).max(300).optional(),
     /** Manual requests: an optional brief explaining the narrative to research. */
@@ -102,6 +105,18 @@ export const ResearchRequestSchema = z
       }
       if (r.subject || r.brief) {
         ctx.addIssue({ code: "custom", message: "subject and brief are for manual requests" });
+      }
+    } else if (r.origin === "theme") {
+      if (r.post || r.subject || r.brief || r.claims.length === 0 || !r.question) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "a theme request names claims and a question only, with no post, subject or brief",
+        });
+      }
+      const themes = new Set(r.claims.flatMap((c) => c.themeIds));
+      if (themes.size !== 1) {
+        ctx.addIssue({ code: "custom", message: "a theme request targets exactly one theme" });
       }
     } else {
       if (!r.subject) ctx.addIssue({ code: "custom", message: "a manual request needs a subject" });

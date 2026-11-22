@@ -770,3 +770,77 @@ describe("librarian coverage across extraction schema versions", () => {
     ]);
   });
 });
+
+describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => {
+  const extra = { id: "claim-new", statement: "A new aircraft sprayed the region" };
+  const supportTreatyOnly = (req: ResearchRequest) => ({
+    passages: req.claims
+      .filter((c) => c.claimRecordId === "claim-treaty")
+      .map((c) => ({ claimRecordId: c.claimRecordId, url: "https://un.example/enmod" })),
+  });
+
+  async function firstPost() {
+    const r = researcher(supportTreatyOnly);
+    const first = await analysis("p1", claims, "Weather warfare");
+    const created = await assessPostCoverage({
+      artifacts,
+      ...first,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    return created.record.mappings[0]!.dossierId;
+  }
+
+  it("does not repurchase a researched theme when byline, post and claim order change", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    // Another post: different post identity (byline/context), claims reordered, one new.
+    const r = researcher(supportTreatyOnly);
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const out = await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+    });
+    // No new full discovery: one targeted theme request for only what still needs evidence.
+    expect(r.requests).toHaveLength(1);
+    const req = r.requests[0]!;
+    expect(req).toMatchObject({ origin: "theme", pass: 1 });
+    expect(req.post).toBeUndefined();
+    expect(req.claims.map((c) => c.claimRecordId).sort()).toEqual(["claim-new", "claim-payment"]);
+    expect(req.claims.every((c) => c.themeIds.length === 1 && c.themeIds[0] === dossierId)).toBe(
+      true,
+    );
+    // Covered evidence is reused with its exact dossier version; nothing is
+    // presented as covering the new claim unless the targeted work supports it.
+    const byId = new Map(out.record.claims.map((c) => [c.claimRecordId, c]));
+    expect(byId.get("claim-treaty")).toMatchObject({ reused: true, status: "evidence-found" });
+    expect(byId.get("claim-treaty")!.evidenceFrom?.dossier.path).toMatch(/^dossier\//);
+    expect(byId.get("claim-new")).toMatchObject({ reused: false });
+    expect(byId.get("claim-new")!.status).not.toBe("evidence-found");
+    // The precise post request context stays as audit provenance in the coverage record.
+    expect(out.record.post).toMatchObject({ publicationId: "pub", postId: "p2" });
+  });
+
+  it("gives a third post with the same needs the same targeted job, whatever its byline", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const jobs: string[] = [];
+    for (const postId of ["p2", "p3"]) {
+      const r = researcher(() => "busy");
+      const a = await analysis(postId, [claims[1]!, extra, claims[0]!], "Weather warfare");
+      await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+      });
+      jobs.push(...r.requests.map((q) => researchJobId(q)));
+    }
+    expect(jobs).toHaveLength(2);
+    expect(jobs[0]).toBe(jobs[1]);
+  });
+});
