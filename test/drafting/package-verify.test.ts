@@ -1163,6 +1163,11 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     expect(classifyFindings("Looks fine to me.\nEND OF ASSESSMENT")).toEqual({
       state: "malformed",
     });
+    // A heading with no location, problem or reason is not a finding.
+    expect(classifyFindings("## Finding 1\nEND OF ASSESSMENT")).toEqual({ state: "malformed" });
+    expect(
+      classifyFindings("## Finding: x\n- Where: body\n- What is wrong: wrong.\nEND OF ASSESSMENT"),
+    ).toEqual({ state: "malformed" });
     // A qualified or incidental phrase is not a clean assessment.
     expect(
       classifyFindings(
