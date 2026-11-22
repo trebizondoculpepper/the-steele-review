@@ -653,6 +653,12 @@ export async function assessPostCoverage(input: {
   /** Claims whose remaining gap could materially change the writer's account. */
   consequential?: (claim: { claimRecordId: string; statement: string }) => boolean;
   now?: () => Date;
+  /**
+   * Job IDs the workflow already journaled for this analysis (#658). A run
+   * planned before targeted theme requests existed keeps its full request:
+   * the plan follows these rather than inventing a request it never made.
+   */
+  pinnedJobIds?: ReadonlySet<string>;
 }): Promise<{ record: CoverageRecord; ref: ArtifactRef }> {
   const now = (input.now ?? (() => new Date()))().toISOString();
   const judge = input.judge ?? new ThresholdJudge();
@@ -721,7 +727,7 @@ export async function assessPostCoverage(input: {
   // so shortlist or judge changes cannot move a theme to another dossier.
   // Jobs an earlier assessment of this exact analysis commissioned (#658):
   // reassessment repeats the same request rather than switching mode.
-  const priorJobIds = new Set<string>();
+  const priorJobIds = new Set<string>(input.pinnedJobIds ?? []);
   const priorTargeted = new Map<string, string[][]>();
   const savedMapping = await priorMappings(
     input.artifacts,

@@ -970,4 +970,52 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
       }),
     ).rejects.toThrow("retained-research-capture-mismatch");
   });
+
+  it("keeps a pre-upgrade workflow's journaled full request for a researched theme", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    // What the pre-upgrade planner would have pinned: the full extraction request.
+    const probe = researcher(() => "busy");
+    const { assessPostCoverage: assess } = await import("../../src/research/librarian.js");
+    // Derive the full request's ID by planning without prior research context.
+    const fresh = await mkdtemp(join(tmpdir(), "steele-pre-"));
+    const old = artifacts;
+    try {
+      artifacts = new GitArtifactStore({ repoPath: fresh, repository: "content" });
+      await artifacts.initialise();
+      const a = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+      await assess({
+        artifacts,
+        ...a,
+        commission: probe.commission,
+        shortlister: new LexicalShortlister(),
+      });
+    } finally {
+      await rm(fresh, { recursive: true, force: true });
+      artifacts = old;
+    }
+    const fullIds = new Set(
+      probe.requests.map((q) =>
+        researchJobId({
+          ...q,
+          post: {
+            ...q.post!,
+            themeResult: ref(second.themeResult),
+            claimResult: ref(second.claimResult),
+          },
+        }),
+      ),
+    );
+    const r = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+      pinnedJobIds: fullIds,
+    });
+    expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
+  });
 });
