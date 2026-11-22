@@ -125,7 +125,9 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
         return query.direction === "desc" ? -cmp : cmp;
       });
       const pageRows = rows;
-      const more = pageRows.length === query.limit;
+      // A page that stopped at the scan budget still has an examined position
+      // to resume from, even when it holds few or no matches.
+      const more = pageRows.length === query.limit || (!complete && lastConsumed !== undefined);
       return {
         rows: pageRows,
         ...(more && lastConsumed ? { next: lastConsumed } : {}),
