@@ -827,6 +827,30 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
     expect(out.record.post).toMatchObject({ publicationId: "pub", postId: "p2" });
   });
 
+  it("gives targeted research the same single follow-up for a consequential gap (#597)", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    const r = researcher(supportTreatyOnly);
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: accept,
+      consequential: (c) => c.claimRecordId === "claim-new",
+    });
+    expect(r.requests).toHaveLength(2);
+    const [first, follow] = r.requests;
+    expect(follow).toMatchObject({
+      origin: "theme",
+      pass: 2,
+      previousJobId: researchJobId(first!),
+    });
+    expect(follow!.post).toBeUndefined();
+    expect(follow!.claims.map((c) => c.claimRecordId)).toEqual(["claim-new"]);
+  });
+
   it("gives a third post with the same needs the same targeted job, whatever its byline", async () => {
     const dossierId = await firstPost();
     const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };

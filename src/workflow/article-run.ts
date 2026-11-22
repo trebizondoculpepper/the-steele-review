@@ -633,7 +633,21 @@ export function articleRunWorkflow(stages: ArticleStages) {
       const followUps = await step("plan-follow-up", () =>
         stages.planFollowUp!(themes, claims, pinned),
       );
-      if (followUps.length > 0) {
+      // No time left under the shared deadline: commission nothing that
+      // would be pinned as timed out while still spending the allowance.
+      const timeLeft = deadline - (await ctx.date.now()) > 0;
+      if (followUps.length > 0 && !timeLeft) {
+        research = [
+          ...research,
+          ...followUps.map((r) => ({
+            jobId: researchJobId(r),
+            outcome: "not-commissioned" as const,
+            round: 2,
+            mode: mode(r),
+          })),
+        ];
+        logPipeline(input, "follow-up-research", "deadline-passed", input.sourceVersion);
+      } else if (followUps.length > 0) {
         const second = await researchRound(followUps, {
           select: "select-follow-up",
           research: "follow-up-research",

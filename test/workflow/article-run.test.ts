@@ -175,6 +175,8 @@ const stages: ArticleStages = {
     calls.coverage++;
     pinnedByPost.set(themes.path, pinned);
     if (options?.followUp) reassessed.add(themes.path);
+    // A slow first assessment uses up the shared research deadline (#597).
+    if (themes.path.includes("followup-late") && !options?.followUp) await sleep(2_000);
     return ref(`librarian/coverage/${themes.path}`);
   },
   package: async (coverage) => ({ ref: ref(`writer-packages/${coverage.path}`), status: "ready" }),
@@ -569,14 +571,14 @@ describe("new-job allowance in the workflow (#596)", () => {
 });
 
 describe("one follow-up research round (#597)", () => {
-  const run = async (name: string, plan: string[], allowance: number) => {
+  const run = async (name: string, plan: string[], allowance: number, deadlineMs = 60_000) => {
     plans.set(name, plan);
     const post = {
       ...input(name),
       researchRequestLimit: allowance,
       researchSelection: "allowance-v1" as const,
       researchFollowUp: "one-round-v1" as const,
-      researchDeadlineMs: 60_000,
+      researchDeadlineMs: deadlineMs,
     };
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     await client.workflowSubmit(post);
@@ -608,6 +610,28 @@ describe("one follow-up research round (#597)", () => {
     expect(researchSubjects.filter((s) => s.startsWith("follow-gap-sp"))).toEqual([]);
     // There is never a third round.
     expect(result.research.every((r) => (r.round ?? 1) <= 2)).toBe(true);
+  }, 120_000);
+});
+
+describe("follow-up after the deadline (#597)", () => {
+  it("commissions no follow-up once the shared deadline has passed", async () => {
+    plans.set("followup-late", ["gap-late-one"]);
+    const post = {
+      ...input("followup-late"),
+      researchRequestLimit: 2,
+      researchSelection: "allowance-v1" as const,
+      researchFollowUp: "one-round-v1" as const,
+      researchDeadlineMs: 1_200,
+    };
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    await client.workflowSubmit(post);
+    const result = await client.workflowAttach();
+    expect(result.research).toEqual([
+      expect.objectContaining({ outcome: "finished", round: 1 }),
+      expect.objectContaining({ outcome: "not-commissioned", round: 2, mode: "targeted" }),
+    ]);
+    expect(researchSubjects).not.toContain("follow-gap-late-one");
+    expect(reassessed.has("theme-proposals/followup-late.json")).toBe(false);
   }, 120_000);
 });
 
