@@ -1,5 +1,6 @@
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
+import type { ResearchPort, ThemeResearchDoc } from "./research.js";
 import type { ResearchState } from "../research/theme-coverage.js";
 import { dossierPath } from "../research/dossier.js";
 
@@ -10,7 +11,7 @@ const traceLink = (publicationId: string, postId: string) =>
 const detailLink = (result: string, id: string) =>
   `/themes/view?${new URLSearchParams({ result, id }).toString()}`;
 
-export function themeViews(themes?: ThemesPort): DashboardView[] {
+export function themeViews(themes?: ThemesPort, research?: ResearchPort): DashboardView[] {
   const list: DashboardView = {
     path: "/themes",
     title: "Themes",
@@ -184,7 +185,7 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
         return '<p class="empty">Choose a canonical theme from the catalogue.</p>';
       const { theme, coverage } = found;
       const dossier = coverage.dossier;
-      const research = dossier
+      const researchSummary = dossier
         ? `<p>${expressCoverage(coverage.state)} — ${dossier.covered} covered claim(s), ${dossier.gaps} gap(s), ${dossier.citations} citation(s).</p>
 <p><a href="/research/view?${escapeHtml(new URLSearchParams({ path: dossierPath(theme.id), at: dossier.commit }).toString())}">Read the research documents</a> · dossier <code>${escapeHtml(dossier.hash.slice(0, 19))}…</code></p>`
         : `<p>${expressCoverage(coverage.state)} — no research has been saved for this theme yet. It still exists as an established topic.</p>`;
@@ -196,11 +197,43 @@ export function themeViews(themes?: ThemesPort): DashboardView[] {
             )
             .join("")}</tbody></table></div>`
         : '<p class="empty">No saved librarian mapping targets this theme yet.</p>';
+      let documents: ThemeResearchDoc[] = [];
+      let documentsState = "unavailable" as "ok" | "none" | "partial" | "unavailable";
+      let documentsNext: string | undefined;
+      if (research) {
+        try {
+          const listing = await research.forTheme(theme.id, url.searchParams.get("after") ?? undefined);
+          documents = listing.docs;
+          documentsState = listing.state;
+          documentsNext = listing.next;
+        } catch {
+          documentsState = "unavailable";
+        }
+      }
+      const documentRows = documents
+        .map((d) => {
+          const link = `/research/view?${new URLSearchParams({ path: d.path, at: d.commit }).toString()}`;
+          return `<tr><td><a href="${escapeHtml(link)}">${escapeHtml(d.title)}</a>${d.jobId ? `<br><code>${escapeHtml(d.jobId)}</code>` : ""}</td><td>${escapeHtml(d.kind)}</td><td>${d.summary ? escapeHtml(d.summary) : '<span class="empty">no summary saved</span>'}</td><td>${d.date ? escapeHtml(d.date) : '<span class="empty">no date recorded</span>'}</td><td><code>${escapeHtml(d.commit.slice(0, 12))}</code><br><span class="empty">${escapeHtml(d.hash.slice(0, 19))}…</span></td></tr>`;
+        })
+        .join("");
+      const documentsNote =
+        documentsState === "unavailable"
+          ? '<p class="empty">Saved research documents are unavailable.</p>'
+          : documentsState === "none"
+            ? '<p class="empty">No saved research documents are linked to this theme yet. Browse the <a href="/research">Research browser</a> for unrelated material.</p>'
+            : documentsState === "partial"
+              ? '<p class="empty">This document list is incomplete; open the <a href="/research">Research browser</a> to search the corpus.</p>'
+              : "";
+      const moreDocuments = documentsNext
+        ? `<p><a href="/themes/canonical/view?${escapeHtml(new URLSearchParams({ id: theme.id, after: documentsNext }).toString())}">More documents</a></p>`
+        : "";
+      const documentsSection = `<h2>Research documents</h2><p class="empty">Only saved librarian/theme/dossier associations are listed; documents are never matched by title.</p>${documentsState === "unavailable" ? "" : `<div class="wrap"><table><thead><tr><th>Document</th><th>Kind</th><th>Summary</th><th>Date</th><th>Version</th></tr></thead><tbody>${documentRows}</tbody></table></div>`}${documentsNote}${moreDocuments}`;
       return `<p><a href="/themes/catalogue">All canonical themes</a> · <a href="/themes">Extractor proposals</a></p>
 <h1>${escapeHtml(theme.title)}</h1>
 <p><code>${escapeHtml(theme.id)}</code></p>
 ${theme.description ? `<p>${escapeHtml(theme.description)}</p>` : ""}
-<h2>Research</h2>${research}
+<h2>Research</h2>${researchSummary}
+${documentsSection}
 <h2>Mapped proposal wording</h2><p class="empty">Proposals remain distinct; this is the librarian's saved mapping, not UI string merging.</p>${found.proposalsPartial ? '<p class="empty">The mapping scan was incomplete.</p>' : ""}${mapped}`;
     },
   };

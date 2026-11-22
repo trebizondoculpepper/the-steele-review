@@ -260,7 +260,10 @@ const views = [
       : undefined,
   ),
   // Saved theme proposals and the canonical catalogue, read-only (#493).
-  ...themeViews(content ? savedThemes(content) : undefined),
+  ...themeViews(
+    content ? savedThemes(content) : undefined,
+    content ? savedResearch(content) : undefined,
+  ),
   // Saved claim proposals with their quotations, read-only (#494).
   ...claimViews(content ? savedClaims(content, archive) : undefined),
   ...(content ? reviewViews(savedReviews(content)) : []),
