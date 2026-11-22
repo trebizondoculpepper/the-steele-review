@@ -528,7 +528,7 @@ export function mergeCoverage(
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
 type RequestPlanEntry =
   | { mode: "full" }
-  | { mode: "targeted"; batches: string[][]; question?: string };
+  | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
 const RequestPlanSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -542,6 +542,8 @@ const RequestPlanSchema = z
             batches: z.array(z.array(z.string()).max(100)).max(100),
             /** The rendered question, so a later prompt edit never changes this plan's requests. */
             question: z.string().min(1).max(4000).optional(),
+            /** Identity of the prompt file the question was rendered from. */
+            promptVersion: z.string().min(1).max(200).optional(),
           })
           .strict(),
       ]),
@@ -1058,6 +1060,7 @@ export async function assessPostCoverage(input: {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
         question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
+        promptVersion: THEME_ENHANCEMENT.version,
       });
     } else {
       planned.set(dossierId, { mode: "full" });
@@ -1082,6 +1085,25 @@ export async function assessPostCoverage(input: {
     } else {
       const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
       for (const g of chunks(sortedAll)) await assessGroup(dossierId, g);
+    }
+  }
+
+  // Every accepted claim ends with an explicit outcome, even when the
+  // retained plan does not name its group (it was fully reused when planned,
+  // and a later claim merge has since changed what matches).
+  for (const [dossierId, all] of groups) {
+    for (const claim of all) {
+      if (outcomes.has(claim.key)) continue;
+      outcomes.set(claim.key, {
+        claimRecordId: claim.claimRecordId,
+        statement: claim.statement,
+        dossierId,
+        status: "not-commissioned",
+        reused: false,
+        jobIds: [],
+        citations: [],
+        reason: "not part of this analysis's retained research plan; reassess as a new analysis",
+      });
     }
   }
 

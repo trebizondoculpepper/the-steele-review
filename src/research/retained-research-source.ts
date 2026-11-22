@@ -170,6 +170,7 @@ async function requireCommissioningCoverage(
   const capture = JSON.stringify(ref(input.capture));
   let after: string | undefined;
   let scanned = 0;
+  let contextMismatch = false;
   while (scanned < COVERAGE_SCAN) {
     // Scoped to this article's own coverage, so unrelated history never
     // pushes the commissioning record past the bound.
@@ -191,11 +192,17 @@ async function requireCommissioningCoverage(
         JSON.parse(await input.artifacts.read(fromRef(c.sourceContext))),
       );
       const wanted = JSON.stringify(SourceContextSchema.parse(input.sourceContext));
-      if (JSON.stringify(context) !== wanted) throw new Error("retained-research-context-mismatch");
+      // Another record (for example after an attribution change) may match.
+      if (JSON.stringify(context) !== wanted) {
+        contextMismatch = true;
+        continue;
+      }
       return;
     }
     if (paths.length < 200) break;
     after = paths[paths.length - 1];
   }
-  throw new Error("retained-research-capture-mismatch");
+  throw new Error(
+    contextMismatch ? "retained-research-context-mismatch" : "retained-research-capture-mismatch",
+  );
 }
