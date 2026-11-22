@@ -79,7 +79,12 @@ export type RunState = (
   | { state: "not-configured" }
 ) & {
   workflowKey?: string;
-  attempts?: Array<{ workflowKey: string; requestId: string; recordedAt: string }>;
+  attempts?: Array<{
+    workflowKey: string;
+    requestId: string;
+    recordedAt: string;
+    inputHash?: string;
+  }>;
 };
 
 /** Content for one saved draft (markdown, untrusted) and its exact hash. */
@@ -207,7 +212,12 @@ export interface ArticleTrace {
   post: { publicationId: string; postId: string };
   correlationId: string;
   workflowKey?: string;
-  attempts?: Array<{ workflowKey: string; requestId: string; recordedAt: string }>;
+  attempts?: Array<{
+    workflowKey: string;
+    requestId: string;
+    recordedAt: string;
+    inputHash?: string;
+  }>;
   sourceVersion?: string;
   summary: RunSummary;
   /** What the workflow concluded editorially; `none` for failures and pending work. */

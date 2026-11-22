@@ -180,6 +180,58 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
     expect(revised.version).toBeDefined();
     expect(writer).toHaveBeenCalledTimes(1);
   });
+  it("recovers a credit-stopped revision after the original mechanical deadline without reusing that budget", async () => {
+    let blocked = true;
+    const writer = vi.fn(async () => {
+      if (blocked) throw new ModelProviderError("credit-exhausted", 402);
+      return WRITER;
+    });
+    const f = await seeded({
+      writer,
+      judge: async () =>
+        "## Reasons\nA material factual correction is needed.\n## Required corrections\nCorrect the material claim.\n## Accepted minor observations\nNone.\nDECISION: REVISE",
+    });
+    const assessment = await f.stages.assess(f.version, f.pkg, "revision-credit-assessment");
+    const judgment = await f.stages.judge(assessment.ref, "revision-credit-judgment");
+    const revise = (recoveryId?: string) =>
+      f.stages.revise(
+        f.version,
+        f.pkg,
+        judgment.ref,
+        1,
+        "https://pub.example.com/p/p1",
+        recoveryId,
+      );
+    const identityInput = {
+      publicationId: "pub",
+      postId: "p1",
+      sourceVersion: `sha256:${"a".repeat(64)}`,
+      sourceUrl: "https://pub.example.com/p/p1",
+      researchDeadlineMs: 1000,
+      operatorRequestId: "operator-original",
+    };
+    const original = editorialAttemptIdentity(identityInput);
+    const recovery = editorialAttemptIdentity({ ...identityInput, recoveryGeneration: 1 });
+    expect(recovery.recoveryId).not.toBe(original.recoveryId);
+    await expect(revise(original.recoveryId)).rejects.toThrow();
+    expect(writer).toHaveBeenCalledTimes(1);
+    blocked = false;
+    const realNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(realNow + 360_000);
+    try {
+      expect(await revise(original.recoveryId)).toMatchObject({
+        failure: "mechanical-deadline-exhausted",
+      });
+      expect(writer).toHaveBeenCalledTimes(1);
+      const recovered = await revise(recovery.recoveryId);
+      expect(recovered.version).toBeDefined();
+      expect(writer).toHaveBeenCalledTimes(2);
+      expect((await revise(recovery.recoveryId)).version).toEqual(recovered.version);
+      expect(writer).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it.each(["assessor", "judge"])(
     "keeps a failed %s attempt and credit category without fictional approval",
     async (role) => {

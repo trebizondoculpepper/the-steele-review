@@ -143,7 +143,7 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async revise(version, pkg, judgment, number, sourceUrl) {
+    async revise(version, pkg, judgment, number, sourceUrl, recoveryId) {
       const loaded = await bound(version, pkg);
       const decision = JudgmentRecordSchema.parse(JSON.parse(await deps.content.read(judgment)));
       if (
@@ -168,6 +168,7 @@ export function editorialStages(deps: {
         package: pkg,
         provider: deps.writer,
         sourceUrl,
+        ...(recoveryId ? { writerRecoveryId: recoveryId } : {}),
         previousDraft: {
           ref: version.draft,
           markdown: loaded.markdown,

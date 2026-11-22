@@ -54,6 +54,7 @@ export interface EditorialStages {
     judgment: Ref,
     number: number,
     sourceUrl: string,
+    recoveryId?: string,
   ): Promise<{
     version?: EditorialVersion;
     failure?: string;

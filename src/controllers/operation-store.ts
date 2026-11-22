@@ -797,7 +797,13 @@ export class OperationStore {
     postId: string,
     sourceVersion: string,
     limit = 10,
-  ): Array<{ workflowKey: string; requestId: string; sourceVersion: string; recordedAt: string }> {
+  ): Array<{
+    workflowKey: string;
+    requestId: string;
+    sourceVersion: string;
+    recordedAt: string;
+    inputHash: string;
+  }> {
     if (
       !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
       !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
@@ -821,6 +827,7 @@ export class OperationStore {
         requestId: value.requestId,
         sourceVersion: value.sourceVersion,
         recordedAt: value.recordedAt,
+        inputHash: value.inputHash,
       }));
   }
 

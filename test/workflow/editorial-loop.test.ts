@@ -80,6 +80,12 @@ function fixture(alwaysRevise = false) {
   };
 }
 describe("versioned journaled editorial loop", () => {
+  it("threads the same explicit recovery token into revision writer work", async () => {
+    const f = fixture();
+    const revise = vi.spyOn(f.stages, "revise");
+    await runEditorialLoop({ ...f.args, recoveryId: "dashboard-recovery-fixture" });
+    expect(revise.mock.calls[0]?.[5]).toBe("dashboard-recovery-fixture");
+  });
   it("replays committed assessment/judgment/revision steps without duplicate paid work or approval", async () => {
     const f = fixture();
     f.crash("editorial-assess-0");

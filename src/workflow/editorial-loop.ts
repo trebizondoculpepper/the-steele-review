@@ -91,7 +91,14 @@ export async function runEditorialLoop(input: {
     if (round === input.policy.maxRevisions) break;
     await input.progress("revise", round + 1);
     const revised = await input.step(`editorial-revise-${round + 1}`, () =>
-      input.stages.revise(version, input.package, judgment.ref, round + 1, input.sourceUrl),
+      input.stages.revise(
+        version,
+        input.package,
+        judgment.ref,
+        round + 1,
+        input.sourceUrl,
+        input.recoveryId,
+      ),
     );
     if (revised.mechanicalRun) mechanicalRuns.push(revised.mechanicalRun);
     diagnostics.push(...(revised.diagnostics ?? []));

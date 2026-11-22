@@ -85,7 +85,6 @@ export function indexArticles(
         : [{ match_all: {} }];
       const filter = publicationId ? [{ term: { publicationId } }] : [];
       const hits = await search.search(index, { bool: { must, filter } }, {
-
         size: limit,
         sort: esSort,
         ...(searchAfter ? { searchAfter } : {}),
@@ -384,8 +383,14 @@ export function restateRuns(
         attempts?.articleAttempts(post.publicationId, post.postId, post.sourceVersion, 10) ?? [];
       if (recorded.length) {
         const current = recorded[0]!;
+        const selected = await read(current.workflowKey);
+        const recovery =
+          selected.state === "finished" && isCreditBlocked(selected.result.reason)
+            ? await read(recoveryWorkflowKey(current.workflowKey))
+            : undefined;
         return {
-          ...(await read(current.workflowKey)),
+          ...selected,
+          ...(recovery && recovery.state !== "not-started" ? { recovery } : {}),
           workflowKey: current.workflowKey,
           attempts: recorded,
         };

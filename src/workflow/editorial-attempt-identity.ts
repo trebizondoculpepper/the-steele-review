@@ -13,9 +13,8 @@ export function editorialAttemptIdentity(input: ArticleRunInput) {
   ];
   const attemptId = `editorial-${createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 32)}`;
   const recoveryId =
-    input.operatorRequestId ??
-    (generation > 0
+    generation > 0
       ? `dashboard-recovery-${createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 32)}`
-      : undefined);
+      : input.operatorRequestId;
   return { attemptId, recoveryId };
 }

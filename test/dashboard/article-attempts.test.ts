@@ -9,6 +9,50 @@ const post = {
   sourceVersion: `sha256:${"a".repeat(64)}`,
 };
 describe("operator attempt visibility", () => {
+  it("shows the selected operator recovery rather than a prior base recovery", async () => {
+    const base = "fixture/post@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const key = base + "~run-bbbbbbbbbbbbbbbb";
+    const requested: string[] = [];
+    const connect = (() => ({
+      workflowClient: (_: unknown, workflowKey: string) => {
+        requested.push(workflowKey);
+        return {
+          workflowOutput: async () => ({
+            ready: true,
+            result: {
+              outcome: workflowKey === key ? "failed" : "verified",
+              reason: workflowKey === key ? "credit-exhausted" : undefined,
+              research: [],
+            },
+          }),
+        };
+      },
+    })) as unknown as typeof clients.connect;
+    const runs = restateRuns(
+      "https://restate.example",
+      1000,
+      {
+        articleAttempts: () => [
+          {
+            workflowKey: key,
+            requestId: "request-one",
+            sourceVersion: post.sourceVersion,
+            recordedAt: "2026-01-01T00:00:00Z",
+            inputHash: "a".repeat(64),
+          },
+        ],
+      },
+      connect,
+    );
+    expect(await runs.status(post)).toMatchObject({
+      workflowKey: key,
+      state: "finished",
+      result: { outcome: "failed" },
+      recovery: { state: "finished", result: { outcome: "verified" } },
+    });
+    expect(requested).toContain(key + "~recovered");
+    expect(requested).not.toContain(base + "~recovered");
+  });
   it("shows the exact recorded rerun and its judge progress instead of the old terminal workflow", async () => {
     const key = "fixture/post@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~run-bbbbbbbbbbbbbbbb";
     const requested: string[] = [];
