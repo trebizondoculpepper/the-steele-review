@@ -7,10 +7,11 @@ import {
 } from "../../src/analysis/theme-bulk-plan.js";
 
 // Synthetic corpus only.
-const post = (postId: string) => ({ publicationId: "pub", postId });
+const version = `sha256:${"a".repeat(64)}`;
+const post = (postId: string, sourceVersion = version) => ({ publicationId: "pub", postId, sourceVersion });
 const current = { modelVersion: "model-a", promptVersion: "themes-v2" };
 const saved = (over: Partial<SavedThemeExtraction> = {}): SavedThemeExtraction => ({
-  sourceVersion: `sha256:${"a".repeat(64)}`,
+  sourceVersion: version,
   processor: current,
   readable: true,
   titles: ["Weather modification"],
@@ -43,6 +44,28 @@ describe("theme-only bulk plan (#526)", () => {
       current,
     });
     expect(plan.entries[0]).toMatchObject({ action: "extract", reason: /unreadable/ });
+  });
+
+  it("extracts again when the captured revision changed", () => {
+    const plan = planThemeBulk({
+      selection: [post("p1", `sha256:${"c".repeat(64)}`)],
+      saved: new Map([["pub/p1", saved()]]),
+      current,
+    });
+    expect(plan.entries[0]).toMatchObject({ action: "extract", reason: /revision changed/ });
+  });
+
+  it("groups different wordings of one canonical theme and never merges unrelated ones", () => {
+    const ranked = rankThemeFrequency([
+      saved({ titles: ["Weather modification"], canonicalByTitle: { "Weather modification": "geoengineering" } }),
+      saved({ titles: ["Climate engineering"], canonicalByTitle: { "Climate engineering": "geoengineering" } }),
+      // Same wording, different meaning: no canonical id, stays separate.
+      saved({ titles: ["Chemtrails"] }),
+    ]);
+    const geo = ranked.find((r) => r.key === "canonical:geoengineering");
+    expect(geo).toMatchObject({ postCount: 2 });
+    expect(geo!.titles.sort()).toEqual(["Climate engineering", "Weather modification"]);
+    expect(ranked.some((r) => r.key === "chemtrails")).toBe(true);
   });
 
   it("bounds one pass and reports truncation instead of silently covering less", () => {

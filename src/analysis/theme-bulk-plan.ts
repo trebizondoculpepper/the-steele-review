@@ -14,7 +14,12 @@ import { z } from "zod";
  */
 
 export const BulkPostSchema = z
-  .object({ publicationId: z.string().min(1), postId: z.string().min(1) })
+  .object({
+    publicationId: z.string().min(1),
+    postId: z.string().min(1),
+    /** The captured revision being analysed; a changed capture cannot reuse. */
+    sourceVersion: z.string().min(1),
+  })
   .strict();
 export type BulkPost = z.infer<typeof BulkPostSchema>;
 
@@ -31,6 +36,11 @@ export interface SavedThemeExtraction {
   readable: boolean;
   /** Proposed theme titles, exactly as saved. */
   titles: string[];
+  /**
+   * Canonical theme id per proposal title, when a mapping is known. Frequency
+   * groups by this, so different wordings for one topic are not split.
+   */
+  canonicalByTitle?: Record<string, string>;
 }
 
 export type BulkAction = "reuse" | "extract" | "incompatible";
@@ -74,6 +84,12 @@ export function planThemeBulk(input: BulkPlanInput): BulkPlan {
       return { ...post, action: "extract", reason: "no saved theme result for this post" };
     if (!saved.readable)
       return { ...post, action: "extract", reason: "saved theme result is unreadable" };
+    if (saved.sourceVersion !== post.sourceVersion)
+      return {
+        ...post,
+        action: "extract",
+        reason: "the captured revision changed since the saved result",
+      };
     if (
       saved.processor.modelVersion !== input.current.modelVersion ||
       saved.processor.promptVersion !== input.current.promptVersion
@@ -121,8 +137,12 @@ export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFreque
   results.forEach((result, index) => {
     if (!result.readable) return;
     for (const title of result.titles) {
-      const k = normaliseThemeTitle(title);
-      if (k === "") continue;
+      const wording = normaliseThemeTitle(title);
+      if (wording === "") continue;
+      // A known canonical id groups different wordings of one topic; unknown
+      // ones stay separate rather than being merged by resemblance.
+      const canonical = result.canonicalByTitle?.[title];
+      const k = canonical ? `canonical:${canonical}` : wording;
       const entry = byTheme.get(k) ?? { titles: new Map<string, number>(), posts: new Set<number>() };
       entry.titles.set(title, (entry.titles.get(title) ?? 0) + 1);
       entry.posts.add(index);
