@@ -21,7 +21,14 @@ export interface TraceExplanation {
 type Input = Pick<
   ArticleTrace,
   "summary" | "editorial" | "outcome" | "reason" | "stages" | "research" | "approvalRecorded"
->;
+> & {
+  /**
+   * Whether the recovery action is available for this failure. Recovery only
+   * supports a credit-stopped run, so anything else must not be advised to use
+   * it.
+   */
+  recoveryAvailable?: boolean;
+};
 
 const stageLabel = (stage: string): string => stage.replace(/-/g, " ");
 
@@ -34,9 +41,14 @@ function currentStage(stages: Input["stages"]): string | undefined {
 /** First stage recorded as failed, with its detail when present. */
 function failedStage(stages: Input["stages"]): { stage: string; detail?: string } | undefined {
   const failed = stages.find((s) => s.state === "failed");
-  return failed === undefined
-    ? undefined
-    : { stage: failed.stage, ...(failed.detail ? { detail: failed.detail } : {}) };
+  if (failed === undefined) return undefined;
+  // `summariseRun` may already prefix the detail with the stage name; strip it
+  // so the explanation does not read "claims: claims: …".
+  const prefix = `${failed.stage}: `;
+  const detail = failed.detail?.startsWith(prefix)
+    ? failed.detail.slice(prefix.length)
+    : failed.detail;
+  return { stage: failed.stage, ...(detail ? { detail } : {}) };
 }
 
 export function explainTrace(t: Input): TraceExplanation {
@@ -69,7 +81,10 @@ export function explainTrace(t: Input): TraceExplanation {
     return {
       status: "Failed: the workflow stopped before finishing its stages.",
       stoppedReason,
-      next: "Recover this revision; completed stage results are reused, so nothing already done is repeated.",
+      next:
+        t.recoveryAvailable === true
+          ? "Recover this revision; completed stage results are reused, so nothing already done is repeated."
+          : "Recovery is not available for this failure. Inspect the failing stage and the verifier history, fix the cause, and run the revision again.",
     };
   }
 

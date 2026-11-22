@@ -57,7 +57,18 @@ describe("article trace explanation (#525)", () => {
     });
     expect(e.status).toMatch(/Failed/);
     expect(e.stoppedReason).toBe("claims: provider credit");
-    expect(e.next).toMatch(/completed stage results are reused/);
+    // Recovery is not offered unless the action actually supports this failure.
+    expect(e.next).toMatch(/Recovery is not available/);
+    expect(
+      explainTrace({
+        ...base,
+        summary: "failed",
+        editorial: "none",
+        reason: "claims: credit-exhausted",
+        stages: [{ stage: "claims", state: "failed", detail: "claims: credit-exhausted" }],
+        recoveryAvailable: true,
+      }),
+    ).toMatchObject({ stoppedReason: "claims: credit-exhausted" });
   });
 
   it("does not present an unreadable state as a stopped process", () => {
