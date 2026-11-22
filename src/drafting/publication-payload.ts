@@ -4,6 +4,7 @@ import { ArtifactReferenceSchema, type ArtifactReference } from "../content/arti
 import { PublicationFieldsSchema, type PublicationFields } from "../content/publication-fields.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { writeOnce } from "../research/job.js";
+import { classifyArticlePath } from "./article-identity.js";
 import { PackageDraftMetadataSchema } from "./package-draft.js";
 
 export class PublicationPayloadError extends Error {
@@ -68,6 +69,46 @@ export const artifactRef = (ref: ArtifactReference): ArtifactRef => ({
 export const sameArtifact = (a: ArtifactReference, b: ArtifactReference) =>
   a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash;
 
+/**
+ * Canonical metadata retains the write-once generation pointer (a Git commit
+ * cannot embed its own hash). A canonical snapshot is an exact alias only
+ * when both files share a pinned commit and its body matches that generation.
+ */
+export async function assertMetadataBodyBinding(
+  content: Pick<GitArtifactStore, "read">,
+  metadataRef: ArtifactRef,
+  metadata: z.infer<typeof PackageDraftMetadataSchema>,
+  body: ArtifactRef,
+): Promise<void> {
+  if (metadata.draft === `${body.commit}:${body.path}`) return;
+  const canonical = classifyArticlePath(body.path);
+  const metaPath = classifyArticlePath(metadataRef.path);
+  const separator = metadata.draft.indexOf(":");
+  const generationCommit = metadata.draft.slice(0, separator);
+  const generationPath = metadata.draft.slice(separator + 1);
+  const generation = classifyArticlePath(generationPath);
+  if (
+    canonical?.kind !== "canonical" ||
+    canonical.part !== "body" ||
+    metaPath?.kind !== "canonical" ||
+    metaPath.part !== "metadata" ||
+    canonical.id !== metaPath.id ||
+    canonical.publicationId !== metaPath.publicationId ||
+    canonical.postId !== metaPath.postId ||
+    metadataRef.commit !== body.commit ||
+    metadataRef.repository !== body.repository ||
+    generation?.kind !== "legacy-generation" ||
+    generation.part !== "body" ||
+    generation.publicationId !== canonical.publicationId ||
+    generation.postId !== canonical.postId ||
+    !/^[0-9a-f]{40}$/.test(generationCommit)
+  )
+    throw new PublicationPayloadError();
+  // GitArtifactStore verifies the supplied hash as well as commit/path. Using
+  // the canonical hash proves equality without resolving any current head.
+  await content.read({ ...body, commit: generationCommit, path: generationPath });
+}
+
 /** Save the exact metadata/body association before verification. */
 export async function savePublicationPayload(input: {
   content: GitArtifactStore;
@@ -78,8 +119,7 @@ export async function savePublicationPayload(input: {
   const metadata = PackageDraftMetadataSchema.parse(
     JSON.parse(await input.content.read(input.metadata)),
   );
-  if (metadata.draft !== `${input.body.commit}:${input.body.path}`)
-    throw new PublicationPayloadError();
+  await assertMetadataBodyBinding(input.content, input.metadata, metadata, input.body);
   const candidate = {
     schemaVersion: 1,
     metadata: artifactReference(input.metadata),
@@ -111,11 +151,16 @@ export async function readPublicationPayload(
   const metadata = PackageDraftMetadataSchema.parse(
     JSON.parse(await content.read(artifactRef(payload.metadata))),
   );
+  await assertMetadataBodyBinding(
+    content,
+    artifactRef(payload.metadata),
+    metadata,
+    artifactRef(payload.body),
+  );
   if (
-    metadata.draft !== `${payload.body.commit}:${payload.body.path}` ||
-    (payload.mode === "structured"
+    payload.mode === "structured"
       ? JSON.stringify(metadata.fields) !== JSON.stringify(payload.fields)
-      : metadata.fields !== undefined)
+      : metadata.fields !== undefined
   )
     throw new PublicationPayloadError();
   const markdown = await content.read(artifactRef(payload.body));

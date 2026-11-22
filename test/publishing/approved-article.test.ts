@@ -4,7 +4,11 @@ import {
   artifactReference,
   artifactRef,
 } from "../../src/drafting/publication-payload.js";
-import { PackageVerificationReportSchema } from "../../src/drafting/package-verify.js";
+import { commitArticleRevision } from "../../src/drafting/article-revisions.js";
+import {
+  verifyPackageDraft,
+  PackageVerificationReportSchema,
+} from "../../src/drafting/package-verify.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,8 +25,8 @@ import {
   recordApproval,
   readDummyDeliveryProof,
 } from "../../src/publishing/approved-article.js";
-import { approvedReport } from "./approval-fixtures.js";
-import { articlePaths } from "../../src/drafting/article-identity.js";
+import { archive, approvedReport } from "./approval-fixtures.js";
+import { assessArticle } from "../../src/drafting/article-assessment.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -152,71 +156,148 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     expect(await readDummyDeliveryProof(content, data)).toEqual({ a: a.receipt, b: b.receipt });
   });
 
-  it("delivers the exact approved version after a newer revision of the same article (#580)", async () => {
-    const report = await approved();
-    const { data } = await recordApproval({ content, operations, report });
-    const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0].payload;
-    base = Date.parse(data.approvedAt);
-    const approvedRef = {
-      repository: data.draft.repository,
-      commit: data.draft.commit,
-      path: data.draft.path,
-      sha256: data.draft.hash.replace(/^sha256:/, ""),
-    };
-    const approvedBody = await content.read(approvedRef);
-    // The approved generation is never the in-place canonical document.
-    expect(data.draft.path).not.toMatch(/\/article\.md$/);
-
-    // The logical article moves on: its canonical body now holds newer text.
-    const paths = articlePaths({ publicationId: "pub", postId: "p1" });
-    const v1 = await content.revise(paths.body, approvedBody, null);
-    const newer = `${approvedBody}\n\nA later, unapproved paragraph.\n`;
-    const v2 = await content.revise(paths.body, newer, v1.sha256);
-    expect(v2.sha256).not.toBe(data.draft.hash.replace(/^sha256:/, ""));
-
-    // Record what the destination is actually given, not just its idempotency key.
-    const sent: string[] = [];
-    const site = new (class extends SimulatedDestination {
-      override async deliver(preview: Parameters<SimulatedDestination["deliver"]>[0], key: string) {
-        sent.push(JSON.stringify(preview));
-        return super.deliver(preview, key);
+  it.each(["body", "metadata-only"])(
+    "assesses and delivers canonical v1 after a %s v2 edit (#580)",
+    async (edit) => {
+      const legacyReport = await approved();
+      const legacy = PackageVerificationReportSchema.parse(
+        JSON.parse(await content.read(legacyReport)),
+      );
+      if (legacy.schemaVersion !== 2) throw new Error("expected structured approval");
+      const original = await readPublicationPayload(content, legacy.publication);
+      const snapshot = await commitArticleRevision({
+        content,
+        article: { publicationId: "pub", postId: "p1" },
+        generation: {
+          draft: artifactRef(legacy.draft),
+          metadata: artifactRef(original.payload.metadata),
+        },
+        base: "current",
+      });
+      if (snapshot.status === "conflict") throw new Error("conflict");
+      const approvedBody = await content.read(snapshot.body);
+      const canonicalMetadata = JSON.parse(await content.read(snapshot.metadata));
+      const assessed = await assessArticle({
+        content,
+        archive,
+        metadata: snapshot.metadata,
+        assessor: {
+          modelVersion: "fake/canonical-assessor",
+          complete: async (request) => {
+            const user = JSON.parse(request.user);
+            expect(user.article).toBe(approvedBody);
+            expect(user.publication.title).toBe(canonicalMetadata.fields.title);
+            return "No faults found.\nEND OF ASSESSMENT";
+          },
+        },
+      });
+      if (assessed.status !== "assessed") throw new Error(assessed.status);
+      expect(assessed.record.body).toEqual(artifactReference(snapshot.body));
+      expect(assessed.record.source).toEqual(legacy.source);
+      const verified = await verifyPackageDraft({
+        content,
+        archive,
+        metadata: snapshot.metadata,
+        verifier: {
+          modelVersion: "fake/canonical-verifier",
+          complete: async (request) => {
+            const user = JSON.parse(request.user);
+            expect(user.draft).toBe(approvedBody);
+            expect(user.publication.title).toBe(canonicalMetadata.fields.title);
+            return JSON.stringify({ verdict: "approved", issues: [] });
+          },
+        },
+      });
+      if (verified.status !== "verified") throw new Error(verified.status);
+      expect(verified.report.draft).toEqual(artifactReference(snapshot.body));
+      const manifest = await readPublicationPayload(content, verified.report.publication!);
+      expect(manifest.payload.metadata).toEqual(artifactReference(snapshot.metadata));
+      const { data } = await recordApproval({ content, operations, report: verified.ref });
+      const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0].payload;
+      base = Date.parse(data.approvedAt);
+      const changed = {
+        ...canonicalMetadata,
+        fields: { ...canonicalMetadata.fields, title: "A new unapproved title" },
+      };
+      const [bodyV2, metadataV2] = await content.reviseAll([
+        {
+          path: snapshot.body.path,
+          content: edit === "body" ? approvedBody + "\nNew unapproved prose.\n" : approvedBody,
+          expectedSha256: snapshot.body.sha256,
+        },
+        {
+          path: snapshot.metadata.path,
+          content: JSON.stringify(changed),
+          expectedSha256: snapshot.metadata.sha256,
+        },
+      ]);
+      expect(bodyV2.path).toBe(snapshot.body.path);
+      expect(metadataV2.path).toBe(snapshot.metadata.path);
+      if (edit === "metadata-only") expect(bodyV2.sha256).toBe(snapshot.body.sha256);
+      if (edit === "body")
+        await expect(
+          savePublicationPayload({
+            content,
+            metadata: metadataV2,
+            body: bodyV2,
+            post: { publicationId: "pub", postId: "p1" },
+          }),
+        ).rejects.toThrow();
+      // Old canonical pair remains inspectable and approved even though current paths changed.
+      expect(
+        (await readPublicationPayload(content, verified.report.publication!)).payload,
+      ).toMatchObject({ mode: "structured", fields: canonicalMetadata.fields });
+      const sent: Parameters<SimulatedDestination["deliver"]>[0][] = [];
+      const site = new (class extends SimulatedDestination {
+        override async deliver(
+          preview: Parameters<SimulatedDestination["deliver"]>[0],
+          key: string,
+        ) {
+          sent.push(preview);
+          return super.deliver(preview, key);
+        }
+      })("canonical-site", "draft", { uncertainTimes: 1 });
+      const handle = (event = payload) =>
+        handleApprovedArticle({
+          payload: event,
+          destination: site,
+          schedule: { delayMs: 0 },
+          content,
+          operations,
+          owner: "fixture",
+          now: at(0),
+          retryDelayMs: 1,
+        });
+      expect(await handle()).toMatchObject({ action: "nak", reason: "uncertain" });
+      expect(await handle()).toMatchObject({ action: "ack", outcome: "delivered" });
+      expect(await handle()).toMatchObject({ action: "ack", outcome: "reused" });
+      expect(site.deliveries).toHaveLength(1);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body).toContain(approvedBody);
+      expect(sent[0].publication).toMatchObject({
+        fields: canonicalMetadata.fields,
+        body: artifactReference(snapshot.body),
+        metadata: artifactReference(snapshot.metadata),
+      });
+      const preview = JSON.stringify(sent[0]);
+      expect(preview).not.toContain("A new unapproved title");
+      expect(preview).not.toContain("New unapproved prose");
+      const newer = JSON.parse(payload);
+      newer.data.draft = artifactReference({ ...bodyV2, commit: metadataV2.commit });
+      if (edit === "metadata-only") {
+        const v2 = await savePublicationPayload({
+          content,
+          metadata: metadataV2,
+          body: { ...bodyV2, commit: metadataV2.commit },
+          post: { publicationId: "pub", postId: "p1" },
+        });
+        expect(v2.payload.contentHash).not.toBe(manifest.payload.contentHash);
+        newer.data.publication = artifactReference(v2.ref);
       }
-    })("site", "draft");
-    const out = await handleApprovedArticle({
-      payload,
-      destination: site,
-      schedule: { delayMs: 0 },
-      content,
-      operations,
-      owner: "t",
-      now: at(0),
-    });
-    expect(out).toMatchObject({ action: "ack", outcome: "delivered" });
-    // Exactly the approved bytes were sent, never the newer canonical text.
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).not.toContain("A later, unapproved paragraph.");
-    // The approved body's own text is what was sent.
-    const firstLine = approvedBody.split("\n").find((l) => l.trim().length > 20)!;
-    expect(sent[0]).toContain(JSON.stringify(firstLine).slice(1, -1));
-    // A retry reuses the recorded result and still never adopts the newer text.
-    const again = await handleApprovedArticle({
-      payload,
-      destination: site,
-      schedule: { delayMs: 0 },
-      content,
-      operations,
-      owner: "t",
-      now: at(1),
-    });
-    expect(again).toMatchObject({ action: "ack", outcome: "reused" });
-    // Nothing more was sent on retry.
-    expect(sent).toHaveLength(1);
-    // The newer revision inherits no approval: no event names its hash.
-    const events = operations
-      .duePendingEvents(50, ARTICLE_APPROVED_SUBJECT)
-      .map((e) => JSON.parse(e.payload).data.draft.hash);
-    expect(events).not.toContain(`sha256:${v2.sha256}`);
-  });
+      expect(await handle(JSON.stringify(newer))).toMatchObject({ action: "term" });
+      expect(site.deliveries).toHaveLength(1);
+    },
+  );
 
   it("reconciles an uncertain delivery before retrying, so it is never sent twice", async () => {
     const report = await approved();

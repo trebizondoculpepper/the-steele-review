@@ -1,3 +1,4 @@
+import { isCanonicalArticlePath } from "./article-identity.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
@@ -198,9 +199,17 @@ export async function loadArticleForReview(input: {
   const meta = PackageDraftMetadataSchema.parse(
     JSON.parse(await input.content.read(input.metadata)),
   );
-  const draftPath = meta.draft.slice(meta.draft.indexOf(":") + 1);
-  const draftRef = await input.content.lookup(draftPath);
-  if (!draftRef || `${draftRef.commit}:${draftRef.path}` !== meta.draft) {
+  const separator = meta.draft.indexOf(":");
+  const canonical = isCanonicalArticlePath(input.metadata.path);
+  const draftPath = canonical
+    ? input.metadata.path.replace(/\.json$/, ".md")
+    : meta.draft.slice(separator + 1);
+  const draftCommit = canonical ? input.metadata.commit : meta.draft.slice(0, separator);
+  const pinned = await input.content.lookupAt(draftCommit, draftPath);
+  const draftRef = pinned
+    ? { ...pinned.ref, ...(canonical ? { commit: input.metadata.commit } : {}) }
+    : undefined;
+  if (!draftRef || (!canonical && `${draftRef.commit}:${draftRef.path}` !== meta.draft)) {
     return { status: "context-unavailable" as const, reason: "draft-version-mismatch" };
   }
   const markdown = await input.content.read(draftRef);
@@ -448,7 +457,9 @@ export async function verifyWithRevisions(input: {
     const draftRef = toArtifactRef(verified.report.draft);
     if (!article) {
       try {
-        article = await commit({ draft: draftRef, metadata });
+        article = isCanonicalArticlePath(metadata.path)
+          ? { body: draftRef, metadata }
+          : await commit({ draft: draftRef, metadata });
       } catch {
         // The generation could not be read back: stop before any model call.
         return { outcome: "failed", reason: "draft-unavailable", revisions };
