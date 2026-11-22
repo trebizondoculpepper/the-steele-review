@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -756,6 +757,194 @@ export class OperationStore {
       row?.status === "completed" &&
       JSON.stringify(JSON.parse(row.artifact ?? "null")) ===
         JSON.stringify({ discovery: parsed.data })
+    );
+  }
+
+  /** Record one intentional article rerun before its external submission. */
+  recordArticleAttempt(input: {
+    publicationId: string;
+    postId: string;
+    sourceVersion: string;
+    requestId: string;
+    inputHash: string;
+  }): { workflowKey: string; requestId: string; sourceVersion: string; recordedAt: string } {
+    const parsed = z
+      .object({
+        publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+        sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        requestId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+        inputHash: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .parse(input);
+    const key = `article-attempt:${parsed.publicationId}/${parsed.postId}:${parsed.requestId}`;
+    const workflowKey = `${parsed.publicationId}/${parsed.postId}@${parsed.sourceVersion.slice(7, 39)}~run-${createHash("sha256").update(parsed.requestId).digest("hex").slice(0, 16)}`;
+    const value = { ...parsed, workflowKey, recordedAt: new Date(this.now()).toISOString() };
+    const saved = this.reconcileCompleted(key, value, []) as typeof value;
+    if (
+      saved.inputHash !== parsed.inputHash ||
+      saved.workflowKey !== workflowKey ||
+      saved.sourceVersion !== parsed.sourceVersion
+    )
+      throw new OperationStoreError("invalid-input");
+    return saved;
+  }
+
+  /** Bounded operator-attempt discovery for the exact source revision; never exposes raw state or SQL. */
+  articleAttempts(
+    publicationId: string,
+    postId: string,
+    sourceVersion: string,
+    limit = 10,
+  ): Array<{
+    workflowKey: string;
+    requestId: string;
+    sourceVersion: string;
+    recordedAt: string;
+    inputHash: string;
+  }> {
+    if (
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
+      !/^sha256:[0-9a-f]{64}$/.test(sourceVersion) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 50
+    )
+      throw new OperationStoreError("invalid-input");
+    const rows = this.db
+      .prepare(
+        "SELECT artifact FROM operations WHERE key LIKE ? AND status = 'completed' ORDER BY updated_at DESC, key DESC LIMIT ?",
+      )
+      .all(`article-attempt:${publicationId}/${postId}:%`, 50) as Array<{ artifact: string }>;
+    return rows
+      .map((row) => JSON.parse(row.artifact))
+      .filter((value) => value.sourceVersion === sourceVersion)
+      .slice(0, limit)
+      .map((value) => ({
+        workflowKey: value.workflowKey,
+        requestId: value.requestId,
+        sourceVersion: value.sourceVersion,
+        recordedAt: value.recordedAt,
+        inputHash: value.inputHash,
+      }));
+  }
+
+  /** Fence a returned editorial response against both stale ownership and an expired paid-call lease. */
+  renewEditorialCapture(claim: OperationClaim, leaseMs: number): number {
+    if (
+      !claim.key.startsWith("editorial-capture:") ||
+      !Number.isInteger(leaseMs) ||
+      leaseMs < 1000 ||
+      leaseMs > 20 * 60_000
+    )
+      throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      const expires = now + leaseMs;
+      this.db
+        .prepare("UPDATE operations SET lease_expires_at = ?, updated_at = ? WHERE key = ?")
+        .run(expires, now, claim.key);
+      return expires;
+    });
+  }
+
+  /** Complete only this editorial capture's durable result while its exact claim still has an active lease. */
+  completeEditorialCapture(claim: OperationClaim, result: ArtifactReference): unknown {
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (
+      !claim.key.startsWith("editorial-capture:") ||
+      !valid.success ||
+      !valid.data.path.endsWith(`/${claim.key.slice("editorial-capture:".length)}/manifest.json`)
+    )
+      throw new OperationStoreError("invalid-input");
+    const artifact = { capture: valid.data };
+    const outcome = this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return { accepted: true, artifact: existing };
+      }
+      if (!this.holds(row, claim)) return { accepted: false };
+      if ((row?.lease_expires_at ?? 0) <= now) {
+        // Commit rejection before returning an error: a crash cannot erase this quarantine.
+        this.db
+          .prepare(
+            "UPDATE operations SET status = 'failed', owner = NULL, lease_expires_at = NULL, error_code = 'editorial-quarantined', updated_at = ? WHERE key = ?",
+          )
+          .run(now, claim.key);
+        return { accepted: false };
+      }
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, claim.key);
+      return { accepted: true, artifact };
+    });
+    if (!outcome.accepted) throw new OperationStoreError("not-owner");
+    return outcome.artifact;
+  }
+
+  /** Reconcile only a fenced editorial call whose prior owner vanished, never a rejected capture. */
+  reconcileEditorialCapture(
+    captureId: string,
+    result: ArtifactReference,
+    dispatched?: OperationClaim,
+  ): unknown {
+    if (!/^editorial-attempt-[0-9a-f]{32}$/.test(captureId))
+      throw new OperationStoreError("invalid-input");
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (!valid.success || !valid.data.path.endsWith(`/${captureId}/manifest.json`))
+      throw new OperationStoreError("invalid-input");
+    const key = `editorial-capture:${captureId}`,
+      artifact = { capture: valid.data };
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return existing;
+      }
+      if (dispatched && (dispatched.key !== key || !this.holds(row, dispatched))) {
+        if (row?.status !== "completed") throw new OperationStoreError("not-owner");
+      }
+      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now && !dispatched)
+        throw new OperationStoreError("busy");
+      if (
+        !row ||
+        (row.status !== "claimed" &&
+          !(row.status === "failed" && row.error_code === "writer-capture-incomplete"))
+      )
+        throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, key);
+      return artifact;
+    });
+  }
+
+  /** Narrow read port: a Git candidate alone is not authoritative editorial acceptance. */
+  editorialCaptureAccepted(captureId: string, result: ArtifactReference): boolean {
+    if (!/^editorial-attempt-[0-9a-f]{32}$/.test(captureId)) return false;
+    const parsed = ArtifactReferenceSchema.safeParse(result);
+    if (!parsed.success) return false;
+    const row = this.row(`editorial-capture:${captureId}`);
+    return (
+      row?.status === "completed" &&
+      JSON.stringify(JSON.parse(row.artifact ?? "null")) ===
+        JSON.stringify({ capture: parsed.data })
     );
   }
 

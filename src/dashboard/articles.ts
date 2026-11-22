@@ -56,12 +56,18 @@ export interface RecentArticlesPort {
   }): Promise<ArticlePage>;
 }
 
-export type RunState =
+export type RunState = (
   | { state: "not-started" }
   | {
       state: "running";
       /** The run's own durable progress (#439); null before its first stage, absent if unreadable. */
-      progress?: { stage: string; status: "running" | "completed"; at: string } | null;
+      progress?: {
+        stage: string;
+        status: "running" | "completed";
+        at: string;
+        phase?: string;
+        round?: number;
+      } | null;
     }
   | {
       state: "finished";
@@ -70,7 +76,16 @@ export type RunState =
       recovery?: RunState;
     }
   | { state: "unavailable" }
-  | { state: "not-configured" };
+  | { state: "not-configured" }
+) & {
+  workflowKey?: string;
+  attempts?: Array<{
+    workflowKey: string;
+    requestId: string;
+    recordedAt: string;
+    inputHash?: string;
+  }>;
+};
 
 /** Content for one saved draft (markdown, untrusted) and its exact hash. */
 export interface DraftView {
@@ -196,6 +211,13 @@ export function editorialOutcomeOf(outcome: ArticleRunFinal["outcome"]): Editori
 export interface ArticleTrace {
   post: { publicationId: string; postId: string };
   correlationId: string;
+  workflowKey?: string;
+  attempts?: Array<{
+    workflowKey: string;
+    requestId: string;
+    recordedAt: string;
+    inputHash?: string;
+  }>;
   sourceVersion?: string;
   summary: RunSummary;
   /** What the workflow concluded editorially; `none` for failures and pending work. */
@@ -275,6 +297,9 @@ const STAGE_ALIASES: Record<string, StageName> = {
   draft: "drafting",
   drafting: "drafting",
   verify: "verification",
+  editorial: "verification",
+  assessment: "verification",
+  judgment: "verification",
   verification: "verification",
   approve: "delivery",
   "record-approval": "delivery",
@@ -365,7 +390,8 @@ export function summariseRun(
       }
       // A dashboard stage groups several workflow steps; it is done only when
       // its last step completes (coverage for research, draft for drafting).
-      const finishesGroup = p.status === "completed" && LAST_STEP[named] === p.stage;
+      const finishesGroup =
+        p.status === "completed" && (LAST_STEP[named] === p.stage || p.stage === "editorial");
       const at = idx(named) + (finishesGroup ? 1 : 0);
       const current = Math.min(at, STAGES.length - 1);
       const age = now - Date.parse(p.at);
@@ -373,7 +399,7 @@ export function summariseRun(
       const detail =
         Number.isNaN(age) || age > STALL_MS
           ? `stalled: no update since ${when} UTC`
-          : `${p.stage} ${p.status === "running" ? "in progress" : "done"} at ${when} UTC`;
+          : `${p.stage}${p.phase ? ` ${p.phase}` : ""}${p.round === undefined ? "" : ` pass ${p.round + 1}`} ${p.status === "running" ? "in progress" : "done"} at ${when} UTC`;
       return {
         summary: "pending",
         editorial: "none",
@@ -619,6 +645,8 @@ export async function traceArticle(input: {
 
   return {
     post,
+    ...(run.workflowKey ? { workflowKey: run.workflowKey } : {}),
+    ...(run.attempts ? { attempts: run.attempts } : {}),
     correlationId: postCorrelationId(post),
     ...(sourceVersion ? { sourceVersion } : {}),
     ...summary,

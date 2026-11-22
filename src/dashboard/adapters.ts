@@ -1,3 +1,4 @@
+import type { OperationStore } from "../controllers/operation-store.js";
 import { readPublicationPayload, sameArtifact } from "../drafting/publication-payload.js";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
@@ -344,8 +345,13 @@ export function contentReceipts(
 }
 
 /** ArticleRun status for an exact revision, read through Restate ingress. */
-export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPort {
-  const ingress = clients.connect({ url: ingressUrl });
+export function restateRuns(
+  ingressUrl: string,
+  timeoutMs = 5_000,
+  attempts?: Pick<OperationStore, "articleAttempts">,
+  connect: typeof clients.connect = clients.connect,
+): RunStatusPort {
+  const ingress = connect({ url: ingressUrl });
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
     try {
@@ -373,6 +379,22 @@ export function restateRuns(ingressUrl: string, timeoutMs = 5_000): RunStatusPor
   return {
     async status(post): Promise<RunState> {
       const normal = await read(articleRunKey(post));
+      const recorded =
+        attempts?.articleAttempts(post.publicationId, post.postId, post.sourceVersion, 10) ?? [];
+      if (recorded.length) {
+        const current = recorded[0]!;
+        const selected = await read(current.workflowKey);
+        const recovery =
+          selected.state === "finished" && isCreditBlocked(selected.result.reason)
+            ? await read(recoveryWorkflowKey(current.workflowKey))
+            : undefined;
+        return {
+          ...selected,
+          ...(recovery && recovery.state !== "not-started" ? { recovery } : {}),
+          workflowKey: current.workflowKey,
+          attempts: recorded,
+        };
+      }
       // A credit-stopped run may have an explicit recovery (#480): show the
       // original failure and the recovery state together, never one as the other.
       if (normal.state === "finished" && isCreditBlocked(normal.result.reason)) {

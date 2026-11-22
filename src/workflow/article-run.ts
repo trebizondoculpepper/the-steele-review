@@ -1,4 +1,8 @@
 import type { StageRef } from "../research/staged-research.js";
+import { editorialAttemptIdentity } from "./editorial-attempt-identity.js";
+import { runEditorialLoop } from "./editorial-loop.js";
+import type { EditorialStages, EditorialHistory, EditorialPolicy } from "./editorial-contract.js";
+import { EditorialPolicySchema } from "./editorial-contract.js";
 import {
   CREDIT_EXHAUSTED,
   isCreditExhausted,
@@ -69,6 +73,9 @@ export interface ArticleRunInput {
    * legacy single-step research call, whatever the deployment now enables.
    */
   researchExecution?: "staged";
+  /** Serialized version selects a new journal sequence; absent means legacy. */
+  editorial?: EditorialPolicy;
+  operatorRequestId?: string;
 }
 
 export interface ArticleRunResult {
@@ -89,6 +96,7 @@ export interface ArticleRunResult {
   approvalEvent?: string;
   /** When this run reached a terminal outcome, for operators (#479). */
   completedAt?: string;
+  editorial?: EditorialHistory;
 }
 
 /**
@@ -98,6 +106,11 @@ export interface ArticleRunResult {
  * repeats the step.
  */
 export interface ArticleStages {
+  editorial?: EditorialStages;
+  saveEditorialSummary?(
+    history: Omit<EditorialHistory, "summary">,
+    input: ArticleRunInput,
+  ): Promise<Ref>;
   themes(post: ArticleRunInput): Promise<Ref>;
   claims(post: ArticleRunInput, themes: Ref): Promise<Ref>;
   /** The librarian's stable list of research requests for this analysis. */
@@ -287,6 +300,11 @@ export const ArticleRunInputSchema = z
      */
     recoveryGeneration: z.number().int().min(0).max(100).optional(),
     researchExecution: z.literal("staged").optional(),
+    editorial: EditorialPolicySchema.optional(),
+    operatorRequestId: z
+      .string()
+      .regex(/^[A-Za-z0-9._-]{1,100}$/)
+      .optional(),
     source: z
       .object({
         namespace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}\/[a-z0-9][a-z0-9-]{0,99}$/),
@@ -324,6 +342,7 @@ export const PROGRESS_STAGES = [
   "draft",
   "verify",
   "record-approval",
+  "editorial",
 ] as const;
 export type ProgressStage = (typeof PROGRESS_STAGES)[number];
 export interface RunProgress {
@@ -332,6 +351,8 @@ export interface RunProgress {
   index: number;
   /** When this stage last changed state (workflow clock). */
   at: string;
+  phase?: "prepare" | "assess" | "judge" | "revise" | "approve";
+  round?: number;
 }
 const PROGRESS_KEY = "progress";
 
@@ -343,6 +364,8 @@ export function articleRunWorkflow(stages: ArticleStages) {
     ctx: restate.WorkflowContext,
     input: ArticleRunInput,
   ): Promise<ArticleRunResult> {
+    if (input.editorial && (!stages.editorial || !stages.saveEditorialSummary))
+      throw new restate.TerminalError("editorial-contract-unavailable");
     // Durable progress for operators (#439): the current stage and when it last
     // changed, in the workflow's own state. The stage index only moves forward,
     // so a duplicate or out-of-order update never regresses it.
@@ -469,6 +492,49 @@ export function articleRunWorkflow(stages: ArticleStages) {
         package: pkg.ref,
         ...draftDiagnostics,
         research,
+      };
+    }
+    if (input.editorial) {
+      await mark("editorial", "running");
+      const editorial = await runEditorialLoop({
+        stages: stages.editorial!,
+        policy: input.editorial,
+        draft: drafted.ref,
+        package: pkg.ref,
+        sourceUrl: input.sourceUrl,
+        ...editorialAttemptIdentity(input),
+        now: () => ctx.date.now(),
+        step: runStep,
+        progress: async (phase, round) => {
+          ctx.set<RunProgress>(PROGRESS_KEY, {
+            stage: "editorial",
+            status: "running",
+            index: PROGRESS_STAGES.indexOf("editorial"),
+            at: new Date(await ctx.date.now()).toISOString(),
+            phase,
+            round,
+          });
+        },
+        save: (history) => stages.saveEditorialSummary!(history, input),
+      });
+      await mark("editorial", "completed");
+      return {
+        outcome:
+          editorial.history.terminal === "approved"
+            ? "verified"
+            : editorial.history.terminal === "unresolved"
+              ? "rejected"
+              : "failed",
+        ...(editorial.reason ? { reason: editorial.reason } : {}),
+        themes,
+        claims,
+        coverage,
+        package: pkg.ref,
+        draft: editorial.draft,
+        ...draftDiagnostics,
+        research,
+        editorial: editorial.history,
+        ...(editorial.approvalEvent ? { approvalEvent: editorial.approvalEvent } : {}),
       };
     }
     // Verification may redraft (bounded); the final draft is the one it judged.

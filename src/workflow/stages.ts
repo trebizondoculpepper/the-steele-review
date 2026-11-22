@@ -12,6 +12,9 @@ import {
   type StagedResearchDeps,
   type StageRef,
 } from "../research/staged-research.js";
+import { editorialStages } from "./editorial-stages.js";
+import { writeOnce } from "../research/job.js";
+import { createHash } from "node:crypto";
 import { isCanonicalArticlePath } from "../drafting/article-identity.js";
 import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
 import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
@@ -81,6 +84,8 @@ export function articleStages(deps: {
     writer: ExtractionModelProvider;
     /** Independent verifier stage (#150); without it runs end drafted-unverified. */
     verifier?: ExtractionModelProvider;
+    assessor?: ExtractionModelProvider;
+    judge?: ExtractionModelProvider;
   };
   shortlister: ThemeShortlister;
   research: {
@@ -161,6 +166,21 @@ export function articleStages(deps: {
   };
 
   return {
+    editorial: editorialStages({
+      ...deps,
+      writer: deps.models.writer,
+      assessor: deps.models.assessor ?? deps.models.verifier,
+      judge: deps.models.judge ?? deps.models.verifier,
+    }),
+    async saveEditorialSummary(history, input) {
+      const value = { ...history, input };
+      const key = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+      return writeOnce(
+        deps.content,
+        `editorial-loops/${input.publicationId}/${input.postId}/${key}.json`,
+        value,
+      );
+    },
     async themes(post) {
       const { ref, record, sourceVersion, sourceContext } = await loadSource(post);
       if (sourceVersion !== post.sourceVersion)

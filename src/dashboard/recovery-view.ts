@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
+import type { EditorialPolicy } from "../workflow/editorial-contract.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { articleRunKey, type ArticleRunInput } from "../workflow/article-run.js";
+import {
+  articleRunKey,
+  ArticleRunInputSchema,
+  type ArticleRunInput,
+} from "../workflow/article-run.js";
 import { isCreditBlocked } from "./article-views.js";
 import type { RunState, RunStatusPort } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
@@ -20,6 +26,7 @@ export interface ArticleRecoveryDeps {
   archive: Pick<GitArtifactStore, "lookup" | "read">;
   researchDeadlineMs: number;
   researchRequestLimit: number;
+  editorialPolicy?: EditorialPolicy;
   submitter: ArticleSubmissionPort;
   runs: RunStatusPort;
   identities: RecoveryIdentities;
@@ -34,6 +41,16 @@ const postOf = (input: ArticleRunInput) => ({
   postId: input.postId,
   sourceVersion: input.sourceVersion,
 });
+
+function selectedRecovery(input: ArticleRunInput, run: RunState) {
+  if (!run.workflowKey) return { input, key: articleRunKey(input) };
+  const selected = run.attempts?.find((attempt) => attempt.workflowKey === run.workflowKey);
+  if (!selected?.inputHash) return undefined;
+  const original = ArticleRunInputSchema.parse({ ...input, operatorRequestId: selected.requestId });
+  if (createHash("sha256").update(JSON.stringify(original)).digest("hex") !== selected.inputHash)
+    return undefined;
+  return { input: original, key: selected.workflowKey };
+}
 
 export function articleRecovery(deps: ArticleRecoveryDeps) {
   const selectionFrom = (url: URL) => Object.fromEntries(url.searchParams);
@@ -55,6 +72,8 @@ export function articleRecovery(deps: ArticleRecoveryDeps) {
       if (!recoveryEligible(run)) {
         return "<p>This run is not stopped on a recoverable operational failure, so recovery is not available. Use the normal run action or inspect the trace.</p>";
       }
+      if (!selectedRecovery(input, run))
+        return "<p>The recorded attempt inputs differ from the current configuration or capture. Recovery cannot safely reconstruct that attempt.</p>";
       const fields = Object.entries(selectionFrom(url))
         .map(
           ([name, value]) =>
@@ -82,14 +101,19 @@ export function articleRecovery(deps: ArticleRecoveryDeps) {
         return { status: 409 };
       }
       if (!recoveryEligible(run)) return { status: 409 };
+      const selected = selectedRecovery(input, run);
+      if (!selected) return { status: 409 };
       let identity;
       try {
-        ({ identity } = await deps.identities.ensure(articleRunKey(input)));
+        ({ identity } = await deps.identities.ensure(selected.key));
       } catch {
         // A concurrent submission owns the identity: never start a second run.
         return { status: 409 };
       }
-      await deps.submitter.submit({ ...input, recoveryGeneration: 1 }, identity.workflowKey);
+      await deps.submitter.submit(
+        { ...selected.input, recoveryGeneration: 1 },
+        identity.workflowKey,
+      );
       return {
         status: 303,
         location: `/articles/trace?publication=${encodeURIComponent(input.publicationId)}&post=${encodeURIComponent(input.postId)}`,

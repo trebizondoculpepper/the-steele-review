@@ -28,7 +28,7 @@ export const archive = {
     }),
 } as unknown as GitArtifactStore;
 
-const WRITER = JSON.stringify({
+export const WRITER = JSON.stringify({
   title: "A treaty already bans weather weapons",
   subtitle: "What the post claims, and what the evidence shows",
   excerpt:

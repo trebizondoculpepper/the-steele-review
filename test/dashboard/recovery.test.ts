@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { articleRecovery } from "../../src/dashboard/recovery-view.js";
+import { recordArticleAttempt } from "../../src/workflow/article-attempt.js";
+import { prepareArticleInput } from "../../src/dashboard/trigger.js";
 import { restateSubmitter } from "../../src/dashboard/adapters.js";
 import { articleViews, renderTrace } from "../../src/dashboard/article-views.js";
 import { traceArticle } from "../../src/dashboard/articles.js";
@@ -79,6 +81,7 @@ function wiring(state: RunState) {
     workflowKey?: string;
     publicationId: string;
     recoveryGeneration?: number;
+    operatorRequestId?: string;
   }> = [];
   const recovery = articleRecovery({
     archive,
@@ -89,6 +92,7 @@ function wiring(state: RunState) {
         submitted.push({
           ...(workflowKey ? { workflowKey } : {}),
           publicationId: input.publicationId,
+          ...(input.operatorRequestId ? { operatorRequestId: input.operatorRequestId } : {}),
           ...(input.recoveryGeneration === undefined
             ? {}
             : { recoveryGeneration: input.recoveryGeneration }),
@@ -100,6 +104,44 @@ function wiring(state: RunState) {
   });
   return { recovery, submitted };
 }
+
+it("recovers the selected operator attempt separately from an already recovered base and rejects changed input", async () => {
+  const input = (await prepareArticleInput(
+    { archive, researchDeadlineMs: 60_000, researchRequestLimit: 3 },
+    { publication: "pub", post: "p1", revision: version },
+  ))!;
+  const attempt = recordArticleAttempt(operations, input, "later-operator");
+  const ids = recoveryIdentities(operations);
+  const base = await ids.ensure(`${post.publicationId}/${post.postId}@${version.slice(7, 39)}`);
+  const state = {
+    ...creditBlocked,
+    workflowKey: attempt.identity.workflowKey,
+    attempts: operations.articleAttempts("pub", "p1", version),
+  } as RunState;
+  const { recovery, submitted } = wiring(state);
+  expect(await recovery.submit(selection())).toMatchObject({ status: 303 });
+  expect(submitted[0]!.workflowKey).toBe(recoveryWorkflowKey(attempt.identity.workflowKey));
+  expect(submitted[0]!.workflowKey).not.toBe(base.identity.workflowKey);
+  expect(submitted[0]).toMatchObject({
+    operatorRequestId: "later-operator",
+    recoveryGeneration: 1,
+  });
+  expect(await recovery.submit(selection())).toMatchObject({ status: 303 });
+  expect(submitted[1]!.workflowKey).toBe(submitted[0]!.workflowKey);
+  const changed = articleRecovery({
+    archive,
+    researchDeadlineMs: 60_000,
+    researchRequestLimit: 1,
+    submitter: {
+      submit: async () => {
+        throw new Error("must not submit");
+      },
+    },
+    runs: { status: async () => state },
+    identities: ids,
+  });
+  expect(await changed.submit(selection())).toEqual({ status: 409 });
+});
 
 describe("recovery identities (#480)", () => {
   it("records one workflow identity per run and reuses it", async () => {

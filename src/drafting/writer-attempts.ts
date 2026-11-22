@@ -48,7 +48,8 @@ const Failure = z.enum([
 export const WriterAttemptManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
-    attemptId: z.string().regex(/^writer-attempt-[0-9a-f]{32}$/),
+    attemptId: z.string().regex(/^(writer|editorial)-attempt-[0-9a-f]{32}$/),
+    purpose: z.enum(["assessor", "judge"]).optional(),
     input: ArtifactReferenceSchema,
     package: ArtifactReferenceSchema,
     source: ArtifactReferenceSchema,
@@ -81,7 +82,11 @@ export const WriterAttemptManifestSchema = z
 export type WriterAttemptManifest = z.infer<typeof WriterAttemptManifestSchema>;
 
 export class WriterAttemptError extends Error {
-  constructor(readonly code: "archive-failed" | "busy" | "interrupted") {
+  constructor(
+    readonly code: "archive-failed" | "busy" | "interrupted",
+    readonly artifact?: ArtifactRef,
+    readonly reused?: boolean,
+  ) {
     super(`writer attempt ${code}`);
     this.name = "WriterAttemptError";
   }
@@ -117,6 +122,8 @@ export async function captureWriterAttempt(input: {
   content: GitArtifactStore;
   operations: OperationStore;
   provider: ExtractionModelProvider;
+  /** Assessor/judge share the established durable-call machinery, with separate truthful artifacts. */
+  purpose?: "assessor" | "judge";
   request: Pick<
     Parameters<ExtractionModelProvider["complete"]>[0],
     "system" | "user" | "maxOutputChars"
@@ -136,8 +143,11 @@ export async function captureWriterAttempt(input: {
   /** Must cover the configured request deadline plus durable capture. */
   leaseMs?: number;
 }): Promise<CapturedWriterAttempt> {
+  const prefix = input.purpose ? "editorial-attempt" : "writer-attempt";
+  const directory = input.purpose ? "editorial-attempts" : "writer-attempts";
   const descriptor = {
     schemaVersion: 1,
+    ...(input.purpose ? { purpose: input.purpose } : {}),
     package: ref(input.package),
     source: input.source,
     context: input.context,
@@ -151,14 +161,14 @@ export async function captureWriterAttempt(input: {
     // Exact prompts and source/context are private corpus input, never logs.
     request: input.request,
   };
-  const originalId = `writer-attempt-${hash(JSON.stringify(descriptor)).slice(0, 32)}`;
+  const originalId = `${prefix}-${hash(JSON.stringify(descriptor)).slice(0, 32)}`;
   let id = originalId;
   if (input.recoveryId) {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(input.recoveryId))
       throw new WriterAttemptError("interrupted");
-    const originalRaw = await input.content.lookup(`writer-attempts/${originalId}/response.txt`);
+    const originalRaw = await input.content.lookup(`${directory}/${originalId}/response.txt`);
     if (originalRaw) return captureWriterAttempt({ ...input, recoveryId: undefined });
-    const original = await input.content.lookup(`writer-attempts/${originalId}/manifest.json`);
+    const original = await input.content.lookup(`${directory}/${originalId}/manifest.json`);
     // A new correction has no previous rejection to recover. Its normal
     // stable capture identity still owns and deduplicates the first call.
     if (!original) return captureWriterAttempt({ ...input, recoveryId: undefined });
@@ -175,10 +185,10 @@ export async function captureWriterAttempt(input: {
     // A deliberate recovery token is stable across retries and is recorded in
     // its input. Uncertain network failures never qualify for this escape.
     Object.assign(descriptor, { recovery: { id: input.recoveryId, previous: ref(original) } });
-    id = `writer-attempt-${hash(JSON.stringify(descriptor)).slice(0, 32)}`;
+    id = `${prefix}-${hash(JSON.stringify(descriptor)).slice(0, 32)}`;
   }
-  const dir = `writer-attempts/${id}`;
-  const stateKey = `writer-capture:${id}`;
+  const dir = `${directory}/${id}`;
+  const stateKey = `${input.purpose ? "editorial-capture" : "writer-capture"}:${id}`;
   let claim: OperationClaim | undefined;
   const safeWrite = async (path: string, value: unknown) => {
     try {
@@ -191,6 +201,7 @@ export async function captureWriterAttempt(input: {
   const base = {
     schemaVersion: 1 as const,
     attemptId: id,
+    ...(input.purpose ? { purpose: input.purpose } : {}),
     input: ref(requestRef),
     package: ref(input.package),
     source: input.source,
@@ -203,6 +214,7 @@ export async function captureWriterAttempt(input: {
     requestedModel: input.requestedModel ?? input.provider.modelVersion,
   };
   let metadata: ModelCompletionMetadata = { stopReason: "unknown" };
+  let replayDispatch: ArtifactRef | undefined;
   const rawRef = await input.content.lookup(`${dir}/response.txt`);
   if (rawRef) {
     const saved = await input.content.lookup(`${dir}/manifest.json`);
@@ -211,6 +223,8 @@ export async function captureWriterAttempt(input: {
       const data = JSON.parse(await input.content.read(header));
       if (data.outputHash !== rawRef.sha256) throw new WriterAttemptError("archive-failed");
       metadata = Completion.parse(data.completion);
+      if (input.purpose && data.dispatch)
+        replayDispatch = fromRef(ArtifactReferenceSchema.parse(data.dispatch));
     }
     const manifest = saved
       ? WriterAttemptManifestSchema.parse(JSON.parse(await input.content.read(saved)))
@@ -224,11 +238,51 @@ export async function captureWriterAttempt(input: {
     if (["no-response", "interrupted"].includes(manifest.outcome))
       return { manifest, ref: manifestRef, reused: true };
     try {
-      input.operations.reconcileCompleted(stateKey, { raw: rawRef, manifest: manifestRef }, []);
+      if (input.purpose) {
+        if (!replayDispatch) throw new WriterAttemptError("interrupted", rawRef, true);
+        const dispatch = z
+          .object({
+            attemptId: z.string(),
+            claim: z
+              .object({ key: z.string(), owner: z.string(), attempt: z.number().int().positive() })
+              .strict(),
+          })
+          .strict()
+          .parse(JSON.parse(await input.content.read(replayDispatch)));
+        if (dispatch.attemptId !== id || dispatch.claim.key !== stateKey)
+          throw new WriterAttemptError("interrupted", rawRef, true);
+        let fence = await input.content.lookup(`${dir}/fence.json`);
+        if (!fence) {
+          const expires = input.operations.renewEditorialCapture(
+            dispatch.claim,
+            input.leaseMs ?? 10 * 60_000,
+          );
+          fence = await safeWrite(`${dir}/fence.json`, {
+            attemptId: id,
+            raw: ref(rawRef),
+            expires,
+          });
+        }
+        const proof = JSON.parse(await input.content.read(fence));
+        if (proof.attemptId !== id || proof.raw.hash !== `sha256:${rawRef.sha256}`)
+          throw new WriterAttemptError("interrupted", rawRef, true);
+        input.operations.reconcileEditorialCapture(id, ref(manifestRef), dispatch.claim);
+      } else
+        input.operations.reconcileCompleted(stateKey, { raw: rawRef, manifest: manifestRef }, []);
     } catch (error) {
-      throw new WriterAttemptError(
-        error instanceof OperationStoreError && error.code === "busy" ? "busy" : "interrupted",
-      );
+      throw error instanceof WriterAttemptError
+        ? error
+        : new WriterAttemptError(
+            error instanceof OperationStoreError
+              ? error.code === "busy"
+                ? "busy"
+                : error.code === "not-owner"
+                  ? "interrupted"
+                  : "archive-failed"
+              : "archive-failed",
+            manifestRef,
+            true,
+          );
     }
     return { manifest, ref: manifestRef, text: await input.content.read(rawRef), reused: true };
   }
@@ -261,13 +315,20 @@ export async function captureWriterAttempt(input: {
   }
   claim = held.claim;
   let captured: ArtifactRef | undefined;
+  let retainedArtifact: ArtifactRef | undefined;
+  let dispatchRef: ArtifactRef | undefined;
+  let dispatched = false;
   let text: string | undefined;
   const capture = async (returned: string, info: ModelCompletionMetadata) => {
     const parsed = Completion.safeParse(info);
     metadata = parsed.success ? parsed.data : { stopReason: "unknown" };
     // Transport metadata is committed before the raw blob, so a restart can
     // never lose a known length-limit signal between those two commits.
-    await safeWrite(`${dir}/completion.json`, { completion: metadata, outputHash: hash(returned) });
+    await safeWrite(`${dir}/completion.json`, {
+      completion: metadata,
+      outputHash: hash(returned),
+      ...(dispatchRef ? { dispatch: ref(dispatchRef) } : {}),
+    });
     // This Git commit MUST finish before the caller can parse or validate.
     try {
       captured = await input.content.write(`${dir}/response.txt`, returned, hash(returned));
@@ -277,8 +338,14 @@ export async function captureWriterAttempt(input: {
     text = returned;
   };
   try {
+    if (input.purpose)
+      dispatchRef = await safeWrite(`${dir}/dispatch-${claim.attempt}.json`, {
+        attemptId: id,
+        claim,
+      });
     let failure: z.infer<typeof Failure> | undefined;
     try {
+      dispatched = true;
       const returned = await input.provider.complete(
         {
           ...input.request,
@@ -299,6 +366,23 @@ export async function captureWriterAttempt(input: {
           ? error.code
           : "unavailable";
     }
+    if (input.purpose && captured) {
+      try {
+        const expires = input.operations.renewEditorialCapture(claim, leaseMs);
+        await safeWrite(`${dir}/fence.json`, { attemptId: id, raw: ref(captured), expires });
+      } catch (error) {
+        if (!(error instanceof OperationStoreError && error.code === "not-owner"))
+          throw error instanceof WriterAttemptError
+            ? error
+            : new WriterAttemptError("archive-failed", captured);
+        const late = await safeWrite(`${dir}/late-response.json`, {
+          attemptId: id,
+          raw: ref(captured),
+          lateResponse: true,
+        });
+        throw new WriterAttemptError("interrupted", late, false);
+      }
+    }
     const manifest = WriterAttemptManifestSchema.parse({
       ...base,
       completion: metadata,
@@ -307,6 +391,7 @@ export async function captureWriterAttempt(input: {
         : { outcome: "no-response", failure: failure ?? "unavailable" }),
     });
     const manifestRef = await safeWrite(`${dir}/manifest.json`, manifest);
+    retainedArtifact = manifestRef;
     const retained = WriterAttemptManifestSchema.parse(
       JSON.parse(await input.content.read(manifestRef)),
     );
@@ -314,11 +399,14 @@ export async function captureWriterAttempt(input: {
       await safeWrite(`${dir}/late-response.json`, { ...manifest, lateResponse: true });
       throw new WriterAttemptError("interrupted");
     }
-    input.operations.complete(
-      claim,
-      { manifest: manifestRef, ...(captured ? { raw: captured } : {}) },
-      [],
-    );
+    if (input.purpose && captured)
+      input.operations.completeEditorialCapture(claim, ref(manifestRef));
+    else
+      input.operations.complete(
+        claim,
+        { manifest: manifestRef, ...(captured ? { raw: captured } : {}) },
+        [],
+      );
     claim = undefined;
     return {
       manifest: retained,
@@ -327,14 +415,23 @@ export async function captureWriterAttempt(input: {
       reused: false,
     };
   } catch (error) {
+    const storage =
+      input.purpose &&
+      !(error instanceof WriterAttemptError && error.code === "interrupted") &&
+      !(error instanceof OperationStoreError && error.code === "not-owner");
     if (claim) {
       try {
-        input.operations.fail(claim, "writer-capture-incomplete", false);
+        if (input.purpose && !dispatched && storage) input.operations.yieldClaim(claim);
+        else if (!storage || !captured)
+          input.operations.fail(claim, "writer-capture-incomplete", false);
+        // A retained editorial response keeps its claim for fenced replay after transient storage failure.
       } catch {
         /* expired owner cannot alter state */
       }
     }
-    throw error instanceof WriterAttemptError ? error : new WriterAttemptError("interrupted");
+    throw error instanceof WriterAttemptError
+      ? error
+      : new WriterAttemptError(storage ? "archive-failed" : "interrupted", retainedArtifact);
   }
 }
 

@@ -1,4 +1,5 @@
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
+import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "../workflow/editorial-contract.js";
 import { z } from "zod";
 import { CollectionRecordSchema, collectionArtifactPath } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
@@ -28,6 +29,7 @@ export async function prepareArticleInput(
     archive: Pick<GitArtifactStore, "lookup" | "read">;
     researchDeadlineMs: number;
     researchRequestLimit: number;
+    editorialPolicy?: EditorialPolicy;
   },
   selection: unknown,
 ): Promise<ArticleRunInput | undefined> {
@@ -49,6 +51,7 @@ export async function prepareArticleInput(
     return ArticleRunInputSchema.parse({
       ...target,
       sourceVersion: revision,
+      editorial: deps.editorialPolicy ?? DEFAULT_EDITORIAL_POLICY,
       sourceUrl: record.item.url,
       researchDeadlineMs: deps.researchDeadlineMs,
       researchRequestLimit: deps.researchRequestLimit,
@@ -64,6 +67,7 @@ export function articleTrigger(deps: {
   submitter: ArticleSubmissionPort;
   researchDeadlineMs: number;
   researchRequestLimit: number;
+  editorialPolicy?: EditorialPolicy;
 }) {
   const prepare = (selection: unknown) => prepareArticleInput(deps, selection);
   const view: DashboardView = {

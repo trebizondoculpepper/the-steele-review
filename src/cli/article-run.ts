@@ -1,8 +1,11 @@
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
+import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
+import { recordArticleAttempt } from "../workflow/article-attempt.js";
+import { OperationStore } from "../controllers/operation-store.js";
 /**
  * Start one unattended article run for a captured post (#243).
  *
- *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--wait] [--json]
+ *   article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]
  *
  * Reads the captured post to find its exact source version, then submits the
  * `ArticleRun` workflow keyed by publication, post and source version. A
@@ -23,15 +26,17 @@ import { GitArtifactStore } from "../controllers/artifact-store.js";
 import {
   articleRunKey,
   ResearchRequestLimitSchema,
+  ArticleRunInputSchema,
   type ArticleRunApi,
 } from "../workflow/article-run.js";
 
 const USAGE =
-  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--wait] [--json]";
+  "Usage: article-run --publication-id <id> --post-id <slug> [--deadline-ms <n>] [--research-request-limit <n>] [--request-id <id>] [--editorial-revisions <n>] [--editorial-deadline-ms <n>] [--wait] [--json]";
 const Env = z.object({
   STEELE_ARCHIVE_PATH: z.string().min(1),
   STEELE_ARCHIVE_REPOSITORY: z.string().min(1),
   RESTATE_INGRESS_URL: z.url(),
+  STEELE_STATE_PATH: z.string().min(1).optional(),
 });
 const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/);
 
@@ -44,6 +49,9 @@ async function main(): Promise<number> {
         "post-id": { type: "string" },
         "deadline-ms": { type: "string" },
         "research-request-limit": { type: "string" },
+        "request-id": { type: "string" },
+        "editorial-revisions": { type: "string" },
+        "editorial-deadline-ms": { type: "string" },
         wait: { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean" },
@@ -94,15 +102,47 @@ async function main(): Promise<number> {
     return 1;
   }
   const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
-  const input = {
+  const policy = {
+    ...editorialPolicyFromEnv(process.env),
+    ...(values["editorial-revisions"] !== undefined
+      ? { maxRevisions: Number(values["editorial-revisions"]) }
+      : {}),
+    ...(values["editorial-deadline-ms"] !== undefined
+      ? { deadlineMs: Number(values["editorial-deadline-ms"]) }
+      : {}),
+  };
+  let input = {
     ...post,
+    editorial: policy,
+    source: { namespace: `substack/${post.publicationId}`, itemId: post.postId, artifact: ref },
     sourceVersion: sourceVersionFor(record.text),
     sourceUrl: record.item.url,
     researchDeadlineMs: deadline.data,
     ...researchExecutionFromEnv(),
     ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
   };
-  const key = articleRunKey(input);
+  if (!ArticleRunInputSchema.safeParse(input).success) {
+    console.error(USAGE);
+    return 2;
+  }
+  let key = articleRunKey(input);
+  if (values["request-id"]) {
+    if (!env.data.STEELE_STATE_PATH) {
+      console.error("article-run: missing configuration: STEELE_STATE_PATH");
+      return 2;
+    }
+    const operations = new OperationStore({ path: env.data.STEELE_STATE_PATH });
+    try {
+      const recorded = recordArticleAttempt(operations, input, values["request-id"]);
+      key = recorded.identity.workflowKey;
+      input = recorded.input as typeof input;
+    } catch {
+      console.error("article-run: request identity conflict or invalid input");
+      return 2;
+    } finally {
+      operations.close();
+    }
+  }
   const ingress = clients.connect({ url: env.data.RESTATE_INGRESS_URL });
   const wf = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
   let submitted: "started" | "already-running";
