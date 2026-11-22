@@ -870,4 +870,42 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
     expect(jobs).toHaveLength(2);
     expect(jobs[1]).toBe(jobs[0]);
   });
+
+  it("keeps the same request after a crash between the dossier save and the coverage record", async () => {
+    const r = researcher(supportTreatyOnly);
+    const a = await analysis("p1", claims, "Weather warfare");
+    let crash = true;
+    const crashing = new Proxy(artifacts, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== "write" || typeof v !== "function") return v;
+        return (path: string, ...rest: unknown[]) => {
+          if (crash && path.startsWith("librarian/coverage/")) {
+            crash = false;
+            throw new Error("crash before coverage");
+          }
+          return (v as (...x: unknown[]) => unknown).apply(target, [path, ...rest]);
+        };
+      },
+    });
+    await expect(
+      assessPostCoverage({
+        artifacts: crashing as never,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      }),
+    ).rejects.toThrow("crash before coverage");
+    // The dossier was revised, but the retry follows the retained plan.
+    const retry = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const ids = r.requests.map((q) => researchJobId(q));
+    expect(new Set(ids).size).toBe(1);
+    expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
+    expect(retry.record.jobs.map((j) => j.jobId)).toEqual([ids[0]]);
+  });
 });
