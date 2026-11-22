@@ -158,3 +158,81 @@ describe("review search (#622)", () => {
     ).toContain("not valid");
   });
 });
+
+describe("review search paging and filter fidelity (#622 review)", () => {
+  const verifier = (n: number) => ({
+    kind: "review" as const,
+    path: `verifications/pub/p1/r${String(n).padStart(3, "0")}.json`,
+    outcome: "approved" as const,
+    draft: { commit: "c".repeat(40), path: "articles/pub/p1/x.md", hash: "h" },
+    scope: "publication" as const,
+    issues: [],
+    checks: [],
+  });
+
+  it("reaches every verifier report across the reader's pages and reports partial reads", async () => {
+    const all = Array.from({ length: 21 }, (_, i) => verifier(i));
+    const p = ports([[]]);
+    p.reviews = {
+      async forPost(_post, page = 0) {
+        const slice = all.slice(page * 20, page * 20 + 20);
+        return {
+          state: page === 0 ? "partial" : "ok",
+          reviews: slice,
+          editorial: [],
+          ...(page === 0 ? { next: 1 } : {}),
+          truncated: false,
+        };
+      },
+    };
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let notes = "";
+    for (let i = 0; i < 20; i++) {
+      const page = await queryCollection(reviewsCollection(p, content), {
+        filters: { kind: "verifier-report", post: "pub/p1" },
+        limit: 8,
+        ...(cursor ? { cursor } : {}),
+      });
+      notes += page.limitations.join(" ");
+      seen.push(...page.rows.map((r) => r.id));
+      cursor = page.next;
+      if (!cursor) break;
+    }
+    expect(seen).toHaveLength(21);
+    expect(new Set(seen).size).toBe(21);
+    expect(notes).toMatch(/Not every saved report/);
+  });
+
+  it("matches judgment filters against the displayed outcome", async () => {
+    const p = ports(
+      [[]],
+      [
+        judgment(1, { decision: "none", state: "gated" }),
+        judgment(2, { decision: "none", state: "decided" }),
+      ],
+    );
+    const none = await queryCollection(reviewsCollection(p, content), {
+      filters: { kind: "judgment", outcome: "none" },
+    });
+    expect(none.rows.map((r) => r.postId)).toEqual(["p2"]);
+    const gated = await queryCollection(reviewsCollection(p, content), {
+      filters: { kind: "judgment", outcome: "gated" },
+    });
+    expect(gated.rows.map((r) => r.postId)).toEqual(["p1"]);
+  });
+
+  it("never repeats a record when one is saved before the next page", async () => {
+    const pages = [[assessment(1), assessment(2), assessment(3)]];
+    const p = ports(pages);
+    const first = await queryCollection(reviewsCollection(p, content), { limit: 2 });
+    expect(first.rows.map((r) => r.postId)).toEqual(["p1", "p2"]);
+    // A new record sorting before the shown ones arrives between requests.
+    pages[0]!.unshift(assessment(0));
+    const second = await queryCollection(reviewsCollection(p, content), {
+      limit: 2,
+      cursor: first.next!,
+    });
+    expect(second.rows.map((r) => r.postId)).toEqual(["p3"]);
+  });
+});

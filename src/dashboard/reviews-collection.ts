@@ -56,7 +56,10 @@ const Cursor = z
   .object({
     k: z.enum(["assessment", "judgment", "verifier-report"]),
     after: z.string().optional(),
-    skip: z.number().int().min(0),
+    /** Verifier reports: the reader's page within its current window. */
+    page: z.number().int().min(0).optional(),
+    /** The last record already shown from this reader page. */
+    last: z.string().max(1000).optional(),
   })
   .strict();
 type CursorValue = z.infer<typeof Cursor>;
@@ -104,12 +107,15 @@ export function reviewsCollection(
         cursor = undefined;
       }
       const after = cursor?.after;
-      const skip = cursor?.skip ?? 0;
+      const readerPage = cursor?.page ?? 0;
+      const last = cursor?.last;
       const text = query.text?.toLowerCase();
 
       type Candidate = Omit<ReviewBrowseRow, "artifact" | "summary" | "id"> & { path: string };
       let candidates: Candidate[];
       let readerNext: string | undefined;
+      /** Verifier reports only: the next page within the reader's window. */
+      let nextReaderPage: number | undefined;
 
       if (kind === "verifier-report") {
         const m = f.post ? POST.exec(f.post) : null;
@@ -122,11 +128,14 @@ export function reviewsCollection(
           };
         const history = await ports.reviews.forPost(
           { publicationId: m[1]!, postId: m[2]! },
-          0,
+          readerPage,
           after,
         );
         if (history.state === "unavailable") throw new Error("verifier reports unavailable");
-        if (history.truncated) limitations.push("Not every saved report could be examined.");
+        if (history.truncated || history.state === "partial")
+          limitations.push("Not every saved report could be examined.");
+        // Exhaust the pages within this window before moving to the next one.
+        nextReaderPage = history.next;
         readerNext = history.nextWindow;
         candidates = history.reviews.map((r) => ({
           path: r.path,
@@ -161,13 +170,10 @@ export function reviewsCollection(
           ...(r.findings !== undefined ? { count: r.findings } : {}),
         }));
       } else {
-        const decision =
-          f.outcome && ["approve", "revise", "none"].includes(f.outcome) ? f.outcome : undefined;
-        const state = f.outcome && !decision ? f.outcome : undefined;
+        // The outcome filter applies to the displayed outcome (below), so a
+        // gated record never matches a decision it did not make.
         const listing = await ports.judgments.list({
           ...(f.post ? { post: f.post } : {}),
-          ...(decision ? { decision: decision as never } : {}),
-          ...(state ? { state: state as never } : {}),
           ...(after ? { after } : {}),
         });
         if (listing.state === "unavailable") throw new Error("judgments unavailable");
@@ -189,12 +195,29 @@ export function reviewsCollection(
         }));
       }
 
+      // Resume after the last record shown, by identity, so records saved in
+      // between can never make a page repeat an earlier one.
+      let start = 0;
+      if (last !== undefined) {
+        const at = candidates.findIndex((c) => c.path === last);
+        if (at >= 0) start = at + 1;
+        else if (kind !== "verifier-report") {
+          // Listings are in path order: continue after where it would have been.
+          start = candidates.findIndex((c) => c.path > last);
+          if (start < 0) start = candidates.length;
+        } else
+          limitations.push(
+            "The last shown report is no longer listed; continuing from the start of this page.",
+          );
+      }
       const rows: ReviewBrowseRow[] = [];
-      let consumed = skip;
-      for (const c of candidates.slice(skip)) {
+      let lastShown: string | undefined;
+      let consumed = start;
+      for (const c of candidates.slice(start)) {
         if (rows.length >= query.limit) break;
         consumed++;
-        if (kind === "verifier-report" && f.outcome && c.outcome !== f.outcome) continue;
+        lastShown = c.path;
+        if (kind !== "assessment" && f.outcome && c.outcome !== f.outcome) continue;
         if (
           text &&
           !`${c.publicationId}/${c.postId}\n${c.outcome}\n${c.model ?? ""}`
@@ -217,10 +240,17 @@ export function reviewsCollection(
       }
       const more = consumed < candidates.length;
       const next = more
-        ? encode({ k: kind, ...(after ? { after } : {}), skip: consumed })
-        : readerNext
-          ? encode({ k: kind, after: readerNext, skip: 0 })
-          : undefined;
+        ? encode({
+            k: kind,
+            ...(after ? { after } : {}),
+            ...(readerPage ? { page: readerPage } : {}),
+            ...(lastShown ? { last: lastShown } : {}),
+          })
+        : nextReaderPage !== undefined
+          ? encode({ k: kind, ...(after ? { after } : {}), page: nextReaderPage })
+          : readerNext
+            ? encode({ k: kind, after: readerNext })
+            : undefined;
       return { rows, ...(next ? { next } : {}), limitations: [...new Set(limitations)] };
     },
   };
