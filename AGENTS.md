@@ -40,6 +40,7 @@ Keep home lab infrastructure documentation and private connection information in
 
 Prohibited material includes credentials, tokens, private keys, actual hostnames and addresses, SSH connection details, private service URLs, deployment inventories, and host-specific administration instructions. Do not reproduce these details in project tickets or other public collaboration surfaces.
 
+
 Public application architecture may describe generic dependencies, interfaces, configuration variable names, and deployment requirements using placeholders. It must not document the actual home lab topology or connection details. Supply private runtime configuration from outside this repository.
 
 If private information is discovered in this project, stop propagating it, report the issue without repeating the sensitive values, and remove it from the working files. If it has entered Git history or a public service, report that separately so remediation can be coordinated.

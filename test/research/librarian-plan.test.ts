@@ -391,6 +391,7 @@ describe("librarian assessment and plan (#595)", () => {
       } as Parameters<typeof planLibrarianAssessment>[0]);
     expect(run({ source: "content@aaaa:sources/x.json" })).toThrow();
     expect(run({ configuration: { ...pin("config/librarian.json"), sha256: "nothex" } })).toThrow();
+    expect(run({ source: { ...pin("sources/x.json"), commit: "a".repeat(41) } })).toThrow();
     expect(run({ themeResult: "content@aaaa:themes/pub/p1/v1.json" })).toThrow();
     expect(run({ sourceContext: undefined })).toThrow();
   });

@@ -26,7 +26,8 @@ const Id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/);
 export const PlanRefSchema = z
   .object({
     repository: z.string().min(1).max(200),
-    commit: z.string().regex(/^[0-9a-f]{40,64}$/),
+    // Exactly a SHA-1 or SHA-256 object id, as the artifact store accepts.
+    commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
     path: z.string().min(1).max(600),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
   })
