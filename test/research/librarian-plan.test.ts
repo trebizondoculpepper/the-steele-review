@@ -164,6 +164,35 @@ describe("librarian assessment and plan (#595)", () => {
     expect(plan.mappings[0]!.rationale).toContain("reused saved catalogue decision");
   });
 
+  it("changes the path when a claim moves between themes", () => {
+    const claimA = "sha256:" + "b".repeat(64);
+    const claimB = "sha256:" + "c".repeat(64);
+    const make = (claims: Array<{ claimRecordId: string; canonicalThemeId: string }>) =>
+      planLibrarianAssessment({
+        ...base,
+        proposals: [
+          { id: "t1", title: "Weather modification programmes" },
+          { id: "t2", title: "Aerial spraying" },
+        ],
+        claims,
+        mappings: new Map([
+          ["t1", mapping("geoengineering")],
+          ["t2", mapping("aerial-spraying")],
+        ]),
+        themes: new Set(["geoengineering", "aerial-spraying"]),
+        dossiers: new Map(),
+      });
+    const before = make([
+      { claimRecordId: claimA, canonicalThemeId: "geoengineering" },
+      { claimRecordId: claimB, canonicalThemeId: "aerial-spraying" },
+    ]);
+    const after = make([
+      { claimRecordId: claimA, canonicalThemeId: "aerial-spraying" },
+      { claimRecordId: claimB, canonicalThemeId: "geoengineering" },
+    ]);
+    expect(librarianPlanPath(base, before)).not.toBe(librarianPlanPath(base, after));
+  });
+
   it("saves write-once so an earlier plan stays readable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-plan-"));
     await mkdir(join(dir, "c"));

@@ -231,7 +231,11 @@ export function librarianPlanPath(
     plan.inputs.author ? [plan.inputs.author.name, plan.inputs.author.basis] : null,
     plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps]),
     plan.mappings.map((m) => [m.proposalId, m.canonicalThemeId, m.source]).sort(),
-    plan.claims.map((c) => [c.claimRecordId, c.coverage, c.action]).sort(),
+    // The theme a claim belongs to is material even when its coverage and
+    // action are unchanged by the reassignment.
+    plan.claims
+      .map((c) => [c.claimRecordId, c.canonicalThemeId, c.coverage, c.action])
+      .sort(),
   ]);
   const key = createHash("sha256").update(identity).digest("hex").slice(0, 32);
   return `librarian/plans/${post.publicationId}/${post.postId}/${key}.json`;
