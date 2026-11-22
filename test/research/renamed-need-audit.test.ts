@@ -1,3 +1,5 @@
+import { sourceContextFor, saveSourceContext } from "../../src/content/source-context.js";
+import { saveWriterPackage } from "../../src/drafting/writer-package.js";
 import { createHash } from "node:crypto";
 import { newDossierId } from "../../src/research/librarian.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
@@ -31,13 +33,20 @@ async function analysis(
   artifacts: GitArtifactStore,
   postId: string,
   needRecordId: string,
-  options: { qualifier?: string; reverse?: boolean; title?: string; description?: string } = {},
+  options: {
+    qualifier?: string;
+    reverse?: boolean;
+    title?: string;
+    description?: string;
+    duplicateMixed?: boolean;
+  } = {},
 ) {
   const sourceText = options.qualifier
     ? text.replace(statements[1]!, `${options.qualifier} ${statements[1]}`)
     : text;
+  const actualText = options.duplicateMixed ? `${sourceText} ${statements[1]}` : sourceText;
   const post = { publicationId: "pub", postId };
-  const raw = await artifacts.write(`synthetic-sources/${postId}.md`, sourceText);
+  const raw = await artifacts.write(`synthetic-sources/${postId}.md`, actualText);
   const artifact = {
     repository: raw.repository,
     commit: raw.commit,
@@ -45,15 +54,46 @@ async function analysis(
     hash: `sha256:${raw.sha256}`,
   };
   const source = {
-    text: sourceText,
-    sourceVersion: sourceVersionFor(sourceText),
+    text: actualText,
+    sourceVersion: sourceVersionFor(actualText),
     artifact,
     publicationId: "pub",
     postId,
     url: `https://source.example/${postId}`,
     author: `Synthetic author ${postId}`,
   };
-  await proposeThemes({
+  const contextRef = await saveSourceContext(
+    artifacts,
+    sourceContextFor(
+      {
+        item: {
+          publicationId: "pub",
+          postId,
+          url: source.url,
+          title: `Synthetic ${postId}`,
+          author: source.author,
+        },
+        ingestionReason: "live",
+        supplied: { articleHtml: `<p>${actualText}</p>` },
+        text: actualText,
+        complete: true,
+        provenance: {
+          sourceUrl: source.url,
+          acquiredAt: meta.extractedAt,
+          method: "article-html",
+          originalMedium: "written",
+        },
+      },
+      raw,
+    ),
+  );
+  const sourceContext = {
+    repository: contextRef.repository,
+    commit: contextRef.commit,
+    path: contextRef.path,
+    hash: `sha256:${contextRef.sha256}`,
+  };
+  const proposed = await proposeThemes({
     provider: {
       modelVersion: "synthetic/model",
       complete: async () =>
@@ -69,13 +109,14 @@ async function analysis(
     artifacts,
     post,
     source,
+    sourceContext: contextRef,
   });
-  const paths = await artifacts.list(`theme-proposals/pub/${postId}`, 10);
-  const themeResult = (await artifacts.lookup(paths[0]!))!;
+  if (proposed.status !== "proposed") throw new Error(`synthetic-theme-fixture-${proposed.reason}`);
+  const themeResult = proposed.ref;
   const proposal = JSON.parse(await artifacts.read(themeResult)).proposals[0].id as string;
   const claims = statements.map((statement, i) => {
     const passage = options.qualifier && i === 1 ? `${options.qualifier} ${statement}` : statement;
-    const start = sourceText.indexOf(passage);
+    const start = actualText.indexOf(passage);
     const claim = createClaim(
       {
         statement,
@@ -106,11 +147,44 @@ async function analysis(
       claimRecordId: i === 0 ? treatyId : needRecordId,
     };
   });
+  if (options.duplicateMixed) {
+    const statement = statements[1]!;
+    const start = actualText.lastIndexOf(statement);
+    const claim = createClaim(
+      {
+        statement,
+        claimType: "factual",
+        sourceVersion: source.sourceVersion,
+        span: { start, end: start + statement.length },
+        passage: statement,
+        entities: ["ENMOD Convention"],
+        dates: [{ text: "10 December 1976", value: "1976-12-10" }],
+        extraction: meta,
+      },
+      source,
+    );
+    const occurrence = createClaimOccurrence({
+      claim,
+      source,
+      speaker: { kind: "author-voice" },
+      assertionKind: "assertion",
+      themes: [proposal],
+    });
+    claims.push({
+      claim,
+      occurrence,
+      kind: "assertion",
+      themeIds: [proposal],
+      classification: "themed",
+      claimRecordId: needRecordId,
+    });
+  }
   const record = ClaimExtractionRecordSchema.parse({
     schemaVersion: 4,
     post,
     sourceVersion: source.sourceVersion,
     themeIds: [proposal],
+    sourceContext,
     themeResult: `${themeResult.commit}:${themeResult.path}`,
     claims: options.reverse ? [...claims].reverse() : claims,
     candidates: [],
@@ -293,6 +367,25 @@ it(
         `claim-${"2".repeat(32)}`,
       );
       expect(discoveries).toBe(2);
+      expect(reused.record.jobs).toHaveLength(2);
+      const packaged = await saveWriterPackage({ content: artifacts, coverage: reused.ref });
+      const currentEvidence = packaged.package.claims.find(
+        (c) => c.claimRecordId === currentId,
+      )!.evidence;
+      const originalJob = completed.record.jobs.find(
+        (j) =>
+          j.jobId === reused.record.claims.find((c) => c.claimRecordId === currentId)!.jobIds[0],
+      )!;
+      const originalManifest = JSON.parse(
+        await artifacts.read({
+          repository: originalJob.manifest!.repository,
+          commit: originalJob.manifest!.commit,
+          path: originalJob.manifest!.path,
+          sha256: originalJob.manifest!.hash.slice(7),
+        }),
+      );
+      expect(currentEvidence[0]!.passage).toBe(statements[1]);
+      expect(currentEvidence[0]!.archived).toEqual(originalManifest.citations[0].archivedArtifact);
       const changed = await analysis(artifacts, "changed-scope", currentId, {
         qualifier: "allegedly",
       });
@@ -513,6 +606,165 @@ it(
       expect(pending.requests).toHaveLength(1);
       expect(pending.requests[0]!.claims.every((c) => c.themeIds[0] === "enmod-topic")).toBe(true);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
+  "keeps titles primary in fallback and retains short UN and 5G identifiers",
+  { timeout: 30000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-title-fallback-"));
+    try {
+      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      await artifacts.initialise();
+      const { ThemeStore } = await import("../../src/research/theme-store.js");
+      const scope = "Public accountability policy and facial recognition systems";
+      const store = new ThemeStore(artifacts);
+      await store.ensure({
+        id: "un-topic",
+        title: "UN surveillance",
+        description: scope,
+        createdAt: meta.extractedAt,
+      });
+      await store.ensure({
+        id: "5g-topic",
+        title: "5G",
+        description: scope,
+        createdAt: meta.extractedAt,
+      });
+      await store.ensure({
+        id: "distractor",
+        title: "Separate archive",
+        description: scope,
+        createdAt: meta.extractedAt,
+      });
+      const shortlister = {
+        shortlist: async () => ({
+          method: "lexical" as const,
+          candidates: [{ themeId: "distractor", title: "Separate archive", scope, score: 1 }],
+        }),
+      };
+      for (const [title, id] of [
+        ["UN", "un-topic"],
+        ["5G policy", "5g-topic"],
+      ]) {
+        const item = await analysis(artifacts, id!, `claim-${"8".repeat(32)}`, {
+          title,
+          description: scope,
+        });
+        const pending = librarianFixtures(artifacts).researcher(() => "busy");
+        const result = await assessPostCoverage({
+          artifacts,
+          ...item,
+          shortlister,
+          commission: pending.commission,
+        });
+        expect(result.record.mappings[0]!.dossierId).toBe(id);
+        expect(result.record.mappings[0]!.rationale).toContain("title-primary");
+      }
+      const unrelated = await analysis(artifacts, "unrelated", `claim-${"9".repeat(32)}`, {
+        title: "Unrelated subject",
+        description: scope,
+      });
+      const result = await assessPostCoverage({
+        artifacts,
+        ...unrelated,
+        shortlister,
+        commission: async () => {
+          throw new Error("description-only candidate must not commission");
+        },
+      });
+      expect(result.record.mappings).toEqual([]);
+      expect(result.record.unresolvedProposals![0]!.reason).toContain(
+        "description similarity alone",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
+  "refuses legacy passage attribution when one original grouped ID has mixed accepted semantic scopes",
+  { timeout: 30000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-legacy-ambiguous-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    await artifacts.initialise();
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      const id = `claim-${"a".repeat(32)}`;
+      const old = await analysis(artifacts, "mixed-old", id, {
+        qualifier: "allegedly",
+        duplicateMixed: true,
+      });
+      const themes = JSON.parse(await artifacts.read(old.themeResult));
+      const record = JSON.parse(await artifacts.read(old.claimResult));
+      const ref = (r: typeof old.themeResult) => ({
+        repository: r.repository,
+        commit: r.commit,
+        path: r.path,
+        hash: `sha256:${r.sha256}`,
+      });
+      const request: ResearchRequest = {
+        schemaVersion: 1,
+        origin: "extraction",
+        pass: 1,
+        post: {
+          publicationId: "pub",
+          postId: "mixed-old",
+          sourceArtifact: themes.artifact,
+          sourceContext: record.sourceContext,
+          themeResult: ref(old.themeResult),
+          claimResult: ref(old.claimResult),
+        },
+        claims: [{ claimRecordId: id, statement: statements[1]!, themeIds: ["enmod-topic"] }],
+        question: "What does independent evidence show?",
+        corpusRefs: [],
+      };
+      let discoveries = 0;
+      await runResearchJob({
+        artifacts,
+        operations,
+        request,
+        owner: "synthetic",
+        sonar: {
+          model: "synthetic",
+          research: async () => {
+            discoveries++;
+            return { model: "synthetic", report: "Treaty history.", citations: [SHARED] };
+          },
+        },
+        fetcher: { fetch: async (url) => ({ url, title: "Treaty", text }) },
+        judge: {
+          judge: async () => ({
+            sourceType: "treaty",
+            passages: [{ findingId: id, passage: statements[1]! }],
+          }),
+        },
+      });
+      const current = await analysis(artifacts, "mixed-current", id);
+      const currentThemes = JSON.parse(await artifacts.read(current.themeResult));
+      const { researchNeedBindings } = await import("../../src/research/need-bindings.js");
+      const binding = researchNeedBindings({
+        record: JSON.parse(await artifacts.read(current.claimResult)),
+        source: currentThemes.artifact,
+        ...current,
+        mappings: new Map(
+          currentThemes.proposals.map((p: { id: string }) => [p.id, "enmod-topic"]),
+        ),
+      });
+      const { createLegacyResearchNeedLookup } =
+        await import("../../src/research/need-evidence.js");
+      const result = await createLegacyResearchNeedLookup(artifacts)(
+        binding.entries.find((e) => e.claimRecordId === id)!.need,
+      );
+      expect(result).toEqual({ status: "unavailable", reason: "legacy-proof-ambiguous" });
+      expect(discoveries).toBe(1);
+    } finally {
+      operations.close();
       await rm(dir, { recursive: true, force: true });
     }
   },

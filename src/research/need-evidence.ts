@@ -157,7 +157,7 @@ async function legacyRequestNeeds(
   artifacts: EvidenceStore,
   request: z.infer<typeof ResearchRequestSchema>,
 ) {
-  const out = new Map<string, string>();
+  const out = new Map<string, string | undefined>();
   if (request.origin !== "extraction" || !request.post) return out;
   const post = request.post;
   const record = ClaimExtractionRecordSchema.parse(
@@ -207,9 +207,18 @@ async function legacyRequestNeeds(
         },
       });
     });
-    if (needs.some((n) => !n || n.occurrenceScope)) continue;
-    const ids = [...new Set(needs.map((n) => canonicalNeedId(n!)))];
-    if (ids.length === 1) out.set(ids[0]!, requested.claimRecordId);
+    const ids = [
+      ...new Set(
+        needs
+          .filter((n): n is NonNullable<typeof n> => !!n && !n.occurrenceScope)
+          .map((n) => canonicalNeedId(n)),
+      ),
+    ];
+    if (needs.some((n) => !n || n.occurrenceScope) || ids.length !== 1) {
+      for (const id of ids) out.set(id, undefined);
+      continue;
+    }
+    out.set(ids[0]!, requested.claimRecordId);
   }
   return out;
 }
@@ -270,6 +279,7 @@ export function createLegacyResearchNeedLookup(
   };
   let index: Promise<Map<string, z.infer<typeof ResearchRequestSchema>[]>> | undefined;
   let limited = false;
+  const ambiguous = new Set<string>();
   const build = async () => {
     const out = new Map<string, z.infer<typeof ResearchRequestSchema>[]>();
     let paths = 0;
@@ -292,8 +302,10 @@ export function createLegacyResearchNeedLookup(
           limited = true;
           return out;
         }
-        for (const id of (await legacyRequestNeeds(cached, request)).keys())
-          out.set(id, [...(out.get(id) ?? []), request]);
+        for (const [id, passageId] of await legacyRequestNeeds(cached, request)) {
+          if (passageId === undefined) ambiguous.add(id);
+          else out.set(id, [...(out.get(id) ?? []), request]);
+        }
       }
       if (page.length < 1000) return out;
       after = page[page.length - 1];
@@ -325,7 +337,10 @@ export function createLegacyResearchNeedLookup(
           const checked = await readResearchNeedEvidence(cached, proof);
           if (checked.citations.length) return { status: "found", proof };
         }
-        return { status: "unavailable", reason: "legacy-proof-missing" };
+        return {
+          status: "unavailable",
+          reason: ambiguous.has(id) ? "legacy-proof-ambiguous" : "legacy-proof-missing",
+        };
       })();
       results.set(id, result);
     }

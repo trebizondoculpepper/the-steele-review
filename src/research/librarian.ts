@@ -215,6 +215,13 @@ export class ThresholdJudge implements ThemeEquivalenceJudge {
   }
 }
 
+const titleWords = (text: string) => new Set(normaliseMappingKey(text).split(" ").filter(Boolean));
+const titleSimilarity = (a: string, b: string) => {
+  const left = titleWords(a);
+  const right = titleWords(b);
+  const union = new Set([...left, ...right]).size;
+  return union ? [...left].filter((word) => right.has(word)).length / union : 0;
+};
 /** New-plan policy: titles select candidates; conflicting/unknown meaning stays unresolved. */
 export class TitleFirstJudge extends ThresholdJudge {
   override async decide(
@@ -253,7 +260,36 @@ export class TitleFirstJudge extends ThresholdJudge {
             : "same-title description conflicts or lacks enough scope",
       };
     }
-    return super.decide(theme, shortlist);
+    const titled = shortlist.candidates.filter((c) => titleSimilarity(theme.title, c.title) >= 0.5);
+    if (titled.length) {
+      const ranked = titled
+        .map((c) => ({
+          c,
+          title: titleSimilarity(theme.title, c.title),
+          scope: titleSimilarity(theme.description, c.scope),
+        }))
+        .sort(
+          (a, b) =>
+            b.title - a.title || b.scope - a.scope || a.c.themeId.localeCompare(b.c.themeId),
+        );
+      const best = ranked[0]!;
+      if (
+        best.scope >= 0.5 &&
+        (ranked.length === 1 || best.title > ranked[1]!.title || best.scope > ranked[1]!.scope)
+      )
+        return {
+          themeId: best.c.themeId,
+          rationale: "title-primary similarity with compatible description scope",
+        };
+      return { themeId: null, abstain: true, rationale: "near-title meaning remains ambiguous" };
+    }
+    if (shortlist.candidates.length)
+      return {
+        themeId: null,
+        abstain: true,
+        rationale: "description similarity alone does not establish title equivalence",
+      };
+    return { themeId: null, rationale: "no existing title candidate" };
   }
 }
 
@@ -1008,7 +1044,17 @@ export async function assessPostCoverage(input: {
             scope: a.mapping.description ?? "",
           })),
       ];
-      const candidates = [...new Map(exact.map((s) => [s.themeId, { ...s, score: 1 }])).values()];
+      const byTheme = new Map<string, DossierCandidate>();
+      for (const candidate of exact) {
+        const prior = byTheme.get(candidate.themeId);
+        if (
+          !prior ||
+          titleSimilarity(p.description, candidate.scope) >
+            titleSimilarity(p.description, prior.scope)
+        )
+          byTheme.set(candidate.themeId, { ...candidate, score: 1 });
+      }
+      const candidates = [...byTheme.values()];
       if (candidates.length > 5) {
         unresolvedProposals.push({
           proposalId: p.id,
@@ -1018,11 +1064,24 @@ export async function assessPostCoverage(input: {
         });
         continue;
       }
+      const titleRanked = summaries
+        .filter((s) => titleSimilarity(p.title, s.title) > 0)
+        .map((s) => ({ ...s, score: titleSimilarity(p.title, s.title) }))
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            titleSimilarity(p.description, b.scope) - titleSimilarity(p.description, a.scope) ||
+            a.themeId.localeCompare(b.themeId),
+        );
+      const priority = [
+        ...candidates,
+        ...titleRanked.filter((c) => !candidates.some((e) => e.themeId === c.themeId)),
+      ];
       shortlist = {
         ...shortlist,
         candidates: [
-          ...candidates,
-          ...shortlist.candidates.filter((c) => !candidates.some((e) => e.themeId === c.themeId)),
+          ...priority,
+          ...shortlist.candidates.filter((c) => !priority.some((e) => e.themeId === c.themeId)),
         ].slice(0, 5),
       };
     }
@@ -1130,6 +1189,26 @@ export async function assessPostCoverage(input: {
   const evidenceArtifacts = cachedResearchEvidenceStore(input.artifacts);
   const legacyNeedLookup = createLegacyResearchNeedLookup(evidenceArtifacts);
   const reuseLimitations: NonNullable<CoverageRecord["reuseLimitations"]> = [];
+  const jobs: CoverageRecord["jobs"] = [];
+  const retainJob = (job: CoverageRecord["jobs"][number]) => {
+    const existing = jobs.find((j) => j.jobId === job.jobId);
+    if (existing) {
+      if (
+        existing.dossierId !== job.dossierId ||
+        existing.pass !== job.pass ||
+        existing.outcome !== job.outcome ||
+        JSON.stringify(existing.result ?? null) !== JSON.stringify(job.result ?? null) ||
+        JSON.stringify(existing.manifest ?? null) !== JSON.stringify(job.manifest ?? null)
+      )
+        throw new Error("research-job-reference-conflict");
+      if (job.targetedClaims)
+        existing.targetedClaims = [
+          ...new Set([...(existing.targetedClaims ?? []), ...job.targetedClaims]),
+        ];
+      return;
+    }
+    jobs.push(job);
+  };
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
   const groups = new Map<string, AcceptedClaim[]>();
   for (const claim of claims) {
@@ -1192,6 +1271,14 @@ export async function assessPostCoverage(input: {
           if (!dossier || !proof) continue;
           const checked = await readResearchNeedEvidence(evidenceArtifacts, proof);
           if (checked.citations.length === 0) continue;
+          retainJob({
+            jobId: checked.result.jobId,
+            dossierId: id,
+            pass: checked.request.pass,
+            outcome: checked.result.outcome,
+            result: checked.proof.result,
+            manifest: checked.proof.manifest,
+          });
           outcomes.set(claim.key, {
             claimRecordId: claim.claimRecordId,
             statement: claim.statement,
@@ -1247,7 +1334,6 @@ export async function assessPostCoverage(input: {
   }
 
   // 3. Commission one request per dossier, then assess from exact saved results.
-  const jobs: CoverageRecord["jobs"] = [];
   const postRefs = {
     publicationId: post.publicationId,
     postId: post.postId,
@@ -1367,7 +1453,7 @@ export async function assessPostCoverage(input: {
       };
       manifest = ResearchManifestSchema.parse(JSON.parse(await input.artifacts.read(manifestRef)));
     }
-    jobs.push({
+    retainJob({
       jobId: job.jobId,
       dossierId,
       pass,
@@ -1460,6 +1546,10 @@ export async function assessPostCoverage(input: {
       ),
     }),
   );
+  // A concurrent older worker may have won the immutable plan. Retry from
+  // that authoritative version before making any research request.
+  if ((plan.schemaVersion === 3) !== canonicalMode)
+    throw new Error("research-plan-version-changed");
   const order = plan.schemaVersion !== 1 ? plan.order : Object.keys(plan.dossiers);
   for (const dossierId of order) {
     const entry = plan.dossiers[dossierId]!;
