@@ -29,7 +29,7 @@ import { promptIdentity } from "./prompt-identity.js";
  * Legacy combined verification reports are untouched and keep their meaning.
  */
 
-export const DEFAULT_ASSESSOR_PROMPT = loadPromptFile("verifier", "article-assessor");
+export const DEFAULT_ASSESSOR_PROMPT = loadPromptFile("assessor", "article-assessor");
 export const ASSESSMENT_SCHEMA_VERSION = 1;
 const TERMINATOR = "END OF ASSESSMENT";
 
