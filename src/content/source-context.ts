@@ -130,7 +130,20 @@ export const SourceContextSchema = z
     schemaVersion: z.literal(1),
     source: z
       .object({
-        type: z.literal("substack"),
+        /**
+         * Source kind (#606): `substack` for genuine Substack captures, the
+         * validated capture namespace's kind otherwise (e.g. `blog`), or
+         * `unknown` when the origin is not established. Never inferred from
+         * prose or a generic record shape.
+         */
+        type: z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}$/),
+        /** Present when the kind came from a validated capture namespace. */
+        namespace: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,49}\/[a-z0-9][a-z0-9-]{0,99}$/)
+          .optional(),
+        /** How the kind is known; absent on legacy Substack contexts (archive path). */
+        typeBasis: z.enum(["capture-namespace", "unknown"]).optional(),
         id: z.string().min(1).max(200),
         postId: z.string().min(1).max(200),
         url: z.url({ protocol: /^https$/ }),
@@ -210,11 +223,34 @@ export function sourceContextVersion(context: SourceContext): string {
     .digest("hex")}`;
 }
 
+/**
+ * The source kind, truthfully (#606). A validated capture namespace is
+ * authoritative. Without one, only a capture stored under the Substack
+ * archive layout is known to be Substack, and it keeps exactly its legacy
+ * shape (so existing context identities are unchanged); anything else is
+ * recorded as unknown.
+ */
+function sourceKind(
+  archive: ArtifactRef,
+  origin?: { namespace: string },
+): { type: string; namespace?: string; typeBasis?: "capture-namespace" | "unknown" } {
+  if (origin?.namespace) {
+    const kind = origin.namespace.split("/")[0]!;
+    // A Substack namespace over the Substack archive layout is the legacy case.
+    if (kind === "substack" && archive.path.startsWith("substack/")) return { type: "substack" };
+    return { type: kind, namespace: origin.namespace, typeBasis: "capture-namespace" };
+  }
+  if (archive.path.startsWith("substack/")) return { type: "substack" };
+  return { type: "unknown", typeBasis: "unknown" };
+}
+
 /** Interpret observed archive metadata, never conversational style or visual claims. */
 export function sourceContextFor(
   record: CollectionRecord,
   archive: ArtifactRef,
   attribution?: PostAuthorResolution,
+  /** The validated capture namespace, when the input carried one (#606). */
+  origin?: { namespace: string },
 ): SourceContext {
   const p = record.provenance;
   const hasTranscript = Boolean(
@@ -274,7 +310,7 @@ export function sourceContextFor(
   return SourceContextSchema.parse({
     schemaVersion: 1,
     source: {
-      type: "substack",
+      ...sourceKind(archive, origin),
       id: record.item.publicationId,
       postId: record.item.postId,
       url: record.item.url,

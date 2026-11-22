@@ -247,6 +247,24 @@ describe("many sources, one writing engine, many publishers (#271)", { timeout: 
     );
     for (const r of results)
       expect(r).toMatchObject({ outcome: "verified", approvalEvent: expect.any(String) });
+    // Each source's pinned context names its true kind (#606): the blog
+    // capture is never labelled Substack.
+    const contexts = await Promise.all(
+      (await content.list("source-contexts", 1_000)).map(async (p) =>
+        JSON.parse(await content.read((await content.lookup(p))!)),
+      ),
+    );
+    const blog = contexts.find(
+      (c) => c.source.archive.path === "blog/example-site/a-post/collected.json",
+    );
+    expect(blog?.source).toMatchObject({
+      type: "blog",
+      namespace: "blog/example-site",
+      typeBasis: "capture-namespace",
+    });
+    const substack = contexts.find((c) => c.source.archive.path.startsWith("substack/"));
+    expect(substack?.source.type).toBe("substack");
+    expect(substack?.source).not.toHaveProperty("typeBasis");
     const drafts = await content.list("articles", 1_000);
     // One write-once generation draft per source, and one in-place logical
     // article per source (#579), never a second article for a retry.
