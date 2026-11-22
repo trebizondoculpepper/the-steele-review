@@ -1,6 +1,6 @@
 import { CommitRecordSchema, type ArticleCommitRecord } from "../drafting/article-revisions.js";
 import { createHash } from "node:crypto";
-import type { GitArtifactStore } from "../controllers/artifact-store.js";
+import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
 import {
   artifactReference,
@@ -30,6 +30,8 @@ import type { DraftTrashStore } from "./draft-trash.js";
 
 export const DRAFT_PAGE = 25;
 const METADATA_PATH = /^articles\/([^/]+)\/([^/]+)\/([0-9a-f]{32})\.json$/;
+/** A logical article's canonical metadata: its one row in the inventory (#581). */
+const CANONICAL_PATH = /^articles\/([^/]+)\/([^/]+)\/(article-[0-9a-f]{24})\/article\.json$/;
 export const REPORT_SCAN = 200;
 /** Bound on report pages per post (REPORT_SCAN each). */
 export const REPORT_MAX_PAGES = 10;
@@ -168,19 +170,26 @@ export function draftInventory(
     return { bound, incomplete };
   };
 
+  /**
+   * One draft's entry. With `pinned`, a committed article version is read from
+   * the exact body and metadata its commit record pins, so it stays readable
+   * after the generation files are removed from the branch (#581); its
+   * verdict still binds the generation the verifier saw.
+   */
   const entryFor = async (
     path: string,
     reports: { bound: Map<string, Binding>; incomplete: boolean },
+    pinned?: ArticleCommitRecord,
   ): Promise<{ entry: DraftEntry; markdown?: string }> => {
     const m = METADATA_PATH.exec(path)!;
     const base = { path, publicationId: m[1]!, postId: m[2]!, receipts: [] as ReceiptView[] };
     let meta;
-    let metadataRef;
+    let metadataRef: ArtifactRef | undefined;
     try {
-      const ref = await content.lookup(path);
-      metadataRef = ref;
+      const ref = pinned ? pinned.metadata : await content.lookup(path);
       if (!ref) throw new Error("missing");
       meta = PackageDraftMetadataSchema.parse(JSON.parse(await content.read(ref)));
+      metadataRef = pinned ? pinned.generation.metadata : ref;
     } catch {
       return {
         entry: {
@@ -203,9 +212,11 @@ export function draftInventory(
       modelVersion: meta.modelVersion,
     };
     const at = meta.draft.indexOf(":");
-    let draft;
+    let draft: { ref: { repository: string }; content: string } | undefined;
     try {
-      draft = await content.lookupAt(meta.draft.slice(0, at), meta.draft.slice(at + 1));
+      draft = pinned
+        ? { ref: pinned.body, content: await content.read(pinned.body) }
+        : await content.lookupAt(meta.draft.slice(0, at), meta.draft.slice(at + 1));
     } catch {
       draft = undefined;
     }
@@ -348,33 +359,64 @@ export function draftInventory(
         : "articles";
     // Over-read: metadata and Markdown share the prefix.
     const paths = await content.list(prefix, DRAFT_PAGE * 2, after);
-    const metadata = paths.filter((p) => METADATA_PATH.test(p)).slice(0, DRAFT_PAGE);
+    const metadata = paths
+      .filter((p) => METADATA_PATH.test(p) || CANONICAL_PATH.test(p))
+      .slice(0, DRAFT_PAGE);
     const reportCache = new Map<string, Awaited<ReturnType<typeof reportsFor>>>();
     const entries: DraftEntry[] = [];
-    // Which article version each generation draft became (#581).
-    const versionOf = new Map<string, { id: string; version: number; current: boolean }>();
-    const historyCache = new Set<string>();
+    // Per post: each logical article's chain and current head, and which
+    // generation drafts belong to one (those appear only through it) (#581).
+    const historyCache = new Map<
+      string,
+      { chains: Map<string, ArticleCommitRecord[]>; heads: Map<string, string | undefined> }
+    >();
+    const members = new Set<string>();
     for (const path of metadata) {
-      const m = METADATA_PATH.exec(path)!;
+      const m = (METADATA_PATH.exec(path) ?? CANONICAL_PATH.exec(path))!;
       const key = `${m[1]}/${m[2]}`;
       if (!reportCache.has(key)) reportCache.set(key, await reportsFor(m[1]!, m[2]!));
       if (!historyCache.has(key)) {
-        historyCache.add(key);
         const { byArticle } = await historiesFor(m[1]!, m[2]!);
+        const heads = new Map<string, string | undefined>();
         for (const [id, chain] of byArticle) {
-          const head = await currentHash(m[1]!, m[2]!, id);
-          chain.forEach((r, i) =>
-            versionOf.set(r.generation.metadata.path, {
-              id,
-              version: i + 1,
-              current: isCurrent(r, head),
-            }),
-          );
+          heads.set(id, await currentHash(m[1]!, m[2]!, id));
+          for (const r of chain) members.add(r.generation.metadata.path);
         }
+        historyCache.set(key, { chains: byArticle, heads });
       }
-      const entry = (await entryFor(path, reportCache.get(key)!)).entry;
-      const article = versionOf.get(path);
-      entries.push(article ? { ...entry, article } : entry);
+      const reports = reportCache.get(key)!;
+      const canonical = CANONICAL_PATH.exec(path);
+      if (!canonical) {
+        // A generation committed to an article is shown as that article.
+        if (members.has(path)) continue;
+        entries.push((await entryFor(path, reports)).entry);
+        continue;
+      }
+      const id = canonical[3]!;
+      const { chains, heads } = historyCache.get(key)!;
+      const chain = chains.get(id) ?? [];
+      const at = chain.findIndex((r) => isCurrent(r, heads.get(id)));
+      const shown = at >= 0 ? at : chain.length - 1;
+      const record = chain[shown];
+      if (!record) {
+        entries.push({
+          path,
+          publicationId: m[1]!,
+          postId: m[2]!,
+          receipts: [],
+          status: "unreadable",
+          limitation: "this article's version records could not be read",
+        });
+        continue;
+      }
+      const { entry } = await entryFor(record.generation.metadata.path, reports, record);
+      entries.push({
+        ...entry,
+        ...(at < 0
+          ? { limitation: "the current canonical version could not be matched to a saved version" }
+          : {}),
+        article: { id, version: shown + 1, current: at >= 0 },
+      });
     }
     const last = metadata.length === DRAFT_PAGE ? metadata.at(-1) : undefined;
     const more = paths.length === DRAFT_PAGE * 2 ? paths.at(-1) : undefined;
@@ -415,7 +457,7 @@ export function draftInventory(
       const head = await currentHash(publicationId, postId, id);
       const versions = [];
       for (const [i, r] of chain.entries()) {
-        const { entry } = await entryFor(r.generation.metadata.path, reports);
+        const { entry } = await entryFor(r.generation.metadata.path, reports, r);
         const current = isCurrent(r, head);
         versions.push({
           version: i + 1,
@@ -438,11 +480,13 @@ export function draftInventory(
     async text(path: string) {
       const m = METADATA_PATH.exec(path);
       if (!m) return undefined;
-      const found = await entryFor(path, await reportsFor(m[1]!, m[2]!));
+      const reports = await reportsFor(m[1]!, m[2]!);
       const { byArticle } = await historiesFor(m[1]!, m[2]!);
       for (const [id, chain] of byArticle) {
         const i = chain.findIndex((r) => r.generation.metadata.path === path);
         if (i < 0) continue;
+        // A committed version reads the exact bytes its record pins (#581).
+        const found = await entryFor(path, reports, chain[i]);
         const head = await currentHash(m[1]!, m[2]!, id);
         return {
           ...found,
@@ -452,7 +496,7 @@ export function draftInventory(
           },
         };
       }
-      return found;
+      return entryFor(path, reports);
     },
   };
   return port;

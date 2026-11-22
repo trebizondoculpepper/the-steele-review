@@ -3,6 +3,7 @@ import {
   artifactReference,
   artifactRef,
 } from "../../src/drafting/publication-payload.js";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -356,11 +357,11 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     const inventory = draftInventory(content);
     const page = await inventory.page({ publicationId: "pub", postId: "p1" });
     const byTitle = new Map(page.entries.map((e) => [e.title, e]));
-    expect(byTitle.get("First version")?.article).toMatchObject({ version: 1, current: false });
+    // One row per logical article, showing its current version; older
+    // generations appear only in its history. The legacy draft stays separate.
+    expect(page.entries.map((e) => e.title).sort()).toEqual(["Legacy draft", "Third version"]);
     expect(byTitle.get("Third version")?.article).toMatchObject({ version: 3, current: true });
     expect(byTitle.get("Legacy draft")?.article).toBeUndefined();
-    // The older version keeps its own approval; the current one is not approved.
-    expect(byTitle.get("First version")?.status).toBe("approved");
     expect(byTitle.get("Third version")?.status).toBe("unverified");
 
     const id = byTitle.get("Third version")!.article!.id;
@@ -370,6 +371,8 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
       [2, false],
       [3, true],
     ]);
+    // The older version keeps its own approval; it does not carry over.
+    expect(history?.versions[0]!.entry.status).toBe("approved");
 
     const [, , articleView] = draftViews(inventory);
     const html = await articleView!.render(
@@ -431,6 +434,45 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     // The title-only revision shows the commit that holds its new title.
     expect(h.versions[1]!.commit).toBe(v2.metadata.commit);
     expect(h.versions[1]!.commit).not.toBe(v1.body.commit);
+  });
+
+  it("keeps a committed version readable after its generation files are removed", async () => {
+    const article = { publicationId: "pub", postId: "p3" };
+    const d = await saveDraft("p3", "# Kept body\n", "Kept title");
+    const generation = { draft: d.md, metadata: (await content.lookup(d.metadata))! };
+    await report("p3", ref(d.md), "approved", d.metadata);
+    const v1 = await commitArticleRevision({ content, article, generation, base: "current" });
+    if (v1.status === "conflict") throw new Error("conflict");
+    // Remove the generation files from the branch after the commit.
+    // The content repository is bare: drop the paths with a temporary index.
+    await new Promise<void>((resolve, reject) =>
+      execFile(
+        "sh",
+        [
+          "-c",
+          'set -e; export GIT_INDEX_FILE="$1/remove-index"; git -C "$1" read-tree HEAD; git -C "$1" rm -q --cached "$2" "$3"; t=$(git -C "$1" write-tree); c=$(git -C "$1" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "remove generation"); git -C "$1" update-ref HEAD "$c"; rm -f "$GIT_INDEX_FILE"',
+          "sh",
+          dir,
+          d.md.path,
+          d.metadata,
+        ],
+        (e) => (e ? reject(e) : resolve()),
+      ),
+    );
+    expect(await content.lookup(d.metadata)).toBeUndefined();
+
+    const inventory = draftInventory(content);
+    const [row] = (await inventory.page({ publicationId: "pub", postId: "p3" })).entries;
+    expect(row).toMatchObject({
+      title: "Kept title",
+      status: "approved",
+      article: { version: 1, current: true },
+    });
+    const h = (await inventory.article("pub", "p3", row!.article!.id))!;
+    expect(h.versions[0]!.entry).toMatchObject({ title: "Kept title", status: "approved" });
+    const found = await inventory.text(d.metadata);
+    expect(found?.markdown).toBe("# Kept body\n");
+    expect(found?.entry.article).toMatchObject({ version: 1, current: true });
   });
 
   it("returns nothing for an unknown or malformed article id", async () => {
