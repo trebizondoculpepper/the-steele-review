@@ -1,4 +1,9 @@
-import { DEFAULT_EDITORIAL_POLICY, EditorialPolicySchema } from "../workflow/editorial-contract.js";
+import {
+  DEFAULT_EDITORIAL_POLICY,
+  DEFAULT_EXHAUSTION_ACTION,
+  EXHAUSTION_ACTIONS,
+  EditorialPolicySchema,
+} from "../workflow/editorial-contract.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { MechanicalPolicySchema } from "../drafting/mechanical-policy.js";
@@ -85,9 +90,20 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_EDITORIAL_MAX_REVISIONS",
     domain: "models",
-    description: "Maximum editorial revisions after the first assessment and judgment.",
+    description:
+      "Maximum editorial revision rounds. The initial assessment and judgment is not a round: 1 allows one substantive rewrite after it, 0 allows none. Separate from the research job allowance.",
     schema: z.coerce.number().pipe(EditorialPolicySchema.shape.maxRevisions),
     default: String(DEFAULT_EDITORIAL_POLICY.maxRevisions),
+    sensitivity: "public",
+    activation: "restart",
+  },
+  {
+    key: "STEELE_EDITORIAL_EXHAUSTION_ACTION",
+    domain: "models",
+    description:
+      "When the revision limit is reached without approval: stop, or create-unpublished-draft. Snapshotted into each new run at submission; in-flight runs keep theirs.",
+    schema: z.enum(EXHAUSTION_ACTIONS),
+    default: DEFAULT_EXHAUSTION_ACTION,
     sensitivity: "public",
     activation: "restart",
   },

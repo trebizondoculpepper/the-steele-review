@@ -8,6 +8,8 @@ import { ArticleRunInputSchema, articleRunKey } from "../../src/workflow/article
 import {
   DEFAULT_EDITORIAL_POLICY,
   editorialPolicyFromEnv,
+  exhaustionAction,
+  sameEditorialPolicy,
 } from "../../src/workflow/editorial-contract.js";
 const input = {
   publicationId: "fixture",
@@ -60,6 +62,33 @@ describe("explicit durable article attempt identity", () => {
       }),
     ).toMatchObject({ maxRevisions: 1, deadlineMs: 3000 });
     expect(() => editorialPolicyFromEnv({ STEELE_EDITORIAL_MAX_REVISIONS: "999" })).toThrow();
+    // #734: the exhaustion action is snapshotted at submission, default stop.
+    // The default is not written, so request-id input hashes are unchanged.
+    expect(editorialPolicyFromEnv({})).toEqual(DEFAULT_EDITORIAL_POLICY);
+    expect(editorialPolicyFromEnv({})).not.toHaveProperty("onExhausted");
+    expect(
+      editorialPolicyFromEnv({ STEELE_EDITORIAL_EXHAUSTION_ACTION: "stop" }),
+    ).not.toHaveProperty("onExhausted");
+    expect(
+      editorialPolicyFromEnv({ STEELE_EDITORIAL_EXHAUSTION_ACTION: "create-unpublished-draft" }),
+    ).toMatchObject({ onExhausted: "create-unpublished-draft" });
+    expect(() =>
+      editorialPolicyFromEnv({ STEELE_EDITORIAL_EXHAUSTION_ACTION: "publish" }),
+    ).toThrow();
+    // An input saved before the action existed stays valid and means stop.
+    const savedBefore = { ...DEFAULT_EDITORIAL_POLICY };
+    const parsedLegacy = ArticleRunInputSchema.parse({ ...input, editorial: savedBefore }).editorial!;
+    expect(parsedLegacy).not.toHaveProperty("onExhausted");
+    expect(exhaustionAction(parsedLegacy)).toBe("stop");
+    expect(
+      sameEditorialPolicy(parsedLegacy, { ...DEFAULT_EDITORIAL_POLICY, onExhausted: "stop" }),
+    ).toBe(true);
+    expect(
+      sameEditorialPolicy(parsedLegacy, {
+        ...DEFAULT_EDITORIAL_POLICY,
+        onExhausted: "create-unpublished-draft",
+      }),
+    ).toBe(false);
     expect(
       ArticleRunInputSchema.safeParse({
         ...input,

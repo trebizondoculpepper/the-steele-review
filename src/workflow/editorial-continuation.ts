@@ -22,6 +22,7 @@ import type { ParsedSourceMetadata } from "../content/source-metadata.js";
 import type { EditorialLineage } from "../content/editorial-lineage.js";
 import {
   EditorialPolicySchema,
+  sameEditorialPolicy,
   type EditorialPolicy,
   type EditorialStages,
 } from "./editorial-contract.js";
@@ -139,7 +140,7 @@ export function editorialContinuationWorkflow(deps: {
                     JSON.stringify(intent.seed.parent.summary)
                 )
                   throw new ContinuationSubmissionError("identity-conflict");
-              } else if (JSON.stringify(intent.policy) !== JSON.stringify(configured))
+              } else if (!sameEditorialPolicy(intent.policy, configured))
                 throw new ContinuationSubmissionError("policy-mismatch");
               const seed = await readEditorialContinuation({ ...deps, request: intent.seed });
               await requireParentCompletion(deps.parentCompletion, intent.seed);

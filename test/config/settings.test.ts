@@ -44,6 +44,39 @@ describe("settings registry (#542)", () => {
     expect(value(r, "OPENROUTER_BASE_URL")).toMatchObject({ source: "default" });
   });
 
+  it("registers the editorial revision limit and exhaustion action (#734)", () => {
+    const r = resolveSettings({});
+    expect(value(r, "STEELE_EDITORIAL_MAX_REVISIONS")?.value).toBe(2);
+    expect(value(r, "STEELE_EDITORIAL_EXHAUSTION_ACTION")).toMatchObject({
+      source: "default",
+      value: "stop",
+    });
+    const set = resolveSettings(
+      { STEELE_EDITORIAL_MAX_REVISIONS: "1" },
+      { STEELE_EDITORIAL_EXHAUSTION_ACTION: "create-unpublished-draft" },
+    );
+    expect(value(set, "STEELE_EDITORIAL_MAX_REVISIONS")).toMatchObject({ value: 1 });
+    expect(value(set, "STEELE_EDITORIAL_EXHAUSTION_ACTION")).toMatchObject({
+      source: "file",
+      value: "create-unpublished-draft",
+    });
+    const bad = resolveSettings({
+      STEELE_EDITORIAL_EXHAUSTION_ACTION: "publish",
+      STEELE_EDITORIAL_MAX_REVISIONS: "-1",
+    });
+    expect(value(bad, "STEELE_EDITORIAL_EXHAUSTION_ACTION")?.error).toBe("invalid");
+    expect(value(bad, "STEELE_EDITORIAL_MAX_REVISIONS")?.error).toBe("invalid");
+    // Public, so the browser shows the value, type description and source.
+    const shown = inspectSettings(set).find((s) => s.key === "STEELE_EDITORIAL_EXHAUSTION_ACTION")!;
+    expect(shown).toMatchObject({
+      sensitivity: "public",
+      activation: "restart",
+      state: "configured",
+      value: "create-unpublished-draft",
+    });
+    expect(shown.description).toMatch(/stop, or create-unpublished-draft/);
+  });
+
   it("reports invalid values by category, never echoing them", () => {
     const r = resolveSettings({
       STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT: "500",
