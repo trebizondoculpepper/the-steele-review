@@ -364,3 +364,66 @@ describe("assembly exact-binding regressions (#592)", { timeout: 60_000 }, () =>
     expect(out.outcome).toBe("complete-with-gaps");
   });
 });
+
+describe("assembly agrees with the retained manifest (#592 audit)", { timeout: 60_000 }, () => {
+  it("keeps result, event and summary consistent after a manifest-only interruption", async () => {
+    const d = data({
+      citations: ["https://ok.example/a", "https://slow.example/s"],
+      report: "# R",
+    });
+    const { discovery, inventory } = await stages(d, {
+      "https://slow.example/s": [new WebAdapterError("rate-limited", 429)],
+    });
+    // Interrupt after the manifest is saved, before the result is written.
+    let interrupt = true;
+    const flaky = new Proxy(artifacts, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        return (...args: unknown[]) => {
+          if (
+            interrupt &&
+            typeof args[0] === "string" &&
+            args[0].endsWith("assembled/result.json") &&
+            prop !== "lookup" &&
+            prop !== "read"
+          ) {
+            interrupt = false;
+            throw new Error("interrupted");
+          }
+          return v.apply(target, args);
+        };
+      },
+    });
+    await expect(
+      assembleResearch({
+        artifacts: flaky,
+        operations,
+        discovery,
+        inventory,
+        read: async () => ({ data: d, request }),
+        owner: "t",
+      }),
+    ).rejects.toThrow("interrupted");
+    // The pending source finishes before the retry.
+    await retrieveCitations({ artifacts, inventory, fetcher: fetcher({}), limits });
+    const out = await assembleResearch({
+      artifacts,
+      operations,
+      discovery,
+      inventory,
+      read: async () => ({ data: d, request }),
+      owner: "t",
+    });
+    const manifest = JSON.parse(await artifacts.read(out.manifest));
+    const result = JSON.parse(await artifacts.read(out.result));
+    // The retained manifest still lists the source as pending: everything agrees with it.
+    expect(manifest.citations.some((c: { retrieval: string }) => c.retrieval !== "archived")).toBe(
+      true,
+    );
+    expect(result.outcome).toBe("complete-with-gaps");
+    expect(out.outcome).toBe("complete-with-gaps");
+    expect(out.pending).toBe(1);
+    expect(events()).toEqual([expect.objectContaining({ outcome: "complete-with-gaps" })]);
+  });
+});
