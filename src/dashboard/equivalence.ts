@@ -51,7 +51,8 @@ export interface EquivalenceDetail {
   occurrences: {
     publicationId: string;
     postId: string;
-    passage: string;
+    /** Absent on legacy records that never saved the passage. */
+    passage?: string;
     occurrenceId?: string;
   }[];
   occurrencesPartial: boolean;
@@ -98,7 +99,11 @@ const rowOf = (path: string, decision: z.infer<typeof ClaimEquivalenceDecisionSc
   decidedAt: decision.decidedAt,
 });
 
-export function savedEquivalence(content: Store): EquivalencePort {
+export function savedEquivalence(
+  content: Store,
+  options: { scanLimit?: number } = {},
+): EquivalencePort {
+  const scanLimit = options.scanLimit ?? EQUIVALENCE_SCAN;
   const readRow = async (path: string): Promise<EquivalenceRow | undefined> => {
     try {
       const ref = await content.lookup(path);
@@ -118,7 +123,7 @@ export function savedEquivalence(content: Store): EquivalencePort {
       let cursor = after;
       let partial = false;
       let exhausted = false;
-      while (rows.length < EQUIVALENCE_PAGE && scanned < EQUIVALENCE_SCAN) {
+      while (rows.length < EQUIVALENCE_PAGE && scanned < scanLimit) {
         let paths: string[];
         try {
           paths = await content.list("claim-equivalence", LIST_PAGE, cursor);
@@ -130,21 +135,24 @@ export function savedEquivalence(content: Store): EquivalencePort {
           break;
         }
         for (const path of paths) {
+          if (scanned >= scanLimit) break;
           cursor = path;
+          // Every visited artifact counts against the scan budget, including
+          // legacy names and non-decision files.
+          scanned++;
           if (!path.endsWith(".json")) continue;
           if (!DECISION.test(path)) {
             // A saved file with an unexpected name is not silently absent.
             unreadable++;
             continue;
           }
-          scanned++;
           const row = await readRow(path);
           if (!row) {
             unreadable++;
             continue;
           }
           if (outcome && row.outcome !== outcome) {
-            if (rows.length >= EQUIVALENCE_PAGE || scanned >= EQUIVALENCE_SCAN) break;
+            if (rows.length >= EQUIVALENCE_PAGE || scanned >= scanLimit) break;
             continue;
           }
           if (
@@ -153,14 +161,14 @@ export function savedEquivalence(content: Store): EquivalencePort {
             !row.reason.toLowerCase().includes(q) &&
             !row.candidates.some((c) => c.statement.toLowerCase().includes(q))
           ) {
-            if (rows.length >= EQUIVALENCE_PAGE || scanned >= EQUIVALENCE_SCAN) break;
+            if (rows.length >= EQUIVALENCE_PAGE || scanned >= scanLimit) break;
             continue;
           }
           rows.push(row);
-          if (rows.length >= EQUIVALENCE_PAGE || scanned >= EQUIVALENCE_SCAN) break;
+          if (rows.length >= EQUIVALENCE_PAGE || scanned >= scanLimit) break;
         }
       }
-      if (scanned >= EQUIVALENCE_SCAN) partial = true;
+      if (scanned >= scanLimit) partial = true;
       return {
         state: "ok",
         rows,
@@ -194,7 +202,7 @@ export function savedEquivalence(content: Store): EquivalencePort {
               occurrences.push({
                 publicationId: o.publicationId,
                 postId: o.postId,
-                passage: o.passage,
+                ...(o.passage === undefined ? {} : { passage: o.passage }),
                 ...(o.occurrenceId ? { occurrenceId: o.occurrenceId } : {}),
               });
             }

@@ -147,3 +147,24 @@ describe("claim-equivalence browser (#616)", { timeout: 60_000 }, () => {
     expect(seen.size).toBe(22);
   });
 });
+
+describe("equivalence scan budget (#616)", () => {
+  it("counts every visited artifact and exposes continuation", async () => {
+    // Unexpectedly named files still consume the scan budget.
+    for (let i = 0; i < 4; i++) {
+      await content.write(`claim-equivalence/legacy-${i}.json`, "{}");
+    }
+    await content.write("claim-equivalence/notes.txt", "not a decision");
+    await writeDecision(
+      `claim-${"a".repeat(32)}-${"1".repeat(16)}`,
+      decision(),
+    );
+    const port = savedEquivalence(content, { scanLimit: 3 });
+    const page = await port.list({});
+    expect(page.partial).toBe(true);
+    expect(page.next).toBeDefined();
+    // The decision sorts first and is returned; the budget stops further work.
+    expect(page.rows).toHaveLength(1);
+    expect(page.unreadable).toBeLessThanOrEqual(2);
+  });
+});

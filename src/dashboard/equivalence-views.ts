@@ -93,7 +93,7 @@ export function equivalenceViews(equivalence?: EquivalencePort): DashboardView[]
         ? `<div class="wrap"><table><thead><tr><th>Post</th><th>Passage</th><th>Occurrence</th></tr></thead><tbody>${found.occurrences
             .map(
               (o) =>
-                `<tr><td><a href="/articles/trace?${escapeHtml(new URLSearchParams({ publication: o.publicationId, post: o.postId }).toString())}">${escapeHtml(o.publicationId)}/${escapeHtml(o.postId)}</a></td><td><blockquote>${escapeHtml(o.passage)}</blockquote></td><td>${o.occurrenceId ? `<code>${escapeHtml(o.occurrenceId)}</code>` : '<span class="empty">not recorded</span>'}</td></tr>`,
+                `<tr><td><a href="/articles/trace?${escapeHtml(new URLSearchParams({ publication: o.publicationId, post: o.postId }).toString())}">${escapeHtml(o.publicationId)}/${escapeHtml(o.postId)}</a></td><td>${o.passage === undefined ? '<span class="empty">passage not recorded</span>' : `<blockquote>${escapeHtml(o.passage)}</blockquote>`}</td><td>${o.occurrenceId ? `<code>${escapeHtml(o.occurrenceId)}</code>` : '<span class="empty">not recorded</span>'}</td></tr>`,
             )
             .join("")}</tbody></table></div>`
         : '<p class="empty">No saved occurrences are recorded for this claim.</p>';
