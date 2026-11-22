@@ -131,24 +131,27 @@ const sameRef = (a: z.infer<typeof Ref>, b: z.infer<typeof Ref>) =>
 export function urlsInReport(report: string): string[] {
   const found = report.match(/https?:\/\/[^\s<>"'`]+/g) ?? [];
   return found.map((raw) => {
-    let u = raw;
-    for (;;) {
-      const last = u.at(-1);
-      if (last && ".,;:!?".includes(last)) {
-        u = u.slice(0, -1);
+    // Count brackets once, then update while trimming: linear in the match.
+    const count = { "(": 0, ")": 0, "[": 0, "]": 0 } as Record<string, number>;
+    for (const ch of raw) if (ch in count) count[ch]!++;
+    let end = raw.length;
+    while (end > 0) {
+      const last = raw[end - 1]!;
+      if (".,;:!?".includes(last)) {
+        end--;
         continue;
       }
       if (last === ")" || last === "]") {
         const open = last === ")" ? "(" : "[";
-        const opens = u.split(open).length - 1;
-        const closes = u.split(last).length - 1;
-        if (closes > opens) {
-          u = u.slice(0, -1);
+        if (count[last]! > count[open]!) {
+          count[last]!--;
+          end--;
           continue;
         }
       }
-      return u;
+      break;
     }
+    return raw.slice(0, end);
   });
 }
 
@@ -355,12 +358,11 @@ export async function retrieveCitations(input: {
     const snapshotPath = `${dir}/snapshots/${id}.json`;
     const savedSnapshot = await input.artifacts.lookup(snapshotPath);
     if (savedSnapshot) {
+      // Storage errors propagate (retryable); only the content is judged here.
+      const retained = await input.artifacts.read(savedSnapshot);
       let valid = false;
       try {
-        const snap = CitationSnapshotSchema.parse(
-          JSON.parse(await input.artifacts.read(savedSnapshot)),
-        );
-        valid = snap.retrievalKey === key;
+        valid = CitationSnapshotSchema.parse(JSON.parse(retained)).retrievalKey === key;
       } catch {
         valid = false;
       }

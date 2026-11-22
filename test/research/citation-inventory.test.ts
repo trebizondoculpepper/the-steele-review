@@ -353,3 +353,53 @@ describe("citation inventory review regressions (#591)", { timeout: 60_000 }, ()
     expect(f.calls).toHaveLength(1);
   });
 });
+
+describe("citation inventory robustness (#591)", { timeout: 60_000 }, () => {
+  it("trims many unmatched brackets in linear time", () => {
+    const hostile = `https://x.example/a${")".repeat(200_000)}`;
+    const started = Date.now();
+    expect(urlsInReport(hostile)).toEqual(["https://x.example/a"]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("propagates a storage error reading a retained snapshot", async () => {
+    const discovery = await discoveryRef();
+    const { ref, inventory } = await saveCitationInventory({
+      artifacts,
+      discovery,
+      readDiscovery: async () => data(),
+    });
+    const id = inventory.entries.find(
+      (e) => e.originalUrl === "https://ok.example/a",
+    )!.retrievalId!;
+    const snap = await artifacts.write(
+      `research-discovery/req-1/disc-1/citations/snapshots/${id}.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        retrievalKey: "https://ok.example/a",
+        url: "u",
+        title: "t",
+        truncated: false,
+        text: "x",
+      }),
+    );
+    const flaky = new Proxy(artifacts, {
+      get(target, prop, receiver) {
+        if (prop === "read") {
+          return async (r: { path: string }) => {
+            if (r.path === snap.path) throw new Error("git-failed");
+            return target.read(r as never);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await expect(
+      retrieveCitations({ artifacts: flaky, inventory: ref, fetcher: fetcher({}), limits }),
+    ).rejects.toThrow("git-failed");
+    // Nothing permanent was recorded for that key.
+    expect(
+      await artifacts.lookup(`research-discovery/req-1/disc-1/citations/retrievals/${id}.json`),
+    ).toBeUndefined();
+  });
+});
