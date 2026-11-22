@@ -1,4 +1,15 @@
+import {
+  markdownToProseMirror,
+  UnsupportedMarkdownError,
+} from "../publishing/substack/prosemirror.js";
 import { editorialLineageRefs, type EditorialLineage } from "../content/editorial-lineage.js";
+import {
+  MARKDOWN_ARTICLE_FORMAT,
+  MarkdownArticleError,
+  MarkdownCandidateSchema,
+  splitMarkdownArticle,
+  type MarkdownCandidate,
+} from "./markdown-article.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
@@ -86,6 +97,32 @@ export const PACKAGE_REVISION_PROMPT_VERSION = PACKAGE_REVISION_PROMPT.version;
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
 export const DEFAULT_PACKAGE_DRAFT_PROMPT = loadPromptFile("writer", "package-explainer");
+/** The writer prompt for the Markdown article contract (#535). */
+export const DEFAULT_PACKAGE_MARKDOWN_PROMPT = loadPromptFile(
+  "writer",
+  "package-explainer-markdown",
+);
+const MARKDOWN_OUTPUT_REPAIR_PROMPT = loadPromptFile("writer", "package-output-repair-markdown");
+export const PACKAGE_MARKDOWN_OUTPUT_REPAIR_ID = promptIdentity(
+  MARKDOWN_OUTPUT_REPAIR_PROMPT.version,
+  MARKDOWN_OUTPUT_REPAIR_PROMPT.instructions,
+);
+/** Writer output contracts: legacy structured JSON, or Markdown with a JSON header (#535). */
+export type WriterFormat = "json" | "markdown";
+
+/**
+ * The deployment's writer output contract: `STEELE_WRITER_FORMAT` is "json"
+ * (default, the current behaviour) or "markdown". Anything else is refused
+ * rather than silently treated as either.
+ */
+export function writerFormatFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): WriterFormat {
+  const value = env.STEELE_WRITER_FORMAT;
+  if (value === undefined || value === "" || value === "json") return "json";
+  if (value === "markdown") return "markdown";
+  throw new Error("STEELE_WRITER_FORMAT must be json or markdown");
+}
 
 const ModelDraftSchema = z
   .object({
@@ -172,6 +209,8 @@ export const PackageDraftMetadataSchema = z
      * fields existed; the body is the draft Markdown itself.
      */
     fields: PublicationFieldsSchema.optional(),
+    /** Writer output contract (#535); absent on legacy structured-JSON drafts. */
+    format: z.literal(MARKDOWN_ARTICLE_FORMAT).optional(),
     draftedAt: z.string(),
   })
   .strict();
@@ -184,7 +223,14 @@ export class InvalidDraftError extends Error {
 }
 
 /** Validate a model draft against the package; returns problems (empty when valid). */
-export function draftProblems(pkg: WriterPackage, draft: PackageModelDraft): string[] {
+/** The evidence-bearing parts of any draft, legacy JSON or Markdown (#535). */
+export interface DraftEvidenceView {
+  responses: { claimRecordId: string; verdict: string; evidence: number[] }[];
+  narrative?: { status: "supported"; history: number[] } | { status: "limited" };
+  widerContext?: { status: "supported"; background: number[] } | { status: "limited" };
+}
+
+export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): string[] {
   const problems: string[] = [];
   // Narrative and wider context may be asserted only from the package's own
   // cited context; without it they must be stated as limitations (#176).
@@ -281,6 +327,123 @@ export function modelCitationProblems(draft: PackageModelDraft): string[] {
     (i) =>
       `${i.path.join(".")} contains a model-written citation marker; final references are rendered by the application`,
   );
+}
+
+/** Evidence view of a Markdown candidate: its provenance, in the legacy shape. */
+export function markdownEvidenceView(c: MarkdownCandidate): DraftEvidenceView {
+  const { narrativeHistory, widerContextBackground } = c.provenance;
+  return {
+    responses: c.provenance.responses,
+    ...(narrativeHistory?.length
+      ? { narrative: { status: "supported" as const, history: narrativeHistory } }
+      : {}),
+    ...(widerContextBackground?.length
+      ? { widerContext: { status: "supported" as const, background: widerContextBackground } }
+      : {}),
+  };
+}
+
+/** Model-written citation markers in a Markdown candidate's header text and body. */
+export function markdownCitationIssues(c: MarkdownCandidate): SafeDraftIssue[] {
+  const issues: SafeDraftIssue[] = [];
+  for (const [name, text] of [
+    ["title", c.title],
+    ["subtitle", c.subtitle],
+    ["excerpt", c.excerpt],
+    ["body", c.body],
+  ] as const) {
+    if (text.search(MODEL_CITATION) >= 0) issues.push({ code: "custom", path: [name] });
+    MODEL_CITATION.lastIndex = 0;
+  }
+  return issues;
+}
+
+/** Human-readable marker problems from issue paths only. */
+export function citationProblems(issues: SafeDraftIssue[]): string[] {
+  return issues.map(
+    (i) =>
+      `${i.path.join(".")} contains a model-written citation marker; final references are rendered by the application`,
+  );
+}
+
+/** The candidate as the Markdown text the writer is shown for a correction. */
+function markdownCandidateText(candidate: unknown): string {
+  const { body, ...header } = (candidate ?? {}) as Record<string, unknown>;
+  return `---json\n${JSON.stringify(header)}\n---\n\n${typeof body === "string" ? body : ""}`;
+}
+
+/**
+ * Render a Markdown article (#535): the writer's body exactly, framed by the
+ * application-owned parts the legacy renderer also produced. Claim verdict
+ * markers come from provenance, earlier passages are quoted from the package,
+ * and the numbered Sources list is built from the cited evidence indices, so
+ * deterministic verification reads the same contract as before.
+ */
+export function renderMarkdownDraft(
+  pkg: WriterPackage,
+  c: MarkdownCandidate,
+  sourceUrl: string,
+): string {
+  const linkText = (pkg.source.title ?? sourceUrl).replace(/[\\[\]]/g, (ch) => `\\${ch}`);
+  const claims = new Map(pkg.claims.map((claim) => [claim.claimRecordId, claim]));
+  const sources: { url: string; passage: string; archived?: string }[] = [];
+  const seen = new Set<string>();
+  const cite = (url: string, passage: string, archived?: string) => {
+    const key = JSON.stringify([url, passage]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    sources.push({ url, passage, ...(archived ? { archived } : {}) });
+  };
+  const lines: string[] = [];
+  for (const r of c.provenance.responses) {
+    lines.push(
+      `<!-- claim-verdict ${Buffer.from(r.claimRecordId).toString("hex")} ${r.verdict} -->`,
+    );
+    const claim = claims.get(r.claimRecordId)!;
+    for (const i of r.evidence) {
+      const e = claim.evidence[i]!;
+      cite(
+        e.url,
+        e.passage,
+        e.archived ? `${e.archived.commit.slice(0, 12)}:${e.archived.path}` : undefined,
+      );
+    }
+  }
+  if (lines.length > 0) lines.push("");
+  lines.push(c.body.trimEnd(), "");
+  const omitNarrative =
+    pkg.context?.history.status === "gap" && pkg.context.history.omitWhenAbsent === true;
+  const comparisons = pkg.context?.history.comparisons ?? [];
+  if (!omitNarrative && c.provenance.narrativeHistory?.length) {
+    for (const i of c.provenance.narrativeHistory) {
+      const cmp = comparisons[i]!;
+      for (const e of cmp.earlier) {
+        lines.push(`> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`, "");
+      }
+      lines.push(
+        `_Comparison (${cmp.kind}, ${cmp.uncertainty} uncertainty; analysis, not evidence): ${cmp.comparison.text}_`,
+        "",
+      );
+      if (cmp.conflictRationale) lines.push(`_Qualification: ${cmp.conflictRationale}_`, "");
+      if (cmp.changedCircumstances)
+        lines.push(`_Changed circumstances: ${cmp.changedCircumstances}_`, "");
+    }
+  }
+  const passages = pkg.context?.background.passages ?? [];
+  for (const i of c.provenance.widerContextBackground ?? []) {
+    cite(passages[i]!.url, passages[i]!.passage);
+  }
+  lines.push("## Sources", "", `Original post: [${linkText}](<${sourceUrl}>)`, "");
+  if (sources.length > 0) {
+    lines.push(
+      ...sources.map(
+        (src, i) =>
+          `${i + 1}. ${src.url}${src.archived ? ` (archived ${src.archived})` : ""}: "${src.passage}"`,
+      ),
+      "",
+    );
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 /** True when every marker sits in an isolated publication-metadata field. */
@@ -507,9 +670,21 @@ export async function draftFromPackage(input: {
   beforeNewGeneration?: () => Promise<void>;
   /** Revision instructions; defaults to the editable package-revision.md. */
   revisionInstructions?: string;
+  /**
+   * Writer output contract (#535). "json" (default) keeps the legacy
+   * structured draft; "markdown" asks for a Markdown body with a JSON header.
+   */
+  format?: WriterFormat;
   now?: () => Date;
 }): Promise<PackageDraftOutcome> {
-  const prompt = input.prompt ?? DEFAULT_PACKAGE_DRAFT_PROMPT;
+  const markdown = (input.format ?? writerFormatFromEnv()) === "markdown";
+  const prompt =
+    input.prompt ?? (markdown ? DEFAULT_PACKAGE_MARKDOWN_PROMPT : DEFAULT_PACKAGE_DRAFT_PROMPT);
+  // The repair instructions follow the output contract (#535).
+  const outputRepairId = markdown ? PACKAGE_MARKDOWN_OUTPUT_REPAIR_ID : PACKAGE_OUTPUT_REPAIR_ID;
+  const outputRepairInstructions = markdown
+    ? MARKDOWN_OUTPUT_REPAIR_PROMPT.instructions
+    : OUTPUT_REPAIR_PROMPT.instructions;
   const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(input.package)));
   if (pkg.status !== "ready") return { status: "evidence-gap" };
   const pinnedUrl = pkg.source.originalUrl;
@@ -558,15 +733,15 @@ export async function draftFromPackage(input: {
         ...(input.lineage ? [editorialLineageRefs(input.lineage).map(toRef)] : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
         ...(pinnedUrl ? [] : [sourceUrl]),
+        // The output contract is part of identity; legacy keys are unchanged.
+        ...(markdown ? [MARKDOWN_ARTICLE_FORMAT] : []),
       ]),
     )
     .digest("hex")
     .slice(0, 32);
   const base = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${key}`;
   const repairedKey = createHash("sha256")
-    .update(
-      JSON.stringify([key, PACKAGE_OUTPUT_REPAIR_ID, PACKAGE_FIELD_REPAIR_ID, "mechanical-v1"]),
-    )
+    .update(JSON.stringify([key, outputRepairId, PACKAGE_FIELD_REPAIR_ID, "mechanical-v1"]))
     .digest("hex")
     .slice(0, 32);
   const repairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${repairedKey}`;
@@ -678,6 +853,7 @@ export async function draftFromPackage(input: {
       : {}),
   });
   let draft: PackageModelDraft | undefined;
+  let draftMd: MarkdownCandidate | undefined;
   let lastProblems: string[] = [];
   let lastFailure: "provider-failed" | "malformed-output" | "invalid-draft" = "malformed-output";
   let providerError: string | undefined;
@@ -701,7 +877,7 @@ export async function draftFromPackage(input: {
     };
     const start = await mechanicalStart(
       input.content,
-      [key, PACKAGE_OUTPUT_REPAIR_ID, PACKAGE_FIELD_REPAIR_ID, input.writerRecoveryId ?? null],
+      [key, outputRepairId, PACKAGE_FIELD_REPAIR_ID, input.writerRecoveryId ?? null],
       policy,
     );
     const deadline = start.deadlineAt;
@@ -718,7 +894,7 @@ export async function draftFromPackage(input: {
     let fieldRepair: FieldRepair | undefined;
     let previousCandidateRef: ArtifactRef | undefined;
     const attempts = policy.maxTurns;
-    for (let attempt = 0; attempt < attempts && !draft; attempt++) {
+    for (let attempt = 0; attempt < attempts && !draft && !draftMd; attempt++) {
       if (Date.now() >= deadline || signal.aborted) {
         mechanical.outcome = "deadline-exhausted";
         mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
@@ -740,7 +916,7 @@ export async function draftFromPackage(input: {
           : correction?.kind === "evidence-validation"
             ? "evidence"
             : "format-schema";
-      const repairPromptId = fieldRepair ? PACKAGE_FIELD_REPAIR_ID : PACKAGE_OUTPUT_REPAIR_ID;
+      const repairPromptId = fieldRepair ? PACKAGE_FIELD_REPAIR_ID : outputRepairId;
       if (isCorrection) {
         repairPromptVersions.add(repairPromptId);
         lastRepairPromptId = repairPromptId;
@@ -773,7 +949,7 @@ export async function draftFromPackage(input: {
             system: fieldRepair
               ? FIELD_REPAIR_PROMPT.instructions
               : isCorrection
-                ? `${prompt.instructions}\n\n${OUTPUT_REPAIR_PROMPT.instructions}`
+                ? `${prompt.instructions}\n\n${outputRepairInstructions}`
                 : prompt.instructions,
             user: requestUser,
             maxOutputChars: 40_000,
@@ -860,19 +1036,32 @@ export async function draftFromPackage(input: {
       }
       raw = captured.text;
       let parsed: PackageModelDraft | undefined;
+      let parsedMd: MarkdownCandidate | undefined;
+      // A body the publisher cannot render needs a whole-article correction.
+      let undeliverableBody = false;
       let candidate: unknown;
       let candidateRef: ArtifactRef | undefined;
       let kind: DraftValidationKind | undefined;
       let issues: SafeDraftIssue[] = [];
       try {
         let json: unknown;
-        try {
-          json = JSON.parse(raw);
-        } catch {
-          // Retain the existing tolerance for a JSON object wrapped in prose or
-          // a code fence, without misclassifying valid JSON scalars as syntax errors.
-          json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-        }
+        if (markdown && !fieldRepair) {
+          // Structural split only; the candidate schema validates the fields.
+          const split = splitMarkdownArticle(raw);
+          json = {
+            ...(split.header && typeof split.header === "object" && !Array.isArray(split.header)
+              ? (split.header as Record<string, unknown>)
+              : {}),
+            body: split.body,
+          };
+        } else
+          try {
+            json = JSON.parse(raw);
+          } catch {
+            // Retain the existing tolerance for a JSON object wrapped in prose or
+            // a code fence, without misclassifying valid JSON scalars as syntax errors.
+            json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+          }
         if (fieldRepair) {
           const merged = mergeFieldPatch(fieldRepair, json);
           if (!merged) {
@@ -888,29 +1077,40 @@ export async function draftFromPackage(input: {
           }
         }
         candidate = json;
-        const checked = kind ? undefined : ModelDraftSchema.safeParse(json);
-        if (checked?.success) parsed = checked.data;
-        else if (checked) {
-          kind = "schema-validation";
-          issues = safeDraftIssues(checked.error);
+        if (markdown) {
+          const checked = kind ? undefined : MarkdownCandidateSchema.safeParse(json);
+          if (checked?.success) parsedMd = checked.data;
+          else if (checked) {
+            kind = "schema-validation";
+            issues = safeDraftIssues(checked.error);
+          }
+        } else {
+          const checked = kind ? undefined : ModelDraftSchema.safeParse(json);
+          if (checked?.success) parsed = checked.data;
+          else if (checked) {
+            kind = "schema-validation";
+            issues = safeDraftIssues(checked.error);
+          }
         }
       } catch (error) {
-        if (error instanceof SyntaxError) kind = "json-syntax";
+        // A malformed Markdown header is the Markdown contract's syntax error.
+        if (error instanceof SyntaxError || error instanceof MarkdownArticleError)
+          kind = "json-syntax";
         else throw error;
       }
       if ((completion as string) === "length-limit") kind = "truncated-output";
-      if (!kind && parsed) {
-        const structural = draftProblems(pkg, parsed);
-        const markers = modelCitationIssues(parsed);
+      if (!kind && (parsed || parsedMd)) {
+        const structural = draftProblems(pkg, parsed ?? markdownEvidenceView(parsedMd!));
+        const markers = parsed ? modelCitationIssues(parsed) : markdownCitationIssues(parsedMd!);
         if (structural.length === 0 && metadataOnlyMarkers(markers)) {
           // Markers only in isolated metadata fields: repair just those fields
           // (#549's field-only path), preserving body and citation data.
           kind = "schema-validation";
-          lastProblems = modelCitationProblems(parsed);
+          lastProblems = citationProblems(markers);
           issues = markers.slice(0, 30);
         } else if (structural.length > 0 || markers.length > 0) {
           kind = "evidence-validation";
-          lastProblems = [...structural, ...modelCitationProblems(parsed)];
+          lastProblems = [...structural, ...citationProblems(markers)];
           // Exact schema paths for markers; structural evidence problems stay
           // attributed to the responses array.
           issues = [
@@ -919,6 +1119,20 @@ export async function draftFromPackage(input: {
               : []),
             ...markers,
           ].slice(0, 30); // the diagnostic contract records at most 30 issues
+        }
+      }
+      // Only after the evidence checks pass (rendering needs valid indices).
+      // A Markdown body must be deliverable: check the rendered article with
+      // the destination's own strict converter before any verification (#535).
+      if (!kind && parsedMd) {
+        try {
+          markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
+        } catch (error) {
+          if (!(error instanceof UnsupportedMarkdownError)) throw error;
+          undeliverableBody = true;
+          kind = "schema-validation";
+          issues = [{ code: "custom", path: ["body"] }];
+          lastProblems = [`body uses Markdown the publisher cannot render (${error.reason})`];
         }
       }
       if (kind) {
@@ -953,7 +1167,7 @@ export async function draftFromPackage(input: {
           kind === "schema-validation" && (!fieldRepair || candidateRef)
             ? metadataFieldRepair(candidate, issues)
             : undefined;
-        if (fieldRepair && kind !== "evidence-validation") {
+        if (fieldRepair && kind !== "evidence-validation" && !undeliverableBody) {
           // A malformed, truncated or overbroad patch cannot replace preserved fields.
           fieldRepair = nextFieldRepair ?? {
             ...fieldRepair,
@@ -965,7 +1179,11 @@ export async function draftFromPackage(input: {
           previousCandidateRef = candidateRef ?? captured.ref;
         }
         correction = {
-          previousOutput: candidateRef ? JSON.stringify(candidate) : raw,
+          previousOutput: candidateRef
+            ? markdown
+              ? markdownCandidateText(candidate)
+              : JSON.stringify(candidate)
+            : raw,
           kind,
           issues,
         };
@@ -978,9 +1196,10 @@ export async function draftFromPackage(input: {
       mechanical.outcome = "valid";
       mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
       draft = parsed;
+      draftMd = parsedMd;
       repaired = isCorrection;
     }
-    if (!draft) {
+    if (!draft && !draftMd) {
       if (mechanical.outcome === "in-progress") mechanical.outcome = "turns-exhausted";
       mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
       return {
@@ -996,9 +1215,12 @@ export async function draftFromPackage(input: {
         ...(writerAttempts.length ? { writerAttempts } : {}),
       };
     }
-    const markdown = renderPackageDraft(pkg, draft, sourceUrl);
+    const rendered = draftMd
+      ? renderMarkdownDraft(pkg, draftMd, sourceUrl)
+      : renderPackageDraft(pkg, draft!, sourceUrl);
+    const fields = draftMd ?? draft!;
     const outputBase = repaired ? repairedBase : base;
-    const draftRef = await writeOnce(input.content, `${outputBase}.md`, markdown);
+    const draftRef = await writeOnce(input.content, `${outputBase}.md`, rendered);
     const metadata = PackageDraftMetadataSchema.parse({
       schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
       package: toRef(input.package),
@@ -1029,7 +1251,8 @@ export async function draftFromPackage(input: {
       ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
       ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
       draft: `${draftRef.commit}:${draftRef.path}`,
-      fields: { title: draft.title, subtitle: draft.subtitle, excerpt: draft.excerpt },
+      fields: { title: fields.title, subtitle: fields.subtitle, excerpt: fields.excerpt },
+      ...(draftMd ? { format: MARKDOWN_ARTICLE_FORMAT } : {}),
       draftedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
     const metaRef = await writeOnce(input.content, `${outputBase}.json`, metadata);

@@ -15,6 +15,11 @@ export type DraftValidationKind = z.infer<typeof DraftValidationKindSchema>;
 // Do not retain Zod messages, arbitrary keys, expected/received values or
 // provider exception strings. Only schema-owned names can reach a diagnostic.
 const FIELD_NAMES = [
+  // Markdown article candidate fields (#535).
+  "body",
+  "provenance",
+  "narrativeHistory",
+  "widerContextBackground",
   "title",
   "subtitle",
   "excerpt",

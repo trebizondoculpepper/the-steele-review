@@ -95,26 +95,54 @@ export class MarkdownArticleError extends Error {
   }
 }
 
-/** Parse and validate one writer response in the Markdown article format. */
-export function parseMarkdownArticle(text: string): MarkdownArticle {
-  // Normalise line endings and a leading byte-order mark only; the body is
-  // otherwise kept exactly.
-  const normalised = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+/**
+ * The writer's candidate as one object: header fields plus `body` (#535,
+ * slice 2). The drafting loop validates and field-repairs this object with
+ * its existing machinery, so a header-only repair can never touch the body.
+ */
+export const MarkdownCandidateSchema = ArticleHeaderSchema.extend({
+  // Checked, never transformed: leading indentation can be significant
+  // Markdown (an indented code block), so the body is kept exactly.
+  body: z
+    .string()
+    .max(MAX_BODY_CHARS)
+    .refine((b) => b.trim().length > 0),
+}).strict();
+export type MarkdownCandidate = z.infer<typeof MarkdownCandidateSchema>;
+
+/**
+ * Structural split only: the header's JSON value (not yet schema-checked)
+ * and the body. Delimiter, JSON syntax, duplicate-key and size errors are
+ * raised here; field-level validation is left to the candidate schema.
+ */
+export function splitMarkdownArticle(text: string): { header: unknown; body: string } {
+  const normalised = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const lines = normalised.split("\n");
   if (lines[0]?.trimEnd() !== OPEN) throw new MarkdownArticleError("missing-header");
   const close = lines.findIndex((line, i) => i > 0 && line.trimEnd() === CLOSE);
   if (close < 0) throw new MarkdownArticleError("unterminated-header");
   const headerText = lines.slice(1, close).join("\n");
   if (headerText.length > MAX_HEADER_CHARS) throw new MarkdownArticleError("oversized-header");
-
-  let raw: unknown;
+  let header: unknown;
   try {
-    raw = JSON.parse(headerText);
+    header = JSON.parse(headerText);
   } catch {
     throw new MarkdownArticleError("malformed-header");
   }
   const duplicate = firstDuplicateKey(headerText);
   if (duplicate !== undefined) throw new MarkdownArticleError("duplicate-header-key", duplicate);
+  const body = lines
+    .slice(close + 1)
+    .join("\n")
+    .replace(/^\n+/, "")
+    .replace(/\s+$/, "");
+  if (body.length > MAX_BODY_CHARS) throw new MarkdownArticleError("oversized-body");
+  return { header, body: body.length > 0 ? `${body}\n` : "" };
+}
+
+/** Parse and validate one writer response in the Markdown article format. */
+export function parseMarkdownArticle(text: string): MarkdownArticle {
+  const { header: raw, body } = splitMarkdownArticle(text);
   const header = ArticleHeaderSchema.safeParse(raw);
   if (!header.success) {
     const issue = header.error.issues[0];
@@ -123,15 +151,8 @@ export function parseMarkdownArticle(text: string): MarkdownArticle {
       issue ? `${issue.path.join(".") || "header"}: ${issue.code}` : undefined,
     );
   }
-
-  const body = lines
-    .slice(close + 1)
-    .join("\n")
-    .replace(/^\n+/, "")
-    .replace(/\s+$/, "");
-  if (body.length === 0) throw new MarkdownArticleError("empty-body");
-  if (body.length > MAX_BODY_CHARS) throw new MarkdownArticleError("oversized-body");
-  return { header: header.data, body: `${body}\n` };
+  if (body.trim().length === 0) throw new MarkdownArticleError("empty-body");
+  return { header: header.data, body };
 }
 
 /** Serialise an article in the exact format `parseMarkdownArticle` accepts. */
