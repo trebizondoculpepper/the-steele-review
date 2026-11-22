@@ -44,6 +44,11 @@ import { researchJobId, type ResearchRequest } from "../research/job.js";
 import {
   assessPostCoverage,
   CoverageRecordSchema,
+  analysedBefore,
+  retainedOrdering,
+  originalOrder,
+  rankResearchRequests,
+  saveResearchSelection,
   type CommissionedJob,
   type ThemeShortlister,
 } from "../research/librarian.js";
@@ -152,6 +157,16 @@ export function articleStages(deps: {
 
   // Planning captures the librarian's requests without commissioning research.
   const planned = async (themes: Ref, claims: Ref): Promise<ResearchRequest[]> => {
+    const theme = JSON.parse(await deps.content.read(themes)) as {
+      post: { publicationId: string; postId: string };
+    };
+    // Ordering is decided once per analysis, before this planning writes any
+    // coverage record (#533): an analysis already assessed before ranking
+    // keeps its original order, so retained recoveries still match. The
+    // decision is saved write-once, so every retry follows it.
+    const ordering = await retainedOrdering(deps.content, theme.post, themes, claims, async () =>
+      (await analysedBefore(deps.content, theme.post, themes, claims)) ? "original" : "ranked",
+    );
     const requests: ResearchRequest[] = [];
     await assessPostCoverage({
       artifacts: deps.content,
@@ -163,7 +178,12 @@ export function articleStages(deps: {
         return { jobId: "planning", status: "busy" };
       },
     });
-    return requests;
+    // Most useful gap first: the workflow commissions the first
+    // `researchRequestLimit` of this order, and the selection is saved.
+    const ordered =
+      ordering === "original" ? originalOrder(requests) : rankResearchRequests(requests);
+    await saveResearchSelection(deps.content, theme.post, themes, claims, ordered, ordering);
+    return ordered.map((r) => r.request);
   };
 
   return {

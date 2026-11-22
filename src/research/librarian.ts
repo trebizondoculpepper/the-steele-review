@@ -374,7 +374,8 @@ function assess(
       out.set(claim.key, {
         status: "not-commissioned",
         citations: [],
-        reason: "article research request limit reached",
+        reason:
+          "not selected: the article's new-research allowance went to higher-ranked evidence gaps (see the saved research selection)",
       });
       continue;
     }
@@ -1309,4 +1310,145 @@ export async function assessPostCoverage(input: {
   const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
   if (saveError) throw saveError;
   return { record: stored, ref };
+}
+
+/** One ranked research candidate for an article (#533). */
+export interface RankedResearchRequest {
+  request: ResearchRequest;
+  jobId: string;
+  rank: number;
+  /** Claims in the request that still need evidence. */
+  claimsNeedingEvidence: number;
+  rationale: string;
+}
+
+/**
+ * Order an article's candidate research requests by usefulness (#533): the
+ * gap with the most claims still needing evidence first, so a small new-job
+ * allowance buys the most coverage. Ties break on the stable job ID, so the
+ * order (and therefore the selected job) is deterministic on every retry.
+ * Requests only ever contain claims that need evidence: reused coverage is
+ * never re-requested.
+ */
+/** The original commissioning order, kept for analyses planned before ranking (#533). */
+export function originalOrder(requests: ResearchRequest[]): RankedResearchRequest[] {
+  return requests.map((request, i) => ({
+    request,
+    jobId: researchJobId(request),
+    rank: i + 1,
+    claimsNeedingEvidence: request.claims.length,
+    rationale: "planned before ranking existed; the original commissioning order is kept",
+  }));
+}
+
+/**
+ * The research ordering for one analysis, decided once and saved write-once
+ * (#533): the first decision is kept, so retries never switch between the
+ * original and the ranked order.
+ */
+export async function retainedOrdering(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  decide: () => Promise<"ranked" | "original">,
+): Promise<"ranked" | "original"> {
+  const key = createHash("sha256")
+    .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  const path = `librarian/research-ordering/${post.publicationId}/${post.postId}/${key}.json`;
+  const Saved = z
+    .object({ schemaVersion: z.literal(1), ordering: z.enum(["ranked", "original"]) })
+    .strict();
+  const existing = await artifacts.lookup(path);
+  if (existing) return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
+  const ref = await writeOnce(artifacts, path, { schemaVersion: 1, ordering: await decide() });
+  return Saved.parse(JSON.parse(await artifacts.read(ref))).ordering;
+}
+
+/** True when this exact analysis was already assessed (any saved coverage record). */
+export async function analysedBefore(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+): Promise<boolean> {
+  const paths = await artifacts.list(
+    `librarian/coverage/${post.publicationId}/${post.postId}`,
+    1000,
+  );
+  for (const path of paths) {
+    const ref = await artifacts.lookup(path);
+    if (!ref) continue;
+    const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+    if (!parsed.success) continue;
+    const r = parsed.data;
+    if (
+      r.themeResult.commit === themeResult.commit &&
+      r.themeResult.path === themeResult.path &&
+      r.claimResult.commit === claimResult.commit &&
+      r.claimResult.path === claimResult.path
+    )
+      return true;
+  }
+  return false;
+}
+
+export function rankResearchRequests(requests: ResearchRequest[]): RankedResearchRequest[] {
+  return requests
+    .map((request) => ({ request, jobId: researchJobId(request), n: request.claims.length }))
+    .sort((a, b) => b.n - a.n || a.jobId.localeCompare(b.jobId))
+    .map((r, i) => ({
+      request: r.request,
+      jobId: r.jobId,
+      rank: i + 1,
+      claimsNeedingEvidence: r.n,
+      rationale:
+        i === 0
+          ? `most claims still needing evidence (${r.n})`
+          : `${r.n} claim(s) still needing evidence; ranked below larger gaps (job ID breaks ties)`,
+    }));
+}
+
+/**
+ * Save the ranked candidates for one analysis, write-once (#533): which
+ * requests were considered, in which order and why. The workflow commissions
+ * the first `researchRequestLimit` of them; the coverage record shows which
+ * were commissioned and marks the rest as not selected.
+ */
+export async function saveResearchSelection(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  ranked: RankedResearchRequest[],
+  ordering: "ranked" | "original" = "ranked",
+): Promise<ArtifactRef> {
+  // Keyed by the analysis and its exact candidate set: a later attempt with
+  // fewer remaining gaps gets its own record, never an earlier one's.
+  const key = createHash("sha256")
+    .update(
+      JSON.stringify([toRef(themeResult), toRef(claimResult), ranked.map((r) => r.jobId).sort()]),
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return writeOnce(
+    artifacts,
+    `librarian/research-selection/${post.publicationId}/${post.postId}/${key}.json`,
+    {
+      schemaVersion: 1,
+      themeResult: toRef(themeResult),
+      claimResult: toRef(claimResult),
+      ordering,
+      candidates: ranked.map((r) => ({
+        rank: r.rank,
+        jobId: r.jobId,
+        origin: r.request.origin,
+        themeIds: [...new Set(r.request.claims.flatMap((c) => c.themeIds))],
+        claimsNeedingEvidence: r.claimsNeedingEvidence,
+        rationale: r.rationale,
+      })),
+    },
+  );
 }
