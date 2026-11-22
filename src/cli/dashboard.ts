@@ -65,6 +65,7 @@ import { dossierViews } from "../dashboard/dossier-views.js";
 import { savedEquivalence } from "../dashboard/equivalence.js";
 import { equivalenceViews } from "../dashboard/equivalence-views.js";
 import { mappingViews } from "../dashboard/mapping-views.js";
+import { reviewsBrowseViews } from "../dashboard/reviews-browse-views.js";
 import { articlesBrowseViews } from "../dashboard/articles-browse-views.js";
 import { themesBrowseViews } from "../dashboard/themes-browse-views.js";
 import { savedAssessments } from "../dashboard/assessments.js";
@@ -320,6 +321,16 @@ const views = [
   ...themesBrowseViews(content ? savedThemes(content) : undefined, content),
   ...(content ? assessmentViews(savedAssessments(content)) : []),
   ...(content ? judgmentViews(savedJudgments(content)) : []),
+  ...reviewsBrowseViews(
+    content
+      ? {
+          assessments: savedAssessments(content),
+          judgments: savedJudgments(content),
+          reviews: savedReviews(content),
+        }
+      : undefined,
+    content,
+  ),
   ...(content ? researchBrowseViews(savedResearch(content)) : []),
   // Saved research reports and dossiers, read-only (#507).
   ...researchViews(content ? savedResearch(content) : undefined),
