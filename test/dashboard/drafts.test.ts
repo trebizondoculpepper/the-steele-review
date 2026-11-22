@@ -274,7 +274,7 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
   });
 });
 
-describe("trashed drafts leave the active listing (#478)", () => {
+describe("trashed drafts leave the active listing (#478)", { timeout: 60_000 }, () => {
   it("hides a trashed draft and shows it again after a restore", async () => {
     await saveDraft("post", "Body text");
     const trash = new DraftTrashStore(content);

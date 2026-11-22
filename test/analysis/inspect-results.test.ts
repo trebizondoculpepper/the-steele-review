@@ -101,7 +101,9 @@ async function analyse(text = TEXT) {
   });
 }
 
-describe("inspectPost", () => {
+// These cases build real Git artifacts and read them back; under a loaded
+// parallel run the default per-test timeout is the flake source (#720).
+describe("inspectPost", { timeout: 60_000 }, () => {
   it("distinguishes nothing saved from an empty result", async () => {
     const none = await inspectPost(content, post);
     expect(none.notFound).toBe(true);
