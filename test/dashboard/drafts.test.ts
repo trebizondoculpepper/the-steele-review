@@ -439,3 +439,34 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     expect(await inventory.article("pub", "p1", "../x")).toBeUndefined();
   });
 });
+
+describe("article search respects delete and restore (#621)", () => {
+  it("drops a deleted draft from search and shows it again after a restore", async () => {
+    const { articlesCollection } = await import("../../src/dashboard/articles-collection.js");
+    const { queryCollection } = await import("../../src/dashboard/collection-query.js");
+    await saveDraft("post", "Body text");
+    const trash = new DraftTrashStore(content);
+    const search = () =>
+      queryCollection(articlesCollection(draftInventory(content, undefined, trash), content), {
+        filters: { category: "legacy-draft" },
+      });
+    const [row] = (await search()).rows;
+    expect(row).toBeDefined();
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: row!.artifact.path,
+      action: "delete",
+      requestId: "s-1",
+      at: "2026-02-01T00:00:00.000Z",
+    });
+    expect((await search()).rows).toHaveLength(0);
+    await trash.mark({
+      schemaVersion: 1,
+      draftPath: row!.artifact.path,
+      action: "restore",
+      requestId: "s-2",
+      at: "2026-02-02T00:00:00.000Z",
+    });
+    expect((await search()).rows).toHaveLength(1);
+  });
+});

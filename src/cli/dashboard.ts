@@ -312,7 +312,11 @@ const views = [
   ...(content ? dossierViews(savedThemes(content), savedResearch(content)) : []),
   ...(content ? equivalenceViews(savedEquivalence(content)) : []),
   ...mappingViews(content),
-  ...articlesBrowseViews(content ? draftInventory(content) : undefined, content),
+  // Search respects saved delete/restore markers (#478); reading them needs no write access.
+  ...articlesBrowseViews(
+    content ? draftInventory(content, undefined, new DraftTrashStore(content)) : undefined,
+    content,
+  ),
   ...themesBrowseViews(content ? savedThemes(content) : undefined, content),
   ...(content ? assessmentViews(savedAssessments(content)) : []),
   ...(content ? judgmentViews(savedJudgments(content)) : []),
