@@ -301,10 +301,10 @@ it.each(["local", "staged"] as const)(
   },
 );
 
-it(
-  "local live selection yields archive-failed without terminalizing a job, then retries one genuine dispatch",
+it.each(["normal", "local"])(
+  "%s live selection yields archive-failed without terminalizing a job, then retries one genuine dispatch",
   { timeout: 60000 },
-  async () => {
+  async (mode) => {
     const dir = await mkdtemp(join(tmpdir(), "live-selector-refusal-"));
     const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
@@ -341,19 +341,45 @@ it(
         corpusRefs: [],
       };
       const { runSonarResearch } = await import("../../src/research/sonar-runner.js");
-      const run = () =>
-        runSonarResearch({
-          artifacts,
-          operations,
-          owner: "fixture",
-          request,
-          discover: local,
-          fetcher: {
-            fetch: async () => {
-              throw new Error("no source retrieval expected");
-            },
-          },
-        });
+      const fetcher = {
+        fetch: async () => {
+          throw new Error("no source retrieval expected");
+        },
+      };
+      const sonar = new OpenRouterSonarClient({
+        apiKey: "synthetic-test-key",
+        model: "fixture/model",
+        timeoutMs: 1000,
+        maxOutputTokens: 4000,
+        tokens,
+        fetch,
+      });
+      const run =
+        mode === "local"
+          ? () =>
+              runSonarResearch({
+                artifacts,
+                operations,
+                owner: "fixture",
+                request,
+                discover: local,
+                fetcher,
+              })
+          : () =>
+              runResearchJob({
+                artifacts,
+                operations,
+                owner: "fixture",
+                request,
+                sonar,
+                fetcher,
+                judge: {
+                  judge: async () => {
+                    throw new Error("no support call expected");
+                  },
+                },
+                limits: { maxSources: 1, maxAttempts: 1, timeoutMs: 1000, maxSourceChars: 1000 },
+              });
       const scan = vi
         .spyOn(artifacts, "list")
         .mockResolvedValueOnce(Array.from({ length: 201 }, (_, index) => `synthetic-${index}`));
