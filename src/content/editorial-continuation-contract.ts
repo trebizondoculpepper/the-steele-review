@@ -72,6 +72,7 @@ export const safeContinuationReason = (value: string | undefined) => {
     "provider-failed",
     "malformed-output",
     "invalid-draft",
+    "application-format-failed",
     "source-url-mismatch",
     "no-source-url",
     "article-conflict",
