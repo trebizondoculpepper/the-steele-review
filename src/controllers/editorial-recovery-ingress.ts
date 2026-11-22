@@ -72,6 +72,44 @@ export interface JudgeRecoveryIngress {
   ): Promise<{ invocationId: string; repeated: boolean }>;
   attach(key: string, waitMs: number): Promise<JudgeRecoveryResult>;
 }
+export interface JudgeRecoveryCompletionPort {
+  read(
+    key: string,
+  ): Promise<{ state: "not-complete" } | { state: "completed"; result: JudgeRecoveryResult }>;
+}
+/** Status only: never invokes run or submits an absent workflow. */
+export function restateJudgeRecoveryCompletion(url: string): JudgeRecoveryCompletionPort {
+  let ingress: ReturnType<typeof clients.connect>;
+  try {
+    urlValid(url);
+    ingress = clients.connect({ url });
+  } catch {
+    throw new EditorialIngressError("unconfigured");
+  }
+  return {
+    async read(key) {
+      const signal = AbortSignal.timeout(10000);
+      try {
+        const output = await ingress
+          .workflowClient<EditorialJudgeRecoveryApi>(
+            { name: EDITORIAL_JUDGE_RECOVERY_WORKFLOW },
+            key,
+          )
+          .workflowOutput(clients.rpc.opts({ signal }));
+        if (!output.ready) return { state: "not-complete" };
+        const parsed = JudgeRecoveryResultSchema.safeParse(output.result);
+        if (!parsed.success) throw new EditorialIngressError("invalid-response");
+        return { state: "completed", result: parsed.data };
+      } catch (error) {
+        if (signal.aborted) throw new EditorialIngressError("timeout");
+        if (error instanceof EditorialIngressError) throw error;
+        if (error instanceof clients.HttpCallError && error.status === 404)
+          return { state: "not-complete" };
+        throw new EditorialIngressError("unavailable");
+      }
+    },
+  };
+}
 export function restateJudgeRecovery(url: string): JudgeRecoveryIngress {
   let ingress: ReturnType<typeof clients.connect>;
   try {

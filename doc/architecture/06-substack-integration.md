@@ -10,6 +10,8 @@ RSS is the initial discovery mechanism. Fetching full posts, historical backfill
 
 The publisher accepts only a stored, verified article version. It checks publication eligibility, records intent, creates or reuses a draft, saves the destination ID, and (when publishing is enabled) publishes. A change to article content after verification invalidates that verification result.
 
+The owner explicitly permits a separate draft-rehearsal authority: one mechanically valid revision with unresolved findings may be saved as an unpublished editable Substack draft, without email. Its exact body/metadata/package and assessment/judgment records remain pinned, and REVISE verdicts are preserved. This is not an editorial approval. The operator authority names exactly two dummy targets and one real draft target with an opaque configuration identity; default destinations refuse this authority unless they implement the explicit unpublished/no-email capability. Initial readback and uncertain-create reconciliation reject published or email-sent records. A cached receipt does not bypass target/capability checks. No public publish or email API is added.
+
 Store the destination URL and publication timestamp after confirmation. Configure publishing frequency limits and a pause switch. Cookie or session expiry must produce a visible operational failure rather than repeated creation attempts. Subscriber email is off unless deliberately enabled.
 
 ## Live Substack publisher design (#256)

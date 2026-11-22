@@ -15,6 +15,15 @@ export const DraftTargetSchema = z
   })
   .strict();
 export type DraftTarget = z.infer<typeof DraftTargetSchema>;
+/** Fixed ordered scope exports faithfully as JSON Schema: two dummies and one real draft. */
+export const OwnerDraftTargetsSchema = z.tuple([
+  DraftTargetSchema.extend({ name: z.literal("dummy-a"), provider: z.literal("dummy") }),
+  DraftTargetSchema.extend({ name: z.literal("dummy-b"), provider: z.literal("dummy") }),
+  DraftTargetSchema.extend({
+    name: z.string().regex(/^(?!dummy-a$|dummy-b$)[a-z0-9][a-z0-9-]{0,62}$/),
+    provider: z.literal("substack"),
+  }),
+]);
 
 export const OwnerDraftRequestSchema = z
   .object({
@@ -32,22 +41,9 @@ export const OwnerDraftRequestSchema = z
     assessment: ArtifactReferenceSchema,
     judgment: ArtifactReferenceSchema,
     mechanicalRun: ArtifactReferenceSchema,
-    destinations: z.array(DraftTargetSchema).length(3),
+    destinations: OwnerDraftTargetsSchema,
   })
-  .strict()
-  .superRefine((r, ctx) => {
-    if (new Set(r.destinations.map((d) => d.name)).size !== r.destinations.length)
-      ctx.addIssue({ code: "custom", message: "duplicate destination" });
-    for (const name of ["dummy-a", "dummy-b"])
-      if (!r.destinations.some((d) => d.name === name && d.provider === "dummy"))
-        ctx.addIssue({ code: "custom", message: "dummy destinations required" });
-    if (
-      r.destinations.filter(
-        (d) => d.provider === "substack" && !["dummy-a", "dummy-b"].includes(d.name),
-      ).length !== 1
-    )
-      ctx.addIssue({ code: "custom", message: "one real Substack draft destination required" });
-  });
+  .strict();
 export type OwnerDraftRequest = z.infer<typeof OwnerDraftRequestSchema>;
 
 export const OwnerDraftAuthorizationSchema = z

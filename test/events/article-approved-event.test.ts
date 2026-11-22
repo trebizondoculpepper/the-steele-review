@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ARTICLE_APPROVED_EVENT_TYPE_V1,
   ARTICLE_APPROVED_SUBJECT,
+  ARTICLE_DRAFT_AUTHORIZED_EVENT_TYPE_V2,
+  ARTICLE_DRAFT_AUTHORIZED_DATASCHEMA_V2,
+  articleApprovedDataJsonSchema,
   ArticleApprovedDataSchema,
   createArticleApprovedEvent,
   parseArticleApprovedEvent,
@@ -56,5 +59,53 @@ describe("article approved contract (#274)", () => {
     const extra = JSON.parse(json);
     extra.data.originalUrl = "https://example.com";
     expect(() => parseArticleApprovedEvent(JSON.stringify(extra))).toThrow();
+  });
+
+  it("versions owner draft authorization separately without changing legacy envelopes", () => {
+    const targets = ["dummy-a", "dummy-b", "substack"].map((name, i) => ({
+      name,
+      provider: i < 2 ? "dummy" : "substack",
+      action: "draft",
+      capability: "unpublished-no-email-v1",
+      identity: `sha256:${"c".repeat(64)}`,
+    }));
+    const owner = ArticleApprovedDataSchema.parse({
+      ...data,
+      approvalKind: "owner-draft-rehearsal",
+      authorizationOutcome: "owner-authorized-draft",
+      draftTargets: targets,
+      publication: ref("publication.json"),
+      assessment: ref("assessment.json"),
+    });
+    const event = createArticleApprovedEvent(owner, "approved-owner").toJSON();
+    expect(event).toMatchObject({
+      type: ARTICLE_DRAFT_AUTHORIZED_EVENT_TYPE_V2,
+      dataschema: ARTICLE_DRAFT_AUTHORIZED_DATASCHEMA_V2,
+    });
+    expect(parseArticleApprovedEvent(JSON.stringify(event))).toMatchObject({
+      eventId: "approved-owner",
+      authorizationOutcome: "owner-authorized-draft",
+    });
+    expect(() =>
+      parseArticleApprovedEvent(JSON.stringify({ ...event, type: ARTICLE_APPROVED_EVENT_TYPE_V1 })),
+    ).toThrow();
+    const v1 = createArticleApprovedEvent(data, "approved-legacy").toJSON();
+    expect(v1.type).toBe(ARTICLE_APPROVED_EVENT_TYPE_V1);
+    expect(v1.data).not.toHaveProperty("authorizationOutcome");
+    expect(() => parseArticleApprovedEvent(JSON.stringify({ ...v1, data: owner }))).toThrow();
+    expect(articleApprovedDataJsonSchema(1).properties).not.toHaveProperty("draftTargets");
+    expect(articleApprovedDataJsonSchema(2).required).toEqual(
+      expect.arrayContaining([
+        "approvalKind",
+        "authorizationOutcome",
+        "draftTargets",
+        "publication",
+        "assessment",
+      ]),
+    );
+    expect(MESSAGES.filter((m) => m.subject === ARTICLE_APPROVED_SUBJECT)).toHaveLength(1);
+    expect(
+      MESSAGES.find((m) => m.subject === ARTICLE_APPROVED_SUBJECT)?.supportedEventTypes,
+    ).toContain(ARTICLE_DRAFT_AUTHORIZED_EVENT_TYPE_V2);
   });
 });

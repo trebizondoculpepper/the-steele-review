@@ -12,6 +12,7 @@ import {
   readApprovedContent,
   readDummyDeliveryProof,
   readDestinationDeliveryProof,
+  assertDraftAuthorizationTarget,
   type DestinationAdapter,
 } from "./approved-article.js";
 import { runPublisherService, type SelectedPublisherResult } from "./publisher-service.js";
@@ -72,9 +73,10 @@ export async function runSelectedPublisher(input: {
     new TextDecoder().decode(message.data) !== pending.payload
   )
     throw new SelectedPublisherError("selection-mismatch");
-  await readApprovedContent(input.content, article);
+  await readApprovedContent(input.content, article, input.operations);
+  assertDraftAuthorizationTarget(article, input.destination);
   const { eventId: _eventId, ...approved } = article;
-  if (!(await readDummyDeliveryProof(input.content, approved)))
+  if (!(await readDummyDeliveryProof(input.content, approved, input.operations)))
     throw new SelectedPublisherError("dummy-proof-missing");
   const suffix = createHash("sha256")
     .update(
@@ -105,6 +107,7 @@ export async function runSelectedPublisher(input: {
       approved,
       input.destination,
       false,
+      input.operations,
     );
     if (!receipt || position.ackFloorSequence !== selection.sequence)
       throw new SelectedPublisherError("ack-without-receipt");

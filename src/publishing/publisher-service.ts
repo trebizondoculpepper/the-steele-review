@@ -99,7 +99,15 @@ export async function runPublisherService(input: {
         if (input.selection?.requireRealReceipt) {
           try {
             const { eventId: _eventId, ...approved } = parseArticleApprovedEvent(payload);
-            if (!(await readDestinationDeliveryProof(input.content, approved, destination, false)))
+            if (
+              !(await readDestinationDeliveryProof(
+                input.content,
+                approved,
+                destination,
+                false,
+                input.operations,
+              ))
+            )
               throw new Error();
           } catch {
             settle({ status: "stopped", reason: "receipt-mismatch" });

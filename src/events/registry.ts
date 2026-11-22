@@ -4,6 +4,7 @@ import {
 } from "./captured-content-event.js";
 import {
   ARTICLE_APPROVED_EVENT_TYPE_V1,
+  ARTICLE_DRAFT_AUTHORIZED_EVENT_TYPE_V2,
   ARTICLE_APPROVED_SUBJECT,
   PUBLICATION_STREAM,
 } from "./article-approved-event.js";
@@ -85,6 +86,8 @@ export interface MessageDefinition {
   subject: string;
   /** CloudEvents type, where the message has a published envelope contract. */
   eventType?: string;
+  /** Explicit envelope versions sharing this subject; the default type stays stable. */
+  supportedEventTypes?: readonly string[];
   /** Stream that retains it, or null when no stream is provisioned yet. */
   stream: string | null;
   producer: string;
@@ -219,11 +222,13 @@ export const MESSAGES: readonly MessageDefinition[] = [
   {
     subject: ARTICLE_APPROVED_SUBJECT,
     eventType: ARTICLE_APPROVED_EVENT_TYPE_V1,
+    supportedEventTypes: [ARTICLE_APPROVED_EVENT_TYPE_V1, ARTICLE_DRAFT_AUTHORIZED_EVENT_TYPE_V2],
     stream: PUBLICATION_STREAM,
-    producer: "recordApproval (package verification approval)",
+    producer: "recordApproval; explicit owner draft authorization",
     description:
-      "An exact article revision was approved; each destination consumes it independently.",
-    emittedWhen: "The package verifier approves an exact draft revision (outbox).",
+      "V1 exact-version editorial approval, or V2 explicitly owner-authorized unpublished draft rehearsal; never an invented factual approval.",
+    emittedWhen:
+      "Exact-version verification approves a draft, or a separate owner authority pins one mechanically valid rehearsal revision (atomic outbox).",
     guarantees:
       "Stable event ID per (draft, approval); each destination keeps its own keyed intent and receipt, reuses it on redelivery and reconciles uncertain deliveries before retrying.",
   },
@@ -312,6 +317,13 @@ export function registryProblems(
   }
   const declared = new Set<string>();
   for (const m of messages) {
+    if (
+      m.supportedEventTypes &&
+      (!m.eventType ||
+        !m.supportedEventTypes.includes(m.eventType) ||
+        new Set(m.supportedEventTypes).size !== m.supportedEventTypes.length)
+    )
+      problems.push(`subject ${m.subject} has inconsistent supported envelope versions`);
     if (!SUBJECT.test(m.subject))
       problems.push(`subject ${m.subject} does not follow steele.v1.<area>.<event>`);
     if (declared.has(m.subject)) problems.push(`subject ${m.subject} is declared twice`);
@@ -369,7 +381,7 @@ export function renderRegistryReference(): string {
     "| --- | --- | --- | --- | --- |",
     ...MESSAGES.map(
       (m) =>
-        `| \`${m.subject}\` | ${m.eventType ? `\`${m.eventType}\`` : "—"} | ${m.stream ? `\`${m.stream}\`` : "not provisioned"} | ${m.producer} | ${m.description} |`,
+        `| \`${m.subject}\` | ${(m.supportedEventTypes ?? (m.eventType ? [m.eventType] : [])).map((t) => `\`${t}\``).join(", ") || "—"} | ${m.stream ? `\`${m.stream}\`` : "not provisioned"} | ${m.producer} | ${m.description} |`,
     ),
     "",
     "## Message contracts",
