@@ -167,4 +167,28 @@ describe("writer records search (#623)", { timeout: 60_000 }, () => {
     );
     expect(html).toContain("unavailable");
   });
+
+  it("counts every examined path toward the scan bound", async () => {
+    const paths = Array.from(
+      { length: 1_200 },
+      (_, i) => `writer-attempts/x/input-${String(i).padStart(5, "0")}.json`,
+    );
+    let lists = 0;
+    const store = {
+      list: async (_p: string, limit: number, after?: string) => {
+        lists++;
+        const start = after ? paths.indexOf(after) + 1 : 0;
+        return paths.slice(start, start + limit);
+      },
+      lookup: async () => undefined,
+      read: async () => "",
+    };
+    const page = await queryCollection(writerCollection(store as never), {
+      filters: { kind: "attempt" },
+    });
+    expect(page.rows).toHaveLength(0);
+    expect(page.next).toBeDefined();
+    expect(page.limitations.join(" ")).toMatch(/scan bound/);
+    expect(lists).toBeLessThanOrEqual(6);
+  });
 });

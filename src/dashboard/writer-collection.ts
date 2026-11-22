@@ -152,8 +152,9 @@ export function writerCollection(content: Store): CollectionAdapter & {
           after = path;
           if (rows.length >= query.limit || scanned >= WRITER_SCAN) break;
           lastSeen = path;
-          if (kind === "brief" ? !BRIEF.test(path) : !ATTEMPT.test(path)) continue;
+          // Every examined path counts, so the bound limits real work.
           scanned++;
+          if (kind === "brief" ? !BRIEF.test(path) : !ATTEMPT.test(path)) continue;
           try {
             if (kind === "brief") {
               const r = await content.lookup(path);
