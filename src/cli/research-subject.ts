@@ -16,8 +16,11 @@ import {
   type ResearchResult,
 } from "../research/job.js";
 import type { ArtifactRef } from "../controllers/artifact-store.js";
-import { restateResearchIngress, submitManualResearch } from "../research/research-submission.js";
-import { restateUiLinks } from "../dashboard/restate-links.js";
+import {
+  reprocessedRequest,
+  restateResearchIngress,
+  submitManualResearch,
+} from "../research/research-submission.js";
 import { researchExecutionFromEnv } from "../workflow/research-execution.js";
 import { runSonarResearch } from "../research/sonar-runner.js";
 
@@ -167,7 +170,6 @@ const SubmitConfig = z.object({
   RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }),
   STEELE_CONTENT_PATH: z.string().min(1),
   STEELE_CONTENT_REPOSITORY: z.string().min(1),
-  STEELE_RESTATE_UI_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
 });
 // A reprocess is a later pass of the same request; passes are bounded at 5.
 const Count = z.coerce.number().int().min(1).max(4);
@@ -209,7 +211,10 @@ async function submitted(
     repoPath: process.env.STEELE_CONTENT_PATH!,
     repository: process.env.STEELE_CONTENT_REPOSITORY ?? "content",
   });
-  const jobId = researchJobId(request);
+  // Status of exactly the generation asked for (with --reprocess, the later pass).
+  const jobId = researchJobId(
+    reprocessedRequest(request, typeof reprocess === "object" ? reprocess.data : 0),
+  );
   if (values.status) {
     const saved = await artifacts.lookup(researchJobPath(jobId, "result"));
     const result = saved
@@ -220,32 +225,24 @@ async function submitted(
     return result ? 0 : 1;
   }
   const c = config.data!;
-  const ui = restateUiLinks(c.STEELE_RESTATE_UI_URL);
   const out = await submitManualResearch({
     ingress: restateResearchIngress(c.RESTATE_INGRESS_URL),
-    artifacts,
     request,
     ...researchExecutionFlag(),
     ...(typeof reprocess === "object" ? { reprocess: reprocess.data } : {}),
     ...(wait?.success ? { waitMs: wait.data } : {}),
-    ...(ui ? { inspect: (id: string) => ui.invocation(id) } : {}),
   });
-  const result = out.kind === "existing" ? out.result : out.job?.result;
+  const result = out.job?.result;
   const attachment =
     values.dossier && result
       ? await attachToDossier(artifacts, String(values.dossier), request, result)
       : undefined;
   if (values.json) {
     console.log(JSON.stringify({ ...out, ...(attachment ? { attachment } : {}) }));
-  } else if (out.kind === "existing") {
-    console.log(
-      `${out.jobId}: already saved (${out.result.outcome}); not resubmitted. Use --reprocess 1 to run it again.`,
-    );
   } else {
     console.log(
       `${out.jobId}: ${out.repeated ? "already submitted" : "submitted"} as ${out.invocationId}`,
     );
-    if (out.inspect) console.log(`Inspect: ${out.inspect}`);
     if (out.waitEnded) console.log("Still running; check later with --status.");
     if (result)
       console.log(`Outcome: ${result.outcome}${result.failure ? ` (${result.failure})` : ""}`);

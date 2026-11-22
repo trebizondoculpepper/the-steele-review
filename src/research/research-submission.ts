@@ -1,4 +1,5 @@
 import * as clients from "@restatedev/restate-sdk-clients";
+import { z } from "zod";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { ResearchServiceApi } from "../workflow/article-run.js";
 import { RESEARCH_SCOPE, researchCallKey } from "../workflow/article-run.js";
@@ -68,34 +69,52 @@ export function restateResearchIngress(ingressUrl: string): ResearchIngressPort 
         throw error;
       }
       if (!res.ok) throw new Error(`attach failed (HTTP ${res.status})`);
-      return (await res.json()) as CommissionedJob;
+      // An external boundary: the job envelope, result and refs are validated.
+      const parsed = CommissionedJobSchema.safeParse(await res.json().catch(() => undefined));
+      if (!parsed.success) throw new Error("attach returned an invalid job");
+      return parsed.data as CommissionedJob;
     },
   };
 }
 
-export type SubmissionOutcome =
-  | {
-      kind: "existing";
-      jobId: string;
-      result: ResearchResult;
-      resultRef: ArtifactRef;
-    }
-  | {
-      kind: "submitted";
-      jobId: string;
-      invocationId: string;
-      /** True when Restate already had this exact submission. */
-      repeated: boolean;
-      handler: "run" | "runStaged";
-      inspect?: string;
-      job?: CommissionedJob;
-      /** Set when `wait` ended before the job finished; the invocation keeps running. */
-      waitEnded?: "timeout";
-    };
+const RefSchema = z
+  .object({
+    repository: z.string().min(1).max(500),
+    commit: z.string().regex(/^[0-9a-f]{40,64}$/),
+    path: z.string().min(1).max(1000),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+const CommissionedJobSchema = z
+  .object({
+    jobId: z.string().regex(/^research-[0-9a-f]{32}$/),
+    status: z.enum(["finished", "busy", "not-commissioned"]),
+    result: ResearchResultSchema.optional(),
+    resultRef: RefSchema.optional(),
+  })
+  .strict();
+
+export type SubmissionOutcome = {
+  kind: "submitted";
+  jobId: string;
+  invocationId: string;
+  /** True when Restate already had this exact submission. */
+  repeated: boolean;
+  handler: "run" | "runStaged";
+  job?: CommissionedJob;
+  /** Set when `wait` ended before the job finished; the invocation keeps running. */
+  waitEnded?: "timeout";
+};
+
+/** The request a reprocessing generation submits: a later pass linked to the original job. */
+export function reprocessedRequest(request: ResearchRequest, reprocess = 0): ResearchRequest {
+  return reprocess > 0
+    ? { ...request, pass: request.pass + reprocess, previousJobId: researchJobId(request) }
+    : request;
+}
 
 export async function submitManualResearch(input: {
   ingress: ResearchIngressPort;
-  artifacts: Pick<GitArtifactStore, "lookup" | "read">;
   request: ResearchRequest;
   /** The contract new runs use, as for article runs (`researchExecutionFromEnv`). */
   staged: boolean;
@@ -103,46 +122,22 @@ export async function submitManualResearch(input: {
   reprocess?: number;
   /** Wait for the job, bounded; the invocation is never cancelled on timeout. */
   waitMs?: number;
-  /** Builds a Restate UI link for an invocation, when configured. */
-  inspect?: (invocationId: string) => string | undefined;
 }): Promise<SubmissionOutcome> {
-  const reprocess = input.reprocess ?? 0;
-  // Reprocessing is a new durable job, not a new call to the old one: a later
-  // pass linked to the original job, so earlier artifacts stay untouched and
-  // the worker cannot reuse the old result.
-  const request: ResearchRequest =
-    reprocess > 0
-      ? {
-          ...input.request,
-          pass: input.request.pass + reprocess,
-          previousJobId: researchJobId(input.request),
-        }
-      : input.request;
+  // Reprocessing is a new durable job, not a new call to the old one, so
+  // earlier artifacts stay untouched and the worker cannot reuse the old result.
+  const request = reprocessedRequest(input.request, input.reprocess);
   const jobId = researchJobId(request);
-  // Saved terminal work is reported, never silently repeated (this applies to
-  // a reprocessed job too, so repeating `--reprocess n` never reruns it).
-  {
-    const saved = await input.artifacts.lookup(researchJobPath(jobId, "result"));
-    if (saved) {
-      const result = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(saved)));
-      return { kind: "existing", jobId, result, resultRef: saved };
-    }
-  }
+  // Always submitted: the worker reuses a saved result without new discovery
+  // and, through the state controller, repairs a missing completion event.
+  // The stable call key makes a repeat attach to the same invocation.
   const handler: "run" | "runStaged" = input.staged ? "runStaged" : "run";
-  const sent = await input.ingress.send(
-    handler,
-    request,
-    // The same call key as article research: one job, one paid run.
-    researchCallKey(jobId),
-  );
-  const link = input.inspect?.(sent.invocationId);
+  const sent = await input.ingress.send(handler, request, researchCallKey(jobId));
   const base = {
     kind: "submitted" as const,
     jobId,
     invocationId: sent.invocationId,
     repeated: sent.status === "PreviouslyAccepted",
     handler,
-    ...(link ? { inspect: link } : {}),
   };
   if (!input.waitMs) return base;
   try {

@@ -64,10 +64,8 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     const ingress = fakeIngress();
     const first = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
-      inspect: (id) => `https://restate.invalid/ui/invocations/${id}`,
     });
     expect(first).toMatchObject({
       kind: "submitted",
@@ -75,10 +73,8 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
       repeated: false,
       handler: "run",
     });
-    expect(first.kind === "submitted" && first.inspect).toMatch(/invocations\/inv_/);
     const again = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
     });
@@ -96,14 +92,13 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     const ingress = fakeIngress();
     const out = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: true,
     });
     expect(out).toMatchObject({ handler: "runStaged" });
   });
 
-  it("reports saved work instead of resubmitting it, including legacy standalone results", async () => {
+  it("hands saved work to the worker under its own key, and reprocesses as a new linked job", async () => {
     const jobId = researchJobId(request);
     await artifacts.write(
       `research-jobs/${jobId}/result.json`,
@@ -118,16 +113,16 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     const ingress = fakeIngress();
     const out = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
     });
-    expect(out).toMatchObject({ kind: "existing", result: { outcome: "failed" } });
-    expect(ingress.sent).toHaveLength(0);
+    // Submitted under the original job's key: the worker reuses the saved
+    // result (repairing any missing completion event) without new discovery.
+    expect(out).toMatchObject({ kind: "submitted", jobId });
+    expect(ingress.sent[0]!.key).toBe(jobId);
     // Explicit reprocessing submits under a distinct, stable key.
     const re = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
       reprocess: 1,
@@ -136,7 +131,7 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     // A new durable job: a later pass linked to the original, never the old job's key.
     const reJobId = researchJobId({ ...request, pass: 2, previousJobId: jobId });
     expect(re).toMatchObject({ jobId: reJobId });
-    expect(ingress.sent[0]!.key).toBe(reJobId);
+    expect(ingress.sent[1]!.key).toBe(reJobId);
     // The original result is untouched.
     expect(await artifacts.lookup(`research-jobs/${jobId}/result.json`)).toBeDefined();
   });
@@ -146,7 +141,6 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     const ingress = fakeIngress(async () => ({ jobId, status: "finished" }));
     const out = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
       waitMs: 5_000,
@@ -158,7 +152,6 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     const ingress = fakeIngress();
     const out = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
       waitMs: 1_000,
@@ -168,7 +161,6 @@ describe("manual research submission (#594)", { timeout: 30_000 }, () => {
     // Recovery after disconnect: resubmitting attaches to the same invocation.
     const again = await submitManualResearch({
       ingress: ingress.port,
-      artifacts,
       request,
       staged: false,
     });
@@ -200,6 +192,27 @@ describe("restate research ingress adapter (#594)", { timeout: 15_000 }, () => {
       expect(attached).toBe("/restate/invocation/inv_abcdefghij1/attach");
     } finally {
       for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+describe("attach response validation (#594)", { timeout: 15_000 }, () => {
+  it("rejects a malformed job from the ingress", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as import("node:net").AddressInfo;
+    try {
+      await expect(
+        restateResearchIngress(`http://127.0.0.1:${port}`).attach(
+          "inv_abcdefghij1",
+          AbortSignal.timeout(5_000),
+        ),
+      ).rejects.toThrow("invalid job");
+    } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
