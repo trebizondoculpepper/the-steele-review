@@ -11,6 +11,7 @@ import {
   RetrievalOutcomeSchema,
   type RetrievalOutcome,
 } from "./citation-inventory.js";
+import { CitationSupportSchema, supportPath, type CitationSupport } from "./citation-support.js";
 import type { DiscoveryData } from "./discovery-data.js";
 import { readResearchDiscovery } from "./discovery.js";
 import {
@@ -86,6 +87,8 @@ export async function assembleResearch(input: {
   read: AssemblyReader;
   owner: string;
   now?: () => Date;
+  /** Judge identity whose saved verdicts apply (#593); "none" when unjudged. */
+  supportIdentity?: string;
 }): Promise<AssembledResearch> {
   const dir = input.discovery.path.replace(/\/result\.json$/, "");
   const assembledDir = `${dir}/assembled`;
@@ -190,7 +193,38 @@ export async function assembleResearch(input: {
       pending++;
       citations.push({ ...base, retrieval: "not-attempted", retrievalReason: "retrieval-pending" });
     } else if (o.status === "archived" && o.snapshot) {
-      citations.push({ ...base, retrieval: "archived", archivedArtifact: o.snapshot });
+      // A saved support judgement counts only for exactly this snapshot (#593).
+      const judged = await readSupport(
+        input.artifacts,
+        input.inventory,
+        entry.retrievalId,
+        o.snapshot,
+        input.supportIdentity ?? "none",
+      );
+      citations.push({
+        ...base,
+        retrieval: "archived",
+        archivedArtifact: o.snapshot,
+        ...(judged
+          ? {
+              support: judged.support,
+              passages: judged.passages,
+              ...(judged.monitored
+                ? {
+                    sourceType: "monitored-source",
+                    confidenceRationale: "The claimant's own material; not independent support.",
+                  }
+                : {
+                    sourceType: judged.sourceType ?? "web-page",
+                    confidenceRationale:
+                      judged.rationale ??
+                      (judged.support === "supported"
+                        ? "Contains a verbatim passage supporting the report's conclusion."
+                        : "No passage directly supports the report's conclusion."),
+                  }),
+            }
+          : {}),
+      });
     } else if (o.status === "unsupported") {
       citations.push({
         ...base,
@@ -225,7 +259,15 @@ export async function assembleResearch(input: {
     );
   if (data.citationProvenance !== "provider-original")
     gaps.push("Citation list comes from the adapter's return, not the original provider envelope.");
-  gaps.push(STANDING_GAP);
+  const unjudged = citations.filter(
+    (c) => c.retrieval === "archived" && c.support === "not-checked",
+  ).length;
+  const unverified = citations.filter(
+    (c) => c.retrieval === "archived" && c.support === "unverified",
+  ).length;
+  if (unverified > 0)
+    gaps.push(`${unverified} archived source(s) have no verified supporting passage.`);
+  if (unjudged > 0) gaps.push(STANDING_GAP);
 
   if (citations.length > 500) {
     // The manifest contract holds at most 500 citations; the rest stay in the inventory.
@@ -324,4 +366,27 @@ function outcomeOf(m: ResearchManifest): "complete" | "complete-with-gaps" {
     m.gaps.every((g) => g === STANDING_GAP)
     ? "complete"
     : "complete-with-gaps";
+}
+
+/** The saved judgement for one archived source, bound to its exact snapshot. */
+async function readSupport(
+  artifacts: GitArtifactStore,
+  inventory: ArtifactRef,
+  retrievalId: string,
+  snapshot: { repository: string; commit: string; path: string; hash: string },
+  identity: string,
+): Promise<CitationSupport | undefined> {
+  const ref = await artifacts.lookup(supportPath(inventory, retrievalId, identity));
+  if (!ref) return undefined;
+  const parsed = CitationSupportSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+  if (!parsed.success) return undefined;
+  const s = parsed.data;
+  return s.retrievalId === retrievalId &&
+    s.judge === identity &&
+    s.snapshot.repository === snapshot.repository &&
+    s.snapshot.commit === snapshot.commit &&
+    s.snapshot.path === snapshot.path &&
+    s.snapshot.hash === snapshot.hash
+    ? s
+    : undefined;
 }

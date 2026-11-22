@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
+import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import { WebAdapterError } from "../../src/controllers/research-web.js";
 import {
   assembleStage,
@@ -14,6 +15,7 @@ import {
   retrieveStage,
   retrievalIds,
   retrieveOneStage,
+  supportStage,
   type StagedResearchDeps,
 } from "../../src/research/staged-research.js";
 import { researchJobId } from "../../src/research/job.js";
@@ -88,6 +90,7 @@ function stagesFor(deps: StagedResearchDeps): ResearchStages {
     inventory: (d) => inventoryStage(deps, d),
     retrieve: (i) => retrieveStage(deps, i),
     ids: (i) => retrievalIds(deps, i),
+    support: (d, i, id) => supportStage(deps, d, i, id),
     retrieveOne: (i, id) => retrieveOneStage(deps, i, id),
     assemble: (d, i) => assembleStage(deps, d, i),
     failed: (r, f) => finishFailedStage(deps, r, f as never),
@@ -357,5 +360,151 @@ describe("staged outputs are searchable (#593)", () => {
     const job = await existingJob({ artifacts, operations }, request);
     expect(job?.result?.failure).toBe("provider-error");
     expect(operations.pendingEventStatus(jobId)).toBeDefined();
+  });
+});
+
+describe("staged support handoff (#593)", { timeout: 60_000 }, () => {
+  const judgeWith = (
+    fn: (url: string, source: string) => { findingId: string; passage: string }[],
+  ) => ({
+    calls: 0,
+    async judge(input: { url: string; source: string; findings: { id: string }[] }) {
+      this.calls++;
+      return {
+        passages: fn(input.url, input.source).map((p) => ({
+          ...p,
+          findingId: p.findingId || input.findings[0]!.id,
+        })),
+      };
+    },
+  });
+  const fetchOk = {
+    fetch: async (url: string) => ({ url, title: url, text: `Text of ${url} with a key fact.` }),
+  };
+
+  it("judges each archived source as its own step and records supported passages", async () => {
+    const judge = judgeWith((url) =>
+      url.includes("ok.example")
+        ? [{ findingId: "", passage: "a key fact" }]
+        : [{ findingId: "", passage: "not in the source" }],
+    );
+    const d = { ...deps(sonar(), fetchOk), judge: judge as never, monitoredHosts: [] };
+    const run = journalCtx();
+    const job = await runResearch(
+      run.ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d) },
+      request,
+      "staged",
+    );
+    expect(run.names.filter((n) => n.startsWith("research-support-"))).toHaveLength(2);
+    const manifest = JSON.parse(
+      await artifacts.read((await artifacts.lookup(job.result!.manifest!.path))!),
+    );
+    const byUrl = new Map(manifest.citations.map((c: { url: string }) => [c.url, c]));
+    expect(byUrl.get("https://ok.example/a")).toMatchObject({
+      support: "supported",
+      passages: [{ passage: "a key fact" }],
+    });
+    // A passage that is not verbatim in the source never counts.
+    expect(byUrl.get("https://flaky.example/b")).toMatchObject({
+      support: "unverified",
+      passages: [],
+    });
+    expect(manifest.gaps.join(" ")).toMatch(/no verified supporting passage/);
+    expect(manifest.gaps.join(" ")).not.toMatch(/not yet assessed/);
+    // A replay reuses saved judgements: no further judge calls.
+    const before = judge.calls;
+    await runResearch(
+      journalCtx().ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d) },
+      request,
+      "staged",
+    );
+    expect(judge.calls).toBe(before);
+  });
+
+  it("never reuses a verdict made under another judge prompt", async () => {
+    const first = Object.assign(
+      judgeWith(() => [{ findingId: "", passage: "a key fact" }]),
+      {
+        identity: "support-judge-v1+sha256:aaaa",
+      },
+    );
+    const d1 = { ...deps(sonar(), fetchOk), judge: first as never };
+    await runResearch(
+      journalCtx().ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d1) },
+      request,
+      "staged",
+    );
+    const second = Object.assign(
+      judgeWith(() => []),
+      { identity: "support-judge-v2+sha256:bbbb" },
+    );
+    const d2 = { ...deps(sonar(), fetchOk), judge: second as never };
+    // A new invocation under the new prompt judges again (the old verdict is kept, not reused).
+    for (const id of await retrievalIds(
+      d2,
+      (await artifacts.lookup(
+        (await artifacts.list("research-discovery", 50)).find((p) => p.endsWith("inventory.json"))!,
+      ))!,
+    )) {
+      await supportStage(
+        d2,
+        (await artifacts.lookup(
+          (await artifacts.list("research-discovery", 50)).find(
+            (p) => p.endsWith("/result.json") && !p.includes("assembled"),
+          )!,
+        ))!,
+        (await artifacts.lookup(
+          (await artifacts.list("research-discovery", 50)).find((p) =>
+            p.endsWith("inventory.json"),
+          )!,
+        ))!,
+        id,
+      );
+    }
+    expect(second.calls).toBe(2);
+    expect(first.calls).toBe(2);
+  });
+
+  it("keeps the claimant's own pages unverified and labelled", async () => {
+    const judge = judgeWith(() => [{ findingId: "", passage: "a key fact" }]);
+    const d = { ...deps(sonar(), fetchOk), judge: judge as never, monitoredHosts: ["ok.example"] };
+    const job = await runResearch(
+      journalCtx().ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d) },
+      request,
+      "staged",
+    );
+    const manifest = JSON.parse(
+      await artifacts.read((await artifacts.lookup(job.result!.manifest!.path))!),
+    );
+    expect(
+      manifest.citations.find((c: { url: string }) => c.url === "https://ok.example/a"),
+    ).toMatchObject({
+      support: "unverified",
+      sourceType: "monitored-source",
+    });
+  });
+
+  it("stops recoverably when the judge runs out of credit", async () => {
+    const d = {
+      ...deps(sonar(), fetchOk),
+      judge: {
+        judge: async () => {
+          throw new ModelProviderError("credit-exhausted", 402);
+        },
+      } as never,
+    };
+    const run = journalCtx();
+    const job = await runResearch(
+      run.ctx,
+      { research: async () => ({}) as never, researchStages: stagesFor(d) },
+      request,
+      "staged",
+    );
+    expect(job.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
+    expect(run.names).not.toContain("research-assemble");
   });
 });

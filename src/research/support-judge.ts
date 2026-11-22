@@ -1,3 +1,4 @@
+import { promptIdentity } from "../drafting/prompt-identity.js";
 import { z } from "zod";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { loadPromptFile } from "../prompt-files.js";
@@ -24,6 +25,7 @@ const SYSTEM = SUPPORT_PROMPT.instructions;
 export const SUPPORT_JUDGE_PROMPT_VERSION = SUPPORT_PROMPT.version;
 
 export class ModelSupportJudge implements SupportJudge {
+  readonly identity = promptIdentity(SUPPORT_JUDGE_PROMPT_VERSION, SYSTEM);
   constructor(
     private readonly provider: ExtractionModelProvider,
     private readonly maxSourceChars = 60_000,

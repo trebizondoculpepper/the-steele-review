@@ -195,6 +195,12 @@ export interface ResearchStages {
   retrieve(inventory: StageRef): Promise<{ retryable: number; creditExhausted?: true }>;
   /** The inventory's fetch keys, in order (#593 per-URL steps). */
   ids(inventory: StageRef): Promise<string[]>;
+  /** Judge one archived source's support as its own named durable step. */
+  support(
+    discovery: StageRef,
+    inventory: StageRef,
+    retrievalId: string,
+  ): Promise<{ kind: "judged" | "not-archived" | "not-checked" | "credit-exhausted" }>;
   /** Retrieve one fetch key as its own named durable step. */
   retrieveOne(
     inventory: StageRef,
@@ -236,7 +242,8 @@ export async function runResearch(
   const inventory = await ctx.run("research-inventory", () => s.inventory(found.discovery));
   // Each URL is its own named step, so every retrieval is visible and
   // recoverable on its own; a failed URL never repeats completed ones.
-  let pendingIds = await ctx.run("research-ids", () => s.ids(inventory));
+  const allIds = await ctx.run("research-ids", () => s.ids(inventory));
+  let pendingIds = allIds;
   for (let round = 0; round < s.rounds && pendingIds.length > 0; round++) {
     const retry: string[] = [];
     for (const id of pendingIds) {
@@ -251,6 +258,16 @@ export async function runResearch(
     pendingIds = retry;
     if (pendingIds.length > 0 && round < s.rounds - 1) {
       await ctx.sleep(s.roundDelayMs * 2 ** round);
+    }
+  }
+  // Support handoff: each archived source judged as its own step, so
+  // coverage receives supported passages exactly as from the legacy runner.
+  for (const id of allIds) {
+    const judged = await ctx.run(`research-support-${id}`, () =>
+      s.support(found.discovery, inventory, id),
+    );
+    if (judged.kind === "credit-exhausted") {
+      return ctx.run("research-failed", () => s.failed(request, "budget-exceeded"));
     }
   }
   return ctx.run("research-assemble", () => s.assemble(found.discovery, inventory));

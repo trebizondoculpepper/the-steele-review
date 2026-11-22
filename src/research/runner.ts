@@ -115,6 +115,11 @@ export interface SupportJudgement {
 }
 
 export interface SupportJudge {
+  /**
+   * The judge's prompt identity (version plus content hash). Saved with each
+   * staged judgement so a prompt change is never mistaken for reuse (#593).
+   */
+  readonly identity?: string;
   /** Passages from `source` that directly support a finding; [] when none do. */
   judge(
     input: {
