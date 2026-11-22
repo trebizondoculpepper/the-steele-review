@@ -86,8 +86,17 @@ export function classifyFindings(document: string): {
   const lines = text.split(/\r?\n/);
   if (lines.at(-1)?.trim() !== TERMINATOR) return { state: "incomplete" };
   const body = lines.slice(0, -1).join("\n");
-  const findings = (body.match(/^##\s+Finding\b/gm) ?? []).length;
-  if (findings > 0) return { state: "findings", findings };
+  const sections = body.split(/^(?=##\s+Finding\b)/m).filter((p) => /^##\s+Finding\b/.test(p));
+  if (sections.length > 0) {
+    // Every finding must say where, what is wrong and why; a bare heading,
+    // or one missing any of those, is not a complete finding.
+    const field = (section: string, name: string) =>
+      new RegExp(`^[ \\t]*-[ \\t]*${name}:[ \\t]*\\S`, "im").test(section);
+    const complete = sections.every(
+      (s) => field(s, "Where") && field(s, "What is wrong") && field(s, "Why"),
+    );
+    return complete ? { state: "findings", findings: sections.length } : { state: "malformed" };
+  }
   // A clean assessment is exactly the prescribed sentence and nothing else:
   // an incidental or qualified phrase ("No faults found in the title, but…")
   // never counts as clean.

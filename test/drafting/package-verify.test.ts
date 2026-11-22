@@ -1163,6 +1163,19 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     expect(classifyFindings("Looks fine to me.\nEND OF ASSESSMENT")).toEqual({
       state: "malformed",
     });
+    // An empty field never borrows the next line's content.
+    for (const doc of [
+      "## Finding: x\n- Where:\n- What is wrong: wrong.\n- Why: reason\nEND OF ASSESSMENT",
+      "## Finding: x\n- Where: body\n- What is wrong:\n- Why: reason\nEND OF ASSESSMENT",
+      "## Finding: empty\n- Where:\n- What is wrong:\n- Why:\n- Category (optional): unsupported claim\nEND OF ASSESSMENT",
+    ]) {
+      expect(classifyFindings(doc)).toEqual({ state: "malformed" });
+    }
+    // A heading with no location, problem or reason is not a finding.
+    expect(classifyFindings("## Finding 1\nEND OF ASSESSMENT")).toEqual({ state: "malformed" });
+    expect(
+      classifyFindings("## Finding: x\n- Where: body\n- What is wrong: wrong.\nEND OF ASSESSMENT"),
+    ).toEqual({ state: "malformed" });
     // A qualified or incidental phrase is not a clean assessment.
     expect(
       classifyFindings(
