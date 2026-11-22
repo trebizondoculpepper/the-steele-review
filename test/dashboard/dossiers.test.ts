@@ -162,4 +162,19 @@ describe("dossier document continuation (#532)", { timeout: 60_000 }, () => {
     const second = await render(`/dossiers/view?theme=masts&after=${next}`);
     expect(second).not.toContain("More documents");
   });
+
+  it("distinguishes an unavailable document listing from an empty one", async () => {
+    await theme("masts", "Phone masts");
+    await saveDossier("masts", true);
+    const failing = {
+      forTheme: async () => ({ state: "unavailable" as const, docs: [], truncated: false }),
+      detail: savedResearch(content).detail.bind(savedResearch(content)),
+      list: savedResearch(content).list.bind(savedResearch(content)),
+    };
+    const views = dossierViews(savedThemes(content), failing as never);
+    const view = views.find((v) => v.path === "/dossiers/view")!;
+    const html = await view.render(new URL("http://x/dossiers/view?theme=masts"));
+    expect(html).toContain("associated document list is unavailable");
+    expect(html).not.toContain("No other saved documents are associated");
+  });
 });

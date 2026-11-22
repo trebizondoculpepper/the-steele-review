@@ -124,8 +124,8 @@ export function dossierViews(themes?: ThemesPort, research?: ResearchPort): Dash
               return `<li><a href="${escapeHtml(link)}">${escapeHtml(d.title)}</a> <span class="empty">(${escapeHtml(d.kind)}${d.jobId ? `, ${escapeHtml(d.jobId)}` : ""})</span>${d.summary ? `<br>${escapeHtml(d.summary)}` : ""}</li>`;
             })
             .join("")}</ul>`
-        : documents === undefined
-          ? '<p class="empty">The document list is unavailable.</p>'
+        : documents === undefined || documents.state === "unavailable"
+          ? '<p class="empty">The associated document list is unavailable.</p>'
           : '<p class="empty">No other saved documents are associated with this theme.</p>';
       const documentNotes =
         documents === undefined
