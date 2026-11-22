@@ -1224,6 +1224,28 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     expect(cut).toMatchObject({ status: "assessed", record: { state: "incomplete" } });
   });
 
+  it("classifies the retained document, not a competing concurrent response", async () => {
+    const { metadata } = await drafted();
+    const [a, b] = await Promise.all([
+      assessArticle({ content, archive, metadata, assessor: model("fake/race", FINDINGS) }),
+      assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: model("fake/race", "No faults found.\nEND OF ASSESSMENT"),
+      }),
+    ]);
+    if (a.status !== "assessed" || b.status !== "assessed") throw new Error("not assessed");
+    // Both report the one persisted record, consistent with the saved document.
+    expect(a.ref.path).toBe(b.ref.path);
+    expect(a.record).toEqual(b.record);
+    const saved = await content.read({
+      ...a.record.document!,
+      sha256: a.record.document!.hash.slice(7),
+    } as never);
+    expect(classifyFindings(saved).state).toBe(a.record.state);
+  });
+
   it("reuses a response retained before a crash instead of calling the model again", async () => {
     const { metadata } = await drafted();
     const first = model("fake/assessor-crash", "No faults found.\n\nEND OF ASSESSMENT");

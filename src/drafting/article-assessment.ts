@@ -176,6 +176,9 @@ export async function assessArticle(input: {
     raw === undefined
       ? undefined
       : (retained ?? (await writeOnce(input.content, documentPath, raw)));
+  // Classify the document actually retained: under a concurrent assessment
+  // the saved document may be another caller's response, never this one's.
+  if (document) raw = await input.content.read(document);
   const verdict = raw === undefined ? { state: "provider-failed" as const } : classifyFindings(raw);
   const record: AssessmentRecord = AssessmentRecordSchema.parse({
     schemaVersion: ASSESSMENT_SCHEMA_VERSION,
@@ -203,5 +206,7 @@ export async function assessArticle(input: {
     return { status: "assessed", record, ref, reused: false };
   }
   const ref = await writeOnce(input.content, recordPath, record);
-  return { status: "assessed", record, ref, reused: false };
+  // Return the record actually persisted (a concurrent writer may have won).
+  const persisted = AssessmentRecordSchema.parse(JSON.parse(await input.content.read(ref)));
+  return { status: "assessed", record: persisted, ref, reused: false };
 }
