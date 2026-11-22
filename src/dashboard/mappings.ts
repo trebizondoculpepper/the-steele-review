@@ -89,8 +89,10 @@ export function themeMappingCollection(content: Store): CollectionAdapter & {
         let paths: string[];
         try {
           paths = await content.list(ROOT, LIST_PAGE, listed);
-        } catch {
-          limitations.push("The saved mappings could not be listed right now.");
+        } catch (error) {
+          // No authoritative scan at all is "unavailable", never "empty".
+          if (scanned === 0) throw error;
+          limitations.push("The saved mappings could not be listed completely right now.");
           complete = false;
           break;
         }
@@ -127,6 +129,7 @@ export function themeMappingCollection(content: Store): CollectionAdapter & {
         limitations.push(
           `Only the first ${MAPPING_SCAN} saved mappings were examined; later ones are not shown.`,
         );
+      if (unreadable > 0 && rows.length === 0) throw new Error("no saved mapping could be read");
       if (unreadable > 0) limitations.push(`${unreadable} saved mapping(s) could not be read.`);
 
       const text = query.text?.toLowerCase();

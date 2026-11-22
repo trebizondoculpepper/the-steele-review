@@ -173,4 +173,19 @@ describe("theme mappings tab (#519)", { timeout: 60_000 }, () => {
   it("distinguishes an empty collection", async () => {
     expect(await render("/mappings")).toContain("No theme mappings have been saved yet.");
   });
+
+  it("reports an unreadable repository as unavailable, not empty", async () => {
+    const broken = {
+      list: async () => {
+        throw new Error("git failed");
+      },
+      lookup: async () => undefined,
+      read: async () => "",
+    };
+    const html = await mappingViews(broken as never)
+      .find((v) => v.path === "/mappings")!
+      .render(new URL("https://dashboard.test/mappings"));
+    expect(html).toContain("unavailable");
+    expect(html).not.toContain("No theme mappings have been saved yet.");
+  });
 });
