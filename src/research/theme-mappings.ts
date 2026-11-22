@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 
 /**
  * First-class, reusable theme mappings (#518).
@@ -13,6 +17,13 @@ import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifa
  *
  * A catalogue hit is a decision that was already made by the librarian; it is
  * never a fresh judgement and never an inference by the extractor.
+ *
+ * Each mapping is an ordinary JSON document at a stable path, created once
+ * and corrected by a normal Git revision of the same file, with an
+ * expected-version check (owner design, #518). Git is the history: there is no
+ * separate supersession journal. Coverage pins the exact mapping version it
+ * used, so an earlier brief keeps reading its original bytes after a
+ * correction while current lookups see the new content.
  */
 
 export const THEME_MAPPING_SCHEMA_VERSION = 1;
@@ -57,6 +68,37 @@ export const ThemeMappingSchema = z
     /** Where the decision was first made. */
     decidedBy: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     rationale: z.string().min(1).max(1000),
+    /** How the decision was made (#518 provenance); absent on older mappings. */
+    method: z.enum(["embedding", "lexical", "manual"]).optional(),
+    /** The saved proposal the decision was made from. */
+    source: z
+      .object({
+        themeResult: z
+          .object({
+            repository: z.string(),
+            commit: z.string(),
+            path: z.string(),
+            hash: z.string(),
+          })
+          .strict(),
+        proposalId: z.string().min(1).max(200),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Set by a correction when a split or changed meaning needs a new choice:
+     * the mapping is then not reused, and the proposal goes back through the
+     * bounded shortlist/decision path instead of a silent guess.
+     */
+    status: z.literal("unresolved").optional(),
+    /** The latest correction, when the file has been revised. */
+    correction: z
+      .object({
+        reason: z.string().min(1).max(1000),
+        correctedAt: z.iso.datetime({ offset: true }),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ThemeMapping = z.infer<typeof ThemeMappingSchema>;
@@ -79,44 +121,9 @@ function pathSegment(text: string): string {
 
 /** Stable artifact path for one mapping, including its optional scope. */
 export function themeMappingPath(m: Pick<ThemeMapping, "key" | "scope">): string {
-  const scope = m.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(m.scope))}`;
+  const scope =
+    m.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(m.scope))}`;
   return `librarian/theme-mappings/${scope}/${pathSegment(normaliseMappingKey(m.key))}.json`;
-}
-
-export const THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION = 1;
-
-/**
- * Explicit supersession of one mapping decision (#518).
- *
- * A canonical split, merge or changed scope is recorded as an immutable
- * redirect from the old canonical ID to the new one. Earlier mapping versions
- * and the briefs that referenced them stay untouched; only new lookups follow
- * the redirect.
- */
-export const ThemeMappingSupersessionSchema = z
-  .object({
-    schemaVersion: z.literal(THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION),
-    key: z.string().min(1).max(2400),
-    scope: z.string().min(1).max(120).optional(),
-    from: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
-    to: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
-    reason: z.string().min(1).max(1000),
-    decidedAt: z.iso.datetime({ offset: true }),
-    decidedBy: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
-  })
-  .strict();
-export type ThemeMappingSupersession = z.infer<typeof ThemeMappingSupersessionSchema>;
-
-/** Immutable artifact path for one supersession event. */
-export function themeMappingSupersessionPath(
-  s: Pick<ThemeMappingSupersession, "key" | "scope" | "from" | "to" | "decidedAt">,
-): string {
-  const scope = s.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(s.scope))}`;
-  const name = `${s.from}-to-${s.to}-${createHash("sha256")
-    .update(`${s.decidedAt}|${s.from}|${s.to}`)
-    .digest("hex")
-    .slice(0, 12)}`;
-  return `librarian/theme-mappings/supersessions/${scope}/${pathSegment(normaliseMappingKey(s.key))}/${name}.json`;
 }
 
 export interface ThemeMappingQuery {
@@ -125,157 +132,67 @@ export interface ThemeMappingQuery {
   scope?: string;
 }
 
+/** A mapping together with the exact version it was read from. */
+export interface PinnedThemeMapping {
+  mapping: ThemeMapping;
+  ref: ArtifactRef;
+}
+
+const serialise = (m: ThemeMapping) => `${JSON.stringify(m, null, 2)}\n`;
+
 /**
  * Consult saved mappings. A scope-specific decision wins over a global one for
- * the same proposal; nothing is guessed when neither exists.
+ * the same proposal; nothing is guessed when neither exists. Wording and
+ * description together form the key, so a same-titled topic with a different
+ * meaning never inherits another's decision.
  */
 export class ThemeMappingCatalogue {
-  constructor(
-    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write" | "list">,
-  ) {}
+  constructor(private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise">) {}
 
+  /** The current mapping, or undefined; an unresolved mapping is never reused. */
   async lookup(query: ThemeMappingQuery): Promise<ThemeMapping | undefined> {
+    return (await this.current(query))?.mapping;
+  }
+
+  /** The current, reusable mapping with its exact version, for pinning. */
+  async current(query: ThemeMappingQuery): Promise<PinnedThemeMapping | undefined> {
     const key = proposalMappingKey(query.proposal, query.description);
     const candidates: Array<Pick<ThemeMapping, "key" | "scope">> = [];
     if (query.scope !== undefined) candidates.push({ key, scope: query.scope });
     candidates.push({ key });
     for (const candidate of candidates) {
-      const ref = await this.artifacts.lookup(themeMappingPath(candidate));
-      if (!ref) continue;
-      const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
-      if (!parsed.success) continue;
-      const canonicalThemeId = await this.resolve(parsed.data);
-      return canonicalThemeId === parsed.data.canonicalThemeId
-        ? parsed.data
-        : { ...parsed.data, canonicalThemeId };
+      const found = await this.at(themeMappingPath(candidate));
+      if (!found) continue;
+      if (found.mapping.status === "unresolved") return undefined;
+      return found;
     }
     return undefined;
   }
 
-  /** Follow saved supersessions to the current canonical ID (cycle-safe). */
-  private async resolve(mapping: ThemeMapping): Promise<string> {
-    const supersessions = await this.supersessions(mapping);
-    let current = mapping.canonicalThemeId;
-    const seen = new Set([current]);
-    for (let hops = 0; hops < 20; hops++) {
-      // The chronologically newest event from the current ID wins; ties keep
-      // the earlier event (stable sort in `supersessions`).
-      const next = [...supersessions].reverse().find((s) => s.from === current);
-      if (!next || seen.has(next.to)) return current;
-      seen.add(next.to);
-      current = next.to;
-    }
-    return current;
+  /** Exactly the pinned version a brief used, even after later corrections. */
+  async pinned(ref: ArtifactRef): Promise<ThemeMapping> {
+    return ThemeMappingSchema.parse(JSON.parse(await this.artifacts.read(ref)));
   }
 
-  /** All recorded supersessions for one mapping, oldest first. */
-  async supersessions(
-    mapping: Pick<ThemeMapping, "key" | "scope">,
-  ): Promise<ThemeMappingSupersession[]> {
-    const scope = mapping.scope === undefined
-      ? "global"
-      : `scope-${pathSegment(normaliseMappingKey(mapping.scope))}`;
-    const base = `librarian/theme-mappings/supersessions/${scope}/${pathSegment(normaliseMappingKey(mapping.key))}`;
-    // Storage failures propagate: reporting "no supersessions" on a transient
-    // failure would let a stale canonical ID be reused as if current.
-    const paths = await this.listPrefix(base);
-    const found: ThemeMappingSupersession[] = [];
-    for (const path of paths.sort()) {
-      const ref = await this.artifacts.lookup(path);
-      if (!ref) continue;
-      let raw: string;
-      try {
-        raw = await this.artifacts.read(ref);
-      } catch (error) {
-        if (error instanceof ArtifactStoreError && error.code === "git-failed") throw error;
-        continue;
-      }
-      let parsed;
-      try {
-        parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(raw));
-      } catch {
-        continue; // malformed record: skipped, never guessed
-      }
-      if (parsed.success) found.push(parsed.data);
-    }
-    // Chronological order by parsed instant: timestamps may carry different
-    // UTC offsets, so text order is not time order. Equal instants keep a
-    // deterministic text tie-break.
-    return found.sort((a, b) => {
-      const ta = Date.parse(a.decidedAt);
-      const tb = Date.parse(b.decidedAt);
-      if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
-      return a.decidedAt.localeCompare(b.decidedAt);
-    });
+  private async at(path: string): Promise<PinnedThemeMapping | undefined> {
+    const ref = await this.artifacts.lookup(path);
+    if (!ref) return undefined;
+    const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
+    return parsed.success ? { mapping: parsed.data, ref } : undefined;
   }
 
   /**
-   * Record an explicit supersession. Write-once and idempotent: the first
-   * event for the same key, scope and from/to pair wins.
-   */
-  async supersede(input: {
-    proposal: string;
-    description?: string;
-    scope?: string;
-    from: string;
-    to: string;
-    reason: string;
-    decidedAt: string;
-    decidedBy: { publicationId: string; postId: string };
-  }): Promise<ThemeMappingSupersession> {
-    const key = proposalMappingKey(input.proposal, input.description);
-    if (key.length === 0) throw new Error("theme mapping: empty proposal");
-    if (input.from === input.to) throw new Error("theme mapping: supersession is a no-op");
-    const payload = ThemeMappingSupersessionSchema.parse({
-      schemaVersion: THEME_MAPPING_SUPERSESSION_SCHEMA_VERSION,
-      key,
-      ...(input.scope === undefined ? {} : { scope: input.scope }),
-      from: input.from,
-      to: input.to,
-      reason: input.reason,
-      decidedAt: input.decidedAt,
-      decidedBy: input.decidedBy,
-    });
-    const path = themeMappingSupersessionPath(payload);
-    const read = async (): Promise<ThemeMappingSupersession | undefined> => {
-      const ref = await this.artifacts.lookup(path);
-      if (!ref) return undefined;
-      const parsed = ThemeMappingSupersessionSchema.safeParse(
-        JSON.parse(await this.artifacts.read(ref)),
-      );
-      return parsed.success ? parsed.data : undefined;
-    };
-    const existing = await read();
-    if (existing) return existing;
-    try {
-      await this.artifacts.write(path, `${JSON.stringify(payload, null, 2)}\n`);
-      return payload;
-    } catch (error) {
-      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
-        const winner = await read();
-        if (winner) return winner;
-      }
-      throw error;
-    }
-  }
-
-  private async listPrefix(prefix: string): Promise<string[]> {
-    const out: string[] = [];
-    let after: string | undefined;
-    for (let page = 0; page < 10; page++) {
-      const paths = await this.artifacts.list(prefix, 200, after);
-      out.push(...paths);
-      if (paths.length < 200) break;
-      after = paths[paths.length - 1];
-    }
-    return out;
-  }
-
-  /**
-   * Record a decision. Write-once: recording the same key and scope again keeps
-   * the first decision, so history is never silently rewritten.
+   * Record a new decision. The first accepted decision for a key and scope
+   * wins: a concurrent or repeated record returns the stored one rather than
+   * overwriting it. Changing a stored decision is a `correct`, never a record.
    */
   async record(mapping: Omit<ThemeMapping, "schemaVersion" | "key">): Promise<ThemeMapping> {
+    return (await this.recordPinned(mapping)).mapping;
+  }
+
+  async recordPinned(
+    mapping: Omit<ThemeMapping, "schemaVersion" | "key">,
+  ): Promise<PinnedThemeMapping> {
     const key = proposalMappingKey(mapping.proposal, mapping.description);
     if (key.length === 0) throw new Error("theme mapping: empty proposal");
     const payload = ThemeMappingSchema.parse({
@@ -284,25 +201,59 @@ export class ThemeMappingCatalogue {
       ...mapping,
     });
     const path = themeMappingPath(payload);
-    const read = async (): Promise<ThemeMapping | undefined> => {
-      const ref = await this.artifacts.lookup(path);
-      if (!ref) return undefined;
-      const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
-      return parsed.success ? parsed.data : undefined;
-    };
-    const existing = await read();
-    if (existing) return existing;
-    try {
-      await this.artifacts.write(path, `${JSON.stringify(payload, null, 2)}\n`);
-      return payload;
-    } catch (error) {
-      // A concurrent assessment may have written the same key first. The
-      // stored winner is authoritative, so reconcile to it instead of failing.
-      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
-        const winner = await read();
-        if (winner) return winner;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = await this.at(path);
+      // A resolved decision is authoritative and never overwritten here.
+      if (existing && existing.mapping.status !== "unresolved") return existing;
+      try {
+        // Create only if absent; an unresolved mapping is resolved by this
+        // fresh accepted decision as a revision checked against its version.
+        const ref = await this.artifacts.revise(
+          path,
+          serialise(payload),
+          existing ? existing.ref.sha256 : null,
+        );
+        return { mapping: payload, ref };
+      } catch (error) {
+        // Someone else changed the file first: re-read and decide again.
+        if (error instanceof ArtifactStoreError && error.code === "stale-revision") continue;
+        throw error;
       }
-      throw error;
     }
+    const winner = await this.at(path);
+    if (winner && winner.mapping.status !== "unresolved") return winner;
+    throw new Error("theme mapping: could not record a decision");
+  }
+
+  /**
+   * Correct a mapping as a normal revision of its file. The caller names the
+   * version it read; if the file changed since, `stale-revision` is thrown
+   * and nothing is overwritten. A rename of the canonical display name needs
+   * no correction: the theme ID is stable.
+   */
+  async correct(input: {
+    expected: ArtifactRef;
+    change:
+      | { canonicalThemeId: string; unresolved?: never }
+      | { unresolved: true; canonicalThemeId?: never };
+    reason: string;
+    correctedAt: string;
+  }): Promise<PinnedThemeMapping> {
+    const current = await this.pinned(input.expected);
+    const next = ThemeMappingSchema.parse({
+      ...current,
+      ...(input.change.unresolved
+        ? { status: "unresolved" as const }
+        : { canonicalThemeId: input.change.canonicalThemeId, status: undefined }),
+      method: "manual",
+      correction: { reason: input.reason, correctedAt: input.correctedAt },
+    });
+    if (next.status === undefined) delete (next as { status?: unknown }).status;
+    const ref = await this.artifacts.revise(
+      input.expected.path,
+      serialise(next),
+      input.expected.sha256,
+    );
+    return { mapping: next, ref };
   }
 }

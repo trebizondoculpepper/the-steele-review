@@ -88,7 +88,12 @@ export function assertArtifactPath(path: string): string {
  * The only path prefixes that may be revised in place. Everything else,
  * including captured sources and saved evidence, is write-once.
  */
-export const REVISABLE_PREFIXES: readonly string[] = ["dossier/", "catalogue/"];
+export const REVISABLE_PREFIXES: readonly string[] = [
+  "dossier/",
+  "catalogue/",
+  // Reusable theme mappings (#518): corrected by normal file revisions.
+  "librarian/theme-mappings/",
+];
 
 /** Normalised claim records (claims/claim-<hex>.json) evolve as occurrences accumulate. */
 const REVISABLE_CLAIM_RECORD = /^claims\/claim-[0-9a-f]{32}\.json$/;

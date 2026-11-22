@@ -584,6 +584,26 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
       method: "catalogue",
       created: false,
     });
+    // The coverage pins the exact mapping version it used (#518), with provenance.
+    const pin = reused.record.mappings[0]!.mappingRef!;
+    expect(pin.path).toMatch(/^librarian\/theme-mappings\/global\/.+\.json$/);
+    const { ThemeMappingCatalogue } = await import("../../src/research/theme-mappings.js");
+    const catalogue = new ThemeMappingCatalogue(artifacts);
+    const pinnedRef = { ...pin, sha256: pin.hash.replace(/^sha256:/, "") };
+    const used = await catalogue.pinned(pinnedRef);
+    expect(used).toMatchObject({
+      canonicalThemeId: dossierId,
+      method: "lexical",
+      source: { proposalId: expect.any(String) },
+    });
+    // A later correction revises the file; the pinned version is unchanged.
+    await catalogue.correct({
+      expected: pinnedRef,
+      change: { canonicalThemeId: "another-theme" },
+      reason: "split",
+      correctedAt: "2026-03-01T00:00:00.000Z",
+    });
+    expect((await catalogue.pinned(pinnedRef)).canonicalThemeId).toBe(dossierId);
   });
 
   it("maps to an established theme that has no research yet, keeping its ID (#528)", async () => {

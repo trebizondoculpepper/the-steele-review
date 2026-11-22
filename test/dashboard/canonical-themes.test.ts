@@ -25,7 +25,12 @@ afterEach(async () => {
 const decideBy = { publicationId: "pub", postId: "p1" };
 const savedResearchPort = () => savedResearch(content);
 
-async function theme(id: string, title: string, description?: string, createdAt = "2026-01-01T00:00:00Z") {
+async function theme(
+  id: string,
+  title: string,
+  description?: string,
+  createdAt = "2026-01-01T00:00:00Z",
+) {
   const store = new ThemeStore(content);
   return store.ensure({
     id,
@@ -107,10 +112,9 @@ describe("canonical themes browser (#517)", { timeout: 60_000 }, () => {
     await dossier("b", "partial");
 
     const themes = savedThemes(content);
-    expect((await themes.canonical({ coverage: "unresearched" })).rows.map((r) => r.id).sort()).toEqual([
-      "a",
-      "c",
-    ]);
+    expect(
+      (await themes.canonical({ coverage: "unresearched" })).rows.map((r) => r.id).sort(),
+    ).toEqual(["a", "c"]);
     expect(
       (await themes.canonical({ coverage: "partially-researched" })).rows.map((r) => r.id),
     ).toEqual(["b"]);
@@ -137,7 +141,7 @@ describe("canonical themes browser (#517)", { timeout: 60_000 }, () => {
     expect(unresearched).not.toContain("/research/view");
   });
 
-  it("resolves mapped proposals through saved librarian mappings and supersession", async () => {
+  it("resolves mapped proposals through the current saved mapping files", async () => {
     await theme("masts", "Phone masts");
     await theme("other", "Other topic");
     const catalogue = new ThemeMappingCatalogue(content);
@@ -148,20 +152,19 @@ describe("canonical themes browser (#517)", { timeout: 60_000 }, () => {
       decidedBy: decideBy,
       rationale: "same established topic",
     });
-    await catalogue.record({
+    const old = await catalogue.recordPinned({
       proposal: "Old masts wording",
       canonicalThemeId: "legacy-masts",
       decidedAt: "2026-01-01T00:00:00Z",
       decidedBy: decideBy,
       rationale: "earlier identity",
     });
-    await catalogue.supersede({
-      proposal: "Old masts wording",
-      from: "legacy-masts",
-      to: "masts",
+    // A canonical merge is a normal revision of the mapping file.
+    await catalogue.correct({
+      expected: old.ref,
+      change: { canonicalThemeId: "masts" },
       reason: "canonical merge",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: decideBy,
+      correctedAt: "2026-01-02T00:00:00Z",
     });
     await catalogue.record({
       proposal: "Unrelated",
@@ -225,72 +228,6 @@ describe("canonical themes browser (#517)", { timeout: 60_000 }, () => {
   });
 });
 
-describe("canonical mapping resolution (#517)", { timeout: 60_000 }, () => {
-  it("follows a redirect chain to the current canonical identity", async () => {
-    await theme("c", "Final topic");
-    const catalogue = new ThemeMappingCatalogue(content);
-    await catalogue.record({
-      proposal: "Chained wording",
-      canonicalThemeId: "a",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: decideBy,
-      rationale: "initial",
-    });
-    // Record B→C before A→B; the newest-event-per-proposal shortcut would
-    // resolve A→B and miss C.
-    await catalogue.supersede({
-      proposal: "Chained wording",
-      from: "b",
-      to: "c",
-      reason: "merge",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: decideBy,
-    });
-    await catalogue.supersede({
-      proposal: "Chained wording",
-      from: "a",
-      to: "b",
-      reason: "rename",
-      decidedAt: "2026-01-03T00:00:00Z",
-      decidedBy: decideBy,
-    });
-    const detail = await savedThemes(content).canonicalDetail("c");
-    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Chained wording"]);
-    expect(await savedThemes(content).canonicalDetail("a")).toBeUndefined();
-  });
-
-  it("orders supersession timestamps by instant, not text", async () => {
-    await theme("later", "Later target");
-    const catalogue = new ThemeMappingCatalogue(content);
-    await catalogue.record({
-      proposal: "Offset wording",
-      canonicalThemeId: "start",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: decideBy,
-      rationale: "initial",
-    });
-    // 23:00Z is later than 00:30+02:00 (22:30Z), though it sorts earlier as text.
-    await catalogue.supersede({
-      proposal: "Offset wording",
-      from: "start",
-      to: "earlier",
-      reason: "earlier correction",
-      decidedAt: "2026-01-02T00:30:00+02:00",
-      decidedBy: decideBy,
-    });
-    await catalogue.supersede({
-      proposal: "Offset wording",
-      from: "start",
-      to: "later",
-      reason: "later correction",
-      decidedAt: "2026-01-01T23:00:00Z",
-      decidedBy: decideBy,
-    });
-    const detail = await savedThemes(content).canonicalDetail("later");
-    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Offset wording"]);
-  });
-});
-
 describe("legacy catalogue transition (#517)", { timeout: 60_000 }, () => {
   it("keeps the earlier detected catalogue separately accessible", async () => {
     await content.revise(
@@ -321,77 +258,6 @@ describe("legacy catalogue transition (#517)", { timeout: 60_000 }, () => {
   });
 });
 
-describe("canonical supersession fidelity (#517)", { timeout: 60_000 }, () => {
-  it("normalises scope spellings like the librarian does", async () => {
-    await theme("b", "Scoped target");
-    const catalogue = new ThemeMappingCatalogue(content);
-    await catalogue.record({
-      proposal: "Scoped wording",
-      description: "A scoped topic",
-      scope: "Science Desk",
-      canonicalThemeId: "a",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: decideBy,
-      rationale: "initial",
-    });
-    await catalogue.supersede({
-      proposal: "Scoped wording",
-      description: "A scoped topic",
-      scope: "science-desk",
-      from: "a",
-      to: "b",
-      reason: "canonical correction",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: decideBy,
-    });
-    // The librarian's own lookup already resolves this to b.
-    expect(
-      (await catalogue.lookup({ proposal: "Scoped wording", description: "A scoped topic", scope: "Science Desk" }))
-        ?.canonicalThemeId,
-    ).toBe("b");
-    const detail = await savedThemes(content).canonicalDetail("b");
-    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Scoped wording"]);
-  });
-
-  it("keeps the same tie-break as the librarian for identical timestamps", async () => {
-    await theme("b", "Tie target B");
-    await theme("c", "Tie target C");
-    const catalogue = new ThemeMappingCatalogue(content);
-    await catalogue.record({
-      proposal: "Tied wording",
-      canonicalThemeId: "a",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: decideBy,
-      rationale: "initial",
-    });
-    const at = "2026-01-02T00:00:00Z";
-    await catalogue.supersede({
-      proposal: "Tied wording",
-      from: "a",
-      to: "b",
-      reason: "first decision",
-      decidedAt: at,
-      decidedBy: decideBy,
-    });
-    await catalogue.supersede({
-      proposal: "Tied wording",
-      from: "a",
-      to: "c",
-      reason: "second decision, same instant",
-      decidedAt: at,
-      decidedBy: decideBy,
-    });
-    const expected = (
-      await catalogue.lookup({ proposal: "Tied wording" })
-    )?.canonicalThemeId;
-    expect(["b", "c"]).toContain(expected);
-    const detail = await savedThemes(content).canonicalDetail(expected!);
-    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Tied wording"]);
-    const other = expected === "b" ? "c" : "b";
-    expect((await savedThemes(content).canonicalDetail(other))?.proposals ?? []).toEqual([]);
-  });
-});
-
 describe("theme research documents (#516)", { timeout: 60_000 }, () => {
   const job = (
     themeIds: string[],
@@ -415,10 +281,7 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
       corpusRefs: [],
     };
     const jobId = researchJobId(request);
-    await content.write(
-      `research-jobs/${jobId}/request.json`,
-      JSON.stringify(request),
-    );
+    await content.write(`research-jobs/${jobId}/request.json`, JSON.stringify(request));
     if (j.report !== undefined) {
       await content.write(
         `research-jobs/${jobId}/${j.format === "json" ? "report.json" : "report.md"}`,
@@ -513,7 +376,10 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
     }
     // Every report is reachable exactly once across bounded pages.
     expect(seen.size, `seen=${JSON.stringify([...seen])}`).toBe(22);
-    expect([...seen.values()].every((n) => n === 1), `seen=${JSON.stringify([...seen])}`).toBe(true);
+    expect(
+      [...seen.values()].every((n) => n === 1),
+      `seen=${JSON.stringify([...seen])}`,
+    ).toBe(true);
   });
 
   it("pins the document version rather than substituting current text", async () => {

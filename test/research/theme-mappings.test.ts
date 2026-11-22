@@ -75,10 +75,13 @@ describe("theme mapping catalogue (#518)", () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
     await catalogue.record({ ...decided, proposal: "Mercury", description: "the planet" });
     expect(
-      (await catalogue.lookup({ proposal: "Mercury", description: "the planet" }))?.canonicalThemeId,
+      (await catalogue.lookup({ proposal: "Mercury", description: "the planet" }))
+        ?.canonicalThemeId,
     ).toBe("geoengineering");
     // A different meaning must not inherit the planet's mapping.
-    expect(await catalogue.lookup({ proposal: "Mercury", description: "the toxic metal" })).toBeUndefined();
+    expect(
+      await catalogue.lookup({ proposal: "Mercury", description: "the toxic metal" }),
+    ).toBeUndefined();
   });
 
   it("handles a non-ASCII proposal without an invalid artifact path", async () => {
@@ -114,197 +117,96 @@ describe("theme mapping catalogue (#518)", () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
     const saved = await catalogue.record(decided);
     const path = themeMappingPath(saved);
-    expect(path).toMatch(/^librarian\/theme-mappings\/global\/weather-modification-programmes-[0-9a-f]{12}\.json$/);
+    expect(path).toMatch(
+      /^librarian\/theme-mappings\/global\/weather-modification-programmes-[0-9a-f]{12}\.json$/,
+    );
     expect(await artifacts.lookup(path)).toBeDefined();
   });
 });
 
-describe("mapping supersession (#518)", () => {
-  const by = { publicationId: "pub", postId: "p1" };
-
-  it("redirects new lookups after a canonical merge without rewriting the original", async () => {
+describe("mapping corrections as file revisions (#518)", () => {
+  it("corrects a mapping in place while a pinned version keeps its original bytes", async () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
-    const original = await catalogue.record({
-      proposal: "5G health risks",
-      description: "Health concerns about 5G",
-      canonicalThemeId: "five-g-health",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: by,
-      rationale: "same topic",
+    const first = await catalogue.recordPinned(decided);
+    const corrected = await catalogue.correct({
+      expected: first.ref,
+      change: { canonicalThemeId: "weather-control" },
+      reason: "split: weather modification is its own canonical theme",
+      correctedAt: "2026-03-01T00:00:00.000Z",
     });
-    const originalRef = await artifacts.lookup(
-      `librarian/theme-mappings/global/${themeMappingPath(original).split("/").pop()}`,
+    // Current lookup sees the correction...
+    expect((await catalogue.lookup({ proposal: decided.proposal }))?.canonicalThemeId).toBe(
+      "weather-control",
     );
-    const before = originalRef ? await artifacts.read(originalRef) : undefined;
-
-    await catalogue.supersede({
-      proposal: "5G health risks",
-      description: "Health concerns about 5G",
-      from: "five-g-health",
-      to: "five-g-merged",
-      reason: "canonical merge into the broader 5G dossier",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: by,
+    expect(corrected.ref.path).toBe(first.ref.path);
+    // ...while the earlier pin still reads exactly what that brief used.
+    expect((await catalogue.pinned(first.ref)).canonicalThemeId).toBe("geoengineering");
+    expect(corrected.mapping).toMatchObject({
+      method: "manual",
+      correction: { reason: expect.stringMatching(/split/) },
     });
-    expect(
-      await catalogue.lookup({ proposal: "5G health risks", description: "Health concerns about 5G" }),
-    ).toMatchObject({ canonicalThemeId: "five-g-merged" });
-
-    // The original immutable mapping still records the decision it made.
-    const after = originalRef ? await artifacts.read(originalRef) : undefined;
-    expect(after).toBe(before);
+    // No journal: only the mapping file exists under the catalogue.
+    expect(await artifacts.list("librarian/theme-mappings", 50)).toEqual([first.ref.path]);
   });
 
-  it("follows a chain of redirects and stops safely on a cycle", async () => {
+  it("refuses a correction made against a stale version", async () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
-    await catalogue.record({
-      proposal: "Smart cities",
-      canonicalThemeId: "smart-cities",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: by,
-      rationale: "topic",
+    const first = await catalogue.recordPinned(decided);
+    await catalogue.correct({
+      expected: first.ref,
+      change: { canonicalThemeId: "weather-control" },
+      reason: "first correction",
+      correctedAt: "2026-03-01T00:00:00.000Z",
     });
-    await catalogue.supersede({
-      proposal: "Smart cities",
-      from: "smart-cities",
-      to: "agenda-2030",
-      reason: "merge",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: by,
-    });
-    await catalogue.supersede({
-      proposal: "Smart cities",
-      from: "agenda-2030",
-      to: "global-governance",
-      reason: "second merge",
-      decidedAt: "2026-01-03T00:00:00Z",
-      decidedBy: by,
-    });
-    expect(await catalogue.lookup({ proposal: "Smart cities" })).toMatchObject({
-      canonicalThemeId: "global-governance",
-    });
-
-    await catalogue.supersede({
-      proposal: "Smart cities",
-      from: "global-governance",
-      to: "smart-cities",
-      reason: "cycle for the test",
-      decidedAt: "2026-01-04T00:00:00Z",
-      decidedBy: by,
-    });
-    // A cycle returns the last distinct ID instead of looping forever.
-    const resolved = await catalogue.lookup({ proposal: "Smart cities" });
-    expect(["global-governance", "smart-cities"]).toContain(resolved?.canonicalThemeId);
+    await expect(
+      catalogue.correct({
+        expected: first.ref,
+        change: { canonicalThemeId: "climate" },
+        reason: "a concurrent, different correction",
+        correctedAt: "2026-03-02T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "stale-revision" });
+    expect((await catalogue.lookup({ proposal: decided.proposal }))?.canonicalThemeId).toBe(
+      "weather-control",
+    );
   });
 
-  it("keeps the first supersession event for the same redirect", async () => {
+  it("leaves a changed meaning unresolved instead of guessing", async () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
-    const first = await catalogue.supersede({
-      proposal: "Chemtrails",
-      from: "chemtrails",
-      to: "geoengineering",
-      reason: "merge",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: by,
+    const first = await catalogue.recordPinned(decided);
+    await catalogue.correct({
+      expected: first.ref,
+      change: { unresolved: true },
+      reason: "meaning changed; needs a fresh decision",
+      correctedAt: "2026-03-01T00:00:00.000Z",
     });
-    const again = await catalogue.supersede({
-      proposal: "Chemtrails",
-      from: "chemtrails",
-      to: "geoengineering",
-      reason: "duplicate retry",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: by,
+    expect(await catalogue.lookup({ proposal: decided.proposal })).toBeUndefined();
+    // A fresh accepted decision resolves it, as a revision of the same file.
+    const resolved = await catalogue.recordPinned({
+      ...decided,
+      canonicalThemeId: "weather-control",
     });
-    expect(again).toEqual(first);
-  });
-});
-
-describe("supersession correctness (#518)", () => {
-  const by = { publicationId: "pub", postId: "p1" };
-
-  it("lets a later correction from the same ID win", async () => {
-    const catalogue = new ThemeMappingCatalogue(artifacts);
-    await catalogue.record({
-      proposal: "Directed energy",
-      canonicalThemeId: "a",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: by,
-      rationale: "topic",
-    });
-    await catalogue.supersede({
-      proposal: "Directed energy",
-      from: "a",
-      to: "b",
-      reason: "first merge",
-      decidedAt: "2026-01-02T00:00:00Z",
-      decidedBy: by,
-    });
-    await catalogue.supersede({
-      proposal: "Directed energy",
-      from: "a",
-      to: "c",
-      reason: "later reassessment",
-      decidedAt: "2026-01-03T00:00:00Z",
-      decidedBy: by,
-    });
-    expect(await catalogue.lookup({ proposal: "Directed energy" })).toMatchObject({
-      canonicalThemeId: "c",
-    });
+    expect(resolved.mapping.status).toBeUndefined();
+    expect(resolved.ref.path).toBe(first.ref.path);
+    expect((await catalogue.lookup({ proposal: decided.proposal }))?.canonicalThemeId).toBe(
+      "weather-control",
+    );
+    // The earlier versions stay readable by their pins.
+    expect((await catalogue.pinned(first.ref)).canonicalThemeId).toBe("geoengineering");
   });
 
-  it("propagates a storage failure instead of returning a stale mapping", async () => {
+  it("records decision method and source provenance", async () => {
     const catalogue = new ThemeMappingCatalogue(artifacts);
-    await catalogue.record({
-      proposal: "Weather control",
-      canonicalThemeId: "weather",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: by,
-      rationale: "topic",
-    });
-    const failing = new ThemeMappingCatalogue({
-      lookup: (path: string) => artifacts.lookup(path),
-      read: (ref: never) => artifacts.read(ref),
-      write: (path: string, content: string) => artifacts.write(path, content),
-      list: async () => {
-        throw new ArtifactStoreError("git-failed");
+    const source = {
+      themeResult: {
+        repository: "content",
+        commit: "c".repeat(40),
+        path: "theme-proposals/p/x/r.json",
+        hash: `sha256:${"d".repeat(64)}`,
       },
-    });
-    await expect(failing.lookup({ proposal: "Weather control" })).rejects.toBeInstanceOf(
-      ArtifactStoreError,
-    );
-  });
-});
-
-describe("supersession time ordering (#518)", () => {
-  it("orders by the instant even when UTC offsets differ", async () => {
-    const catalogue = new ThemeMappingCatalogue(artifacts);
-    const by = { publicationId: "pub", postId: "p1" };
-    await catalogue.record({
-      proposal: "Geoengineering",
-      canonicalThemeId: "a",
-      decidedAt: "2026-01-01T00:00:00Z",
-      decidedBy: by,
-      rationale: "topic",
-    });
-    // 00:30+02:00 is 22:30Z the previous day: earlier than 23:00Z.
-    await catalogue.supersede({
-      proposal: "Geoengineering",
-      from: "a",
-      to: "b",
-      reason: "earlier correction",
-      decidedAt: "2026-01-02T00:30:00+02:00",
-      decidedBy: by,
-    });
-    await catalogue.supersede({
-      proposal: "Geoengineering",
-      from: "a",
-      to: "c",
-      reason: "later correction",
-      decidedAt: "2026-01-01T23:00:00Z",
-      decidedBy: by,
-    });
-    expect(await catalogue.lookup({ proposal: "Geoengineering" })).toMatchObject({
-      canonicalThemeId: "c",
-    });
+      proposalId: "theme-1",
+    };
+    const saved = await catalogue.recordPinned({ ...decided, method: "embedding", source });
+    expect(saved.mapping).toMatchObject({ method: "embedding", source });
   });
 });

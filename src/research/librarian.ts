@@ -246,6 +246,11 @@ export const CoverageRecordSchema = z
           method: z.enum(["embedding", "lexical", "catalogue"]),
           limitation: z.string().optional(),
           rationale: z.string(),
+          /**
+           * The exact saved mapping version used or recorded (#518). A later
+           * correction revises the file; this pin keeps reading the original.
+           */
+          mappingRef: Ref.optional(),
         })
         .strict(),
     ),
@@ -676,11 +681,12 @@ export async function assessPostCoverage(input: {
     }
     // A decision made for the same proposal on another post is reused instead
     // of recalculated, as long as its canonical dossier still exists (#518).
-    const catalogued = await catalogue.lookup({
+    const pinned = await catalogue.current({
       proposal: p.title,
       ...(p.description ? { description: p.description } : {}),
     });
-    if (catalogued && established.has(catalogued.canonicalThemeId)) {
+    const catalogued = pinned?.mapping;
+    if (pinned && catalogued && established.has(catalogued.canonicalThemeId)) {
       const dossierId = catalogued.canonicalThemeId;
       if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
       dossierFor.set(p.id, dossierId);
@@ -692,6 +698,7 @@ export async function assessPostCoverage(input: {
         created: false,
         method: "catalogue",
         rationale: `reused saved catalogue decision (${catalogued.key})`,
+        mappingRef: toRef(pinned.ref),
       });
       await themeStore.ensure({
         id: dossierId,
@@ -729,17 +736,26 @@ export async function assessPostCoverage(input: {
     // Only an accepted equivalence teaches the catalogue: a new dossier is
     // this post's own invention and must not become a global default.
     if (decision.themeId !== null) {
-      const winner = await catalogue.record({
+      const recorded = await catalogue.recordPinned({
         proposal: p.title,
         ...(p.description ? { description: p.description } : {}),
         canonicalThemeId: dossierId,
         decidedAt: now,
         decidedBy: { publicationId: post.publicationId, postId: post.postId },
-        rationale: decision.rationale,
+        rationale: decision.rationale.slice(0, 1000),
+        method: shortlist.method,
+        source: { themeResult: toRef(input.themeResult), proposalId: p.id.slice(0, 200) },
       });
+      const winner = recorded.mapping;
+      // Pin exactly the stored version this post's coverage now depends on.
+      mappings[mappings.length - 1]!.mappingRef = toRef(recorded.ref);
       // A concurrent assessment may have stored a different winner. It is
       // authoritative: this mapping must not diverge from it.
-      if (winner.canonicalThemeId !== dossierId && established.has(winner.canonicalThemeId)) {
+      if (
+        winner.status !== "unresolved" &&
+        winner.canonicalThemeId !== dossierId &&
+        established.has(winner.canonicalThemeId)
+      ) {
         const saved = mappings[mappings.length - 1]!;
         saved.dossierId = winner.canonicalThemeId;
         saved.method = "catalogue";
