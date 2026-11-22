@@ -32,23 +32,19 @@ const WorkerVerificationSchema = z
     verdict: z.enum(["approve", "redraft", "skip"]),
     draft: z.object({ path: z.string(), commit: z.string(), hash: z.string() }).strict(),
     brief: z.object({ path: z.string(), commit: z.string(), hash: z.string() }).strict(),
-    issues: z
-      .array(
-        z
-          .object({
-            source: z.enum(["deterministic", "verifier"]).optional(),
-            passage: z.string().optional(),
-            problem: z.string(),
-            requiredChange: z.string(),
-          })
-          .strict(),
-      ),
+    issues: z.array(
+      z
+        .object({
+          source: z.enum(["deterministic", "verifier"]).optional(),
+          passage: z.string().optional(),
+          problem: z.string(),
+          requiredChange: z.string(),
+        })
+        .strict(),
+    ),
     attempt: z.number().int().min(0),
     maxAttempts: z.number().int().min(0),
-    verifier: z
-      .object({ modelVersion: z.string(), promptVersion: z.string() })
-      .strict()
-      .optional(),
+    verifier: z.object({ modelVersion: z.string(), promptVersion: z.string() }).strict().optional(),
     rejectedIssues: z.number().int().min(0),
     contextRef: z.string().optional(),
   })
@@ -93,6 +89,8 @@ export type ReviewEntry =
       revisions: number;
       /** The terminal report this wrapper points at. */
       reportPath: string;
+      /** The exact pinned report the wrapper names. */
+      report?: { repository: string; commit: string; path: string; hash: string };
       issues: ReviewIssue[];
     }
   | { kind: "unreadable"; path: string };
@@ -110,14 +108,24 @@ export interface ReviewHistory {
   /** Newest first, bounded to REVIEW_PAGE. */
   reviews: ReviewEntry[];
   editorial: EditorialDecisionView[];
-  /** Cursor for the next page, when more saved reports exist. */
+  /** Next page within this window of reports, when more are in it. */
   next?: number;
+  /**
+   * Storage-order cursor for the next window of reports (#499): every saved
+   * report is reachable by following it, a bounded window at a time.
+   */
+  nextWindow?: string;
   /** True when the bounded scan could not examine every saved report. */
   truncated: boolean;
 }
 
 export interface ReviewHistoryPort {
-  forPost(post: { publicationId: string; postId: string }, page?: number): Promise<ReviewHistory>;
+  forPost(
+    post: { publicationId: string; postId: string },
+    page?: number,
+    /** Resume after this report path (from `nextWindow`). */
+    after?: string,
+  ): Promise<ReviewHistory>;
 }
 
 type Store = Pick<GitArtifactStore, "list" | "lookup" | "read">;
@@ -159,12 +167,16 @@ const asDecision = (raw: unknown): EditorialDecisionView | undefined => {
 
 export function savedReviews(content: Store): ReviewHistoryPort {
   return {
-    async forPost(post, page = 0) {
+    async forPost(post, page = 0, windowAfter?: string) {
       const start = Number.isInteger(page) && page >= 0 ? page : 0;
       let paths: string[] = [];
       let truncated = false;
       let unreadableListing = false;
-      let after: string | undefined;
+      // Each window resumes after the last report of the previous one, so no
+      // report past the first window is unreachable.
+      let after: string | undefined =
+        windowAfter && REPORT_PATH.test(windowAfter) ? windowAfter : undefined;
+      let windowEnd: string | undefined;
       for (let calls = 0; calls < 10; calls++) {
         let batch: string[];
         try {
@@ -180,7 +192,8 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         paths.push(...batch);
         if (batch.length < LIST_PAGE) break;
         if (paths.length >= REVIEW_SCAN) {
-          truncated = true;
+          // More reports exist: the next window starts after this one.
+          windowEnd = paths[REVIEW_SCAN - 1];
           break;
         }
         after = batch.at(-1);
@@ -188,10 +201,9 @@ export function savedReviews(content: Store): ReviewHistoryPort {
       if (unreadableListing && paths.length === 0) {
         return { state: "unavailable", reviews: [], editorial: [], truncated: false };
       }
-      if (paths.length > REVIEW_SCAN) {
-        paths = paths.slice(0, REVIEW_SCAN);
-        truncated = true;
-      }
+      if (paths.length > REVIEW_SCAN) paths = paths.slice(0, REVIEW_SCAN);
+      // The listing stopped early only when the call budget ran out mid-window.
+      if (!windowEnd && paths.length >= LIST_PAGE * 10) truncated = true;
 
       const parsed: ReviewEntry[] = [];
       let unreadableReports = 0;
@@ -272,6 +284,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
             outcome: "unresolved",
             revisions: wrapper.data.revisions,
             reportPath: wrapper.data.report.path,
+            report: wrapper.data.report,
             issues: asIssues(raw && (raw as { issues?: unknown }).issues),
           });
           continue;
@@ -294,7 +307,16 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         if (entry.kind === "unresolved") {
           let found = 0;
           try {
-            const ref = await content.lookup(entry.reportPath);
+            // The exact pinned report, never whatever the path holds now.
+            const pinned = entry.report;
+            const ref = pinned
+              ? {
+                  repository: pinned.repository,
+                  commit: pinned.commit,
+                  path: pinned.path,
+                  sha256: pinned.hash.replace(/^sha256:/, ""),
+                }
+              : undefined;
             if (ref) {
               const inner = PackageVerificationReportSchema.safeParse(
                 JSON.parse(await content.read(ref)),
@@ -335,7 +357,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         } catch {
           // A missing directory lists as empty; an exception is a storage
           // failure, so collected decisions are not the whole story.
-          if (calls > 0 || decisionPaths.length > 0) editorialIncomplete = true;
+          editorialIncomplete = true;
           break;
         }
         decisionPaths.push(...batch);
@@ -374,6 +396,7 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         parsed.length === 0 ? (incomplete ? "partial" : "none") : incomplete ? "partial" : "ok";
       return {
         state,
+        ...(windowEnd ? { nextWindow: windowEnd } : {}),
         reviews,
         editorial,
         ...(next === undefined ? {} : { next }),
