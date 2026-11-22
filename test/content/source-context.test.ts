@@ -141,6 +141,7 @@ describe("pinned source provenance", () => {
     });
     expect(sourceContextFor(record, archive).transcript).toMatchObject({
       origin,
+      ...(machineGenerated === undefined ? {} : { machineGenerated }),
       segments: [{ index: 0, start: 1, end: 2 }],
     });
   });
