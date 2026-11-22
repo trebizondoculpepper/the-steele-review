@@ -33,6 +33,7 @@ This is the state of every model-facing prompt after the migration slices (#421â
 | Package redraft                        | `writer/package-revision.md`                                             | `drafting/package-draft.ts` (identity from `drafting/prompt-identity.ts`)      |
 | Package verifier                       | `verifier/package-verifier.md`                                           | `drafting/package-verify.ts` (identity from `drafting/prompt-identity.ts`)     |
 | Article assessor (findings only, #598) | `verifier/article-assessor.md`                                           | `drafting/article-assessment.ts` (identity from `drafting/prompt-identity.ts`) |
+| Editorial judge (#599)                 | `verifier/editorial-judge.md`                                            | `drafting/editorial-judgment.ts` (identity from `drafting/prompt-identity.ts`) |
 
 ## Remaining
 

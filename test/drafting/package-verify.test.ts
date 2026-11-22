@@ -15,6 +15,7 @@ import {
 } from "../../src/drafting/package-draft.js";
 import { readFileSync } from "node:fs";
 import { assessArticle, classifyFindings } from "../../src/drafting/article-assessment.js";
+import { judgeAssessment, DEFAULT_JUDGE_PROMPT } from "../../src/drafting/editorial-judgment.js";
 const DEFAULT_REVISION_TEXT = readFileSync(
   new URL("../../src/prompts/writer/package-revision.md", import.meta.url),
   "utf8",
@@ -1268,5 +1269,115 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     const out = await assessArticle({ content, archive, metadata, assessor: second });
     expect(second.calls).toBe(0);
     expect(out).toMatchObject({ status: "assessed", record: { state: "no-faults" } });
+  });
+});
+
+describe("separately recorded editorial judgment (#599)", { timeout: 60_000 }, () => {
+  const FOUND =
+    "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
+  const judgeDoc = (decision: "APPROVE" | "REVISE", corrections = "None.") =>
+    `## Reasons\nConsidered.\n\n## Required corrections\n${corrections}\n\n## Accepted minor observations\nNone.\n\nDECISION: ${decision}`;
+  const assessed = async (doc = FOUND) => {
+    const { metadata } = await drafted();
+    const out = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: model("fake/assessor", doc),
+    });
+    if (out.status !== "assessed") throw new Error(out.status);
+    return out;
+  };
+
+  it("requests a revision for a material fault, with persisted recommendations", async () => {
+    const a = await assessed();
+    const out = await judgeAssessment({
+      content,
+      assessment: a.ref,
+      judge: model("fake/judge", judgeDoc("REVISE", "- Quote the source exactly.")),
+    });
+    if (out.status !== "judged") throw new Error(out.status);
+    expect(out.record).toMatchObject({ decision: "revise", state: "decided" });
+    const doc = await content.read({
+      ...out.record.document!,
+      sha256: out.record.document!.hash.slice(7),
+    } as never);
+    expect(doc).toContain("Quote the source exactly.");
+  });
+
+  it("approves only the exact reviewed version, and a policy change is a new judgment", async () => {
+    const a = await assessed("No faults found.\nEND OF ASSESSMENT");
+    const out = await judgeAssessment({
+      content,
+      assessment: a.ref,
+      judge: model("fake/judge", judgeDoc("APPROVE")),
+    });
+    if (out.status !== "judged") throw new Error(out.status);
+    expect(out.record).toMatchObject({
+      decision: "approve",
+      body: a.record.body,
+      publication: a.record.publication,
+    });
+    // Same inputs reuse; changed policy wording never reuses the older approval.
+    const again = model("fake/judge", judgeDoc("APPROVE"));
+    expect(await judgeAssessment({ content, assessment: a.ref, judge: again })).toMatchObject({
+      reused: true,
+    });
+    expect(again.calls).toBe(0);
+    const stricter = model("fake/judge", judgeDoc("REVISE", "- Tighten."));
+    const changed = await judgeAssessment({
+      content,
+      assessment: a.ref,
+      judge: stricter,
+      prompt: {
+        version: DEFAULT_JUDGE_PROMPT.version,
+        instructions: `${DEFAULT_JUDGE_PROMPT.instructions}\nBe stricter.`,
+      },
+    });
+    expect(stricter.calls).toBe(1);
+    expect(changed).toMatchObject({ reused: false, record: { decision: "revise" } });
+  });
+
+  it("never approves from an incomplete assessment, and does not ask the model", async () => {
+    const a = await assessed("## Finding: x\n- Where: body");
+    const judge = model("fake/judge", judgeDoc("APPROVE"));
+    const out = await judgeAssessment({ content, assessment: a.ref, judge });
+    expect(out).toMatchObject({ status: "judged", record: { decision: "none", state: "gated" } });
+    expect(judge.calls).toBe(0);
+  });
+
+  it("lets a deterministic fault override a model approval", async () => {
+    const a = await assessed("No faults found.\nEND OF ASSESSMENT");
+    // The same exact assessment, but with a deterministic citation fault recorded.
+    const withFault = {
+      ...a.record,
+      deterministicFindings: [{ passage: "[9]", reason: "unknown citation" }],
+    };
+    const ref = await content.write(
+      "assessments/pub/p1/synthetic-fault.json",
+      JSON.stringify(withFault),
+    );
+    const out = await judgeAssessment({
+      content,
+      assessment: ref,
+      judge: model("fake/judge", judgeDoc("APPROVE")),
+    });
+    expect(out).toMatchObject({
+      status: "judged",
+      record: { decision: "revise", gates: ["deterministic-fault-blocks-approval"] },
+    });
+  });
+
+  it("treats a missing or invalid decision line as no decision", async () => {
+    const a = await assessed();
+    const out = await judgeAssessment({
+      content,
+      assessment: a.ref,
+      judge: model("fake/judge", "## Reasons\nLooks good, approve it."),
+    });
+    expect(out).toMatchObject({
+      status: "judged",
+      record: { decision: "none", state: "malformed" },
+    });
   });
 });
