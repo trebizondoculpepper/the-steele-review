@@ -14,6 +14,7 @@ import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js
 import type { PageFetcher } from "./gap-research.js";
 import {
   finishResearchJob,
+  writeOnce,
   researchJobPath,
   ResearchResultSchema,
   researchJobId,
@@ -179,7 +180,19 @@ export async function assembleStage(
     ...(deps.now ? { now: deps.now } : {}),
   });
   const result = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(out.result)));
-  return { jobId: out.jobId, status: "finished", result, resultRef: plain(out.result) };
+  // Compatible job artifacts (write-once), so the result is found by its
+  // stable job ID whatever the processor settings later become, and existing
+  // research readers (dashboard listing, theme view, detail) see it. The
+  // completion event was already recorded with the assembly.
+  const { request, data } = await acceptedAssemblyReader(
+    deps.artifacts,
+    deps.operations,
+  )(discovery);
+  await writeOnce(deps.artifacts, researchJobPath(out.jobId, "request"), request);
+  await writeOnce(deps.artifacts, `research-jobs/${out.jobId}/report.md`, data.report);
+  const canonical = await writeOnce(deps.artifacts, researchJobPath(out.jobId, "result"), result);
+  const kept = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(canonical)));
+  return { jobId: out.jobId, status: "finished", result: kept, resultRef: plain(canonical) };
 }
 
 /** A failed job from a stage that ended without evidence (provider failure or credit). */
@@ -235,6 +248,10 @@ export async function existingJob(
   const ref = await deps.artifacts.lookup(researchJobPath(jobId, "result"));
   if (!ref) return null;
   const saved = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
+  // A staged success recorded its own completion event with the assembly.
+  if (saved.manifest?.path.startsWith("research-discovery/")) {
+    return { jobId, status: "finished", result: saved, resultRef: plain(ref) };
+  }
   // Adopt through the completion helper, which records any missing
   // completion event before the saved result is reused.
   const out = await finishResearchJob({

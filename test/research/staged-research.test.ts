@@ -161,8 +161,19 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
       status: "finished",
       result: { outcome: expect.stringMatching(/complete/) },
     });
-    // Exact artifact refs: the result is the assembled one under the discovery.
-    expect(job.resultRef?.path).toMatch(/^research-discovery\/.+\/assembled\/result\.json$/);
+    // Found by its stable job ID, with compatible request and report for readers.
+    expect(job.resultRef?.path).toMatch(/^research-jobs\/research-[0-9a-f]{32}\/result\.json$/);
+    expect(job.result?.manifest?.path).toMatch(
+      /^research-discovery\/.+\/assembled\/manifest\.json$/,
+    );
+    expect(await artifacts.lookup(`research-jobs/${job.jobId}/request.json`)).toBeDefined();
+    expect(await artifacts.lookup(`research-jobs/${job.jobId}/report.md`)).toBeDefined();
+    // A later invocation reuses it with no provider call, even with other settings.
+    const again = journalCtx();
+    const reused = await runResearch(again.ctx, stages, request, "staged");
+    expect(s.calls.n).toBe(1);
+    expect(again.names).toEqual(["research-existing"]);
+    expect(reused.resultRef?.path).toBe(job.resultRef?.path);
   });
 
   it("retries transient retrievals in bounded rounds, keeping other results", async () => {
@@ -185,11 +196,7 @@ describe("staged research through Restate (#593)", { timeout: 60_000 }, () => {
     expect(run.names).toContain("research-retrieve-1");
     // The adapter-only fake provenance always leaves a gap; both sources are archived.
     const manifest = JSON.parse(
-      await artifacts.read(
-        (await artifacts.lookup(
-          job.resultRef!.path.replace("result.json", "manifest.json"),
-        )) as never,
-      ),
+      await artifacts.read((await artifacts.lookup(job.result!.manifest!.path))!),
     );
     expect(manifest.citations.map((c: { retrieval: string }) => c.retrieval)).toEqual([
       "archived",
