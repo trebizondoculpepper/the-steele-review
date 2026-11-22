@@ -146,6 +146,23 @@ const checkpoint = e.STEELE_CATCHUP_CHECKPOINT_PATH
   ? fileCheckpoint(e.STEELE_CATCHUP_CHECKPOINT_PATH)
   : undefined;
 
+// Rescheduling (#749) and recovery need durable attempt identities in the
+// state controller; without configured state those actions stay unavailable.
+// Opening the writable store can fail (missing/incompatible/read-only). That
+// must disable them, not prevent the read-only dashboard from starting.
+let operations: OperationStore | undefined;
+if (
+  archive &&
+  env.data.RESTATE_INGRESS_URL &&
+  env.data.STEELE_DASHBOARD_ORIGIN &&
+  e.STEELE_STATE_PATH
+) {
+  try {
+    operations = new OperationStore({ path: e.STEELE_STATE_PATH });
+  } catch {
+    operations = undefined;
+  }
+}
 const trigger =
   archive && env.data.RESTATE_INGRESS_URL && env.data.STEELE_DASHBOARD_ORIGIN
     ? articleTrigger({
@@ -154,20 +171,11 @@ const trigger =
         researchRequestLimit: env.data.STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT,
         researchDeadlineMs: env.data.STEELE_DASHBOARD_RESEARCH_DEADLINE_MS,
         editorialPolicy: editorialPolicyFromEnv(process.env),
+        // Read the same selected attempt the status views show (#749).
+        runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, operations),
+        ...(operations ? { attempts: operations } : {}),
       })
     : undefined;
-// A recoverable stopped run needs a durable recovery identity in the state
-// controller; without configured state the action stays unavailable.
-// Opening the writable store can fail (missing/incompatible/read-only). That
-// must disable recovery, not prevent the read-only dashboard from starting.
-let operations: OperationStore | undefined;
-if (trigger && e.STEELE_STATE_PATH) {
-  try {
-    operations = new OperationStore({ path: e.STEELE_STATE_PATH });
-  } catch {
-    operations = undefined;
-  }
-}
 const recovery =
   trigger && archive && operations && env.data.RESTATE_INGRESS_URL
     ? articleRecovery({
