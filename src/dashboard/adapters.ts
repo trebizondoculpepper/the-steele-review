@@ -51,7 +51,7 @@ export function indexArticles(
       );
       return hits.map((h) => toArticle(h.source)).filter((a): a is ArchivedArticle => Boolean(a));
     },
-    async page({ sort, after, limit }) {
+    async page({ sort, after, limit, query, publicationId }) {
       // Tie-break on stable source identity so a page boundary cannot repeat or
       // skip a row when several posts share a publication date.
       const order = sort === "newest" ? "desc" : "asc";
@@ -59,7 +59,8 @@ export function indexArticles(
       // missing dates there using a 64-bit integer that JavaScript cannot
       // round-trip through a JSON cursor, which would corrupt paging for
       // undated articles.
-      const missingDate = sort === "newest" ? "9999-12-31T23:59:59.999Z" : "0001-01-01T00:00:00.000Z";
+      const missingDate =
+        sort === "newest" ? "9999-12-31T23:59:59.999Z" : "0001-01-01T00:00:00.000Z";
       const esSort = [
         { publishedAt: { order, missing: missingDate } },
         { publicationId: { order: "asc" } },
@@ -75,15 +76,18 @@ export function indexArticles(
           searchAfter = undefined;
         }
       }
-      const hits = await search.search(
-        index,
-        { match_all: {} },
-        {
-          size: limit,
-          sort: esSort,
-          ...(searchAfter ? { searchAfter } : {}),
-        } as { size?: number; sort?: unknown; searchAfter?: unknown[] },
-      );
+      // Search over the whole index (#509): user text is plain words, never
+      // query-string syntax; the publication is an exact term filter.
+      const words = query?.trim().slice(0, 200);
+      const must = words
+        ? [{ multi_match: { query: words, fields: ["title^2", "text"], operator: "and" } }]
+        : [{ match_all: {} }];
+      const filter = publicationId ? [{ term: { publicationId } }] : [];
+      const hits = await search.search(index, { bool: { must, filter } }, {
+        size: limit,
+        sort: esSort,
+        ...(searchAfter ? { searchAfter } : {}),
+      } as { size?: number; sort?: unknown; searchAfter?: unknown[] });
       const entries = hits
         .map((h) => toArticle(h.source))
         .filter((a): a is ArchivedArticle => Boolean(a));

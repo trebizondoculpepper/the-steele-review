@@ -114,6 +114,10 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       }
       const sort = url.searchParams.get("sort") === "oldest" ? "oldest" : "newest";
       const after = url.searchParams.get("after") ?? undefined;
+      // Search and publication filter over the whole indexed collection (#509).
+      const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+      const pubRaw = url.searchParams.get("publication") ?? "";
+      const publication = ID.test(pubRaw) ? pubRaw : "";
       const requested = url.searchParams.get("status") ?? "all";
       const filter: ArticleStatusFilter = (ARTICLE_STATUS_FILTERS as readonly string[]).includes(
         requested,
@@ -157,6 +161,8 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
               sort,
               limit: RECENT_LIMIT,
               ...(cursor ? { after: cursor } : {}),
+              ...(q ? { query: q } : {}),
+              ...(publication ? { publicationId: publication } : {}),
             })
           : { entries: await deps.articles.recent(RECENT_LIMIT) };
         const withSummary = await Promise.all(
@@ -177,7 +183,13 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       const visible = rows;
       const query = (over: Record<string, string | undefined>) => {
         const params = new URLSearchParams();
-        const merged = { sort, status: filter === "all" ? undefined : filter, ...over };
+        const merged = {
+          sort,
+          status: filter === "all" ? undefined : filter,
+          q: q || undefined,
+          publication: publication || undefined,
+          ...over,
+        };
         for (const [k, v] of Object.entries(merged)) if (v) params.set(k, v);
         const qs = params.toString();
         return `/articles${qs ? `?${qs}` : ""}`;
@@ -191,7 +203,10 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
             : `<a href="${escapeHtml(query({ status: f === "all" ? undefined : f, after: undefined }))}">${f}</a>`,
         )
         .join(" · ")}</p>`;
-      const pagingControls = `${filterLinks}${
+      const searchForm = deps.articles.page
+        ? `<form method="get" action="/articles" class="search"><input type="hidden" name="sort" value="${sort}">${filter === "all" ? "" : `<input type="hidden" name="status" value="${escapeHtml(filter)}">`}<label>Search title and text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Publication <input name="publication" value="${escapeHtml(publication)}" maxlength="300"></label> <button>Search</button></form>`
+        : "";
+      const pagingControls = `${searchForm}${filterLinks}${
         deps.articles.page
           ? `<p class="sorting">Sort: ${
               sort === "newest"
@@ -206,9 +221,11 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       }`;
       if (visible.length === 0)
         return `${pagingControls}<p class="empty">${
-          filter === "all"
-            ? "No archived articles are indexed yet."
-            : `No archived articles currently have the status “${escapeHtml(filter)}”.`
+          q || publication
+            ? "No indexed articles match this search."
+            : filter === "all"
+              ? "No archived articles are indexed yet."
+              : `No archived articles currently have the status “${escapeHtml(filter)}”.`
         }</p>`;
       const rowsHtml = await Promise.all(
         visible.map(async ({ article: a, summary }) => {

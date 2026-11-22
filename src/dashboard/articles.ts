@@ -45,7 +45,15 @@ export interface RecentArticlesPort {
    * port that only offers `recent` still works: the view then says the full
    * listing is unavailable rather than pretending to page.
    */
-  page?(options: { sort: ArticleSort; after?: string; limit: number }): Promise<ArticlePage>;
+  page?(options: {
+    sort: ArticleSort;
+    after?: string;
+    limit: number;
+    /** Plain words matched over the indexed title and text (#509). */
+    query?: string;
+    /** Exact publication filter (#509). */
+    publicationId?: string;
+  }): Promise<ArticlePage>;
 }
 
 export type RunState =
@@ -325,7 +333,12 @@ export function summariseRun(
         research: [],
       };
     case "not-started":
-      return { summary: "not-started", editorial: "none", stages: rows(idx("themes")), research: [] };
+      return {
+        summary: "not-started",
+        editorial: "none",
+        stages: rows(idx("themes")),
+        research: [],
+      };
     case "running": {
       // Progress comes from the run's own durable state (#439). Missing or
       // stale progress is shown as such, never as success.
