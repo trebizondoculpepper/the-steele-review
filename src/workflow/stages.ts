@@ -9,6 +9,7 @@ import {
   retrieveStage,
   retrievalIds,
   retrieveOneStage,
+  supportStage,
   type StagedResearchDeps,
   type StageRef,
 } from "../research/staged-research.js";
@@ -269,12 +270,17 @@ export function articleStages(deps: {
                 timeoutMs: 30_000,
                 maxSourceChars: 200_000,
               },
+              ...(deps.research.judge ? { judge: deps.research.judge } : {}),
+              ...(deps.research.monitoredHosts
+                ? { monitoredHosts: deps.research.monitoredHosts }
+                : {}),
             };
             return {
               discover: (request: ResearchRequest) => discoverStage(staged, request),
               inventory: (d: StageRef) => inventoryStage(staged, d),
               retrieve: (i: StageRef) => retrieveStage(staged, i),
               ids: (i: StageRef) => retrievalIds(staged, i),
+              support: (d: StageRef, i: StageRef, id: string) => supportStage(staged, d, i, id),
               retrieveOne: (i: StageRef, id: string) => retrieveOneStage(staged, i, id),
               assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
               failed: (request: ResearchRequest, failure: string) =>

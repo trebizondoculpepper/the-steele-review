@@ -25,6 +25,8 @@ import {
 import type { CommissionedJob } from "./librarian.js";
 import { RESEARCH_PROMPT_VERSION, researchPrompt } from "./runner.js";
 import type { SonarClient } from "./sonar.js";
+import { judgeCitationSupport, type SupportStep } from "./citation-support.js";
+import type { SupportJudge } from "./runner.js";
 
 /**
  * Staged research (#593, under #210): the named, recoverable stages that
@@ -51,6 +53,9 @@ export interface StagedResearchDeps {
   owner: string;
   limits: RetrievalLimits;
   now?: () => Date;
+  /** Support judge (#593 handoff); without it sources stay `not-checked`. */
+  judge?: SupportJudge;
+  monitoredHosts?: string[];
 }
 
 /** Plain, serialisable artifact reference passed between durable steps. */
@@ -200,6 +205,29 @@ export async function retrieveOneStage(
       return { retryable: false, creditExhausted: true };
     throw error;
   }
+}
+
+/** Stage 3b, per URL: judge one archived source's support as its own step. */
+export async function supportStage(
+  deps: StagedResearchDeps,
+  discovery: StageRef,
+  inventory: StageRef,
+  retrievalId: string,
+): Promise<{ kind: SupportStep["kind"] }> {
+  const { request, data } = await acceptedAssemblyReader(
+    deps.artifacts,
+    deps.operations,
+  )(discovery);
+  const out = await judgeCitationSupport({
+    artifacts: deps.artifacts,
+    inventory,
+    retrievalId,
+    request,
+    report: data.report,
+    ...(deps.judge ? { judge: deps.judge } : {}),
+    ...(deps.monitoredHosts ? { monitoredHosts: deps.monitoredHosts } : {}),
+  });
+  return { kind: out.kind };
 }
 
 /** Stage 4: assemble and record completion; the job the librarian pins. */
