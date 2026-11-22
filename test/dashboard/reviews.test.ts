@@ -353,7 +353,9 @@ describe("review history legacy and unknown scope (#499)", { timeout: 60_000 }, 
 
 describe("review history reachability and exactness (#499 audit)", { timeout: 120_000 }, () => {
   it("reaches a report beyond the first scan window by following the next-set cursor", async () => {
-    for (let i = 0; i < 205; i++) {
+    // A small window exercises the same cursor semantics without hundreds of
+    // Git commits (which made this test exceed its timeout under load).
+    for (let i = 0; i < 6; i++) {
       await writeReport(
         `h-${String(i).padStart(3, "0")}`,
         report({
@@ -361,12 +363,12 @@ describe("review history reachability and exactness (#499 audit)", { timeout: 12
         }),
       );
     }
-    const reviews = savedReviews(content);
+    const reviews = savedReviews(content, { windowSize: 4 });
     const first = await reviews.forPost(post);
     expect(first.nextWindow).toBeDefined();
     const second = await reviews.forPost(post, 0, first.nextWindow);
     const seen = second.reviews.map((r) => r.path.split("/").pop());
-    expect(seen).toContain("h-204.json");
+    expect(seen).toContain("h-005.json");
     expect(second.nextWindow).toBeUndefined();
     // The page offers the next set.
     const [view] = reviewViews(reviews);

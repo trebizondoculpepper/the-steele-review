@@ -324,9 +324,11 @@ describe("article pages (#377)", () => {
       ],
     };
     const html = renderTrace(t);
-    // Article markup is shown as text, never executed.
+    // Article markup is still escaped and never executed, without showing
+    // implementation language in the reader.
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>");
+    expect(html).not.toContain("markup is never executed");
     // A report for another revision is called out, not presented as approval.
     expect(html).toContain("does not bind to the saved draft");
     expect(html).toContain("redraft");

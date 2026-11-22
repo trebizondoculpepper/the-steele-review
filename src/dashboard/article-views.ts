@@ -502,7 +502,7 @@ export function renderTrace(t: ArticleTrace): string {
     : "";
   const source = renderSource(t.source);
   const draft = t.draft
-    ? `<h2>Draft</h2><p>Saved revision <code>sha256:${escapeHtml(t.draft.hash)}</code>. Shown as text; its markup is never executed.</p><pre>${escapeHtml(t.draft.text)}</pre>`
+    ? `<h2>Draft</h2><p>Saved revision <code>sha256:${escapeHtml(t.draft.hash)}</code>.</p><pre>${escapeHtml(t.draft.text)}</pre>`
     : "";
   const verification = t.verification
     ? `<h2>Verification</h2><p>${badge(t.verification.outcome === "approved" ? "done" : "failed", t.verification.outcome)} ${

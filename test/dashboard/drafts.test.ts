@@ -189,6 +189,8 @@ describe("draft inventory (#440)", { timeout: 60_000 }, () => {
     expect(html).toContain("&lt;img src=x&gt;");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>");
+    // Implementation language is not article content.
+    expect(html).not.toContain("markup is never executed");
   });
 
   it("shows an incomplete verification scan as incomplete, not unverified", async () => {
