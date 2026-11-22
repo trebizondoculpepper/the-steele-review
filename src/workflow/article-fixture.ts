@@ -92,6 +92,20 @@ export function fixtureProviders(): Pick<
         modelVersion: "fixture/verifier",
         complete: async () => JSON.stringify({ verdict: "approved", issues: [] }),
       },
+      // Editorial assessment (#598): a complete no-faults findings document.
+      assessor: {
+        modelVersion: "fixture/assessor",
+        complete: async () => "No faults found.\n\nEND OF ASSESSMENT",
+      },
+      // Editorial judgement (#598): a complete approval document.
+      judge: {
+        modelVersion: "fixture/judge",
+        complete: async () =>
+          "## Reasons\nThe assessment found no faults.\n\n" +
+          "## Required corrections\nNone required.\n\n" +
+          "## Accepted minor observations\nNone.\n\n" +
+          "DECISION: APPROVE",
+      },
     },
     shortlister: new LexicalShortlister(),
     research: {
