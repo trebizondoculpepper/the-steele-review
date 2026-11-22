@@ -14,6 +14,7 @@ import {
   retrieveStage,
   type StagedResearchDeps,
 } from "../../src/research/staged-research.js";
+import { researchJobId } from "../../src/research/job.js";
 import { researchDocumentKind } from "../../src/research/research-index.js";
 import { runResearch, type ResearchStages } from "../../src/workflow/article-run.js";
 
@@ -297,5 +298,47 @@ describe("staged outputs are searchable (#593)", () => {
     expect(
       researchDocumentKind("research-discovery/req-a/disc-b/citations/inventory.json"),
     ).toBeUndefined();
+  });
+
+  it("ends retrieval credit exhaustion as a recoverable credit failure", async () => {
+    const s = sonar();
+    const run = journalCtx();
+    const job = await runResearch(
+      run.ctx,
+      {
+        research: async () => ({}) as never,
+        researchStages: stagesFor(
+          deps(s, {
+            fetch: async () => {
+              throw new WebAdapterError("credit-exhausted", 402);
+            },
+          }),
+        ),
+      },
+      request,
+      "staged",
+    );
+    expect(job.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
+    expect(job.resultRef).toBeUndefined();
+    expect(run.names).toContain("research-failed");
+    expect(run.names).not.toContain("research-assemble");
+  });
+
+  it("records a missing completion event before reusing a saved result", async () => {
+    const jobId = researchJobId(request);
+    await artifacts.write(
+      `research-jobs/${jobId}/result.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId,
+        outcome: "failed",
+        failure: "provider-error",
+        finishedAt: "2026-11-22T00:00:00.000Z",
+      }),
+    );
+    expect(operations.pendingEventStatus(jobId)).toBeUndefined();
+    const job = await existingJob({ artifacts, operations }, request);
+    expect(job?.result?.failure).toBe("provider-error");
+    expect(operations.pendingEventStatus(jobId)).toBeDefined();
   });
 });

@@ -179,7 +179,7 @@ export interface ResearchStages {
     request: ResearchRequest,
   ): Promise<{ kind: "discovered"; discovery: StageRef } | { kind: "failed"; failure: string }>;
   inventory(discovery: StageRef): Promise<StageRef>;
-  retrieve(inventory: StageRef): Promise<{ retryable: number }>;
+  retrieve(inventory: StageRef): Promise<{ retryable: number; creditExhausted?: true }>;
   assemble(discovery: StageRef, inventory: StageRef): Promise<CommissionedJob>;
   failed(request: ResearchRequest, failure: string): Promise<CommissionedJob>;
   /** A job already finished (terminal failure or result) is reused, never rerun. */
@@ -216,6 +216,9 @@ export async function runResearch(
   const inventory = await ctx.run("research-inventory", () => s.inventory(found.discovery));
   for (let round = 0; round < s.rounds; round++) {
     const out = await ctx.run(`research-retrieve-${round}`, () => s.retrieve(inventory));
+    if (out.creditExhausted) {
+      return ctx.run("research-failed", () => s.failed(request, "budget-exceeded"));
+    }
     if (out.retryable === 0) break;
     if (round < s.rounds - 1) await ctx.sleep(s.roundDelayMs * 2 ** round);
   }

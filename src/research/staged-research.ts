@@ -142,14 +142,25 @@ export async function inventoryStage(
 export async function retrieveStage(
   deps: StagedResearchDeps,
   inventory: StageRef,
-): Promise<{ retryable: number }> {
-  const out = await retrieveCitations({
-    artifacts: deps.artifacts,
-    inventory,
-    fetcher: deps.fetcher,
-    limits: deps.limits,
-  });
-  return { retryable: out.retryable.length };
+): Promise<{ retryable: number; creditExhausted?: true }> {
+  try {
+    const out = await retrieveCitations({
+      artifacts: deps.artifacts,
+      inventory,
+      fetcher: deps.fetcher,
+      limits: deps.limits,
+    });
+    return { retryable: out.retryable.length };
+  } catch (error) {
+    // Exhausted credit is an operational block, not an evidence gap: report it
+    // so the job ends recoverably; saved discovery and downloads are kept.
+    if (
+      isCreditExhausted(error) ||
+      (error instanceof WebAdapterError && error.code === "credit-exhausted")
+    )
+      return { retryable: 0, creditExhausted: true };
+    throw error;
+  }
 }
 
 /** Stage 4: assemble and record completion; the job the librarian pins. */
@@ -217,14 +228,22 @@ export async function finishFailedStage(
 
 /** A job whose terminal result is already saved is reused, never rerun. */
 export async function existingJob(
-  deps: Pick<StagedResearchDeps, "artifacts">,
+  deps: Pick<StagedResearchDeps, "artifacts" | "operations">,
   request: ResearchRequest,
 ): Promise<CommissionedJob | null> {
   const jobId = researchJobId(request);
   const ref = await deps.artifacts.lookup(researchJobPath(jobId, "result"));
   if (!ref) return null;
-  const result = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
-  return { jobId, status: "finished", result, resultRef: plain(ref) };
+  const saved = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
+  // Adopt through the completion helper, which records any missing
+  // completion event before the saved result is reused.
+  const out = await finishResearchJob({
+    artifacts: deps.artifacts,
+    operations: deps.operations,
+    jobId,
+    outcome: saved.outcome,
+  });
+  return { jobId, status: "finished", result: out.result, resultRef: plain(out.resultRef) };
 }
 
 /** Bound on retrieval rounds for transient failures within one invocation. */
