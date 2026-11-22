@@ -545,7 +545,7 @@ export async function traceArticle(input: {
     try {
       themes = await input.themes.forPost(post, sourceVersion);
     } catch {
-      themes = { state: "unavailable", themes: [] };
+      themes = { state: "unavailable", results: [], themes: [] };
     }
   }
   // Claims are listed for the same exact revision, from the saved extraction.
