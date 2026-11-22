@@ -281,6 +281,8 @@ const views = [
     ...(archive ? { source: archivedSource(archive) } : {}),
     ...(content ? { themes: savedThemes(content) } : {}),
     ...(content ? { claims: savedClaims(content) } : {}),
+    ...(content ? { assessments: savedAssessments(content) } : {}),
+    ...(content ? { judgments: savedJudgments(content) } : {}),
   }),
   // Every saved draft with its exact verification and delivery status (#440).
   ...draftViews(

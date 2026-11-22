@@ -20,6 +20,9 @@ import {
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
+import type { AssessmentsPort } from "./assessments.js";
+import type { JudgmentsPort } from "./judgments.js";
+import { loadEditorialTimeline, renderEditorialTimeline } from "./editorial-timeline.js";
 import type { ArticleClaims, ArticleClaimLink, ClaimsPort } from "./claims.js";
 
 /** Article list and per-revision trace pages (#377). */
@@ -32,6 +35,9 @@ export interface ArticleViewDeps {
   themes?: ThemesPort;
   /** Saved claims for the trace page (#497). */
   claims?: ClaimsPort;
+  /** Editorial timeline sources (#644). */
+  assessments?: AssessmentsPort;
+  judgments?: JudgmentsPort;
   articles?: RecentArticlesPort;
   runs?: RunStatusPort;
   trace?: (post: { publicationId: string; postId: string }) => Promise<PostTrace>;
@@ -273,6 +279,10 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         ...(deps.themes ? { themes: deps.themes } : {}),
         ...(deps.claims ? { claims: deps.claims } : {}),
       });
+      const timeline = await loadEditorialTimeline(
+        { ...(deps.assessments ? { assessments: deps.assessments } : {}), ...(deps.judgments ? { judgments: deps.judgments } : {}) },
+        post,
+      );
       const trigger =
         deps.canTrigger && t.sourceVersion
           ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
@@ -293,7 +303,9 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         }
         inspection = await restateRunLinksHtml({ ...deps.restate, runs });
       }
-      return trigger + recovery + renderTrace(t) + inspection;
+      return (
+        trigger + recovery + renderTrace(t) + renderEditorialTimeline(timeline, post) + inspection
+      );
     },
   };
   return [list, detail];
