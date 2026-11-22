@@ -199,3 +199,92 @@ describe("assemble research from saved stages (#592)", { timeout: 60_000 }, () =
     expect(out.outcome).toBe("complete");
   });
 });
+
+describe("assembly review regressions (#592)", { timeout: 60_000 }, () => {
+  it("announces the retained result when a pending retrieval finishes before a retry", async () => {
+    const d = data({
+      citations: ["https://ok.example/a", "https://slow.example/s"],
+      report: "# R",
+    });
+    const { discovery, inventory } = await stages(d, {
+      "https://slow.example/s": [new WebAdapterError("rate-limited", 429)],
+    });
+    const crashing = new Proxy(operations, {
+      get(target, prop, receiver) {
+        if (prop === "complete")
+          return () => {
+            throw new Error("crash");
+          };
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await expect(
+      assembleResearch({
+        artifacts,
+        operations: crashing,
+        discovery,
+        inventory,
+        read: async () => ({ data: d, request }),
+        owner: "t",
+      }),
+    ).rejects.toThrow("crash");
+    // The pending source is retrieved before the retry.
+    await retrieveCitations({ artifacts, inventory, fetcher: fetcher({}), limits });
+    const out = await assembleResearch({
+      artifacts,
+      operations,
+      discovery,
+      inventory,
+      read: async () => ({ data: d, request }),
+      owner: "t",
+    });
+    // The event and the result agree with what was first saved.
+    const saved = JSON.parse(await artifacts.read(out.result));
+    expect(events()).toEqual([expect.objectContaining({ outcome: saved.outcome })]);
+    expect(saved.outcome).toBe("complete-with-gaps");
+  });
+
+  it("keeps completion events of two discoveries of one request apart", async () => {
+    const d = data({ citations: ["https://ok.example/a"], report: "# R" });
+    const one = await artifacts.write("research-discovery/req-1/disc-1/result.json", "{}");
+    const two = await artifacts.write("research-discovery/req-1/disc-2/result.json", "{}");
+    for (const discovery of [one, two]) {
+      const { ref: inventory } = await saveCitationInventory({
+        artifacts,
+        discovery,
+        readDiscovery: async () => d,
+      });
+      await retrieveCitations({ artifacts, inventory, fetcher: fetcher({}), limits });
+      await assembleResearch({
+        artifacts,
+        operations,
+        discovery,
+        inventory,
+        read: async () => ({ data: d, request }),
+        owner: "t",
+      });
+    }
+    expect(events()).toHaveLength(2);
+  });
+
+  it("never reports success for an exhausted assembly", async () => {
+    const d = data({ citations: ["https://ok.example/a"], report: "# R" });
+    const { discovery, inventory } = await stages(d, {});
+    const exhausted = new Proxy(operations, {
+      get(target, prop, receiver) {
+        if (prop === "claim") return () => ({ kind: "exhausted" });
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await expect(
+      assembleResearch({
+        artifacts,
+        operations: exhausted,
+        discovery,
+        inventory,
+        read: async () => ({ data: d, request }),
+        owner: "t",
+      }),
+    ).rejects.toThrow("assembly-exhausted");
+  });
+});

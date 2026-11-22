@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
 import {
@@ -66,6 +67,7 @@ export interface AssembledResearch {
   pending: number;
 }
 
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
   commit: r.commit,
@@ -206,6 +208,7 @@ export async function assembleResearch(input: {
     missing === 0 &&
     invalid === 0 &&
     inventory.omittedEntries === 0 &&
+    citations.length <= 500 &&
     data.citationProvenance === "provider-original"
       ? "complete"
       : "complete-with-gaps";
@@ -221,13 +224,24 @@ export async function assembleResearch(input: {
     }),
   );
 
+  // The retained result is authoritative: a retry after a partial save
+  // announces exactly what was saved, never a recomputed outcome.
+  const retained = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(result)));
+  if (!retained.manifest) throw new Error("assembled result has no manifest");
+
   // Completion and its event in one state transaction (outbox).
   const claim = input.operations.claim(key, input.owner, 60_000, 5);
   if (claim.kind === "busy") throw new Error("assembly-busy");
+  if (claim.kind === "exhausted") throw new Error("assembly-exhausted");
   if (claim.kind === "claimed") {
     const event = createResearchCompletedEvent(
-      { jobId, outcome, manifest: toRef(manifest) },
-      { id: `research-assembled-${jobId.slice(9)}`, now: input.now ?? (() => new Date()) },
+      {
+        jobId,
+        outcome: retained.outcome === "failed" ? "complete-with-gaps" : retained.outcome,
+        manifest: retained.manifest,
+      },
+      // Scoped to this discovery: two discoveries of one request never collide.
+      { id: `research-assembled-${sha(dir).slice(0, 32)}`, now: input.now ?? (() => new Date()) },
     );
     const pendingEvent: PendingEventInput = {
       eventId: event.id,
@@ -245,6 +259,10 @@ export async function assembleResearch(input: {
       }
       throw error;
     }
+  }
+  // Success only for a durably completed operation.
+  if (input.operations.operationStatus(key)?.status !== "completed") {
+    throw new Error("assembly not recorded");
   }
   const done = await recorded(claim.kind !== "claimed");
   if (!done) throw new Error("assembly not recorded");
