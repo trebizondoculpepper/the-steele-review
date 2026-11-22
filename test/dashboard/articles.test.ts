@@ -461,3 +461,137 @@ describe("article pages (#377)", () => {
     expect(t.summary).toBe("unknown");
   });
 });
+
+describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
+  const assessment = (over: Record<string, unknown> = {}) => ({
+    path: `assessments/pub/p1/${"1".repeat(32)}.json`,
+    publicationId: "pub",
+    postId: "p1",
+    state: "findings" as const,
+    findings: 1,
+    deterministicFindings: 0,
+    assessorModel: "fake/assessor",
+    promptVersion: "assessor-prompt",
+    assessedAt: "2026-01-01T00:00:00Z",
+    hasDocument: true,
+    ...over,
+  });
+  const judgment = (over: Record<string, unknown> = {}) => ({
+    path: `judgments/pub/p1/${"2".repeat(32)}.json`,
+    publicationId: "pub",
+    postId: "p1",
+    state: "decided" as const,
+    decision: "revise" as const,
+    gateCount: 0,
+    judgeModel: "fake/judge",
+    promptVersion: "judge-prompt",
+    decidedAt: "2026-01-01T01:00:00Z",
+    hasDocument: true,
+    ...over,
+  });
+
+  it("shows every assessor and judge pass chronologically with exact links", async () => {
+    const [, detail] = articleViews({
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
+      },
+      assessments: {
+        list: async () => ({
+          state: "ok",
+          rows: [
+            assessment(),
+            assessment({
+              path: `assessments/pub/p1/${"3".repeat(32)}.json`,
+              state: "provider-failed",
+              findings: undefined,
+              assessedAt: "2026-01-02T02:00:00Z",
+            }),
+          ],
+          partial: false,
+          unreadable: 0,
+        }),
+        detail: async () => undefined,
+      },
+      judgments: {
+        list: async () => ({
+          state: "ok",
+          rows: [
+            judgment(),
+            judgment({
+              path: `judgments/pub/p1/${"4".repeat(32)}.json`,
+              decision: "approve",
+              decidedAt: "2026-01-02T03:00:00Z",
+            }),
+          ],
+          partial: false,
+          unreadable: 0,
+        }),
+        detail: async () => undefined,
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).toContain("Editorial timeline");
+    // Ordering: assessment, judgment, failed assessment, approval judgment.
+    const revise = html.indexOf("judgment: decided / revise");
+    const failed = html.indexOf("assessment: provider-failed");
+    const approve = html.indexOf("judgment: decided / approve");
+    expect(revise).toBeGreaterThan(-1);
+    expect(failed).toBeGreaterThan(revise);
+    expect(approve).toBeGreaterThan(failed);
+    expect(html).toContain("requested an editorial revision");
+    expect(html).toContain(`/assessments/view?path=${encodeURIComponent(`assessments/pub/p1/${"3".repeat(32)}.json`)}`);
+    expect(html).toContain(`/judgments/view?path=${encodeURIComponent(`judgments/pub/p1/${"4".repeat(32)}.json`)}`);
+    expect(html).toContain("Mechanical writer repair turns are not editorial revisions");
+    expect(html).toContain("/assessments?post=pub%2Fp1");
+    expect(html).toContain("/judgments?post=pub%2Fp1");
+  });
+
+  it("labels missing passes as not approval and reports bounded history", async () => {
+    const [, detail] = articleViews({
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
+      },
+      assessments: {
+        list: async () => ({ state: "ok", rows: [], partial: true, unreadable: 1, next: "x" }),
+        detail: async () => undefined,
+      },
+      judgments: {
+        list: async () => ({ state: "unavailable", rows: [], partial: false, unreadable: 0 }),
+        detail: async () => undefined,
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).toContain("Judge attempts are unavailable");
+    expect(html).toContain("bounded");
+    expect(html).toContain("could not be read");
+    expect(html).toContain("not approval");
+  });
+
+  it("shows an explicit empty state when no editorial records exist", async () => {
+    const [, detail] = articleViews({
+      articles: {
+        recent: async () => [],
+        find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
+      },
+      assessments: {
+        list: async () => ({ state: "ok", rows: [], partial: false, unreadable: 0 }),
+        detail: async () => undefined,
+      },
+      judgments: {
+        list: async () => ({ state: "ok", rows: [], partial: false, unreadable: 0 }),
+        detail: async () => undefined,
+      },
+    });
+    const html = await detail!.render(
+      new URL("http://x/articles/trace?publication=pub&post=p1"),
+    );
+    expect(html).toContain("No assessor or judge attempts are saved");
+    expect(html).toContain("not approval");
+  });
+});
