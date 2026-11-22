@@ -444,21 +444,31 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     const v1 = await commitArticleRevision({ content, article, generation, base: "current" });
     if (v1.status === "conflict") throw new Error("conflict");
     // Remove the generation files from the branch after the commit.
-    // The content repository is bare: drop the paths with a temporary index.
-    await new Promise<void>((resolve, reject) =>
-      execFile(
-        "sh",
-        [
-          "-c",
-          'set -e; export GIT_INDEX_FILE="$1/remove-index"; git -C "$1" read-tree HEAD; git -C "$1" rm -q --cached "$2" "$3"; t=$(git -C "$1" write-tree); c=$(git -C "$1" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "remove generation"); git -C "$1" update-ref HEAD "$c"; rm -f "$GIT_INDEX_FILE"',
-          "sh",
-          dir,
-          d.md.path,
-          d.metadata,
-        ],
-        (e) => (e ? reject(e) : resolve()),
-      ),
+    // The content repository is bare: drop the paths through a temporary index.
+    const env = { ...process.env, GIT_INDEX_FILE: join(dir, "remove-index") };
+    const git = (...args: string[]) =>
+      new Promise<string>((resolve, reject) =>
+        execFile("git", ["-C", dir, ...args], { env }, (e, out) =>
+          e ? reject(e) : resolve(out.trim()),
+        ),
+      );
+    await git("read-tree", "HEAD");
+    await git("rm", "-q", "--cached", d.md.path, d.metadata);
+    const tree = await git("write-tree");
+    const commit = await git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit-tree",
+      tree,
+      "-p",
+      "HEAD",
+      "-m",
+      "remove generation",
     );
+    await git("update-ref", "HEAD", commit);
+    await rm(env.GIT_INDEX_FILE, { force: true });
     expect(await content.lookup(d.metadata)).toBeUndefined();
 
     const inventory = draftInventory(content);
@@ -473,6 +483,35 @@ describe("one logical article with its revision history (#581)", { timeout: 60_0
     const found = await inventory.text(d.metadata);
     expect(found?.markdown).toBe("# Kept body\n");
     expect(found?.entry.article).toMatchObject({ version: 1, current: true });
+  });
+
+  it("keeps later pages reachable when the skip bound is reached", async () => {
+    // A long run of rows that are not shown on their own: every storage page
+    // is hidden, so the bounded skip must hand back a cursor, not end.
+    let n = 0;
+    const paths = (after?: string) => {
+      const start = after ? Number(after.split("/")[2]!.slice(1)) + 1 : 0;
+      return Array.from(
+        { length: DRAFT_PAGE * 2 },
+        (_, i) => `articles/pub/p${String(start + i).padStart(6, "0")}/${"0".repeat(32)}.json`,
+      );
+    };
+    const fake = {
+      list: async (prefix: string, _limit: number, after?: string) => {
+        n++;
+        return prefix === "articles" ? paths(after) : [];
+      },
+      lookup: async () => undefined,
+      read: async () => "",
+      lookupAt: async () => undefined,
+    };
+    const hideAll = {
+      states: async (ps: string[]) => new Map(ps.map((p) => [p, "trashed" as const])),
+    };
+    const page = await draftInventory(fake as never, undefined, hideAll).page({});
+    expect(page.entries).toEqual([]);
+    expect(page.next).toBeDefined();
+    expect(n).toBeGreaterThan(0);
   });
 
   it("returns nothing for an unknown or malformed article id", async () => {

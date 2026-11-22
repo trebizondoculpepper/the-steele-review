@@ -444,7 +444,10 @@ export function draftInventory(
         if (page.entries.length > 0 || !page.next) return page;
         cursor = page.next;
       }
-      return { entries: [] };
+      // Bound reached with nothing visible yet (trashed drafts, or generations
+      // shown through their article): hand back the cursor so later pages
+      // stay reachable instead of ending the listing early.
+      return { entries: [], ...(cursor ? { next: cursor } : {}) };
     },
     async article(publicationId, postId, id) {
       if (!ID.test(publicationId) || !ID.test(postId) || !/^article-[0-9a-f]{24}$/.test(id)) {
