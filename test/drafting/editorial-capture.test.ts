@@ -6,7 +6,10 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test"
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
-import { captureWriterAttempt } from "../../src/drafting/writer-attempts.js";
+import {
+  captureWriterAttempt,
+  WriterRecoveryGuardError,
+} from "../../src/drafting/writer-attempts.js";
 import { durableEditorialProvider } from "../../src/drafting/editorial-provider.js";
 let dir: string, content: GitArtifactStore, operations: OperationStore, clock: number;
 const ref = {
@@ -158,5 +161,89 @@ describe("durable editorial calls", { timeout: 60000 }, () => {
       `writer-attempt-${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex").slice(0, 32)}`,
     );
     expect(value.ref.path).toMatch(/^writer-attempts\//);
+  });
+  it("guards an exact denied judge task and replays the recovered response before a new-call base check", async () => {
+    let denied = true;
+    const call = vi.fn(async () => {
+      if (denied) throw new ModelProviderError("unauthorised");
+      return "Recovered judge document";
+    });
+    const args = {
+      content,
+      operations,
+      provider: { modelVersion: "fixture/model", complete: call },
+      purpose: "judge" as const,
+      package: ref,
+      source,
+      context: [],
+      kind: "initial" as const,
+      number: 1,
+      promptVersion: "fixture-judge-v1",
+      request: { ...request, maxOutputChars: 40000 },
+      signal: signal(),
+    };
+    const original = await captureWriterAttempt(args);
+    expect(original.manifest.outcome).toBe("no-response");
+    const descriptor = JSON.parse(
+      await content.read({
+        ...original.manifest.input,
+        sha256: original.manifest.input.hash.slice(7),
+      }),
+    );
+    const expected = {
+      capture: {
+        repository: original.ref.repository,
+        commit: original.ref.commit,
+        path: original.ref.path,
+        hash: `sha256:${original.ref.sha256}`,
+      },
+      descriptorHash: createHash("sha256").update(JSON.stringify(descriptor)).digest("hex"),
+    };
+    denied = false;
+    for (const changed of [
+      { request: { ...args.request, user: "Changed task" } },
+      { provider: { modelVersion: "other/model", complete: call } },
+      { recoveryId: undefined },
+    ])
+      await expect(
+        captureWriterAttempt({
+          ...args,
+          recoveryId: "generation-1",
+          expectedRecovery: expected,
+          ...changed,
+        }),
+      ).rejects.toMatchObject({ code: "task-mismatch" });
+    await expect(
+      captureWriterAttempt({
+        ...args,
+        recoveryId: "generation-1",
+        expectedRecovery: {
+          ...expected,
+          beforeNewCall: async () => {
+            throw new WriterRecoveryGuardError("stale-base");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "stale-base" });
+    expect(call).toHaveBeenCalledTimes(1);
+    const recovered = await captureWriterAttempt({
+      ...args,
+      recoveryId: "generation-1",
+      expectedRecovery: expected,
+    });
+    expect(recovered.text).toBe("Recovered judge document");
+    const replay = await captureWriterAttempt({
+      ...args,
+      recoveryId: "generation-1",
+      expectedRecovery: {
+        ...expected,
+        beforeNewCall: async () => {
+          throw new WriterRecoveryGuardError("stale-base");
+        },
+      },
+    });
+    expect(replay.text).toBe(recovered.text);
+    expect(replay.reused).toBe(true);
+    expect(call).toHaveBeenCalledTimes(2);
   });
 });

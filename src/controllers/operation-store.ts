@@ -1,4 +1,10 @@
 import {
+  EditorialRecoveryBindingInputSchema,
+  EditorialRecoveryBindingSchema,
+  type EditorialRecoveryBindingInput,
+  type EditorialRecoveryBinding,
+} from "../content/editorial-recovery-binding.js";
+import {
   ResearchRecoveryBindingSchema,
   type ResearchRecoveryBinding,
 } from "../content/research-recovery.js";
@@ -891,6 +897,70 @@ export class OperationStore {
   }
 
   /** Stable explicit continuation intent, not a claim that its workflow completed. */
+  /** One denied task has one durable recovery owner, even when no canonical write occurs. */
+  recordEditorialRecovery(input: EditorialRecoveryBindingInput): EditorialRecoveryBinding {
+    const parsed = EditorialRecoveryBindingInputSchema.parse(input);
+    const scope = createHash("sha256")
+      .update(JSON.stringify([parsed.capture, parsed.taskDigest]))
+      .digest("hex");
+    const slot = `editorial-recovery-slot:${scope}`;
+    const request = `editorial-recovery-request:${parsed.publicationId}/${parsed.postId}:${parsed.requestId}`;
+    return this.transaction(() => {
+      const existingRequest = this.row(request),
+        existingSlot = this.row(slot);
+      const matches = (row: OperationRow | undefined) => {
+        if (!row || row.status !== "completed") return undefined;
+        const value = EditorialRecoveryBindingSchema.parse(JSON.parse(row.artifact ?? "null"));
+        const { workflowKey: _key, recordedAt: _at, ...bound } = value;
+        if (JSON.stringify(bound) !== JSON.stringify(parsed))
+          throw new OperationStoreError("invalid-input");
+        return value;
+      };
+      if (existingRequest || existingSlot) {
+        const a = matches(existingRequest),
+          b = matches(existingSlot);
+        if (!a || !b || JSON.stringify(a) !== JSON.stringify(b))
+          throw new OperationStoreError("invalid-input");
+        return a;
+      }
+      const now = this.now();
+      const value = EditorialRecoveryBindingSchema.parse({
+        ...parsed,
+        workflowKey: `${parsed.publicationId}/${parsed.postId}~judge-recovery-${scope.slice(0, 16)}`,
+        recordedAt: new Date(now).toISOString(),
+      });
+      const insert = this.db.prepare(
+        "INSERT INTO operations (key,status,owner,lease_expires_at,attempts,max_attempts,artifact,error_code,updated_at) VALUES (?, 'completed', NULL, NULL, 1, 1, ?, NULL, ?)",
+      );
+      for (const key of [request, slot]) insert.run(key, JSON.stringify(value), now);
+      return value;
+    });
+  }
+  /** Exact reconnect lookup; a recorded intent is not workflow completion. */
+  editorialRecoveryAttempt(
+    publicationId: string,
+    postId: string,
+    requestId: string,
+  ): EditorialRecoveryBinding | undefined {
+    if (
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(publicationId) ||
+      !/^[a-z0-9][a-z0-9-]{0,199}$/.test(postId) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(requestId)
+    )
+      throw new OperationStoreError("invalid-input");
+    const row = this.row(`editorial-recovery-request:${publicationId}/${postId}:${requestId}`);
+    if (!row) return undefined;
+    if (row.status !== "completed") throw new OperationStoreError("invalid-input");
+    const value = EditorialRecoveryBindingSchema.parse(JSON.parse(row.artifact ?? "null"));
+    if (
+      value.publicationId !== publicationId ||
+      value.postId !== postId ||
+      value.requestId !== requestId
+    )
+      throw new OperationStoreError("invalid-input");
+    return value;
+  }
+
   recordEditorialContinuation(input: {
     publicationId: string;
     postId: string;

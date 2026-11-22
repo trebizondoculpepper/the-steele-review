@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ModelCompletionMetadata } from "../analysis/extraction.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactRefSchema,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import {
   OperationStoreError,
   type OperationStore,
@@ -81,6 +85,18 @@ export const WriterAttemptManifestSchema = z
   });
 export type WriterAttemptManifest = z.infer<typeof WriterAttemptManifestSchema>;
 
+/** Fixed domain refusal before any provider invocation; never a provider failure. */
+export class WriterRecoveryGuardError extends Error {
+  constructor(readonly code: "task-mismatch" | "not-denied" | "stale-base" | "deadline") {
+    super(`editorial recovery guard: ${code}`);
+    this.name = "WriterRecoveryGuardError";
+  }
+}
+export interface ExpectedWriterRecovery {
+  capture: z.infer<typeof ArtifactReferenceSchema>;
+  descriptorHash: string;
+  beforeNewCall?: () => Promise<void>;
+}
 export class WriterAttemptError extends Error {
   constructor(
     readonly code: "archive-failed" | "busy" | "interrupted",
@@ -140,6 +156,9 @@ export async function captureWriterAttempt(input: {
   signal: AbortSignal;
   /** Explicit operator recovery of a confirmed rejection before any response. */
   recoveryId?: string;
+  /** Only the validated denied task may use this explicit recovery generation. */
+  expectedRecovery?: ExpectedWriterRecovery;
+  beforeNewCall?: () => Promise<void>;
   /** Must cover the configured request deadline plus durable capture. */
   leaseMs?: number;
 }): Promise<CapturedWriterAttempt> {
@@ -162,6 +181,56 @@ export async function captureWriterAttempt(input: {
     request: input.request,
   };
   const originalId = `${prefix}-${hash(JSON.stringify(descriptor)).slice(0, 32)}`;
+  if (input.expectedRecovery) {
+    const expected = input.expectedRecovery;
+    const same = (
+      a: z.infer<typeof ArtifactReferenceSchema>,
+      b: z.infer<typeof ArtifactReferenceSchema>,
+    ) =>
+      a.repository === b.repository &&
+      a.commit === b.commit &&
+      a.path === b.path &&
+      a.hash === b.hash;
+    if (
+      input.purpose !== "judge" ||
+      !input.recoveryId ||
+      !/^[0-9a-f]{64}$/.test(expected.descriptorHash) ||
+      hash(JSON.stringify(descriptor)) !== expected.descriptorHash ||
+      expected.capture.path !== `${directory}/${originalId}/manifest.json`
+    )
+      throw new WriterRecoveryGuardError("task-mismatch");
+    const previous = await input.content.lookup(expected.capture.path);
+    if (!previous || !same(ref(previous), expected.capture))
+      throw new WriterRecoveryGuardError("not-denied");
+    const manifest = WriterAttemptManifestSchema.parse(
+      JSON.parse(await input.content.read(previous)),
+    );
+    if (
+      manifest.purpose !== "judge" ||
+      manifest.outcome !== "no-response" ||
+      manifest.failure !== "unauthorised" ||
+      manifest.raw ||
+      manifest.lateResponse ||
+      manifest.kind !== "initial" ||
+      manifest.number !== 1 ||
+      manifest.revision !== undefined ||
+      manifest.repairPromptVersion !== undefined ||
+      manifest.completion.stopReason !== "unknown" ||
+      manifest.completion.resolvedModel !== undefined
+    )
+      throw new WriterRecoveryGuardError("not-denied");
+    for (const name of ["response.txt", "completion.json", "late-response.json", "fence.json"])
+      if (await input.content.lookup(`${directory}/${originalId}/${name}`))
+        throw new WriterRecoveryGuardError("not-denied");
+    const state = input.operations.operationStatus(`editorial-capture:${originalId}`);
+    const accepted = z.object({ manifest: ArtifactRefSchema }).strict().safeParse(state?.artifact);
+    if (
+      state?.status !== "completed" ||
+      !accepted.success ||
+      !same(ref(accepted.data.manifest), expected.capture)
+    )
+      throw new WriterRecoveryGuardError("not-denied");
+  }
   let id = originalId;
   if (input.recoveryId) {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(input.recoveryId))
@@ -302,6 +371,8 @@ export async function captureWriterAttempt(input: {
     .min(1000)
     .max(20 * 60_000)
     .parse(input.leaseMs ?? 10 * 60_000);
+  await input.expectedRecovery?.beforeNewCall?.();
+  await input.beforeNewCall?.();
   const held = input.operations.claim(stateKey, "writer-attempt", leaseMs, 1);
   if (held.kind === "busy") throw new WriterAttemptError("busy");
   if (held.kind !== "claimed") {
