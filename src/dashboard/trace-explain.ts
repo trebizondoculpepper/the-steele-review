@@ -16,11 +16,20 @@ export interface TraceExplanation {
   next?: string;
   /** Present only when the run stopped without completing its stages. */
   stoppedReason?: string;
+  /** Which package-readiness contract the run recorded, when it recorded one. */
+  contract?: string;
 }
 
 type Input = Pick<
   ArticleTrace,
-  "summary" | "editorial" | "outcome" | "reason" | "stages" | "research" | "approvalRecorded"
+  | "summary"
+  | "editorial"
+  | "outcome"
+  | "reason"
+  | "stages"
+  | "research"
+  | "approvalRecorded"
+  | "packageReadiness"
 > & {
   /**
    * Whether the recovery action is available for this failure. Recovery only
@@ -59,7 +68,7 @@ function failedStage(stages: Input["stages"]): { stage: string; detail?: string 
   return { stage: failed.stage, ...(detail ? { detail } : {}) };
 }
 
-export function explainTrace(t: Input): TraceExplanation {
+function explainTraceCore(t: Input): TraceExplanation {
   const failed = failedStage(t.stages);
 
   // A run that has a recorded recovery is described by the recovery: the
@@ -163,9 +172,13 @@ export function explainTrace(t: Input): TraceExplanation {
     };
   }
   if (t.editorial === "evidence-gap") {
+    // Only a legacy run can end here: current submissions draft from every
+    // valid package and report the gap on the draft (#769).
     return {
-      status: "Workflow completed with an evidence gap: there was not enough support to write a response.",
-      next: "Commission or supply the missing research, then run the revision again.",
+      status:
+        "Workflow stopped at a legacy evidence gap before drafting: this run was submitted under the old package-readiness contract, so there was not enough support to write a response.",
+      next:
+        "Run this revision again. Current submissions draft with the available evidence and call out unevidenced claims; no new research is required first.",
     };
   }
   if (t.editorial === "unverified") {
@@ -180,6 +193,24 @@ export function explainTrace(t: Input): TraceExplanation {
   };
 }
 
+export function explainTrace(t: Input): TraceExplanation {
+  return withContract(explainTraceCore(t), t.packageReadiness);
+}
+
+/** The recorded contract, stated once so a run can be compared with a newer one. */
+function withContract(
+  explanation: TraceExplanation,
+  contract: Input["packageReadiness"],
+): TraceExplanation {
+  return contract === "non-blocking-v1"
+    ? {
+        ...explanation,
+        contract:
+          "The original submission recorded the non-blocking package contract: every valid package reaches the writer, and an evidence gap is reported on the draft.",
+      }
+    : explanation;
+}
+
 /** Render the explanation as the first block of the trace page. */
 export function renderExplanation(explanation: TraceExplanation): string {
   const esc = (v: string) =>
@@ -188,5 +219,7 @@ export function renderExplanation(explanation: TraceExplanation): string {
     );
   return `<section class="explanation"><h2>What happened</h2><p>${esc(explanation.status)}</p>${
     explanation.stoppedReason ? `<p class="s-failed">Stopped: ${esc(explanation.stoppedReason)}</p>` : ""
-  }${explanation.next ? `<p><strong>Next:</strong> ${esc(explanation.next)}</p>` : ""}</section>`;
+  }${explanation.contract ? `<p class="empty">${esc(explanation.contract)}</p>` : ""}${
+    explanation.next ? `<p><strong>Next:</strong> ${esc(explanation.next)}</p>` : ""
+  }</section>`;
 }

@@ -510,7 +510,12 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         await w.workflowSubmit({ ...base, ...extra });
         return w.workflowAttach();
       };
-      expect((await submit("fixture-original")).outcome).toBe("evidence-gap");
+      // The gate no longer stops before drafting (#769); this fixture's draft
+      // stage itself reports the synthetic stop.
+      expect(await submit("fixture-original")).toMatchObject({
+        outcome: "failed",
+        reason: "synthetic-stop-after-ready-package",
+      });
       expect(researchCalls).toBe(1);
       expect(
         (
@@ -522,7 +527,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         ).status,
       ).toBe("recovered");
       // Same service idempotency key still returns its journaled original failure.
-      expect((await submit("fixture-old-key")).outcome).toBe("evidence-gap");
+      expect((await submit("fixture-old-key")).outcome).toBe("failed");
       expect(researchCalls).toBe(1);
       const recovered = await submit("fixture-recovered", {
         operatorRequestId: "owner-recovery",
@@ -534,7 +539,9 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         reason: "synthetic-stop-after-ready-package",
       });
       expect(researchCalls).toBe(2);
-      expect(draftCalls).toBe(1);
+      // The original submission and the journaled replay both draft now; the
+      // recovery is the third draft call.
+      expect(draftCalls).toBe(3);
       const pkg = JSON.parse(await artifacts.read(recovered.package!));
       expect(pkg.status).toBe("ready");
       expect(pkg.source.context).toEqual(ref(f.context));
@@ -544,7 +551,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         retainedResearchJobIds: [`research-${"f".repeat(32)}`],
       });
       expect(changed).toMatchObject({
-        outcome: "evidence-gap",
+        outcome: "failed",
         reason: "retained-research-plan-mismatch",
       });
       expect(researchCalls).toBe(2);

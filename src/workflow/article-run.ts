@@ -101,6 +101,12 @@ export interface ArticleRunInput {
 export interface ArticleRunResult {
   outcome: "verified" | "rejected" | "drafted-unverified" | "evidence-gap" | "failed";
   reason?: string;
+  /**
+   * Package-readiness contract the run was submitted under (#747, #769).
+   * Current submissions always draft, so this is provenance for the trace, not
+   * a gate. Absent on legacy runs.
+   */
+  packageReadiness?: "non-blocking-v1";
   themes: Ref;
   claims: Ref;
   coverage?: Ref;
@@ -518,6 +524,13 @@ export function articleRunWorkflow(stages: ArticleStages) {
     const submittedAt = await ctx.date.now();
     const deadline = submittedAt + input.researchDeadlineMs;
 
+    // Provenance only: every current submission drafts from a valid package,
+    // including an evidence gap (#769). The marker records which contract the
+    // request was submitted under so a legacy run can be told apart.
+    const contract =
+      input.packageReadiness === "non-blocking-v1"
+        ? ({ packageReadiness: input.packageReadiness } as const)
+        : {};
     const themes = await step("themes", () => stages.themes(input));
     const claims = await step("claims", () => stages.claims(input, themes));
     const requests = await step("plan-research", () => stages.planResearch(themes, claims));
@@ -528,11 +541,12 @@ export function articleRunWorkflow(stages: ArticleStages) {
         JSON.stringify(input.retainedResearchJobIds)
     )
       return {
-        outcome: "evidence-gap",
+        outcome: "failed",
         reason: "retained-research-plan-mismatch",
         themes,
         claims,
         research: [],
+        ...contract,
       };
     /**
      * One research round: choose which requests to dispatch, dispatch them
@@ -666,12 +680,10 @@ export function articleRunWorkflow(stages: ArticleStages) {
       }
     }
     const pkg = await step("package", () => stages.package(coverage));
-    // Legacy runs stop when no claim is supported. Runs submitted with the
-    // non-blocking contract (#747) pass every valid package to the writer:
-    // claim coverage is information for the article, not a librarian veto.
-    if (pkg.status !== "ready" && input.packageReadiness !== "non-blocking-v1") {
-      return { outcome: "evidence-gap", themes, claims, coverage, package: pkg.ref, research };
-    }
+    // Every valid package reaches the writer: claim coverage is information
+    // for the article, not a librarian veto (#747, #769). An invalid package
+    // still fails in `stages.package` above; an evidence gap is reported by the
+    // draft and the traces, never by stopping before drafting.
     const drafted = await step("draft", () => stages.draft(pkg.ref, input.sourceUrl));
     const draftDiagnostics = {
       ...(drafted.diagnostics?.length ? { draftDiagnostics: drafted.diagnostics } : {}),
@@ -687,6 +699,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         package: pkg.ref,
         ...draftDiagnostics,
         research,
+        ...contract,
       };
     }
     if (input.editorial) {
@@ -730,6 +743,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         research,
         editorial: editorial.history,
         ...(editorial.approvalEvent ? { approvalEvent: editorial.approvalEvent } : {}),
+        ...contract,
       };
     }
     // Verification may redraft (bounded); the final draft is the one it judged.
@@ -750,6 +764,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         ...(verified.ref ? { verification: verified.ref } : {}),
         ...(verified.mechanicalRun ? { revisionMechanicalRun: verified.mechanicalRun } : {}),
         research,
+        ...contract,
       };
     if (verified.unavailable) {
       return {
@@ -762,6 +777,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
         draft: finalDraft,
         ...draftDiagnostics,
         research,
+        ...contract,
       };
     }
     // Only an approving verification is handed to publishing.
@@ -781,6 +797,7 @@ export function articleRunWorkflow(stages: ArticleStages) {
       ...draftDiagnostics,
       ...(verified.ref ? { verification: verified.ref } : {}),
       research,
+      ...contract,
     };
   }
 

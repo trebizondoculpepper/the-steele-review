@@ -41,10 +41,18 @@ describe("article trace explanation (#525)", () => {
     );
   });
 
-  it("reports an evidence gap as a gap, not a failure", () => {
+  it("reports a legacy evidence gap and points at a re-run, not new research (#769)", () => {
     const e = explainTrace({ ...base, editorial: "evidence-gap" });
-    expect(e.status).toMatch(/evidence gap/);
-    expect(e.next).toMatch(/Commission or supply the missing research/);
+    expect(e.status).toMatch(/legacy evidence gap/);
+    expect(e.next).toMatch(/Run this revision again/);
+    expect(e.next).toMatch(/draft with the available evidence/);
+    expect(e.next).not.toMatch(/Commission or supply/);
+  });
+
+  it("states the recorded package contract once", () => {
+    const e = explainTrace({ ...base, packageReadiness: "non-blocking-v1" });
+    expect(e.contract).toMatch(/non-blocking package contract/);
+    expect(explainTrace({ ...base }).contract).toBeUndefined();
   });
 
   it("gives the exact stopping reason for a failed run", () => {
