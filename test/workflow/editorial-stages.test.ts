@@ -1,10 +1,11 @@
+import type { JudgmentHistory } from "../../src/content/judgment-history.js";
 import { editorialAttemptIdentity } from "../../src/workflow/editorial-attempt-identity.js";
 import { OperationStoreError } from "../../src/controllers/operation-store.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import { ArtifactStoreError, GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import { editorialStages } from "../../src/workflow/editorial-stages.js";
@@ -40,7 +41,7 @@ async function seeded(
   options: {
     assessor?: () => Promise<string>;
     writer?: (request: any) => Promise<string>;
-    judge?: () => Promise<string>;
+    judge?: (request: { system: string; user: string }) => Promise<string>;
   } = {},
 ) {
   const report = PackageVerificationReportSchema.parse(
@@ -145,14 +146,11 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
   it("feeds deterministic fault details to the writer even when the judge document itself said APPROVE", async () => {
     const writer = vi.fn(async (request: { user: string }) => {
       const user = JSON.parse(request.user);
-      const guidance = JSON.parse(user.revision.feedback[0].reason);
-      expect(guidance).toMatchObject({
-        decision: "revise",
-        deterministicFindings: [
-          { passage: "Synthetic faulty citation", reason: "The citation number is not defined." },
-        ],
+      expect(user.revision.feedback).toContainEqual({
+        passage: "Synthetic faulty citation",
+        reason: "The citation number is not defined.",
       });
-      expect(guidance.judgment).toContain("DECISION: APPROVE");
+      expect(JSON.stringify(user.revision.feedback)).not.toContain("DECISION: APPROVE");
       expect(user.revision.previousFields).toHaveProperty("title");
       return WRITER;
     });
@@ -230,6 +228,146 @@ describe("typed editorial stages and judgment-backed delivery", { timeout: 60000
       expect(writer).toHaveBeenCalledTimes(2);
     } finally {
       clock.mockRestore();
+    }
+  });
+  it.each(["changed-advice", "corrected", "new-material-fault"])(
+    "pins prior guidance and current faults independently: %s",
+    async (mode) => {
+      const correction =
+        "Replace the subtitle with: The public consultation itself is a harmful plan.";
+      const priorDoc = `## Reasons\nMATERIAL-REASONS-SENTINEL\n## Required corrections\n${correction}\n## Accepted minor observations\nOptional: shorten the link label.\nDECISION: REVISE`;
+      let judged = 0;
+      const judge = vi.fn(async (request: any) => {
+        const user = JSON.parse(request.user);
+        judged++;
+        if (judged === 1) {
+          expect(user.priorJudgmentGuidance).toBeUndefined();
+          return priorDoc;
+        }
+        expect(user.priorJudgmentGuidance).toHaveLength(1);
+        expect(user.priorJudgmentGuidance[0].requiredCorrections).toBe(correction);
+        expect(user.priorJudgmentGuidance[0].effectiveDecision).toBe("revise");
+        expect(user.findings).toContain(
+          mode === "new-material-fault"
+            ? "A genuinely new material fault"
+            : "Current independent findings",
+        );
+        if (mode === "corrected") return APPROVE;
+        return `## Reasons\n${mode === "changed-advice" ? "The writer followed my earlier replacement. That advice was wrong; the allegation concerned equipment, not the consultation. I retract it." : "A new material factual fault remains; prior guidance is no exemption."}\n## Required corrections\nCorrect the factual scope using the current evidence.\n## Accepted minor observations\nNone.\nDECISION: REVISE`;
+      });
+      let assessed = 0;
+      const writer = vi.fn(async (request: any) => {
+        const u = JSON.parse(request.user);
+        expect(u.revision.feedback).toContainEqual({
+          passage: "Required editorial corrections",
+          reason: correction,
+        });
+        expect(JSON.stringify(u.revision.feedback)).not.toContain("MATERIAL-REASONS-SENTINEL");
+        expect(JSON.stringify(u.revision.feedback)).not.toContain("Optional: shorten");
+        expect(u.revision.nonBlockingObservations).toEqual([
+          { passage: "Accepted minor observations", reason: "Optional: shorten the link label." },
+        ]);
+        return JSON.stringify({
+          ...JSON.parse(WRITER),
+          subtitle:
+            mode === "corrected"
+              ? "What the treaty actually establishes"
+              : "The public consultation itself is a harmful plan.",
+        });
+      });
+      const f = await seeded({
+        writer,
+        judge,
+        assessor: async () =>
+          `## Finding 1\n- Where: subtitle\n- What is wrong: ${++assessed > 1 && mode === "new-material-fault" ? "A genuinely new material fault" : "Current independent findings"}\n- Why: The current source establishes a narrower scope.\nEND OF ASSESSMENT`,
+      });
+      const a = await f.stages.assess(f.version, f.pkg, "history-assessment-0"),
+        j = await f.stages.judge(a.ref, "history-judge-0");
+      const revised = await f.stages.revise(
+        f.version,
+        f.pkg,
+        j.ref,
+        1,
+        "https://pub.example.com/p/p1",
+      );
+      if (!revised.version) throw new Error("revision failed");
+      const history: JudgmentHistory = [
+        {
+          judgment: artifactReference(j.ref),
+          assessment: artifactReference(a.ref),
+          body: artifactReference(f.version.draft),
+          metadata: artifactReference(f.version.metadata),
+        },
+      ];
+      const current = await f.stages.assess(revised.version, f.pkg, "history-assessment-1");
+      const beforeRecords = await content.list("judgments/pub/p1", 100);
+      const read = content.read.bind(content);
+      let fail = true;
+      const interrupted = vi.spyOn(content, "read").mockImplementation(async (reference) => {
+        if (fail && reference.path === j.ref.path) {
+          fail = false;
+          throw new ArtifactStoreError("git-failed");
+        }
+        return read(reference);
+      });
+      await expect(
+        f.stages.judge(current.ref, "history-judge-1", undefined, history),
+      ).rejects.toMatchObject({ code: "git-failed" });
+      expect(await content.list("judgments/pub/p1", 100)).toEqual(beforeRecords);
+      expect(judge).toHaveBeenCalledTimes(1);
+      interrupted.mockRestore();
+      const next = await f.stages.judge(current.ref, "history-judge-1", undefined, history);
+      expect(next.decision).toBe(mode === "corrected" ? "approve" : "revise");
+      const record = JSON.parse(await content.read(next.ref));
+      expect(record.history).toEqual(history);
+      expect(await f.stages.judge(current.ref, "history-judge-1", undefined, history)).toEqual(
+        next,
+      );
+      expect(judge).toHaveBeenCalledTimes(2);
+      expect(writer).toHaveBeenCalledTimes(1);
+      const invalid = structuredClone(history);
+      invalid[0]!.metadata = artifactReference(f.pkg);
+      expect(
+        await f.stages.judge(current.ref, "history-mismatch", undefined, invalid),
+      ).toMatchObject({ state: "gated", decision: "none" });
+      const unreadable = structuredClone(history);
+      unreadable[0]!.judgment.commit = "0".repeat(40);
+      expect(
+        await f.stages.judge(current.ref, "history-unreadable", undefined, unreadable),
+      ).toMatchObject({ state: "gated", decision: "none" });
+      expect(judge).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("preserves absent-history reuse and captures a valid five-round history without overflowing context bounds", async () => {
+    const reviseDoc =
+      "## Reasons\nA material correction is requested.\n## Required corrections\nCorrect the summary.\n## Accepted minor observations\nNone.\nDECISION: REVISE";
+    const judge = vi.fn(async () => reviseDoc),
+      f = await seeded({ judge });
+    const a = await f.stages.assess(f.version, f.pkg, "max-history-assessment"),
+      prior = [];
+    const first = await f.stages.judge(a.ref, "max-history-0");
+    expect(await f.stages.judge(a.ref, "max-history-0", undefined, [])).toEqual(first);
+    expect(JSON.parse(await content.read(first.ref))).not.toHaveProperty("history");
+    for (let i = 0; i < 5; i++) {
+      const j = i === 0 ? first : await f.stages.judge(a.ref, `max-history-${i}`);
+      prior.push({
+        judgment: artifactReference(j.ref),
+        assessment: artifactReference(a.ref),
+        body: artifactReference(f.version.draft),
+        metadata: artifactReference(f.version.metadata),
+      });
+    }
+    const final = await f.stages.judge(a.ref, "max-history-final", undefined, prior);
+    expect(final.state).toBe("decided");
+    const record = JSON.parse(await content.read(final.ref));
+    expect(record.history).toHaveLength(5);
+    const changed = await f.stages.judge(a.ref, "max-history-final", undefined, prior.slice(0, 4));
+    expect(changed.ref).not.toEqual(final.ref);
+    expect(JSON.parse(await content.read(changed.ref)).history).toHaveLength(4);
+    expect(await f.stages.judge(a.ref, "max-history-final", undefined, prior)).toEqual(final);
+    for (const ref of record.retainedAttempts) {
+      const manifest = JSON.parse(await content.read(artifactRef(ref)));
+      expect(manifest.context).toHaveLength(7);
     }
   });
   it.each(["assessor", "judge"])(

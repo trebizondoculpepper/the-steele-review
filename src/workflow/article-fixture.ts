@@ -102,7 +102,7 @@ export function fixtureProviders(): Pick<
         modelVersion: "fixture/judge",
         complete: async () =>
           "## Reasons\nThe assessment found no faults.\n\n" +
-          "## Required corrections\nNone required.\n\n" +
+          "## Required corrections\nNone.\n\n" +
           "## Accepted minor observations\nNone.\n\n" +
           "DECISION: APPROVE",
       },

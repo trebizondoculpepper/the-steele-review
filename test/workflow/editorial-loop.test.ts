@@ -98,6 +98,38 @@ describe("versioned journaled editorial loop", () => {
     await runEditorialLoop(f.args);
     expect(f.counts()).toEqual({ assessed: 2, judged: 2, revised: 1, approved: 1 });
   });
+  it("passes only exact earlier reviewed versions and judgments to the next journaled judge", async () => {
+    const f = fixture(),
+      judge = vi.spyOn(f.stages, "judge");
+    await runEditorialLoop(f.args);
+    expect(judge.mock.calls[0]?.[3]).toEqual([]);
+    expect(judge.mock.calls[1]?.[3]).toEqual([
+      {
+        judgment: {
+          ...ref("judgments/1.json"),
+          hash: `sha256:${"b".repeat(64)}`,
+          sha256: undefined,
+        },
+        assessment: {
+          ...ref("assessments/1.json"),
+          hash: `sha256:${"b".repeat(64)}`,
+          sha256: undefined,
+        },
+        body: {
+          ...ref("articles/initial.md"),
+          hash: `sha256:${"b".repeat(64)}`,
+          sha256: undefined,
+        },
+        metadata: {
+          ...ref("articles/initial.md.json"),
+          hash: `sha256:${"b".repeat(64)}`,
+          sha256: undefined,
+        },
+      },
+    ]);
+    await runEditorialLoop(f.args);
+    expect(judge).toHaveBeenCalledTimes(2);
+  });
   it("keeps every pass and an unresolved stop after the bounded editorial revisions", async () => {
     const f = fixture(true);
     const out = await runEditorialLoop(f.args);

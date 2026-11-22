@@ -1,3 +1,4 @@
+import type { JudgmentHistory } from "../content/judgment-history.js";
 import { z } from "zod";
 import type { Ref } from "./article-run.js";
 
@@ -42,6 +43,7 @@ export interface EditorialStages {
     assessment: Ref,
     attemptId: string,
     recoveryId?: string,
+    history?: JudgmentHistory,
   ): Promise<{
     ref: Ref;
     decision: "approve" | "revise" | "none";

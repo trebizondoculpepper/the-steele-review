@@ -99,6 +99,24 @@ Separate evidence assessment from the decision about whether to continue:
   independence from assessment, bounded editorial attempts and the existing
   exact-version approval/outbox/publishing boundary.
 
+For a revision pass, the judge may receive bounded earlier guidance from the same
+article chain. Pin each prior judgment, assessment, reviewed body and metadata to
+exact Git references, validate them against the current article/package/source
+context, and include the history in judgment identity and saved provenance. Treat
+it as untrusted historical advice, not evidence or an approval exemption. The
+judge should distinguish applied, still-unfixed and newly discovered faults,
+and explicitly explain any correction to its own earlier advice. A prior bad
+recommendation never excuses a current material error. The assessor remains
+independent and reports current faults without being steered by that history.
+
+The writer receives the complete judgment's **Required corrections** as required
+feedback. **Accepted minor observations** use the separate optional-observations
+channel; reasons and the complete raw judgment remain retained for audit, not a
+flat list of mandatory edits. Ambiguous sections or contradictory approval and
+required-change markers cannot authorize a revision or approval. Transient
+storage failures reading history remain retryable workflow work rather than
+cached negative judgments.
+
 The judge may use a separately prompted model to interpret findings and recommend
 changes. Fixed version, completion and attempt gates stay deterministic. The
 earlier rule-based-only judge was a suggestion, not an owner requirement. Fault

@@ -1,3 +1,4 @@
+import type { JudgmentHistory } from "../content/judgment-history.js";
 import type { EditorialHistory, EditorialPolicy, EditorialStages } from "./editorial-contract.js";
 import type { Ref } from "./article-run.js";
 
@@ -23,6 +24,13 @@ export async function runEditorialLoop(input: {
     input.stages.prepare(input.draft, input.package),
   );
   const initial = version;
+  const judgmentHistory: JudgmentHistory = [];
+  const reference = (r: Ref) => ({
+    repository: r.repository,
+    commit: r.commit,
+    path: r.path,
+    hash: `sha256:${r.sha256}`,
+  });
   const assessments: Ref[] = [],
     judgments: Ref[] = [],
     revisions: (typeof version)[] = [],
@@ -60,9 +68,17 @@ export async function runEditorialLoop(input: {
     }
     await input.progress("judge", round);
     const judgment = await input.step(`editorial-judge-${round}`, () =>
-      input.stages.judge(assessment.ref, `${input.attemptId}:judgment:${round}`, input.recoveryId),
+      input.stages.judge(assessment.ref, `${input.attemptId}:judgment:${round}`, input.recoveryId, [
+        ...judgmentHistory,
+      ]),
     );
     judgments.push(judgment.ref);
+    judgmentHistory.push({
+      judgment: reference(judgment.ref),
+      assessment: reference(assessment.ref),
+      body: reference(version.draft),
+      metadata: reference(version.metadata),
+    });
     if (judgment.operationalFailure) {
       terminal = "operational-stop";
       reason = `judgment: ${judgment.operationalFailure}`;
