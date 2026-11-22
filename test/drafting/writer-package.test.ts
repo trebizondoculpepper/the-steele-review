@@ -91,6 +91,32 @@ describe("writer evidence package (#148)", { timeout: 60_000 }, () => {
       originalUrl: value.source.url,
       title: value.source.title,
     });
+    const reattributedContext = await saveSourceContext(content, {
+      ...value,
+      author: {
+        status: "resolved",
+        author: "Configured Person",
+        observedByline: "Synthetic Account",
+        basis: "source-configured",
+        sourceMetadataVersion: "registry-v2-alias",
+      },
+    });
+    const reattributedCoverage = await content.write(
+      "fixtures/coverage-reattributed.json",
+      JSON.stringify({
+        ...record,
+        sourceContext: {
+          repository: reattributedContext.repository,
+          commit: reattributedContext.commit,
+          path: reattributedContext.path,
+          hash: `sha256:${reattributedContext.sha256}`,
+        },
+      }),
+    );
+    const reattributed = await saveWriterPackage({ content, coverage: reattributedCoverage });
+    expect(reattributed.ref.path).not.toBe(result.ref.path);
+    expect(await content.read(context)).toContain("registry-v1");
+    expect(reattributed.package.source.context?.path).toBe(reattributedContext.path);
     const wrong = await saveSourceContext(content, {
       ...value,
       source: { ...value.source, postId: "another-post" },

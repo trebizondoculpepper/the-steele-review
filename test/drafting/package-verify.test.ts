@@ -1,3 +1,4 @@
+import { parseSourceMetadata, postAttribution } from "../../src/content/source-metadata.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   readPublicationPayload,
@@ -159,6 +160,16 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     async (medium, method, supplied, representation) => {
       const record = JSON.parse(await archive.read({} as never));
       record.item.publishedAt = "2026-01-02T12:34:56+02:00";
+      record.item.author = "Synthetic Account";
+      const registry = parseSourceMetadata([
+        {
+          sourceId: "pub",
+          sourceType: "substack",
+          displayName: "Synthetic",
+          defaultAuthor: "Configured Author",
+          sourceAccountBylines: ["Synthetic Account"],
+        },
+      ]);
       record.supplied = supplied;
       record.provenance.method = method;
       if (medium !== "unknown") record.provenance.originalMedium = medium;
@@ -177,12 +188,7 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
         content,
         archive: captured,
         coverage: coverage.ref,
-        resolveAuthor: () => ({
-          status: "resolved",
-          author: "Configured Author",
-          basis: "source-configured",
-          sourceMetadataVersion: "synthetic-registry-v1",
-        }),
+        resolveAuthor: (item) => postAttribution(registry, item),
       });
       const users: Record<string, any>[] = [];
       const writer = {
@@ -247,7 +253,8 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
             status: "resolved",
             author: "Configured Author",
             basis: "source-configured",
-            sourceMetadataVersion: "synthetic-registry-v1",
+            sourceMetadataVersion: registry.version,
+            observedByline: "Synthetic Account",
           },
           publishedAt: {
             kind: "timestamp",

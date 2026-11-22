@@ -8,7 +8,7 @@ import { z } from "zod";
  *
  * A subscribed source may name a default author explicitly. That is configured
  * attribution, not extraction inference: the extractor never guesses an author
- * from a publication id or a missing byline. An explicit post byline always
+ * from a publication id or a missing byline. An explicit personal post byline
  * wins, a multi-author byline stays unknown, and every resolved author carries
  * the basis it came from plus the configuration version, so a derived artifact
  * can record exactly what it relied on.
@@ -24,7 +24,9 @@ export const SourceMetadataSchema = z
     sourceType: z.string().min(1).max(40),
     /** Human-readable source name, never a credential or private URL. */
     displayName: z.string().trim().min(1).max(200),
-    /** Only used when a post carries no explicit single-author byline. */
+    /** Exact configured publication/account labels, not person aliases or inferred names. */
+    sourceAccountBylines: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+    /** Used when a post has no personal byline, including a recognized source account. */
     defaultAuthor: z.string().trim().min(1).max(200).optional(),
     /**
      * Stable identity of the default author, so person resolution (#470/#471)
@@ -81,6 +83,7 @@ const SourceDocumentSchema = z
             id: SourceIdSchema,
             type: z.string().min(1).max(40),
             name: z.string().trim().min(1).max(200),
+            sourceAccountBylines: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
             defaultAuthor: z
               .object({
                 id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
@@ -106,6 +109,7 @@ function normalise(input: unknown): SourceMetadata[] {
       sourceId: s.id,
       sourceType: s.type,
       displayName: s.name,
+      ...(s.sourceAccountBylines ? { sourceAccountBylines: s.sourceAccountBylines } : {}),
       ...(s.defaultAuthor
         ? { defaultAuthor: s.defaultAuthor.name, defaultAuthorId: s.defaultAuthor.id }
         : {}),
@@ -141,10 +145,20 @@ export type PostAuthorResolution =
       sourceMetadataVersion: string;
     };
 
+const normalizedByline = (value: string) =>
+  value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+function isSourceAccountByline(source: SourceMetadata | undefined, value: string): boolean {
+  return (
+    source?.sourceAccountBylines?.some(
+      (alias) => normalizedByline(alias) === normalizedByline(value),
+    ) ?? false
+  );
+}
+
 /**
  * Resolve the author of an archived post.
  *
- * Precedence: an explicit single-author post byline, then the configured source
+ * Precedence: an explicit single-person post byline, then the configured source
  * default. A multi-author byline is ambiguous and never collapses to the
  * default — that would silently attribute a co-written post to one person.
  */
@@ -159,7 +173,7 @@ export function resolvePostAuthor(input: {
   if (input.byline && input.byline.length > 1)
     return { status: "unknown", reason: "ambiguous-byline", sourceMetadataVersion: version };
   const single = input.byline?.[0]?.trim();
-  if (single) {
+  if (single && !isSourceAccountByline(source, single)) {
     return {
       status: "resolved",
       author: single,
@@ -289,7 +303,12 @@ export function postAttribution(
   post: { publicationId: string; author?: string },
 ): PostAuthorResolution | undefined {
   if (!metadata) return undefined;
-  const byline = bylineAuthors(post.author);
+  // Match the whole account label before splitting person lists: a publication
+  // name may itself contain "and" or commas without naming multiple authors.
+  const byline =
+    post.author && isSourceAccountByline(metadata.bySource.get(post.publicationId), post.author)
+      ? [post.author]
+      : bylineAuthors(post.author);
   return resolvePostAuthor({
     sourceId: post.publicationId,
     metadata,
