@@ -53,7 +53,7 @@ import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { promptIdentity } from "./prompt-identity.js";
 
-import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import { contextSources, WriterPackageSchema, type WriterPackage } from "./writer-package.js";
 
 /**
  * Draft one article from a saved writer package (#149).
@@ -235,7 +235,8 @@ export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): str
   // Narrative and wider context may be asserted only from the package's own
   // cited context; without it they must be stated as limitations (#176).
   const history = pkg.context?.history.comparisons ?? [];
-  const background = pkg.context?.background.passages ?? [];
+  // Background passages, then archived theme-context sources (#748).
+  const background = contextSources(pkg);
   if (draft.narrative?.status === "supported") {
     if (history.length === 0)
       problems.push("narrative development asserted without historical evidence");
@@ -429,7 +430,7 @@ export function renderMarkdownDraft(
         lines.push(`_Changed circumstances: ${cmp.changedCircumstances}_`, "");
     }
   }
-  const passages = pkg.context?.background.passages ?? [];
+  const passages = contextSources(pkg);
   for (const i of c.provenance.widerContextBackground ?? []) {
     cite(passages[i]!.url, passages[i]!.passage);
   }
@@ -521,7 +522,7 @@ export function renderPackageDraft(
     if (draft.widerContext.status === "limited") {
       lines.push(draft.widerContext.limitation, "");
     } else {
-      const passages = pkg.context?.background.passages ?? [];
+      const passages = contextSources(pkg);
       const refs = draft.widerContext.background.map((i) =>
         cite(passages[i].url, passages[i].passage),
       );
@@ -820,14 +821,34 @@ export async function draftFromPackage(input: {
             gap: pkg.context?.history.reason ?? "no historical comparison",
             ...(pkg.context?.history.omitWhenAbsent ? { omit: true } : {}),
           },
+    // Wider-context sources, indexed for widerContext.background: the
+    // independent background passages, then theme-context sources (#748).
     background:
-      pkg.context?.background.status === "available"
-        ? pkg.context.background.passages.map((p, i) => ({
+      contextSources(pkg).length > 0
+        ? contextSources(pkg).map((p, i) => ({
             index: i,
             url: p.url,
             passage: p.passage,
+            ...(p.kind === "theme-context" ? { kind: p.kind } : {}),
           }))
         : { gap: pkg.context?.background.reason ?? "no independent background" },
+    // Theme-level research for this post's themes (#748): background only,
+    // never evidence for a claim. Absent in packages built before it.
+    ...(pkg.themeContext
+      ? {
+          themeContext:
+            pkg.themeContext.status === "available"
+              ? {
+                  reports: pkg.themeContext.reports.map((r) => ({
+                    theme: r.dossierId,
+                    excerpt: r.excerpt,
+                    ...(r.excerptTruncated ? { excerptTruncated: true } : {}),
+                  })),
+                  ...(pkg.themeContext.truncated ? { truncated: true } : {}),
+                }
+              : { gap: pkg.themeContext.reason ?? "no theme research" },
+        }
+      : {}),
     ...(input.revision
       ? {
           revision: {

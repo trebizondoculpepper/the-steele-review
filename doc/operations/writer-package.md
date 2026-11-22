@@ -164,3 +164,14 @@ Existing hash-named drafts (`articles/<publication>/<post>/<32 hex>.md|json`) ar
 - **Revisions (#579):** each generation is committed into the canonical body and metadata in a single atomic commit, against the version it expects to replace. A write-once record at `<article-id>/commits/<generation>.json` pins the generation files, the base it replaced, and the exact body and metadata versions it produced. Redelivering a completed generation returns that record and never overwrites or rolls back a later revision. A concurrent change is reported as `article-conflict`.
 - **Approval and delivery (#580):** both bind the exact commit, path and hash of one version. A new revision inherits no approval, and earlier approvals and receipts stay readable against the version they covered.
 - **Console (#581):** `/drafts` lists each logical article once, at its current version. Generations committed to an article appear only in its history at `/drafts/article`, and each version there is read from the exact body and metadata refs its commit record pins. A version stays readable even if its generation files are later removed from the branch. Drafts never committed to an article are still listed on their own.
+
+## Theme context (#748)
+
+A package also carries `themeContext` (`theme-context-v1`), which is separate from claim support. It holds research saved for the post's own mapped themes, taken only from the jobs the coverage record names:
+- a bounded excerpt of each report: at most 5 reports and 3,000 characters each;
+- each report's archived sources: at most 30 in total, each pinned by its exact archived snapshot;
+- a `truncated` flag when one of those limits was reached.
+
+It's built from existing research only and never commissions anything. With no such research it's an explicit `gap`.
+
+Theme context is background, not evidence. It's never attached to a claim, so an uncovered claim stays uncovered and still can't cite anything. The writer sees the report excerpts and can cite the archived sources only through `widerContext.background`, where they follow the independent background passages in the same index space. The rendered article labels each one as theme background that wasn't checked against a specific claim. Verification accepts these sources as known, and a hash-mismatched or missing pinned artifact is still a technical error. Packages built before #748 have no `themeContext`; they stay valid, and their writer input is unchanged.

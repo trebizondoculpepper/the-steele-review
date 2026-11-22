@@ -11,7 +11,7 @@ import { commitArticleRevision } from "./article-revisions.js";
 import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
-import { WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import { WriterPackageSchema, type WriterPackage, contextSources } from "./writer-package.js";
 import {
   savePublicationPayload,
   sameArtifact,
@@ -112,7 +112,8 @@ export function deterministicIssues(pkg: WriterPackage, markdown: string): Verif
   const issues: VerificationIssue[] = [];
   const known = new Set<string>([
     ...pkg.claims.flatMap((c) => c.evidence.map((e) => e.url)),
-    ...(pkg.context?.background.passages ?? []).map((p) => p.url),
+    // Wider-context sources, including archived theme context (#748).
+    ...contextSources(pkg).map((p) => p.url),
   ]);
   const sources = markdown.split(/^## Sources\s*$/m)[1] ?? "";
   for (const m of sources.matchAll(/^\d+\.\s+(\S+?)(?= \(archived |: ")/gm)) {
