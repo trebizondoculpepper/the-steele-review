@@ -64,8 +64,26 @@ export interface ArticleThemeLink {
   sourceVersion: string;
 }
 
+/** One saved extraction for a revision, with its own identity (#765). */
+export interface ArticleThemeResult {
+  /** Saved extraction path; the stable link identity for its proposals. */
+  result: string;
+  modelVersion: string;
+  promptVersion: string;
+  proposedAt: string;
+  /** Newest result for the revision; every other result is superseded. */
+  current: boolean;
+  themes: ArticleThemeLink[];
+}
+
 export interface ArticleThemes {
   state: "ok" | "not-analysed" | "partial" | "unavailable";
+  /**
+   * Every saved extraction matching the revision, newest first. Two results for
+   * one revision stay two labelled groups, never one merged proposal list.
+   */
+  results: ArticleThemeResult[];
+  /** Proposals of the current result only; one reading, not a duplicate list. */
   themes: ArticleThemeLink[];
 }
 
@@ -166,7 +184,15 @@ export function savedThemes(content: Store, options: { scanLimit?: number } = {}
   const scanLimit = options.scanLimit ?? THEME_RESULT_SCAN;
   const readResultState = async (
     path: string,
-  ): Promise<{ sourceVersion: string; rows: ThemeRow[] } | "unreadable" | undefined> => {
+  ): Promise<
+    | {
+        sourceVersion: string;
+        rows: ThemeRow[];
+        extraction: { modelVersion: string; promptVersion: string; proposedAt: string };
+      }
+    | "unreadable"
+    | undefined
+  > => {
     const m = RESULT_PATH.exec(path);
     if (!m) return undefined;
     try {
@@ -175,6 +201,11 @@ export function savedThemes(content: Store, options: { scanLimit?: number } = {}
       const r = parseThemeProposalResult(JSON.parse(await content.read(ref)));
       return {
         sourceVersion: r.sourceVersion,
+        extraction: {
+          modelVersion: r.extraction.modelVersion,
+          promptVersion: r.extraction.promptVersion,
+          proposedAt: r.extraction.proposedAt,
+        },
         rows: r.proposals.map((p) => ({
           result: path,
           id: p.id,
@@ -250,13 +281,12 @@ export function savedThemes(content: Store, options: { scanLimit?: number } = {}
       try {
         paths = await content.list(prefix, THEME_LIST_PAGE);
       } catch {
-        return { state: "unavailable", themes: [] };
+        return { state: "unavailable", results: [], themes: [] };
       }
       // A bounded per-post scan: a post has few saved analyses, and hitting the
       // bound is reported as partial rather than silently treated as complete.
       const partial = paths.length >= THEME_LIST_PAGE;
-      const themes: ArticleThemeLink[] = [];
-      let matchedResult = false;
+      const results: ArticleThemeResult[] = [];
       let unreadable = 0;
       for (const path of paths) {
         if (!RESULT_PATH.test(path)) continue;
@@ -269,21 +299,31 @@ export function savedThemes(content: Store, options: { scanLimit?: number } = {}
         // The source version is checked on the saved result itself, so a valid
         // extraction with no proposals is still "analysed".
         if (state.sourceVersion !== sourceVersion) continue;
-        matchedResult = true;
-        themes.push(
-          ...state.rows.map((r) => ({
+        results.push({
+          result: path,
+          ...state.extraction,
+          current: false,
+          themes: state.rows.map((r) => ({
             result: r.result,
             id: r.id,
             title: r.title,
             ...(r.description ? { description: r.description } : {}),
             sourceVersion: r.sourceVersion,
           })),
-        );
+        });
       }
+      // Newest saved extraction is current; ties break on the stable path so
+      // the label never depends on listing order.
+      results.sort(
+        (a, b) => b.proposedAt.localeCompare(a.proposedAt) || a.result.localeCompare(b.result),
+      );
+      results.forEach((r, i) => (r.current = i === 0));
+      const themes = results.find((r) => r.current)?.themes ?? [];
       // An unreadable saved result is not evidence that nothing was analysed.
-      if (unreadable > 0) return { state: "partial", themes };
-      if (!matchedResult) return { state: partial ? "partial" : "not-analysed", themes: [] };
-      return { state: partial ? "partial" : "ok", themes };
+      if (unreadable > 0) return { state: "partial", results, themes };
+      if (results.length === 0)
+        return { state: partial ? "partial" : "not-analysed", results: [], themes: [] };
+      return { state: partial ? "partial" : "ok", results, themes };
     },
 
     async canonical(filter) {

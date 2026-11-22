@@ -514,20 +514,38 @@ export function renderTrace(t: ArticleTrace): string {
               : t.themes.state === "partial"
                 ? "the theme scan was incomplete"
                 : "";
-        const list =
-          t.themes.themes.length === 0
-            ? ""
-            : `<ul>${t.themes.themes
-                .map(
-                  (theme: { result: string; id: string; title: string; description?: string }) => {
-                    const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
-                    return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
-                      theme.description ? ` — ${escapeHtml(theme.description)}` : ""
-                    } <span class="empty">(extractor proposal, not canonical)</span></li>`;
-                  },
-                )
-                .join("")}</ul>`;
-        return `<h2>Themes</h2>${list}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
+        // Two saved extractions for one revision stay two labelled groups: a
+        // merged proposal list shows the same topic twice and hides which
+        // result is current (#765).
+        const groups = t.themes.results
+          .map((result: {
+            result: string;
+            current: boolean;
+            modelVersion: string;
+            promptVersion: string;
+            proposedAt: string;
+            themes: readonly { result: string; id: string; title: string; description?: string }[];
+          }) => {
+            const list =
+              result.themes.length === 0
+                ? '<p class="empty">This extraction saved no proposals.</p>'
+                : `<ul>${result.themes
+                    .map((theme) => {
+                      const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                      return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                        theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                      } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                    })
+                    .join("")}</ul>`;
+            return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
+<p class="empty"><code>${escapeHtml(result.result)}</code> · ${escapeHtml(result.modelVersion)} · ${escapeHtml(result.promptVersion)} · saved ${escapeHtml(result.proposedAt)}</p>${list}`;
+          })
+          .join("");
+        const many =
+          t.themes.results.length > 1
+            ? `<p class="empty">${t.themes.results.length} saved theme extractions exist for this revision. Each is shown under its own identity; the newest is the current reading and the others are kept for reference, not merged into it.</p>`
+            : "";
+        return `<h2>Themes</h2>${many}${groups}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
       })()
     : "";
   const claims = renderClaims(t.claims);
