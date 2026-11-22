@@ -41,3 +41,11 @@ After discovery, two named deterministic stages run under the same discovery dir
 - **Support:** every citation's support is `not-checked`. A retrieved document is not evidence, and support assessment stays a separate boundary.
 - **Gaps:** inaccessible, unsupported, not-attempted and pending retrievals, unfetchable URLs, omitted inventory entries and adapter-only citation provenance are listed explicitly, and any of them makes the outcome `complete-with-gaps`. "Retrieval complete" never means "research sufficient".
 - **Completion:** completion and its `research.completed` event are recorded in one state transaction. A failed completion releases its claim for retry. A replay returns the recorded result without rebuilding or emitting again.
+
+## Staged research workflow (#593)
+
+The Restate `Research` service can run one research job as named, recoverable steps instead of one coarse step: `research-discover`, `research-inventory`, `research-retrieve-<round>` (up to three bounded rounds, with backoff between them) and `research-assemble`. A replay reuses each completed step, so a failed URL never restarts discovery and each stage is visible in the invocation journal. Provider failure and credit exhaustion end as a failed result (`provider-error`, `budget-exceeded`), never as an evidence gap.
+
+The contract is chosen per run, at submission, and saved in the run's input as `researchExecution: "staged"`. The dashboard trigger, the captured-content bridge and the `article-run` CLI set it when `STEELE_RESEARCH_STAGED=1`. The article worker always registers both `Research/run` (legacy, one step) and `Research/runStaged`, and a run calls the handler its saved input names. Changing the setting therefore never changes how an in-flight invocation replays. A staged run first reuses any saved terminal result for its job, so a recovery never buys discovery again. Terminal failures are saved with their `research.completed` event; credit exhaustion is left recoverable. Staged reports and snapshots are indexed for research search.
+
+It's off by default because the staged result doesn't yet assess support, and article coverage depends on supported passages.

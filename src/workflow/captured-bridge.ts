@@ -1,3 +1,4 @@
+import { researchExecutionFromEnv } from "./research-execution.js";
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
@@ -57,6 +58,7 @@ export function articleRunInputFor(
     sourceVersion: event.sourceVersion,
     sourceUrl: event.originalUrl,
     researchDeadlineMs,
+    ...researchExecutionFromEnv(),
     ...(researchRequestLimit === undefined ? {} : { researchRequestLimit }),
     source: {
       namespace: event.source.namespace,
