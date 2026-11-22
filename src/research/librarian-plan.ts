@@ -143,7 +143,8 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       canonicalThemeId,
       source: saved ? "catalogue" : "new",
       rationale: saved
-        ? `reused saved catalogue decision (${saved.key})`
+        ? // The key can be far longer than a rationale allows; keep it bounded.
+          `reused saved catalogue decision (${saved.key.slice(0, 200)})`
         : "no saved mapping; candidate identity for librarian decision",
     });
     canonicalFor.set(proposal.id, canonicalThemeId);

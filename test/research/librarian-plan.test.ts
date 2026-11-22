@@ -151,6 +151,19 @@ describe("librarian assessment and plan (#595)", () => {
     expect(librarianPlanPath(base, empty)).not.toBe(librarianPlanPath(base, otherBasis));
   });
 
+  it("bounds a long catalogue key in the rationale instead of failing", () => {
+    const long = { ...mapping("geoengineering"), key: "k".repeat(2400) };
+    const plan = planLibrarianAssessment({
+      ...base,
+      proposals: [{ id: "t1", title: "Weather modification programmes", description: "x".repeat(2000) }],
+      mappings: new Map([["t1", long]]),
+      themes: new Set(["geoengineering"]),
+      dossiers: new Map(),
+    });
+    expect(plan.mappings[0]!.rationale.length).toBeLessThanOrEqual(1000);
+    expect(plan.mappings[0]!.rationale).toContain("reused saved catalogue decision");
+  });
+
   it("saves write-once so an earlier plan stays readable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-plan-"));
     await mkdir(join(dir, "c"));
