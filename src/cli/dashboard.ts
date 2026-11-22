@@ -47,6 +47,7 @@ import {
   restateSubmitter,
 } from "../dashboard/adapters.js";
 import { articleTrigger } from "../dashboard/trigger.js";
+import { refetchAction, refetchView } from "../dashboard/refetch.js";
 import { articleRecovery } from "../dashboard/recovery-view.js";
 import { recoveryIdentities } from "../dashboard/recovery.js";
 import { OperationStore } from "../controllers/operation-store.js";
@@ -103,6 +104,8 @@ const env = z
       .optional(),
     /** "1" enables the draft trash action; the content mount must be writable. */
     STEELE_DASHBOARD_TRASH: z.enum(["0", "1"]).optional(),
+    /** "1" enables the single-source re-fetch action (#770). */
+    STEELE_DASHBOARD_REFETCH: z.enum(["0", "1"]).optional(),
     /** Saved configuration file the console may edit, when editing is enabled. */
     STEELE_CONFIG_PATH: z.string().min(1).optional(),
     /** Private salt the configuration version tokens are keyed on. */
@@ -154,18 +157,14 @@ const checkpoint = e.STEELE_CATCHUP_CHECKPOINT_PATH
   ? fileCheckpoint(e.STEELE_CATCHUP_CHECKPOINT_PATH)
   : undefined;
 
-// Rescheduling (#749) and recovery need durable attempt identities in the
-// state controller; without configured state those actions stay unavailable.
-// Opening the writable store can fail (missing/incompatible/read-only). That
-// must disable them, not prevent the read-only dashboard from starting.
+// Durable operation identity: rescheduling (#749), recovery and re-fetch
+// (#770) record work here. Re-fetch only needs the collector's store, not the
+// workflow engine. Opening the writable store can fail
+// (missing/incompatible/read-only). That must disable those actions, not
+// prevent the read-only dashboard from starting.
 let operations: OperationStore | undefined;
 let attemptsUnreadable = false;
-if (
-  archive &&
-  env.data.RESTATE_INGRESS_URL &&
-  env.data.STEELE_DASHBOARD_ORIGIN &&
-  e.STEELE_STATE_PATH
-) {
+if (archive && env.data.STEELE_DASHBOARD_ORIGIN && e.STEELE_STATE_PATH) {
   try {
     operations = new OperationStore({ path: e.STEELE_STATE_PATH });
   } catch {
@@ -196,6 +195,15 @@ const trigger =
         runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, attemptSource),
         ...(operations ? { attempts: operations } : {}),
       })
+    : undefined;
+// Deliberate single-source re-fetch (#770): records the same typed request the
+// reingest command uses; the running collector performs the fetch.
+const refetch =
+  archive && operations && env.data.STEELE_DASHBOARD_REFETCH === "1"
+    ? {
+        view: refetchView({ archive, operations }),
+        ...refetchAction({ archive, operations }),
+      }
     : undefined;
 const recovery =
   trigger && archive && operations && env.data.RESTATE_INGRESS_URL
@@ -288,11 +296,13 @@ const views = [
   ...configView,
   ...activityView,
   ...(trigger ? [trigger.view] : []),
+  ...(refetch ? [refetch.view] : []),
   ...(recovery ? [recovery.view] : []),
   ...articleViews({
     canTrigger: Boolean(trigger),
     canRecover: Boolean(recovery),
-    ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
+    canRefetch: Boolean(refetch),
+    ...(trigger || refetch ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL
       ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, attemptSource) }
@@ -413,13 +423,14 @@ const trashAction = trashStore?.action();
 // action route is registered at all.
 const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
 const actions =
-  (trigger || trashAction) && actionOrigin
+  (trigger || trashAction || refetch) && actionOrigin
     ? {
         origin: actionOrigin,
         routes: {
           ...(trigger ? { "/articles/run": trigger.submit } : {}),
           ...(recovery ? { "/articles/recover": recovery.submit } : {}),
           ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
+          ...(refetch ? { "/articles/refetch": refetch.submit } : {}),
           ...(configAction ? { "/config/save": configAction.submit } : {}),
         },
       }

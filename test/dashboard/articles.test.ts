@@ -406,6 +406,22 @@ describe("article pages (#377)", () => {
     expect(await readOnly!.render(new URL("http://x/articles"))).not.toContain("/articles/run");
   });
 
+  it("offers a re-fetch control for the captured source when configured (#770)", async () => {
+    const [list] = articleViews({
+      articles,
+      canRefetch: true,
+      actionOrigin: "https://console.example.test",
+    });
+    const html = await list!.render(new URL("http://x/articles"));
+    expect(html).toContain("<th>Action</th>");
+    expect(html).toContain(
+      'href="https://console.example.test/articles/refetch?publication=pub&amp;post=p1"',
+    );
+    expect(html).toContain("Re-fetch source</a>");
+    const [readOnly] = articleViews({ articles });
+    expect(await readOnly!.render(new URL("http://x/articles"))).not.toContain("/articles/refetch");
+  });
+
   it("uses the configured canonical origin instead of a request alias", async () => {
     const [list] = articleViews({
       articles,
