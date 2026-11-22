@@ -257,7 +257,8 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
 }
 
 /**
- * Build a provider from configuration: OPENROUTER_API_KEY (or _FILE),
+ * Build a provider from configuration: OPENROUTER_API_KEY_CONFIG_FILE (canonical
+ * TOML), or legacy OPENROUTER_API_KEY / OPENROUTER_API_KEY_FILE,
  * STEELE_MODEL, and optional OPENROUTER_BASE_URL. Throws CredentialError
  * (which names the variable, never the value) when the key is missing.
  */
