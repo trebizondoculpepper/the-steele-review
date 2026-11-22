@@ -32,10 +32,13 @@ export interface SavedThemeExtraction {
   /** Exact source revision the saved result was produced from. */
   sourceVersion: string;
   /**
-   * Stable source-post identity (`publicationId/postId`). Ranking counts
-   * distinct posts, so the same post supplied twice must not count twice.
+   * Stable source-post identity (`publicationId/postId`). Required, because
+   * ranking counts distinct posts and an index fallback would let the same post
+   * supplied twice count twice.
    */
-  postKey?: string;
+  postKey: string;
+  /** False when the saved result was stored flagged as incomplete. */
+  complete?: boolean;
   processor: ProcessorIdentity;
   /** False when the saved result could not be read or parsed. */
   readable: boolean;
@@ -89,6 +92,8 @@ export function planThemeBulk(input: BulkPlanInput): BulkPlan {
       return { ...post, action: "extract", reason: "no saved theme result for this post" };
     if (!saved.readable)
       return { ...post, action: "extract", reason: "saved theme result is unreadable" };
+    if (saved.complete === false)
+      return { ...post, action: "extract", reason: "saved theme result is incomplete" };
     if (saved.sourceVersion !== post.sourceVersion)
       return {
         ...post,
@@ -141,8 +146,7 @@ export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFreque
   const byTheme = new Map<string, { titles: Map<string, number>; posts: Set<string> }>();
   results.forEach((result, index) => {
     if (!result.readable) return;
-    // Prefer the stable post identity; the index is only a fallback.
-    const postIdentity = result.postKey ?? `#${index}`;
+    const postIdentity = result.postKey;
     for (const title of result.titles) {
       const wording = normaliseThemeTitle(title);
       if (wording === "") continue;

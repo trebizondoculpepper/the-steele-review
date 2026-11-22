@@ -10,7 +10,9 @@ import {
 const version = `sha256:${"a".repeat(64)}`;
 const post = (postId: string, sourceVersion = version) => ({ publicationId: "pub", postId, sourceVersion });
 const current = { modelVersion: "model-a", promptVersion: "themes-v2" };
+let counter = 0;
 const saved = (over: Partial<SavedThemeExtraction> = {}): SavedThemeExtraction => ({
+  postKey: `pub/p${++counter}`,
   sourceVersion: version,
   processor: current,
   readable: true,
@@ -75,6 +77,15 @@ describe("theme-only bulk plan (#526)", () => {
       saved({ postKey: "pub/p2" }),
     ]);
     expect(ranked[0]).toMatchObject({ key: "weather modification", postCount: 2 });
+  });
+
+  it("extracts when a saved result is flagged incomplete", () => {
+    const plan = planThemeBulk({
+      selection: [post("p1")],
+      saved: new Map([["pub/p1", saved({ postKey: "pub/p1", complete: false })]]),
+      current,
+    });
+    expect(plan.entries[0]).toMatchObject({ action: "extract", reason: /incomplete/ });
   });
 
   it("bounds one pass and reports truncation instead of silently covering less", () => {
