@@ -168,11 +168,6 @@ export async function runEditorialLoop(input: {
         reason = `assessment: ${assessment.operationalFailure}`;
         break;
       }
-      if (await expired()) {
-        terminal = "deadline";
-        reason = "editorial deadline reached";
-        break;
-      }
       await observe("judge", round);
       if (await expired()) {
         terminal = "deadline";
@@ -210,6 +205,7 @@ export async function runEditorialLoop(input: {
         reason = `judgment: ${judgment.operationalFailure}`;
         break;
       }
+      await observe("decision", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -218,12 +214,6 @@ export async function runEditorialLoop(input: {
       if (judgment.state !== "decided" || judgment.decision === "none") {
         terminal = "operational-stop";
         reason = `editorial judgment ${judgment.state}`;
-        break;
-      }
-      await observe("decision", round);
-      if (await expired()) {
-        terminal = "deadline";
-        reason = "editorial deadline reached";
         break;
       }
       const exhausted = round >= policy.maxRevisions;

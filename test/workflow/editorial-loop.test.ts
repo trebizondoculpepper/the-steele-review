@@ -365,3 +365,116 @@ describe("explicit live-policy editorial contract", () => {
     expect(authorize).not.toHaveBeenCalled();
   });
 });
+
+describe("legacy clock journal and fresh live deadline boundaries", () => {
+  it.each([undefined, 1000])(
+    "preserves the historical step/clock sequence with deadlineAt=%s",
+    async (deadlineAt) => {
+      const f = fixture();
+      const trace: string[] = [];
+      await runEditorialLoop({
+        ...f.args,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+        now: async () => {
+          trace.push("clock");
+          return 0;
+        },
+        step: async (name, work) => {
+          trace.push(name);
+          return work();
+        },
+      });
+      expect(trace).toEqual([
+        ...(deadlineAt === undefined ? ["clock"] : []),
+        "editorial-prepare",
+        "clock",
+        "editorial-assess-0",
+        "clock",
+        "editorial-judge-0",
+        "clock",
+        "editorial-revise-1",
+        "clock",
+        "editorial-assess-1",
+        "clock",
+        "editorial-judge-1",
+        "clock",
+        "editorial-record-approval",
+        "editorial-save-summary",
+      ]);
+    },
+  );
+  it.each(["assessment", "judgment"])(
+    "uses a deadline extension made during %s before deciding that time expired",
+    async (phase) => {
+      const f = fixture(true);
+      let deadlineMs = 1000;
+      const read = async () => ({
+        version: "live-editorial-policy-v1" as const,
+        revision: "config-sha256:" + "a".repeat(32),
+        policy: {
+          ...DEFAULT_EDITORIAL_POLICY,
+          maxRevisions: 0,
+          deadlineMs,
+          onExhausted: "stop" as const,
+        },
+      });
+      const advance = () => {
+        f.advance(1500);
+        deadlineMs = 5000;
+      };
+      if (phase === "assessment") {
+        const original = f.stages.assess;
+        f.stages.assess = async (...args) => {
+          const result = await original(...args);
+          advance();
+          return result;
+        };
+      } else {
+        const original = f.stages.judge;
+        f.stages.judge = async (...args) => {
+          const result = await original(...args);
+          advance();
+          return result;
+        };
+      }
+      const result = await runEditorialLoop({
+        ...f.args,
+        livePolicy: {
+          read,
+          authorize: async () => {
+            throw new Error("stop mode");
+          },
+        },
+      });
+      expect(result.history.terminal).toBe("unresolved");
+      expect(f.counts().judged).toBe(1);
+      expect(result.history.policyObservations?.at(-1)?.policy.deadlineMs).toBe(5000);
+    },
+  );
+  it("applies a shortened current deadline before starting the next judge", async () => {
+    const f = fixture(true);
+    let deadlineMs = 5000;
+    const original = f.stages.assess;
+    f.stages.assess = async (...args) => {
+      const result = await original(...args);
+      f.advance(1500);
+      deadlineMs = 1000;
+      return result;
+    };
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: {
+        read: async () => ({
+          version: "live-editorial-policy-v1",
+          revision: "config-sha256:" + "a".repeat(32),
+          policy: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions: 0, deadlineMs, onExhausted: "stop" },
+        }),
+        authorize: async () => {
+          throw new Error("deadline stop");
+        },
+      },
+    });
+    expect(result.history.terminal).toBe("deadline");
+    expect(f.counts().judged).toBe(0);
+  });
+});
