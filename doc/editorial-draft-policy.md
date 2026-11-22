@@ -19,6 +19,16 @@ records only applied non-secret values and an opaque revision. Replay uses that
 completed observation rather than today's settings. Invalid or unavailable current
 configuration stops new work through the existing retry boundary.
 
+The captured-content bridge can compose the same contract when supplied with the
+content artifact controller and the shared authoritative article state controller.
+It retains the original base workflow key: already accepted legacy invocations
+still attach to their old journals. A first-winner source submission intent pins
+exact inputs for reconnect; it contains no editorial settings or credentials.
+A redelivery cannot switch that saved capture or request contract. Existing bridge
+installations without those composition ports retain their legacy behavior; the
+release readiness check must verify the new ports before enabling automatic runs.
+The explicit fresh-fetch proof still submits its normal attempt separately.
+
 At editorial exhaustion, `stop` preserves rejection. Draft mode seals a separate
 exact-output authorization while preserving REVISE findings. Initial approval need
 not force a rewrite; draft mode still emits only draft authority, never a broader

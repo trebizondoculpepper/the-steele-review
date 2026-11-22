@@ -1,4 +1,9 @@
 import {
+  CapturedArticleIntentInputSchema,
+  CapturedArticleIntentSchema,
+  type CapturedArticleIntent,
+} from "../content/captured-article-intent.js";
+import {
   EditorialRecoveryBindingInputSchema,
   EditorialRecoveryBindingSchema,
   type EditorialRecoveryBindingInput,
@@ -825,6 +830,68 @@ export class OperationStore {
     return row?.status === "completed"
       ? ResearchRecoveryBindingSchema.parse(JSON.parse(row.artifact!))
       : undefined;
+  }
+
+  /** First accepted capture submission wins; keep the legacy base workflow identity on redelivery. */
+  recordCapturedArticleIntent(
+    input: Omit<CapturedArticleIntent, "requestId" | "workflowKey" | "recordedAt">,
+  ): CapturedArticleIntent {
+    const parsed = CapturedArticleIntentInputSchema.parse(input);
+    const requestId = `capture-${parsed.sourceVersion.slice(7)}`;
+    const workflowKey = `${parsed.publicationId}/${parsed.postId}@${parsed.sourceVersion.slice(7, 39)}`;
+    const slot = `captured-article-intent:${parsed.publicationId}/${parsed.postId}:${parsed.sourceVersion}`;
+    const attemptKey = `article-attempt:${parsed.publicationId}/${parsed.postId}:${requestId}`;
+    return this.transaction(() => {
+      const prior = this.row(slot),
+        oldAttempt = this.row(attemptKey);
+      if (
+        (prior && prior.status !== "completed") ||
+        (oldAttempt && oldAttempt.status !== "completed")
+      )
+        throw new OperationStoreError("busy");
+      const saved = prior
+        ? CapturedArticleIntentSchema.parse(JSON.parse(prior.artifact!))
+        : CapturedArticleIntentSchema.parse({
+            ...parsed,
+            requestId,
+            workflowKey,
+            recordedAt: new Date(this.now()).toISOString(),
+          });
+      if (
+        saved.publicationId !== parsed.publicationId ||
+        saved.postId !== parsed.postId ||
+        saved.sourceVersion !== parsed.sourceVersion ||
+        saved.requestId !== requestId ||
+        saved.workflowKey !== workflowKey
+      )
+        throw new OperationStoreError("invalid-input");
+      const attempt = {
+        publicationId: saved.publicationId,
+        postId: saved.postId,
+        sourceVersion: saved.sourceVersion,
+        requestId,
+        workflowKey,
+        inputHash: saved.inputHash,
+        recordedAt: saved.recordedAt,
+      };
+      if (
+        oldAttempt &&
+        JSON.stringify(JSON.parse(oldAttempt.artifact!)) !== JSON.stringify(attempt)
+      )
+        throw new OperationStoreError("invalid-input");
+      for (const [key, value, existing] of [
+        [slot, saved, prior],
+        [attemptKey, attempt, oldAttempt],
+      ] as const) {
+        if (!existing)
+          this.db
+            .prepare(
+              "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+            )
+            .run(key, JSON.stringify(value), this.now());
+      }
+      return saved;
+    });
   }
 
   /** Record one intentional article rerun before its external submission. */

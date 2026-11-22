@@ -1,3 +1,4 @@
+import { prepareCapturedArticleSubmission } from "../src/workflow/captured-article-submission.js";
 /** Isolated Restate/NATS/Git integration; every model and destination transport is synthetic. */
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -173,6 +174,14 @@ it(
       expect(legacy.outcome).toBe("rejected");
       expect(legacy.editorial?.policyObservations).toBeUndefined();
       expect(legacy.draftAuthorizationEvent).toBeUndefined();
+      const beforeForged = { ...calls };
+      const forgedResult = await ingress.workflowClient(workflow, "unrecorded-live-attempt").run({
+        ...liveEditorialInput(parent.summary.input),
+        operatorRequestId: "not-recorded",
+      });
+      expect(forgedResult.outcome).toBe("failed");
+      expect(forgedResult.reason).toBe("live-editorial-intent-mismatch");
+      expect(calls).toEqual(beforeForged);
       const before = { ...calls };
       const normal = recordArticleAttempt(
         operations,
@@ -359,6 +368,33 @@ it(
       expect(expiredResult.editorial?.assessments).toHaveLength(0);
       expect(expiredResult.draftAuthorizationEvent).toBeUndefined();
       expect(calls).toEqual(beforeExpiry);
+      // The shipped capture submitter uses the same normal workflow, retaining its base key.
+      writer.modelVersion = "synthetic/captured-source-writer";
+      assessor.modelVersion = "synthetic/captured-source-assessor";
+      const captured = await prepareCapturedArticleSubmission({
+        article: parent.summary.input,
+        content,
+        operations,
+      });
+      const capturedResult = await ingress
+        .workflowClient(workflow, captured.workflowKey)
+        .run(captured.input);
+      expect(capturedResult.authorizationOutcome).toBe("owner-authorized-draft");
+      expect(capturedResult.editorial?.revisions).toHaveLength(1);
+      expect(capturedResult.editorial?.terminal).toBe("unresolved");
+      const afterCapture = { ...calls };
+      expect(
+        await prepareCapturedArticleSubmission({
+          article: parent.summary.input,
+          content,
+          operations,
+        }),
+      ).toEqual(captured);
+      expect(await ingress.workflowClient(workflow, captured.workflowKey).workflowAttach()).toEqual(
+        capturedResult,
+      );
+      expect(calls).toEqual(afterCapture);
+      expect(calls.research).toBe(0);
     } finally {
       await nats?.close();
       await server?.stop();
