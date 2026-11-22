@@ -78,7 +78,8 @@ const ClaimRecordSchema = z
           })
           .loose(),
       )
-      .max(10_000)
+      // The persisted record permits up to 100,000; display truncates to 100.
+      .max(100_000)
       .optional(),
   })
   .loose();
