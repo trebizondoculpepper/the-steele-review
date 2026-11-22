@@ -3,6 +3,7 @@ import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "./editorial-cont
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
+import { researchSelectionFor } from "./research-execution.js";
 
 /**
  * Captured content to the writing engine (#270).
@@ -64,6 +65,7 @@ export function articleRunInputFor(
     researchDeadlineMs,
     ...researchExecutionFromEnv(),
     ...(researchRequestLimit === undefined ? {} : { researchRequestLimit }),
+    ...researchSelectionFor(researchRequestLimit),
     source: {
       namespace: event.source.namespace,
       itemId: event.itemId,

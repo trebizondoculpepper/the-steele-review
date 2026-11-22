@@ -3,6 +3,7 @@ import { researchCallKey } from "../../src/workflow/article-run.js";
 import { createHash } from "node:crypto";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
+import { selectResearch } from "../../src/research/research-allowance.js";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { ModelProviderError } from "../../src/controllers/openrouter.js";
 import type { ResearchRequest } from "../../src/research/job.js";
@@ -110,6 +111,19 @@ const stages: ArticleStages = {
     const post = themes.path.split("/")[1].replace(".json", "");
     return (plans.get(post) ?? []).map(request);
   },
+  // Allowance selection (#596) over the planned order; "saved-" subjects
+  // stand for jobs whose result is already saved.
+  selectResearch: async (_themes, _claims, requests, allowance) =>
+    selectResearch(
+      requests.map((r, i) => ({ jobId: researchJobId(r), rank: i + 1 })),
+      {
+        allowance,
+        reusable: new Set(
+          requests.filter((r) => r.subject!.startsWith("saved-")).map(researchJobId),
+        ),
+        counted: new Set(),
+      },
+    ).decisions,
   research: async (req) => {
     calls.research++;
     researchSubjects.push(req.subject!);
@@ -506,6 +520,31 @@ describe("unattended article run on Restate (#243)", () => {
     expect(researchSubjects.filter((subject) => subject.startsWith("cap-")).sort()).toEqual([
       "cap-first",
       "cap-second",
+    ]);
+  }, 120_000);
+});
+
+describe("new-job allowance in the workflow (#596)", () => {
+  it("dispatches reused research free and commissions at most the allowance of new jobs", async () => {
+    plans.set("allowance", ["saved-first", "alw-second", "alw-third", "alw-fourth"]);
+    const post = {
+      ...input("allowance"),
+      researchRequestLimit: 2,
+      researchSelection: "allowance-v1" as const,
+      researchDeadlineMs: 60_000,
+    };
+    const client = ingress.workflowClient(Workflow, articleRunKey(post));
+    await client.workflowSubmit(post);
+    const result = await client.workflowAttach();
+    expect(result.research.map((item) => item.outcome)).toEqual([
+      "finished",
+      "finished",
+      "finished",
+      "not-commissioned",
+    ]);
+    expect(researchSubjects.filter((s) => s.startsWith("alw-")).sort()).toEqual([
+      "alw-second",
+      "alw-third",
     ]);
   }, 120_000);
 });
