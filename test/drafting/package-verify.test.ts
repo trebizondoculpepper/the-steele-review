@@ -14,6 +14,7 @@ import {
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
 import { readFileSync } from "node:fs";
+import { assessArticle, classifyFindings } from "../../src/drafting/article-assessment.js";
 const DEFAULT_REVISION_TEXT = readFileSync(
   new URL("../../src/prompts/writer/package-revision.md", import.meta.url),
   "utf8",
@@ -1124,5 +1125,105 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       throw new Error("missing retained refs");
     expect(JSON.parse(await content.read(out.report)).outcome).toBe("redraft");
     expect(JSON.parse(await content.read(out.mechanicalRun)).outcome).toBe("turns-exhausted");
+  });
+});
+
+describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
+  const FINDINGS = [
+    "## Finding: overstated treaty scope",
+    '- Where: body, "proves"',
+    "- What is wrong: the passage does not prove this.",
+    "- Why: the cited passage only states the treaty's scope.",
+    "",
+    "END OF ASSESSMENT",
+  ].join("\n");
+
+  it("classifies complete, empty, cut-off and malformed documents distinctly", () => {
+    expect(classifyFindings(FINDINGS)).toEqual({ state: "findings", findings: 1 });
+    expect(classifyFindings("No faults found.\n\nEND OF ASSESSMENT")).toEqual({
+      state: "no-faults",
+      findings: 0,
+    });
+    // Cut off before the terminator: never "no faults".
+    expect(classifyFindings("## Finding: x\n- Where: body")).toEqual({ state: "incomplete" });
+    expect(classifyFindings("No faults found.")).toEqual({ state: "incomplete" });
+    // Complete but neither findings nor an explicit "no faults" statement.
+    expect(classifyFindings("Looks fine to me.\nEND OF ASSESSMENT")).toEqual({
+      state: "malformed",
+    });
+  });
+
+  it("saves a readable findings document bound to the exact body and publication fields", async () => {
+    const { metadata, draft } = await drafted();
+    const assessor = model("fake/assessor", FINDINGS);
+    const out = await assessArticle({ content, archive, metadata, assessor });
+    if (out.status !== "assessed") throw new Error(out.status);
+    expect(out.record).toMatchObject({
+      state: "findings",
+      findings: 1,
+      body: { path: draft.path, hash: `sha256:${draft.sha256}` },
+      assessor: { model: "fake/assessor" },
+    });
+    expect(out.record.publication.path).toBeDefined();
+    // The detailed findings are a Markdown document, retained as received.
+    expect(
+      await content.read({
+        ...out.record.document!,
+        sha256: out.record.document!.hash.slice(7),
+      } as never),
+    ).toBe(FINDINGS);
+    // The assessor makes no decision: the record has no verdict or approval field.
+    expect(out.record).not.toHaveProperty("outcome");
+    expect(out.record).not.toHaveProperty("verdict");
+
+    // Reassessing the same exact input reuses it, without another model call.
+    const again = model("fake/assessor", FINDINGS);
+    const reused = await assessArticle({ content, archive, metadata, assessor: again });
+    expect(reused).toMatchObject({ status: "assessed", reused: true });
+    expect(again.calls).toBe(0);
+  });
+
+  it("never lets a provider failure or a cut-off response read as no faults", async () => {
+    const { metadata } = await drafted();
+    const failing = {
+      modelVersion: "fake/assessor-down",
+      async complete(): Promise<string> {
+        throw new Error("provider unavailable");
+      },
+    };
+    const failed = await assessArticle({ content, archive, metadata, assessor: failing as never });
+    expect(failed).toMatchObject({ status: "assessed", record: { state: "provider-failed" } });
+    expect(failed.status === "assessed" && failed.record.document).toBeFalsy();
+    const cut = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: model("fake/assessor-cut", "## Finding: x\n- Where: body"),
+    });
+    expect(cut).toMatchObject({ status: "assessed", record: { state: "incomplete" } });
+  });
+
+  it("reuses a response retained before a crash instead of calling the model again", async () => {
+    const { metadata } = await drafted();
+    const first = model("fake/assessor-crash", "No faults found.\n\nEND OF ASSESSMENT");
+    // Crash after the document is retained but before the record is written.
+    const crashing = new Proxy(content, {
+      get(target, prop, receiver) {
+        if (prop === "write") {
+          return async (path: string, body: string) => {
+            if (path.startsWith("assessments/") && path.endsWith(".json")) throw new Error("crash");
+            return target.write(path, body);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await expect(
+      assessArticle({ content: crashing, archive, metadata, assessor: first }),
+    ).rejects.toThrow("crash");
+    const second = model("fake/assessor-crash", "## Finding: different\nEND OF ASSESSMENT");
+    const out = await assessArticle({ content, archive, metadata, assessor: second });
+    expect(second.calls).toBe(0);
+    expect(out).toMatchObject({ status: "assessed", record: { state: "no-faults" } });
   });
 });
