@@ -44,6 +44,8 @@ import { researchJobId, type ResearchRequest } from "../research/job.js";
 import {
   assessPostCoverage,
   CoverageRecordSchema,
+  analysedBefore,
+  originalOrder,
   rankResearchRequests,
   saveResearchSelection,
   type CommissionedJob,
@@ -167,12 +169,22 @@ export function articleStages(deps: {
     });
     // Most useful gap first (#533): the workflow commissions the first
     // `researchRequestLimit` of this order, and the ranking is saved.
-    const ranked = rankResearchRequests(requests);
     const theme = JSON.parse(await deps.content.read(themes)) as {
       post: { publicationId: string; postId: string };
     };
-    await saveResearchSelection(deps.content, theme.post, themes, claims, ranked);
-    return ranked.map((r) => r.request);
+    // An analysis already assessed before ranking keeps its original order,
+    // so retained recoveries and earlier commissioning still match.
+    const before = await analysedBefore(deps.content, theme.post, themes, claims);
+    const ordered = before ? originalOrder(requests) : rankResearchRequests(requests);
+    await saveResearchSelection(
+      deps.content,
+      theme.post,
+      themes,
+      claims,
+      ordered,
+      before ? "original" : "ranked",
+    );
+    return ordered.map((r) => r.request);
   };
 
   return {

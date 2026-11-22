@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { researchJobId, type ResearchRequest } from "../../src/research/job.js";
-import { rankResearchRequests, saveResearchSelection } from "../../src/research/librarian.js";
+import {
+  originalOrder,
+  rankResearchRequests,
+  saveResearchSelection,
+} from "../../src/research/librarian.js";
 
 let dir: string;
 let artifacts: GitArtifactStore;
@@ -83,5 +87,34 @@ describe("research selection (#533)", () => {
       ranked.slice().reverse(),
     );
     expect(again.sha256).toBe(ref.sha256);
+  });
+
+  it("keeps a separate record for a different candidate set of the same analysis", async () => {
+    const themeResult = await artifacts.write("theme-proposals/pub/p1/r.json", "{}");
+    const claimResult = await artifacts.write("claim-extractions/pub/p1/r.json", "{}");
+    const post = { publicationId: "pub", postId: "p1" };
+    const both = await saveResearchSelection(
+      artifacts,
+      post,
+      themeResult,
+      claimResult,
+      rankResearchRequests([theme("small", 1), theme("large", 3)]),
+    );
+    const remaining = await saveResearchSelection(
+      artifacts,
+      post,
+      themeResult,
+      claimResult,
+      rankResearchRequests([theme("small", 1)]),
+    );
+    expect(remaining.path).not.toBe(both.path);
+    expect(JSON.parse(await artifacts.read(remaining)).candidates).toHaveLength(1);
+  });
+
+  it("keeps the original order for an analysis planned before ranking", () => {
+    const requests = [theme("small", 1), theme("large", 4)];
+    const kept = originalOrder(requests);
+    expect(kept.map((r) => r.request)).toEqual(requests);
+    expect(kept[0]!.rationale).toMatch(/before ranking/);
   });
 });
