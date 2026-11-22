@@ -101,7 +101,12 @@ export class MarkdownArticleError extends Error {
  * its existing machinery, so a header-only repair can never touch the body.
  */
 export const MarkdownCandidateSchema = ArticleHeaderSchema.extend({
-  body: z.string().trim().min(1).max(MAX_BODY_CHARS),
+  // Checked, never transformed: leading indentation can be significant
+  // Markdown (an indented code block), so the body is kept exactly.
+  body: z
+    .string()
+    .max(MAX_BODY_CHARS)
+    .refine((b) => b.trim().length > 0),
 }).strict();
 export type MarkdownCandidate = z.infer<typeof MarkdownCandidateSchema>;
 

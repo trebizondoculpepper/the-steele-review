@@ -227,4 +227,12 @@ describe("Markdown writer output (#535 slice 2)", { timeout: 60_000 }, () => {
     expect(writerFormatFromEnv({ STEELE_WRITER_FORMAT: "markdown" })).toBe("markdown");
     expect(() => writerFormatFromEnv({ STEELE_WRITER_FORMAT: "yaml" })).toThrow(/json or markdown/);
   });
+
+  it("keeps significant leading indentation in the body", async () => {
+    const indented = "    quotedCode();\n    more();\n\nThen prose.";
+    const out = await draft(model(doc(header(), indented)));
+    expect(out.status).toBe("drafted");
+    if (out.status !== "drafted") return;
+    expect(await content.read(out.draft)).toContain(indented);
+  });
 });
