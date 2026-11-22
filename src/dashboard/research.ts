@@ -364,65 +364,86 @@ export function savedResearch(content: Store): ResearchPort {
       } catch {
         return { state: "unavailable", docs: [], truncated: false };
       }
-      // Four full listing pages is the scan bound: more jobs exist unexamined.
+      // Four full listing pages is the scan bound: more paths may exist. The
+      // last examined path is returned as a continuation when matches are
+      // sparse or a page fills, so no request becomes unreachable.
       const truncated = jobs.length >= THEME_JOB_SCAN;
-      let scanned = 0;
+      let lastExamined: string | undefined;
+      let unreadableRequests = 0;
       let next: string | undefined;
       for (const path of jobs) {
         if (next !== undefined) break;
-        if (!/^research-jobs\/research-[0-9a-f]{32}\/request\.json$/.test(path)) continue;
-        if (scanned >= THEME_JOB_SCAN) break;
+        if (!/^research-jobs\/research-[0-9a-f]{32}\/request\.json$/.test(path)) {
+          lastExamined = path;
+          continue;
+        }
         if (docs.length >= THEME_DOC_PAGE) {
-          next = path;
+          // Resume after the last fully processed path (the cursor is exclusive).
+          next = lastExamined;
           break;
         }
-        scanned++;
-        let request: { claims?: { themeIds?: string[] }[]; question?: string; subject?: string };
+        lastExamined = path;
+        const jobId = /research-jobs\/(research-[0-9a-f]{32})\//.exec(path)?.[1];
+        if (!jobId) continue;
+        let request: ReturnType<typeof ResearchRequestSchema.parse>;
         try {
           const ref = await content.lookup(path);
           if (!ref) continue;
-          request = JSON.parse(await content.read(ref));
+          // Validate and bind the saved request before trusting its metadata.
+          request = ResearchRequestSchema.parse(JSON.parse(await content.read(ref)));
+          if (researchJobId(request) !== jobId) throw new Error("request belongs to another job");
         } catch {
-          unreadable++;
+          unreadableRequests++;
           continue;
         }
-        const associated = (request.claims ?? []).some((c) => (c.themeIds ?? []).includes(themeId));
+        const associated = request.claims.some((c) => c.themeIds.includes(themeId));
         if (!associated) continue;
-        const jobId = /research-jobs\/(research-[0-9a-f]{32})\//.exec(path)?.[1];
-        if (!jobId) continue;
-        const reportPath = "research-jobs/" + jobId + "/report.md";
+        const reportPath = `research-jobs/${jobId}/report.json`;
+        const markdownPath = `research-jobs/${jobId}/report.md`;
         let report;
-        try {
-          report = await content.lookup(reportPath);
-        } catch {
-          unreadable++;
-          continue;
-        }
-        if (!report) continue;
         let text = "";
         try {
-          text = await content.read(report);
+          report = (await content.lookup(reportPath)) ?? (await content.lookup(markdownPath));
+          if (report) text = await content.read(report);
         } catch {
-          unreadable++;
+          unreadableRequests++;
           continue;
         }
-        const summary = (request.question ?? request.subject ?? text).trim().slice(0, 500);
+        if (!report) continue; // requested but no saved report: not a document
+        const selectedPath = report.path;
+        let title: string;
+        let summaryText: string;
+        if (selectedPath.endsWith(".json")) {
+          try {
+            const snapshot = JSON.parse(text) as { report?: unknown; model?: unknown };
+            summaryText = typeof snapshot.report === "string" ? snapshot.report : text;
+            title = /^#\s+(.+)$/m.exec(summaryText)?.[1]?.trim() ?? jobId;
+          } catch {
+            unreadableRequests++;
+            continue;
+          }
+        } else {
+          summaryText = text;
+          title = /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? jobId;
+        }
+        const summary = (request.question ?? request.subject ?? summaryText).trim().slice(0, 500);
         docs.push({
-          path: reportPath,
+          path: selectedPath,
           commit: report.commit,
           hash: report.sha256,
           kind: "generated-report",
-          title: /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? jobId,
+          title,
           ...(summary ? { summary } : {}),
           jobId,
         });
       }
+      if (next === undefined && truncated) next = lastExamined;
       const state =
         docs.length > 0
-          ? truncated || unreadable > 0
+          ? truncated || unreadable > 0 || unreadableRequests > 0
             ? "partial"
             : "ok"
-          : truncated || unreadable > 0
+          : truncated || unreadable > 0 || unreadableRequests > 0
             ? "partial"
             : "none";
       return { state, docs, ...(next !== undefined ? { next } : {}), truncated };

@@ -9,6 +9,7 @@ import { DossierStore, type Dossier } from "../../src/research/dossier.js";
 import { ThemeStore } from "../../src/research/theme-store.js";
 import { ThemeMappingCatalogue } from "../../src/research/theme-mappings.js";
 import { savedResearch } from "../../src/dashboard/research.js";
+import { researchJobId } from "../../src/research/job.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -392,41 +393,49 @@ describe("canonical supersession fidelity (#517)", { timeout: 60_000 }, () => {
 });
 
 describe("theme research documents (#516)", { timeout: 60_000 }, () => {
-  const job = (hex: string, themeIds: string[], report?: string) => ({
-    requestPath: `research-jobs/research-${hex}/request.json`,
-    reportPath: `research-jobs/research-${hex}/report.md`,
-    themeIds,
-    report,
-  });
+  const job = (
+    themeIds: string[],
+    report?: string,
+    format: "md" | "json" = "md",
+    unique = report ?? "",
+  ) => ({ themeIds, report, format, unique });
 
-  async function writeJob(
-    j: ReturnType<typeof job>,
-  ) {
+  async function writeJob(j: ReturnType<typeof job>) {
+    const request = {
+      schemaVersion: 1,
+      origin: "manual",
+      subject: "Synthetic subject",
+      question: `Does this theme hold up? ${j.unique}`,
+      pass: 1,
+      claims: j.themeIds.map((id, i) => ({
+        claimRecordId: `claim-${i}`,
+        statement: "Synthetic claim",
+        themeIds: [id],
+      })),
+      corpusRefs: [],
+    };
+    const jobId = researchJobId(request);
     await content.write(
-      j.requestPath,
-      JSON.stringify({
-        schemaVersion: 1,
-        origin: "manual",
-        subject: "Synthetic subject",
-        question: "Does this theme hold up?",
-        pass: 1,
-        claims: j.themeIds.map((id, i) => ({
-          claimRecordId: `claim-${i}`,
-          statement: "Synthetic claim",
-          themeIds: [id],
-        })),
-        corpusRefs: [],
-      }),
+      `research-jobs/${jobId}/request.json`,
+      JSON.stringify(request),
     );
-    if (j.report !== undefined) await content.write(j.reportPath, j.report);
+    if (j.report !== undefined) {
+      await content.write(
+        `research-jobs/${jobId}/${j.format === "json" ? "report.json" : "report.md"}`,
+        j.format === "json"
+          ? JSON.stringify({ model: "fake/sonar", report: j.report, citations: [] })
+          : j.report,
+      );
+    }
+    return jobId;
   }
 
   it("lists the dossier and every associated saved report with exact versions", async () => {
     await theme("masts", "Phone masts");
     await dossier("masts");
-    await writeJob(job("a".repeat(32), ["masts"], "# Report one\n\nSummary of one."));
-    await writeJob(job("b".repeat(32), ["other"], "# Unrelated\n\nNot this theme."));
-    await writeJob(job("c".repeat(32), ["masts"], "# Report two\n\nSummary of two."));
+    await writeJob(job(["masts"], "# Report one\n\nSummary of one."));
+    await writeJob(job(["other"], "# Unrelated\n\nNot this theme."));
+    const two = await writeJob(job(["masts"], "# Report two\n\nSummary of two.", "json"));
 
     const html = await render("/themes/canonical/view?id=masts");
     expect(html).toContain("Dossier masts");
@@ -434,8 +443,8 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
     expect(html).toContain("Report two");
     expect(html).not.toContain("Unrelated");
     // Each document opens the exact pinned revision through the #507 reader.
-    const report = await content.lookup(`research-jobs/research-${"c".repeat(32)}/report.md`);
-    expect(html).toContain(encodeURIComponent(`research-jobs/research-${"c".repeat(32)}/report.md`));
+    const report = await content.lookup(`research-jobs/${two}/report.json`);
+    expect(html).toContain(encodeURIComponent(`research-jobs/${two}/report.json`));
     expect(html).toContain(`at=${report!.commit}`);
     expect(html).toContain("no date recorded");
     expect(html).toContain("Only saved librarian/theme/dossier associations are listed");
@@ -457,31 +466,41 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
     await theme("masts", "Phone masts");
     await dossier("masts");
     for (let i = 0; i < 22; i++) {
-      await writeJob(
-        job(
-          String(i).padStart(2, "0").repeat(16),
-          ["masts"],
-          `# <script>Report ${i}</script>\n\nBody ${i}`,
-        ),
-      );
+      await writeJob(job(["masts"], `# <script>Report ${i}</script>\n\nBody ${i}`));
     }
-    const first = await render("/themes/canonical/view?id=masts");
-    expect(first).toContain("More documents");
-    expect(first).toContain("&lt;script&gt;Report");
-    expect(first).not.toContain("<script>Report");
-    const next = /after=([^"&]+)/.exec(first)?.[1];
-    expect(next).toBeDefined();
-    const second = await render(`/themes/canonical/view?id=masts&after=${next}`);
-    expect(second).toContain("Report 21");
-    expect(second).not.toContain("More documents");
-    // The dossier is listed once, not repeated on continuation pages.
-    expect(first).toContain("Dossier masts");
-    expect(second).not.toContain("Dossier masts");
+    const seen = new Map<string, number>();
+    let page = await render("/themes/canonical/view?id=masts");
+    expect(page).toContain("More documents");
+    expect(page).toContain("&lt;script&gt;Report");
+    expect(page).not.toContain("<script>Report");
+    expect(page).toContain("Dossier masts");
+    let pages = 0;
+    for (;;) {
+      pages++;
+      // Count document links (a title also appears inside its summary text).
+      for (const m of page.matchAll(
+        /href="\/research\/view\?path=research-jobs%2F[^"&]+%2Freport\.md/g,
+      )) {
+        const key = m[0]!;
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+      }
+      const more = /More documents/.test(page);
+      if (!more) break;
+      const next = /after=([^"&]+)/.exec(page)?.[1];
+      expect(next).toBeDefined();
+      page = await render(`/themes/canonical/view?id=masts&after=${next}`);
+      // The dossier is listed once, not repeated on continuation pages.
+      expect(page).not.toContain("Dossier masts");
+      expect(pages).toBeLessThan(10);
+    }
+    // Every report is reachable exactly once across bounded pages.
+    expect(seen.size, `seen=${JSON.stringify([...seen])}`).toBe(22);
+    expect([...seen.values()].every((n) => n === 1), `seen=${JSON.stringify([...seen])}`).toBe(true);
   });
 
   it("pins the document version rather than substituting current text", async () => {
     await theme("masts", "Phone masts");
-    await writeJob(job("d".repeat(32), ["masts"], "# Old title\n\nOld body."));
+    await writeJob(job(["masts"], "# Old title\n\nOld body."));
     // A later revision of the same report path does not change the listed ref
     // in an already-rendered page; the link carries the exact commit.
     const listing = await savedResearchPort().forTheme("masts");
