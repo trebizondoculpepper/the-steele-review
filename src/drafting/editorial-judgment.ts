@@ -7,6 +7,7 @@ import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { writeOnce } from "../research/job.js";
 import { AssessmentRecordSchema } from "./article-assessment.js";
+import { readPublicationPayload, sameArtifact } from "./publication-payload.js";
 import { promptIdentity } from "./prompt-identity.js";
 
 /**
@@ -152,16 +153,30 @@ export async function judgeAssessment(input: {
   } else if (assessment.state === "findings" || assessment.state === "no-faults") {
     gates.push("findings-missing");
   }
+  // The exact publication fields the assessment covered: loaded, validated
+  // and checked against the same body, so approval never covers unseen fields.
+  let publication: Record<string, unknown> | undefined;
+  try {
+    const { payload } = await readPublicationPayload(input.content, assessment.publication);
+    if (!sameArtifact(payload.body, assessment.body)) gates.push("publication-body-mismatch");
+    else
+      publication =
+        payload.mode === "structured"
+          ? { mode: "structured", ...payload.fields }
+          : { mode: "legacy-body-only" };
+  } catch {
+    gates.push("publication-unreadable");
+  }
   const blockingDeterministic = assessment.deterministicFindings.length > 0;
 
   // Nothing to judge: record the gated state without calling the model.
-  if (gates.length > 0 || article === undefined || findings === undefined) {
+  if (gates.length > 0 || article === undefined || findings === undefined || !publication) {
     return persist({ ...base, decision: "none", state: "gated", gates, decidedAt: now() });
   }
 
   const user = JSON.stringify({
     article,
-    publication: assessment.publication,
+    publication,
     findings,
     deterministicFindings: assessment.deterministicFindings,
   });

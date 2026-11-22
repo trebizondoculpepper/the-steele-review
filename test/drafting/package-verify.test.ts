@@ -1338,6 +1338,37 @@ describe("separately recorded editorial judgment (#599)", { timeout: 60_000 }, (
     expect(changed).toMatchObject({ reused: false, record: { decision: "revise" } });
   });
 
+  it("shows the judge the actual publication fields, and gates an unreadable payload", async () => {
+    const a = await assessed();
+    const users: string[] = [];
+    const judge = {
+      modelVersion: "fake/judge-fields",
+      async complete(request: { user: string }) {
+        users.push(request.user);
+        return judgeDoc("REVISE", "- Fix.");
+      },
+    };
+    await judgeAssessment({ content, assessment: a.ref, judge: judge as never });
+    const sent = JSON.parse(users[0]!).publication;
+    expect(sent.mode).toBe("structured");
+    expect(sent.title).toBe("A treaty already bans weather weapons");
+    // An assessment pointing at a payload that cannot be read is gated.
+    const broken = {
+      ...a.record,
+      publication: { ...a.record.publication, hash: `sha256:${"0".repeat(64)}` },
+    };
+    const ref = await content.write(
+      "assessments/pub/p1/synthetic-broken.json",
+      JSON.stringify(broken),
+    );
+    const blocked = model("fake/judge-fields", judgeDoc("APPROVE"));
+    expect(await judgeAssessment({ content, assessment: ref, judge: blocked })).toMatchObject({
+      status: "judged",
+      record: { decision: "none", state: "gated" },
+    });
+    expect(blocked.calls).toBe(0);
+  });
+
   it("never approves from an incomplete assessment, and does not ask the model", async () => {
     const a = await assessed("## Finding: x\n- Where: body");
     const judge = model("fake/judge", judgeDoc("APPROVE"));
