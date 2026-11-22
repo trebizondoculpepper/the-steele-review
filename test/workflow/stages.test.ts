@@ -1,3 +1,4 @@
+import { articlePaths } from "../../src/drafting/article-identity.js";
 import { ARTICLE_APPROVED_SUBJECT } from "../../src/events/article-approved-event.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -260,6 +261,35 @@ describe("article stages composed (#243)", () => {
     });
     const approved = await verifying.verify(draft.ref!, pkg.ref, input.sourceUrl);
     expect(approved).toMatchObject({ approved: true, draft: { path: draft.ref!.path } });
+    // Assess a canonical v1 snapshot even after current metadata alone advances
+    // to v2. Verification may not roll current paths back to the old version.
+    const canonical = articlePaths(post);
+    const canonicalBody = (await content.lookup(canonical.body))!;
+    const canonicalMeta = (await content.lookup(canonical.metadata))!;
+    const metaV1 = JSON.parse(await content.read(canonicalMeta));
+    const metaV2 = await content.revise(
+      canonical.metadata,
+      JSON.stringify({ ...metaV1, fields: { ...metaV1.fields, title: "New unapproved metadata" } }),
+      canonicalMeta.sha256,
+    );
+    const pinnedApproval = await verifying.verify(canonicalBody, pkg.ref, input.sourceUrl);
+    expect(pinnedApproval).toMatchObject({
+      approved: true,
+      draft: { path: canonical.body, commit: canonicalBody.commit },
+    });
+    const pinnedReport = JSON.parse(await content.read(pinnedApproval.ref!));
+    const pinnedManifest = JSON.parse(
+      await content.read({
+        ...pinnedReport.publication,
+        sha256: pinnedReport.publication.hash.slice(7),
+      }),
+    );
+    expect(pinnedManifest.metadata).toMatchObject({
+      path: canonical.metadata,
+      commit: canonicalBody.commit,
+    });
+    expect(pinnedManifest.fields.title).toBe(metaV1.fields.title);
+    expect((await content.lookup(canonical.metadata))!.sha256).toBe(metaV2.sha256);
     // The approval is handed to publishing as one approved-article event (#262).
     const handoff = await verifying.approve!(approved.ref!);
     expect(await verifying.approve!(approved.ref!)).toEqual(handoff);

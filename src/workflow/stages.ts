@@ -330,10 +330,15 @@ export function articleStages(deps: {
     async verify(draft, pkg, sourceUrl) {
       if (!deps.models.verifier)
         return { approved: false, unavailable: "no verifier model configured" };
-      // Verification binds an exact write-once generation, never the in-place
-      // canonical article whose current content can move on (#580).
-      if (isCanonicalArticlePath(draft.path)) throw new StageError("verify", "draft-not-pinned");
-      const metadata = await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
+      // A stable path at a pinned commit is an immutable article version.
+      // Canonical metadata must come from that same snapshot, never HEAD.
+      const canonicalMetadata = isCanonicalArticlePath(draft.path)
+        ? await deps.content.lookupAt(draft.commit, draft.path.replace(/\.md$/, ".json"))
+        : undefined;
+      const metadata = isCanonicalArticlePath(draft.path)
+        ? canonicalMetadata && { ...canonicalMetadata.ref, commit: draft.commit }
+        : await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
+      await deps.content.read(draft); // Validate the caller's exact body hash.
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
       const out = await verifyWithRevisions({
         operations: deps.operations,
