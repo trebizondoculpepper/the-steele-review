@@ -60,7 +60,6 @@ describe("configuration file save (#545)", () => {
   it("refuses a non-editable setting without touching the file", async () => {
     const secretKey = SETTINGS.find((s) => s.sensitivity !== "public")!.key;
     const result = await saveSettings(path, {
-      current: {},
       expectedVersion: savedFileVersion({}, salt),
       changes: { [secretKey]: "x" },
       env,
@@ -69,6 +68,31 @@ describe("configuration file save (#545)", () => {
     });
     expect(result.decision).toMatchObject({ status: "rejected", reason: "not-editable" });
     await expect(readFile(path, "utf8")).rejects.toThrow();
+  });
+
+  it("validates against the file on disk, not a caller snapshot", async () => {
+    await writeFile(path, JSON.stringify({ [publicKey]: "1" }), { mode: 0o600 });
+    // Caller claims to have seen the empty version; disk says otherwise.
+    const result = await saveSettings(path, {
+      expectedVersion: savedFileVersion({}, salt),
+      changes: { [publicKey]: "2" },
+      env,
+      salt,
+      now,
+    });
+    expect(result.decision).toMatchObject({ status: "rejected", reason: "stale-version" });
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ [publicKey]: "1" });
+  });
+
+  it("serialises overlapping saves so only one wins", async () => {
+    const expected = savedFileVersion({}, salt);
+    const [a, b] = await Promise.all([
+      saveSettings(path, { expectedVersion: expected, changes: { [publicKey]: "1" }, env, salt, now }),
+      saveSettings(path, { expectedVersion: expected, changes: { [publicKey]: "2" }, env, salt, now }),
+    ]);
+    const accepted = [a, b].filter((r) => r.decision.status === "accepted");
+    expect(accepted).toHaveLength(1);
+    expect([a, b].filter((r) => r.decision.status !== "accepted")).toHaveLength(1);
   });
 
   it("reports an unreadable or invalid existing file instead of overwriting it", async () => {

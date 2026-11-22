@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
 import {
@@ -56,22 +57,48 @@ export interface SaveSettingsResult {
   version: string;
 }
 
+/** Serialises saves per path so two saves cannot interleave read/rename. */
+const saving = new Map<string, Promise<unknown>>();
+
+function serialize<T>(path: string, work: () => Promise<T>): Promise<T> {
+  const previous = saving.get(path) ?? Promise.resolve();
+  const next = previous.then(work, work);
+  // Keep the chain alive without leaking rejections into later callers.
+  saving.set(
+    path,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /**
  * Plan and, when accepted, save the candidate atomically.
  *
- * `expectedVersion` is the saved-file version the operator was shown; a stale
- * submission is refused by the planner and nothing is written.
+ * The current file is always read from disk: a caller-supplied snapshot could
+ * hide a change made since the operator was shown the version, so the stale
+ * check must compare against what is stored. Saves for one path are serialised.
  */
 export async function saveSettings(
   path: string,
-  input: Omit<SettingsSaveInput, "current"> & { current?: Record<string, string> },
+  input: Omit<SettingsSaveInput, "current">,
 ): Promise<SaveSettingsResult> {
-  const current = input.current ?? (await readSettingsFile(path));
+  return serialize(path, () => saveNow(path, input));
+}
+
+async function saveNow(
+  path: string,
+  input: Omit<SettingsSaveInput, "current">,
+): Promise<SaveSettingsResult> {
+  const current = await readSettingsFile(path);
   const decision = planSettingsSave({ ...input, current });
   if (decision.status !== "accepted")
     return { decision, version: savedFileVersion(current, input.salt) };
 
-  const temporary = `${path}.tmp-${process.pid}`;
+  // Unique per call: a shared PID-based name lets two saves collide.
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
     await writeFile(temporary, decision.content, { mode: 0o600 });
     await rename(temporary, path);
