@@ -6,6 +6,8 @@ import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { savedResearch } from "../../src/dashboard/research.js";
 import { researchBrowseViews } from "../../src/dashboard/research-browse-views.js";
 import { DossierStore, type Dossier } from "../../src/research/dossier.js";
+import { researchCollection } from "../../src/dashboard/research-collection.js";
+import type { ResearchPort } from "../../src/dashboard/research.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -115,5 +117,68 @@ describe("research browser (#620)", { timeout: 60_000 }, () => {
     const html = await render("/research/browse?after=not-a-cursor");
     expect(html).toContain("page link was not valid");
     expect(html).toContain("Masts dossier");
+  });
+});
+
+describe("research browser resumability (#620)", () => {
+  it("continues past an empty page that still has a cursor", async () => {
+    const calls: Array<string | undefined> = [];
+    const fake: ResearchPort = {
+      async list({ after }) {
+        calls.push(after);
+        if (after === undefined)
+          return { state: "ok", rows: [], next: "dossier/a.md", partial: true, unreadable: 0 };
+        return {
+          state: "ok",
+          rows: [
+            {
+              path: "research-reports/site/topic/report.md",
+              commit: "b".repeat(40),
+              hash: "c".repeat(64),
+              kind: "imported-report",
+              title: "Later match",
+            },
+          ],
+          partial: false,
+          unreadable: 0,
+        };
+      },
+      async detail() {
+        return undefined;
+      },
+      async forTheme() {
+        return { state: "none", docs: [], truncated: false };
+      },
+    };
+    const page = await researchCollection(fake).search({
+      filters: { kind: "imported-report" },
+      sort: "path",
+      direction: "asc",
+      limit: 5,
+    });
+    expect(page.rows.map((r) => r.summary)).toEqual(["Later match"]);
+    expect(calls).toEqual([undefined, "dossier/a.md"]);
+  });
+
+  it("does not report an unavailable reader as an empty collection", async () => {
+    const fake = {
+      async list() {
+        return { state: "unavailable" as const, rows: [], partial: false, unreadable: 0 };
+      },
+      async detail() {
+        return undefined;
+      },
+      async forTheme() {
+        return { state: "none" as const, docs: [], truncated: false };
+      },
+    };
+    await expect(
+      researchCollection(fake as never).search({
+        filters: {},
+        sort: "title",
+        direction: "asc",
+        limit: 5,
+      }),
+    ).rejects.toThrow();
   });
 });

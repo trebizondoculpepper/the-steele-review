@@ -23,19 +23,6 @@ export type ResearchBrowseRow = CollectionRow & {
   date?: string;
 };
 
-const cursorOf = (sortKey: string, path: string) =>
-  Buffer.from(JSON.stringify([sortKey, path])).toString("base64url");
-function decodeCursor(cursor: string): [string, string] | undefined {
-  try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    return Array.isArray(value) && value.length === 2 && value.every((x) => typeof x === "string")
-      ? (value as [string, string])
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 const dossierTheme = (path: string) =>
   /^dossier\/([^/]+)\.md$/.exec(path)?.[1];
 
@@ -70,20 +57,21 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
     sorts: ["title", "path", "date"],
     async search(query) {
       const limitations: string[] = [];
-      const after = query.cursor ? decodeCursor(query.cursor) : undefined;
-      if (query.cursor && !after)
-        limitations.push("The page link was not valid; showing the first page.");
       const rows: ResearchBrowseRow[] = [];
       const wantedKind = query.filters.kind as ResearchKind | undefined;
       const wantedSubject = (query.filters.subject as string | undefined)?.toLowerCase();
       const wantedTheme = query.filters.theme as string | undefined;
-      let cursor: string | undefined;
-      let scanned = 0;
+      // The cursor is the reader's own listing position, so pages remain
+      // resumable even when a filter matches nothing in an earlier window.
+      const validCursor =
+        query.cursor === undefined ||
+        /^(?:dossier|research-reports|research-jobs)\/[A-Za-z0-9._/-]+$/.test(query.cursor);
+      if (!validCursor) limitations.push("The page link was not valid; showing the first page.");
+      let cursor: string | undefined = validCursor ? query.cursor : undefined;
       let unreadable = 0;
       let complete = true;
-      // Sort order is global, so one page request must see the bounded set
-      // before slicing; the scan bound keeps this from walking the corpus.
-      while (scanned < RESEARCH_BROWSE_SCAN) {
+      let lastConsumed: string | undefined;
+      while (rows.length < query.limit) {
         let page;
         try {
           page = await research.list({
@@ -92,19 +80,21 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
             ...(cursor ? { after: cursor } : {}),
           });
         } catch (error) {
-          if (scanned === 0) throw error;
+          if (rows.length === 0 && !cursor) throw error;
           limitations.push("The research collection could not be listed completely right now.");
           complete = false;
           break;
         }
+        if (page.state === "unavailable") {
+          if (rows.length === 0 && !cursor) throw new Error("research unavailable");
+          limitations.push("Part of the research collection is unavailable right now.");
+          complete = false;
+          break;
+        }
         unreadable += page.unreadable;
-        if (page.rows.length === 0) break;
         for (const row of page.rows) {
-          scanned++;
-          if (scanned > RESEARCH_BROWSE_SCAN) {
-            complete = false;
-            break;
-          }
+          cursor = row.path;
+          lastConsumed = row.path;
           if (wantedSubject && !(row.subject ?? "").toLowerCase().includes(wantedSubject)) continue;
           if (wantedTheme && dossierTheme(row.path) !== wantedTheme) continue;
           rows.push({
@@ -115,11 +105,14 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
             ...(row.subject ? { subject: row.subject } : {}),
             ...(row.date ? { date: row.date } : {}),
           });
+          if (rows.length >= query.limit) break;
         }
-        if (!complete) break;
+        if (rows.length >= query.limit) break;
         if (!page.next) break;
         cursor = page.next;
       }
+      // Sort applies within the returned page; the reader's stable listing
+      // order is what pagination and cursors follow.
       const sortKey = (r: ResearchBrowseRow) =>
         query.sort === "path" ? r.id : query.sort === "date" ? (r.date ?? "") : r.summary;
       rows.sort((a, b) => {
@@ -128,17 +121,11 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
         const cmp = ka.localeCompare(kb) || a.id.localeCompare(b.id);
         return query.direction === "desc" ? -cmp : cmp;
       });
-      const start = after ? rows.findIndex((r) => r.id === after[1]) + 1 : 0;
-      // The cursor path is not necessarily in this scan if sort/filter changed;
-      // fall back to the first page rather than skipping records silently.
-      const from = start > 0 && after && sortKey(rows[start - 1]!) === after[0] ? start : 0;
-      const pageRows = rows.slice(from, from + query.limit);
-      const more = rows.length > from + query.limit;
+      const pageRows = rows;
+      const more = pageRows.length === query.limit;
       return {
         rows: pageRows,
-        ...(pageRows.length > 0 && more
-          ? { next: cursorOf(sortKey(pageRows.at(-1)!), pageRows.at(-1)!.id) }
-          : {}),
+        ...(more && lastConsumed ? { next: lastConsumed } : {}),
         limitations: [
           ...limitations,
           ...(unreadable ? [`${unreadable} saved document(s) could not be read.`] : []),
