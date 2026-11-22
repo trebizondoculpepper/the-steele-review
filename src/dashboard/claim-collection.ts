@@ -105,6 +105,9 @@ export function claimCollection(
       // continuation re-lists from here so an intra-extraction offset resumes.
       let priorPath: string | undefined = cursor?.from;
       let beforeLast: string | undefined = cursor?.from;
+      let beforeExamined: string | undefined = cursor?.from;
+      let examinedPath: string | undefined;
+      let examinedIndex = 0;
       let exhausted = false;
       while (rows.length < query.limit && examined < CLAIM_BROWSE_SCAN) {
         let paths: string[];
@@ -155,6 +158,9 @@ export function claimCollection(
           }
           for (let i = 0; i < all.length; i++) {
             const row = all[i]!;
+            if (examinedPath !== path) beforeExamined = priorPath;
+            examinedPath = path;
+            examinedIndex = i + 1;
             if (path === cursor?.path && i < skip) continue;
             if (category && row.category !== category) continue;
             if (
@@ -189,10 +195,14 @@ export function claimCollection(
         }
       }
       if (examined >= CLAIM_BROWSE_SCAN && rows.length < query.limit) complete = false;
-      const more =
-        rows.length === query.limit || (!complete && lastPath !== undefined);
+      // Progress is the last examined position, not only a matching row, so a
+      // sparse search can resume beyond the scan budget.
+      const resumePath = complete ? lastPath : (examinedPath ?? lastPath);
+      const resumeIndex = complete ? lastIndex : (examinedPath ? examinedIndex : lastIndex);
+      const resumeFrom = complete ? beforeLast : (examinedPath ? beforeExamined : beforeLast);
+      const more = rows.length === query.limit || (!complete && resumePath !== undefined);
       const after =
-        more && lastPath ? encodeCursor(beforeLast, lastPath, lastIndex) : undefined;
+        more && resumePath ? encodeCursor(resumeFrom, resumePath, resumeIndex) : undefined;
       return {
         rows,
         ...(after ? { next: after } : {}),

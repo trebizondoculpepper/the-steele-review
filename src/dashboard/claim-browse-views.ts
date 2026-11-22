@@ -73,7 +73,7 @@ export function claimBrowseViews(
         : "";
       if (page.rows.length === 0) {
         const filtered = q || Object.values(f).some(Boolean);
-        return `${form}${notes}<p class="empty">${filtered ? "No saved claims match this search." : "No claim extractions have been saved yet."}</p>`;
+        return `${form}${notes}<p class="empty">${filtered ? "No saved claims match this search." : "No claim extractions have been saved yet."}</p>${next}`;
       }
       return `${form}${notes}<p>Extraction output only: accepted occurrences, legacy extractions, refinement candidates and rejected diagnostics stay distinct, and none of this is a truth or research verdict. Rows are in stored order; opening one shows its exact saved extraction.</p>
 <div class="wrap"><table><thead><tr><th>Claim</th><th>Category</th><th>Source</th><th>Extraction version</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;
