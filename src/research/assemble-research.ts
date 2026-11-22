@@ -6,6 +6,7 @@ import {
   RESEARCH_COMPLETED_SUBJECT,
 } from "../events/research-completed-event.js";
 import {
+  readCitationSnapshot,
   CitationInventorySchema,
   RetrievalOutcomeSchema,
   type RetrievalOutcome,
@@ -95,9 +96,18 @@ export async function assembleResearch(input: {
   const inventory = CitationInventorySchema.parse(
     JSON.parse(await input.artifacts.read(input.inventory)),
   );
-  if (inventory.discovery.path !== input.discovery.path) {
+  // The exact discovery version, not merely the same path.
+  const want = toRef(input.discovery);
+  const got = inventory.discovery;
+  if (
+    got.repository !== want.repository ||
+    got.commit !== want.commit ||
+    got.path !== want.path ||
+    got.hash !== want.hash
+  ) {
     throw new Error("inventory belongs to another discovery");
   }
+  const inventoryRef = toRef(input.inventory);
 
   // Replay: a recorded assembly is returned as it was, never rebuilt.
   const recorded = async (reused: boolean): Promise<AssembledResearch | undefined> => {
@@ -125,9 +135,43 @@ export async function assembleResearch(input: {
   const outcomes = new Map<string, RetrievalOutcome>();
   for (const id of new Set(inventory.entries.map((e) => e.retrievalId).filter(Boolean))) {
     const ref = await input.artifacts.lookup(`${dirOf}/retrievals/${id}.json`);
-    if (ref) {
-      outcomes.set(id!, RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(ref))));
+    if (!ref) continue;
+    const o = RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+    const key = inventory.entries.find((e) => e.retrievalId === id)?.retrievalKey;
+    // An outcome counts only if it belongs to exactly this inventory, id and key.
+    const sameInventory =
+      o.inventory.repository === inventoryRef.repository &&
+      o.inventory.commit === inventoryRef.commit &&
+      o.inventory.path === inventoryRef.path &&
+      o.inventory.hash === inventoryRef.hash;
+    if (!sameInventory || o.retrievalId !== id || o.retrievalKey !== key) {
+      outcomes.set(id!, {
+        ...o,
+        status: "unavailable",
+        reason: "mismatched-outcome",
+        snapshot: undefined,
+      });
+      continue;
     }
+    // An archived outcome needs a valid snapshot of exactly this key.
+    if (o.status === "archived") {
+      let valid = false;
+      try {
+        valid = (await readCitationSnapshot(input.artifacts, o.snapshot!)).retrievalKey === key;
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        outcomes.set(id!, {
+          ...o,
+          status: "unavailable",
+          reason: "invalid-snapshot",
+          snapshot: undefined,
+        });
+        continue;
+      }
+    }
+    outcomes.set(id!, o);
   }
 
   const gaps: string[] = [];

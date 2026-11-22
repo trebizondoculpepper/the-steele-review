@@ -288,3 +288,79 @@ describe("assembly review regressions (#592)", { timeout: 60_000 }, () => {
     ).rejects.toThrow("assembly-exhausted");
   });
 });
+
+describe("assembly exact-binding regressions (#592)", { timeout: 60_000 }, () => {
+  it("refuses an inventory from the same path at another version", async () => {
+    const d = data({ citations: ["https://ok.example/a"], report: "# R" });
+    const { discovery, inventory } = await stages(d, {});
+    const other = { ...discovery, sha256: "e".repeat(64) };
+    await expect(
+      assembleResearch({
+        artifacts,
+        operations,
+        discovery: other,
+        inventory,
+        read: async () => ({ data: d, request }),
+        owner: "t",
+      }),
+    ).rejects.toThrow("another discovery");
+  });
+
+  it("never counts a mismatched outcome or wrong-key snapshot as archived", async () => {
+    const d = data({ citations: ["https://ok.example/a"], report: "# R" });
+    const discovery = await artifacts.write("research-discovery/req-1/disc-1/result.json", "{}");
+    const { ref: inventory, inventory: inv } = await saveCitationInventory({
+      artifacts,
+      discovery,
+      readDiscovery: async () => d,
+    });
+    const id = inv.entries[0]!.retrievalId!;
+    const wrong = await artifacts.write(
+      "research-discovery/req-1/disc-1/citations/snapshots/elsewhere.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        retrievalKey: "https://other.example/",
+        url: "u",
+        title: "t",
+        truncated: false,
+        text: "x",
+      }),
+    );
+    await artifacts.write(
+      `research-discovery/req-1/disc-1/citations/retrievals/${id}.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        retrievalId: id,
+        retrievalKey: "https://ok.example/a",
+        inventory: {
+          repository: inventory.repository,
+          commit: inventory.commit,
+          path: inventory.path,
+          hash: `sha256:${inventory.sha256}`,
+        },
+        status: "archived",
+        attempts: 1,
+        snapshot: {
+          repository: wrong.repository,
+          commit: wrong.commit,
+          path: wrong.path,
+          hash: `sha256:${wrong.sha256}`,
+        },
+      }),
+    );
+    const out = await assembleResearch({
+      artifacts,
+      operations,
+      discovery,
+      inventory,
+      read: async () => ({ data: d, request }),
+      owner: "t",
+    });
+    const manifest = JSON.parse(await artifacts.read(out.manifest));
+    expect(manifest.citations[0]).toMatchObject({
+      retrieval: "inaccessible",
+      retrievalReason: "invalid-snapshot",
+    });
+    expect(out.outcome).toBe("complete-with-gaps");
+  });
+});
