@@ -8,6 +8,7 @@ import { dossierPath } from "../research/dossier.js";
 import {
   ThemeMappingSchema,
   ThemeMappingSupersessionSchema,
+  normaliseMappingKey,
 } from "../research/theme-mappings.js";
 
 /**
@@ -38,12 +39,18 @@ const MAPPING_LIST_PAGE = 100;
  * librarian's own lookup would not.
  */
 interface SupersessionGraph {
-  bySource: Map<string, { to: string; at: number; decidedAt: string }[]>;
+  bySource: Map<string, { to: string; at: number; decidedAt: string; path: string }[]>;
   complete: boolean;
 }
 
+/** Scope identifiers are normalised exactly as the catalogue's paths are. */
+const scopeKey = (scope?: string) => (scope === undefined ? "" : normaliseMappingKey(scope));
+
 async function supersessionGraph(content: Store): Promise<SupersessionGraph> {
-  const bySource = new Map<string, { to: string; at: number; decidedAt: string }[]>();
+  const bySource = new Map<
+    string,
+    { to: string; at: number; decidedAt: string; path: string }[]
+  >();
   let complete = true;
   let after: string | undefined;
   let scanned = 0;
@@ -72,9 +79,9 @@ async function supersessionGraph(content: Store): Promise<SupersessionGraph> {
         const parsed = ThemeMappingSupersessionSchema.safeParse(JSON.parse(await content.read(ref)));
         if (!parsed.success) continue; // malformed record: skipped, not guessed
         const s = parsed.data;
-        const key = `${s.key}\u0000${s.scope ?? ""}\u0000${s.from}`;
+        const key = `${s.key}\u0000${scopeKey(s.scope)}\u0000${s.from}`;
         const list = bySource.get(key) ?? [];
-        list.push({ to: s.to, at: Date.parse(s.decidedAt), decidedAt: s.decidedAt });
+        list.push({ to: s.to, at: Date.parse(s.decidedAt), decidedAt: s.decidedAt, path });
         bySource.set(key, list);
       } catch {
         complete = false;
@@ -93,11 +100,17 @@ function resolveCanonical(
   let current = mapping.canonicalThemeId;
   const seen = new Set([current]);
   for (let hops = 0; hops < 20; hops++) {
-    const events = graph.bySource.get(`${mapping.key}\u0000${mapping.scope ?? ""}\u0000${current}`);
+    const events = graph.bySource.get(
+      `${mapping.key}\u0000${scopeKey(mapping.scope)}\u0000${current}`,
+    );
     if (!events || events.length === 0) return current;
-    const newest = [...events].sort((a, b) =>
-      a.at === b.at ? b.decidedAt.localeCompare(a.decidedAt) : b.at - a.at,
-    )[0]!;
+    // Match the catalogue exactly: ascending by (instant, decidedAt, path),
+    // then take the last, which is equivalent to descending here.
+    const newest = [...events].sort((a, b) => {
+      if (a.at !== b.at) return b.at - a.at;
+      if (a.decidedAt !== b.decidedAt) return b.decidedAt.localeCompare(a.decidedAt);
+      return b.path.localeCompare(a.path);
+    })[0]!;
     if (seen.has(newest.to)) return current;
     seen.add(newest.to);
     current = newest.to;

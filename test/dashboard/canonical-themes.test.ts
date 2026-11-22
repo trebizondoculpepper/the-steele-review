@@ -314,3 +314,74 @@ describe("legacy catalogue transition (#517)", { timeout: 60_000 }, () => {
     expect(legacy).toContain("not the librarian's canonical authority");
   });
 });
+
+describe("canonical supersession fidelity (#517)", { timeout: 60_000 }, () => {
+  it("normalises scope spellings like the librarian does", async () => {
+    await theme("b", "Scoped target");
+    const catalogue = new ThemeMappingCatalogue(content);
+    await catalogue.record({
+      proposal: "Scoped wording",
+      description: "A scoped topic",
+      scope: "Science Desk",
+      canonicalThemeId: "a",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: decideBy,
+      rationale: "initial",
+    });
+    await catalogue.supersede({
+      proposal: "Scoped wording",
+      description: "A scoped topic",
+      scope: "science-desk",
+      from: "a",
+      to: "b",
+      reason: "canonical correction",
+      decidedAt: "2026-01-02T00:00:00Z",
+      decidedBy: decideBy,
+    });
+    // The librarian's own lookup already resolves this to b.
+    expect(
+      (await catalogue.lookup({ proposal: "Scoped wording", description: "A scoped topic", scope: "Science Desk" }))
+        ?.canonicalThemeId,
+    ).toBe("b");
+    const detail = await savedThemes(content).canonicalDetail("b");
+    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Scoped wording"]);
+  });
+
+  it("keeps the same tie-break as the librarian for identical timestamps", async () => {
+    await theme("b", "Tie target B");
+    await theme("c", "Tie target C");
+    const catalogue = new ThemeMappingCatalogue(content);
+    await catalogue.record({
+      proposal: "Tied wording",
+      canonicalThemeId: "a",
+      decidedAt: "2026-01-01T00:00:00Z",
+      decidedBy: decideBy,
+      rationale: "initial",
+    });
+    const at = "2026-01-02T00:00:00Z";
+    await catalogue.supersede({
+      proposal: "Tied wording",
+      from: "a",
+      to: "b",
+      reason: "first decision",
+      decidedAt: at,
+      decidedBy: decideBy,
+    });
+    await catalogue.supersede({
+      proposal: "Tied wording",
+      from: "a",
+      to: "c",
+      reason: "second decision, same instant",
+      decidedAt: at,
+      decidedBy: decideBy,
+    });
+    const expected = (
+      await catalogue.lookup({ proposal: "Tied wording" })
+    )?.canonicalThemeId;
+    expect(["b", "c"]).toContain(expected);
+    const detail = await savedThemes(content).canonicalDetail(expected!);
+    expect(detail?.proposals.map((p) => p.proposal)).toEqual(["Tied wording"]);
+    const other = expected === "b" ? "c" : "b";
+    expect((await savedThemes(content).canonicalDetail(other))?.proposals ?? []).toEqual([]);
+  });
+});
