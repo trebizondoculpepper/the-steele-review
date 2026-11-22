@@ -287,7 +287,7 @@ describe("dashboard auto-update (#476)", () => {
     try {
       const base = `http://127.0.0.1:${port}`;
       const broken = await fetch(`${base}/articles`);
-      expect(broken.status).toBe(200);
+      expect(broken.status).toBe(503);
       expect(broken.headers.get("x-view-status")).toBe("unavailable");
       expect(await httpReadiness({ baseUrl: base, deadlineMs: 50, intervalMs: 10 }).ready()).toBe(
         false,

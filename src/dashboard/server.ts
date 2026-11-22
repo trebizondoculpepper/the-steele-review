@@ -1,3 +1,7 @@
+import {
+  reportApplicationError,
+  type ApplicationErrorCategory,
+} from "../controllers/sentry-logs.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 /**
@@ -134,6 +138,8 @@ export const DEFAULT_VIEWS: DashboardView[] = [
 export function dashboardHandler(
   views: DashboardView[] = DEFAULT_VIEWS,
   actions?: DashboardActions,
+  /** Where a caught view failure is reported (#723); Sentry by default. */
+  report: (view: string, category: ApplicationErrorCategory) => void = reportApplicationError,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const method = request.method ?? "GET";
@@ -207,11 +213,21 @@ export function dashboardHandler(
     try {
       body = await view.render(url);
     } catch {
-      // Never echo internal errors: they may name hosts or paths.
+      // Never echo or report internal errors: they may name hosts, paths or
+      // user data. Only the registered view path and a fixed category leave.
       body = '<p class="empty">This view is unavailable right now.</p>';
       failed = true;
+      console.error(
+        JSON.stringify({ event: "dashboard.view", view: view.path, outcome: "render-failed" }),
+      );
+      try {
+        report(view.path, "render-failed");
+      } catch {
+        // Reporting never changes the response.
+      }
     }
-    response.writeHead(200, {
+    // A failed render is unavailable, not a healthy page (#723).
+    response.writeHead(failed ? 503 : 200, {
       "content-type": "text/html; charset=utf-8",
       // A fixed, sanitised signal for deployment readiness checks (#476).
       ...(failed ? { "x-view-status": "unavailable" } : {}),
@@ -224,8 +240,9 @@ export function dashboardHandler(
 export function createDashboardServer(
   views: DashboardView[] = DEFAULT_VIEWS,
   actions?: DashboardActions,
+  report?: (view: string, category: ApplicationErrorCategory) => void,
 ): Server {
-  const handle = dashboardHandler(views, actions);
+  const handle = dashboardHandler(views, actions, report);
   return createServer((req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) res.writeHead(500, SECURITY_HEADERS);
