@@ -433,7 +433,22 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
   it("lists the dossier and every associated saved report with exact versions", async () => {
     await theme("masts", "Phone masts");
     await dossier("masts");
-    await writeJob(job(["masts"], "# Report one\n\nSummary of one."));
+    const one = await writeJob(job(["masts"], "# Report one\n\nSummary of one."));
+    await content.write(
+      `research-jobs/${one}/result.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId: one,
+        outcome: "complete-with-gaps",
+        manifest: {
+          repository: "content",
+          commit: "a".repeat(40),
+          path: "x.json",
+          hash: `sha256:${"b".repeat(64)}`,
+        },
+        finishedAt: "2026-01-05T00:00:00Z",
+      }),
+    );
     await writeJob(job(["other"], "# Unrelated\n\nNot this theme."));
     const two = await writeJob(job(["masts"], "# Report two\n\nSummary of two.", "json"));
 
@@ -446,6 +461,9 @@ describe("theme research documents (#516)", { timeout: 60_000 }, () => {
     const report = await content.lookup(`research-jobs/${two}/report.json`);
     expect(html).toContain(encodeURIComponent(`research-jobs/${two}/report.json`));
     expect(html).toContain(`at=${report!.commit}`);
+    // A validated saved result supplies the finished date; reports without one
+    // keep the explicit missing-date state.
+    expect(html).toContain("2026-01-05T00:00:00Z");
     expect(html).toContain("no date recorded");
     expect(html).toContain("Only saved librarian/theme/dossier associations are listed");
     expect(html).toContain("Does this theme hold up?");

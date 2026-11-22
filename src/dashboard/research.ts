@@ -427,6 +427,18 @@ export function savedResearch(content: Store): ResearchPort {
           title = /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? jobId;
         }
         const summary = (request.question ?? request.subject ?? summaryText).trim().slice(0, 500);
+        // A completed job's saved result records when it finished; only a
+        // validated, job-bound result supplies the date.
+        let date: string | undefined;
+        try {
+          const resultRef = await content.lookup(`research-jobs/${jobId}/result.json`);
+          if (resultRef) {
+            const result = ResearchResultSchema.parse(JSON.parse(await content.read(resultRef)));
+            if (result.jobId === jobId) date = result.finishedAt;
+          }
+        } catch {
+          // No usable completion record: the missing-date state stays honest.
+        }
         docs.push({
           path: selectedPath,
           commit: report.commit,
@@ -434,6 +446,7 @@ export function savedResearch(content: Store): ResearchPort {
           kind: "generated-report",
           title,
           ...(summary ? { summary } : {}),
+          ...(date ? { date } : {}),
           jobId,
         });
       }
