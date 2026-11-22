@@ -401,7 +401,7 @@ function renderClaims(claims: ArticleClaims | undefined): string {
 }
 
 export function renderTrace(t: ArticleTrace): string {
-  const reviewLink = `<p><a href="/reviews?publication=${encodeURIComponent(t.post.publicationId)}&post=${encodeURIComponent(t.post.postId)}">Verifier history</a> · <a href="/assessments?${new URLSearchParams({ post: `${t.post.publicationId}/${t.post.postId}` }).toString()}">Assessor attempts</a></p>`;
+  const reviewLink = `<p><a href="/reviews?publication=${encodeURIComponent(t.post.publicationId)}&post=${encodeURIComponent(t.post.postId)}">Verifier history</a> · <a href="/assessments?${new URLSearchParams({ post: `${t.post.publicationId}/${t.post.postId}` }).toString()}">Assessor attempts</a> · <a href="/judgments?${new URLSearchParams({ post: `${t.post.publicationId}/${t.post.postId}` }).toString()}">Judgments</a></p>`;
   const facts = [
     ["Publication", escapeHtml(t.post.publicationId)],
     ["Post", escapeHtml(t.post.postId)],
