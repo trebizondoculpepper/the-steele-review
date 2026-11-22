@@ -1,3 +1,9 @@
+import { isEditorialStorageFailure } from "../drafting/editorial-provider.js";
+import {
+  WriterRecoveryGuardError,
+  WriterAttemptError,
+  type ExpectedWriterRecovery,
+} from "../drafting/writer-attempts.js";
 import type { EditorialLineage } from "../content/editorial-lineage.js";
 import type { JudgmentHistory } from "../content/judgment-history.js";
 import type { EditorialHistory, EditorialPolicy, EditorialStages } from "./editorial-contract.js";
@@ -28,6 +34,13 @@ export async function runEditorialLoop(input: {
   attemptId: string;
   recoveryId?: string;
   lineage?: EditorialLineage;
+  /** Only a separately versioned workflow may opt into judging a validated saved assessment first. */
+  initialAssessment?: Ref;
+  /** Exact validated pair for the separately versioned recovery contract; legacy callers still prepare normally. */
+  initialVersion?: { draft: Ref; metadata: Ref };
+  initialJudgeLineage?: EditorialLineage;
+  initialJudgeRecovery?: ExpectedWriterRecovery;
+  beforeNewEditorialCall?: () => Promise<void>;
   priorHistory?: JudgmentHistory;
   revisionOffset?: number;
   deadlineAt?: number;
@@ -40,9 +53,9 @@ export async function runEditorialLoop(input: {
   save(history: Omit<EditorialHistory, "summary">): Promise<Ref>;
 }) {
   const deadline = input.deadlineAt ?? (await input.now()) + input.policy.deadlineMs;
-  let version = await input.step("editorial-prepare", () =>
-    input.stages.prepare(input.draft, input.package),
-  );
+  let version =
+    input.initialVersion ??
+    (await input.step("editorial-prepare", () => input.stages.prepare(input.draft, input.package)));
   const initial = version;
   const judgmentHistory: JudgmentHistory = [...(input.priorHistory ?? [])];
   const reference = (r: Ref) => ({
@@ -62,6 +75,8 @@ export async function runEditorialLoop(input: {
     approvalEvent: string | undefined;
   const expired = async () => (await input.now()) >= deadline;
   let revisionAttempts = 0;
+  const retainedControlArtifacts: Ref[] = [];
+  const reusedAssessments: Ref[] = [];
   try {
     for (let round = 0; round <= input.policy.maxRevisions; round++) {
       if (await expired()) {
@@ -69,16 +84,23 @@ export async function runEditorialLoop(input: {
         reason = "editorial deadline reached";
         break;
       }
-      await input.progress("assess", round);
-      const assessment = await input.step(`editorial-assess-${round}`, () =>
-        input.stages.assess(
-          version,
-          input.package,
-          `${input.attemptId}:assessment:${round}`,
-          input.recoveryId,
-          input.lineage,
-        ),
-      );
+      let assessment: Awaited<ReturnType<EditorialStages["assess"]>>;
+      if (round === 0 && input.initialAssessment) {
+        assessment = { ref: input.initialAssessment, state: "reused-complete" };
+        reusedAssessments.push(input.initialAssessment);
+      } else {
+        await input.progress("assess", round);
+        assessment = await input.step(`editorial-assess-${round}`, () =>
+          input.stages.assess(
+            version,
+            input.package,
+            `${input.attemptId}:assessment:${round}`,
+            input.recoveryId,
+            input.lineage,
+            ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
+          ),
+        );
+      }
       assessments.push(assessment.ref);
       if (assessment.operationalFailure) {
         terminal = "operational-stop";
@@ -91,14 +113,21 @@ export async function runEditorialLoop(input: {
         break;
       }
       await input.progress("judge", round);
+      const judgeArgs = [
+        assessment.ref,
+        `${input.attemptId}:judgment:${round}`,
+        input.recoveryId,
+        judgmentHistory.slice(-5),
+        round === 0 ? (input.initialJudgeLineage ?? input.lineage) : input.lineage,
+      ] as const;
       const judgment = await input.step(`editorial-judge-${round}`, () =>
-        input.stages.judge(
-          assessment.ref,
-          `${input.attemptId}:judgment:${round}`,
-          input.recoveryId,
-          judgmentHistory.slice(-5),
-          input.lineage,
-        ),
+        (round === 0 && input.initialJudgeRecovery) || input.beforeNewEditorialCall
+          ? input.stages.judge(
+              ...judgeArgs,
+              round === 0 ? input.initialJudgeRecovery : undefined,
+              input.beforeNewEditorialCall,
+            )
+          : input.stages.judge(...judgeArgs),
       );
       judgments.push(judgment.ref);
       judgmentHistory.push({
@@ -144,6 +173,7 @@ export async function runEditorialLoop(input: {
           input.sourceUrl,
           input.recoveryId,
           input.lineage,
+          ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
         ),
       );
       if (revised.mechanicalRun) mechanicalRuns.push(revised.mechanicalRun);
@@ -158,9 +188,15 @@ export async function runEditorialLoop(input: {
       revisions.push(version);
     }
   } catch (error) {
-    if (!input.lineage) throw error;
+    if (!input.lineage || (input.initialAssessment && isEditorialStorageFailure(error)))
+      throw error;
     terminal = "operational-stop";
-    reason = "editorial-stage-unavailable";
+    reason =
+      input.initialAssessment && error instanceof WriterRecoveryGuardError
+        ? `recovery-${error.code}`
+        : "editorial-stage-unavailable";
+    if (input.initialAssessment && error instanceof WriterAttemptError && error.artifact)
+      retainedControlArtifacts.push(error.artifact);
   }
   const history = {
     version: input.policy.version,
@@ -171,6 +207,7 @@ export async function runEditorialLoop(input: {
     mechanicalRuns,
     diagnostics,
     ...(input.lineage ? { retainedWriterAttempts, revisionAttempts } : {}),
+    ...(input.initialAssessment ? { reusedAssessments, retainedControlArtifacts } : {}),
     terminal,
   };
   let summary: Ref;

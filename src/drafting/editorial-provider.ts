@@ -10,6 +10,8 @@ import { ModelProviderError } from "../controllers/openrouter.js";
 import {
   captureWriterAttempt,
   WriterAttemptError,
+  WriterRecoveryGuardError,
+  type ExpectedWriterRecovery,
   type CapturedWriterAttempt,
 } from "./writer-attempts.js";
 
@@ -24,6 +26,8 @@ export function durableEditorialProvider(input: {
   context: ArtifactReference[];
   promptVersion: string;
   recoveryId?: string;
+  expectedRecovery?: ExpectedWriterRecovery;
+  beforeNewCall?: () => Promise<void>;
 }): ExtractionModelProvider & {
   retainedAttempts(): ArtifactReference[];
   retainedAttemptReuses(): Array<boolean | null>;
@@ -74,13 +78,16 @@ export function durableEditorialProvider(input: {
   };
 }
 
-/** Storage/control failures are retryable workflow work, never provider findings. */
-export function rethrowEditorialStorageError(error: unknown): void {
-  if (
+/** Typed transient/control storage failures remain workflow work, never model findings. */
+export function isEditorialStorageFailure(error: unknown): boolean {
+  return (
     (error instanceof WriterAttemptError &&
       (error.code === "archive-failed" || error.code === "busy")) ||
     error instanceof ArtifactStoreError ||
     error instanceof OperationStoreError
-  )
-    throw error;
+  );
+}
+/** Domain guards propagate too, but callers must not treat them as retryable provider failures. */
+export function rethrowEditorialStorageError(error: unknown): void {
+  if (isEditorialStorageFailure(error) || error instanceof WriterRecoveryGuardError) throw error;
 }

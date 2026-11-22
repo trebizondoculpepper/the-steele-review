@@ -1,3 +1,4 @@
+import { ArtifactStoreError } from "../../src/controllers/artifact-store.js";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { runEditorialLoop } from "../../src/workflow/editorial-loop.js";
 import {
@@ -189,5 +190,34 @@ describe("versioned journaled editorial loop", () => {
     expect(out.history.judgments).toHaveLength(1);
     expect(out.history.mechanicalRuns).toHaveLength(1);
     expect(out.history.diagnostics).toHaveLength(1);
+  });
+  it("does not count an initial assessment as reused when the new window already expired", async () => {
+    const f = fixture();
+    const out = await runEditorialLoop({
+      ...f.args,
+      initialAssessment: ref("saved-assessment.json"),
+      lineage: { intent: ref("recovery-intent.json"), parentSummary: ref("failed-parent.json") },
+      deadlineAt: 0,
+    });
+    expect(out.history.terminal).toBe("deadline");
+    expect(out.history.assessments).toEqual([]);
+    expect(out.history.reusedAssessments).toEqual([]);
+    expect(out.history.assessments.length - out.history.reusedAssessments!.length).toBe(0);
+    expect(f.counts()).toEqual({ assessed: 0, judged: 0, revised: 0, approved: 0 });
+  });
+  it("propagates new-path typed storage failure instead of caching a terminal review failure", async () => {
+    const f = fixture();
+    f.stages.judge = async () => {
+      throw new ArtifactStoreError("git-failed");
+    };
+    await expect(
+      runEditorialLoop({
+        ...f.args,
+        initialAssessment: ref("saved-assessment.json"),
+        lineage: { intent: ref("recovery-intent.json"), parentSummary: ref("failed-parent.json") },
+      }),
+    ).rejects.toMatchObject({ code: "git-failed" });
+    expect(f.saved()).toBeUndefined();
+    expect(f.counts()).toEqual({ assessed: 0, judged: 0, revised: 0, approved: 0 });
   });
 });

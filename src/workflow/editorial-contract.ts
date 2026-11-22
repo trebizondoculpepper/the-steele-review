@@ -1,3 +1,4 @@
+import type { ExpectedWriterRecovery } from "../drafting/writer-attempts.js";
 import type { EditorialLineage } from "../content/editorial-lineage.js";
 import type { JudgmentHistory } from "../content/judgment-history.js";
 import { z } from "zod";
@@ -40,6 +41,7 @@ export interface EditorialStages {
     attemptId: string,
     recoveryId?: string,
     lineage?: EditorialLineage,
+    beforeNewCall?: () => Promise<void>,
   ): Promise<{ ref: Ref; state: string; operationalFailure?: string }>;
   judge(
     assessment: Ref,
@@ -47,6 +49,8 @@ export interface EditorialStages {
     recoveryId?: string,
     history?: JudgmentHistory,
     lineage?: EditorialLineage,
+    expectedRecovery?: ExpectedWriterRecovery,
+    beforeNewCall?: () => Promise<void>,
   ): Promise<{
     ref: Ref;
     decision: "approve" | "revise" | "none";
@@ -61,6 +65,7 @@ export interface EditorialStages {
     sourceUrl: string,
     recoveryId?: string,
     lineage?: EditorialLineage,
+    beforeNewCall?: () => Promise<void>,
   ): Promise<{
     version?: EditorialVersion;
     failure?: string;
@@ -79,6 +84,8 @@ export interface EditorialHistory {
   mechanicalRuns: Ref[];
   diagnostics: Ref[];
   retainedWriterAttempts?: Ref[];
+  reusedAssessments?: Ref[];
+  retainedControlArtifacts?: Ref[];
   revisionAttempts?: number;
   terminal: "approved" | "unresolved" | "operational-stop" | "deadline";
   summary: Ref;

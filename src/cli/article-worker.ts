@@ -1,3 +1,5 @@
+import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-recovery.js";
+import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
 import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 import { restateParentCompletion } from "../controllers/editorial-continuation-ingress.js";
@@ -96,6 +98,7 @@ function main(): number {
   let sonar;
   let writer;
   let continuation;
+  let judgeRecovery;
   try {
     sonar = sonarFromEnv();
     writer = openRouterFromEnv({ env: { ...process.env, STEELE_MODEL: writerModel(process.env) } });
@@ -109,6 +112,7 @@ function main(): number {
       repository: c.STEELE_CONTENT_REPOSITORY,
     });
     const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
+    const verifier = model("STEELE_MODEL_VERIFIER");
     stages = articleStages({
       ...(sourceMetadata ? { sourceMetadata } : {}),
       mechanicalPolicy: writerMechanicalPolicy(process.env),
@@ -119,7 +123,7 @@ function main(): number {
         themes: model("STEELE_MODEL_THEMES"),
         claims: model("STEELE_MODEL_CLAIMS"),
         writer,
-        verifier: model("STEELE_MODEL_VERIFIER"),
+        verifier,
       },
       shortlister: new LexicalShortlister(),
       research: {
@@ -148,6 +152,19 @@ function main(): number {
       configuredPolicy: editorialPolicyFromEnv(process.env),
       parentCompletion: restateParentCompletion(process.env.RESTATE_INGRESS_URL),
     });
+    judgeRecovery = editorialJudgeRecoveryWorkflow({
+      content,
+      archive,
+      operations,
+      sourceMetadata,
+      stages: stages.editorial!,
+      currentJudge: { modelVersion: verifier.modelVersion },
+      configuredWindow: {
+        version: "editorial-recovery-window-v1",
+        deadlineMs: editorialPolicyFromEnv(process.env).deadlineMs,
+      },
+      parentCompletion: restateRecoveryParentCompletion(process.env.RESTATE_INGRESS_URL),
+    });
   } catch (error) {
     if (error instanceof SourceMetadataError) {
       console.error(`article-worker: source metadata ${error.code}`);
@@ -157,7 +174,7 @@ function main(): number {
     return 2;
   }
   restate.serve({
-    services: [articleRunWorkflow(stages), researchService(stages), continuation],
+    services: [articleRunWorkflow(stages), researchService(stages), continuation, judgeRecovery],
     port: c.STEELE_ARTICLE_WORKER_PORT,
   });
   console.log(

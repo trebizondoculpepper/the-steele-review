@@ -1,3 +1,4 @@
+import { WriterRecoveryGuardError } from "../drafting/writer-attempts.js";
 import {
   assertEditorialBaseCurrent,
   EditorialContinuationError,
@@ -75,7 +76,7 @@ export function editorialStages(deps: {
       await bound(version, pkg);
       return version;
     },
-    async assess(version, pkg, attemptId, recoveryId, lineage) {
+    async assess(version, pkg, attemptId, recoveryId, lineage, beforeNewCall) {
       if (!deps.assessor) throw new StageError("editorial", "assessor-unconfigured");
       const loaded = await bound(version, pkg);
       const provider = durableEditorialProvider({
@@ -92,6 +93,7 @@ export function editorialStages(deps: {
         ],
         promptVersion: DEFAULT_ASSESSOR_PROMPT.version,
         recoveryId,
+        ...(beforeNewCall ? { beforeNewCall } : {}),
       });
       const out = await assessArticle({
         ...deps,
@@ -113,7 +115,15 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async judge(assessment, attemptId, recoveryId, history, lineage) {
+    async judge(
+      assessment,
+      attemptId,
+      recoveryId,
+      history,
+      lineage,
+      expectedRecovery,
+      beforeNewCall,
+    ) {
       if (!deps.judge) throw new StageError("editorial", "judge-unconfigured");
       const record = AssessmentRecordSchema.parse(JSON.parse(await deps.content.read(assessment)));
       const provider = durableEditorialProvider({
@@ -130,6 +140,8 @@ export function editorialStages(deps: {
         ],
         promptVersion: DEFAULT_JUDGE_PROMPT.version,
         recoveryId,
+        ...(beforeNewCall ? { beforeNewCall } : {}),
+        ...(expectedRecovery ? { expectedRecovery } : {}),
       });
       const out = await judgeAssessment({
         content: deps.content,
@@ -156,7 +168,7 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async revise(version, pkg, judgment, number, sourceUrl, recoveryId, lineage) {
+    async revise(version, pkg, judgment, number, sourceUrl, recoveryId, lineage, beforeNewCall) {
       const loaded = await bound(version, pkg);
       const decision = JudgmentRecordSchema.parse(JSON.parse(await deps.content.read(judgment)));
       if (
@@ -201,11 +213,13 @@ export function editorialStages(deps: {
           ...(lineage
             ? {
                 lineage,
-                beforeNewGeneration: () =>
-                  assertEditorialBaseCurrent(deps.content, {
+                beforeNewGeneration: async () => {
+                  await beforeNewCall?.();
+                  await assertEditorialBaseCurrent(deps.content, {
                     body: artifactReference(version.draft),
                     metadata: artifactReference(version.metadata),
-                  }),
+                  });
+                },
               }
             : {}),
           revisionInputs: [
@@ -231,6 +245,11 @@ export function editorialStages(deps: {
         });
       } catch (error) {
         const cause = error instanceof DraftGuardStop ? error.failure : error;
+        if (lineage && cause instanceof WriterRecoveryGuardError)
+          return {
+            failure: `recovery-${cause.code}`,
+            ...(error instanceof DraftGuardStop ? error.retention : {}),
+          };
         if (lineage && cause instanceof EditorialContinuationError)
           return {
             failure: cause.code,

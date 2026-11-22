@@ -106,6 +106,9 @@ const ResponseSchema = z.object({
 /** Rough characters-per-token bound used to cap output tokens. */
 const CHARS_PER_TOKEN = 3;
 
+/** Pure model identity validation, also usable by submission preflight without a model capability. */
+export const openRouterModelVersion = (model: string) => `openrouter/${ModelName.parse(model)}`;
+
 export class OpenRouterProvider implements ExtractionModelProvider {
   readonly modelVersion: string;
   private readonly endpoint: URL;
@@ -131,7 +134,7 @@ export class OpenRouterProvider implements ExtractionModelProvider {
     this.endpoint.pathname = `${base.pathname.replace(/\/+$/, "")}/chat/completions`;
     this.endpoint.search = "";
     this.endpoint.hash = "";
-    this.modelVersion = `openrouter/${model}`;
+    this.modelVersion = openRouterModelVersion(model);
     this.timeoutMs = config.timeoutMs ?? 120_000;
     this.maxResponseBytes = config.maxResponseBytes ?? 2 * 1024 * 1024;
     this.fetchImpl = config.fetch ?? fetch;

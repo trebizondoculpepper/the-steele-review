@@ -107,3 +107,57 @@ completion, the exact unchanged canonical base, and normal version-bound
 approval/delivery controls remain required before execution. The archived
 ArticleRun-history reader used here is audit-only and does not itself authorize
 a new edit from that obsolete base.
+
+## Versioned judge-only recovery
+
+`EditorialJudgeRecovery` is a separate versioned workflow. It leaves historical
+ArticleRun and EditorialContinuation journals unchanged. Its CLI is
+`editorial-recover-judge --input <checkpoint.json> --request-id <stable-id>
+--generation <positive-number>`, with optional bounded `--wait-ms` and JSON
+output. Managed registration must expose all four services: ArticleRun, Research,
+EditorialContinuation, and EditorialJudgeRecovery. The worker needs its private
+configured ingress for a status-only parent completion check; missing recovery
+configuration does not disable the existing article services.
+
+The operator checkpoint pins the complete saved assessment and exact denied
+judge task. The first new model operation is that judgment. It does not repeat
+writing, assessment, extraction, research or packaging. Its request, model,
+prompt, prior successful guidance and original model-facing lineage must remain
+identical. The failed judgment is audit history, never revision guidance. The
+new generation is recorded in state, the role attempt and the capture recovery
+identity rather than changing the task being recovered. A capture-boundary
+constraint refuses any different or missing original task before the legacy
+new-call fallback can run.
+
+A durable state transaction binds both the operator request and a single slot
+for the exact denied capture/task digest. Same-request reconnect reuses its
+immutable intent, even after its own edit or a configuration change. A competing
+request/generation for that task is a conflict; canonical compare-and-swap alone
+would not protect judge-only approval of an unchanged body. A later recovery
+must not overwrite this slot or manufacture a new source version.
+
+The intent freezes a new bounded window, whose clock starts in the accepted
+workflow rather than when an operator prepares an intent during a funding wait.
+The old terminal policy/timing stays immutable. Ordinary live-clock guards run
+before genuinely new paid calls, after retained-response caches; workflow clocks
+and parent completion are journaled separately, never nested inside a capture
+callback. Domain guard outcomes cross the Restate step boundary as fixed typed
+control data. Storage exceptions remain thrown work for bounded Restate retries.
+
+The saved assessment is explicitly marked reused, not counted as a fresh model
+pass. New counts separate judgments, successful edits, edit attempts and fresh
+assessments from all inherited counts. The first new judge can approve even if
+no edits remain. If it requests revision, only the original remaining allowance
+is available; each edit still requires fresh assessment and judgment. A validated
+initial body/metadata pair is retained exactly, including metadata-only versions
+whose body was introduced at an older commit.
+
+Approval uses the normal exact-payload outbox. Lost acknowledgments reconcile
+the exact editorial judgment's durable event and its full body/metadata/package/
+post binding; incomplete or conflicting proof is recorded as unknown. Summary
+interruption retains known versions, role/capture references, counts and any
+known approval event. This workflow does not enable publishers, drain queues,
+change provider limits, select Markdown output, or authorize another automatic
+recovery. A real execution still requires available external allowance and fresh
+private parent/base/configuration checks. The current JSON task, model and prompt
+identities must match; later format changes cannot silently alter it.
