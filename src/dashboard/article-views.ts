@@ -1,3 +1,10 @@
+import { articleRunKey } from "../workflow/article-run.js";
+import { recoveryWorkflowKey } from "./recovery.js";
+import {
+  restateRunLinksHtml,
+  type InvocationLookupPort,
+  type RestateUiLinks,
+} from "./restate-links.js";
 import { renderPostTrace, type PostTrace } from "../diagnostics/post-trace.js";
 import {
   traceArticle,
@@ -37,6 +44,8 @@ export interface ArticleViewDeps {
   canRecover?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
+  /** Links to Restate's own execution UI (#561), from private configuration. */
+  restate?: { links: RestateUiLinks; lookup?: InvocationLookupPort };
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -217,7 +226,11 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         filter === "all" ? "" : ` with status “${escapeHtml(filter)}”`
       }, ${sort === "newest" ? "newest" : "oldest"} first. Run status is for the archived revision.</p>
 <div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
-<tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}`;
+<tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}${
+        deps.restate
+          ? `<p><a href="${escapeHtml(deps.restate.links.home)}" rel="noopener noreferrer">Open the Restate workflow UI</a> <span class="empty">(external, administrative)</span></p>`
+          : ""
+      }`;
     },
   };
 
@@ -252,7 +265,18 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
           ? `<p><a href="${recoveryLink(publicationId, postId, t.sourceVersion)}">Recover stopped run</a></p>`
           : "";
-      return trigger + recovery + renderTrace(t);
+      // External workflow inspection (#561): the exact original run and, when
+      // one was recorded, its recovery run, each by its own workflow key.
+      let inspection = "";
+      if (deps.restate && t.sourceVersion) {
+        const key = articleRunKey({ publicationId, postId, sourceVersion: t.sourceVersion });
+        const runs = [{ label: "Original run", workflowKey: key }];
+        if (isCreditBlocked(t.reason)) {
+          runs.push({ label: "Recovery run", workflowKey: recoveryWorkflowKey(key) });
+        }
+        inspection = await restateRunLinksHtml({ ...deps.restate, runs });
+      }
+      return trigger + recovery + renderTrace(t) + inspection;
     },
   };
   return [list, detail];
@@ -334,8 +358,10 @@ function renderClaims(claims: ArticleClaims | undefined): string {
     ],
     [
       "Refinement candidates",
-      list(claims.candidates, (c) =>
-        `${c.statement ?? "candidate"}${c.reasons?.length ? ` — ${c.reasons.join(", ")}` : ""}`,
+      list(
+        claims.candidates,
+        (c) =>
+          `${c.statement ?? "candidate"}${c.reasons?.length ? ` — ${c.reasons.join(", ")}` : ""}`,
       ),
     ],
     [
@@ -402,7 +428,9 @@ export function renderTrace(t: ArticleTrace): string {
             : "";
           return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
         })
-        .join("")}</tbody></table></div>${t.recovery.receiptsTruncated ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>' : ""}`
+        .join(
+          "",
+        )}</tbody></table></div>${t.recovery.receiptsTruncated ? '<p class="empty">The receipt scan reached its bound; some receipts may not be shown.</p>' : ""}`
     : "";
   const themes = t.themes
     ? (() => {
@@ -418,12 +446,14 @@ export function renderTrace(t: ArticleTrace): string {
           t.themes.themes.length === 0
             ? ""
             : `<ul>${t.themes.themes
-                .map((theme: { result: string; id: string; title: string; description?: string }) => {
-                  const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
-                  return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
-                    theme.description ? ` — ${escapeHtml(theme.description)}` : ""
-                  } <span class="empty">(extractor proposal, not canonical)</span></li>`;
-                })
+                .map(
+                  (theme: { result: string; id: string; title: string; description?: string }) => {
+                    const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                    return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                      theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                    } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                  },
+                )
                 .join("")}</ul>`;
         return `<h2>Themes</h2>${list}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
       })()

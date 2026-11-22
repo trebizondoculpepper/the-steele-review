@@ -17,6 +17,8 @@
  *   ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY[_FILE]? full-text index (article list)
  *   STEELE_FULLTEXT_INDEX?                           index name (default steele-source-text-v1)
  *   RESTATE_INGRESS_URL                              ArticleRun results
+ *   STEELE_RESTATE_UI_URL?                           Restate execution UI base, linked externally (#561)
+ *   STEELE_RESTATE_ADMIN_URL?                        Restate admin API, to resolve exact invocations
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured-source archive (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   content repository (read only)
  *   STEELE_STATE_PATH?                               state-controller database (read only)
@@ -63,11 +65,21 @@ import { collectActivity, renderActivity } from "../dashboard/activity.js";
 import { renderConfig } from "../dashboard/config-view.js";
 import { inspectSettings, resolveSettings } from "../config/settings.js";
 import { createDashboardServer } from "../dashboard/server.js";
+import { restateInvocations, restateUiLinks } from "../dashboard/restate-links.js";
 
 const env = z
   .object({
     STEELE_DASHBOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(8090),
     RESTATE_INGRESS_URL: z.url({ protocol: /^https?$/ }).optional(),
+    // Compose passes unset values as "": treat that as not configured.
+    STEELE_RESTATE_UI_URL: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.url({ protocol: /^https?$/ }).optional(),
+    ),
+    STEELE_RESTATE_ADMIN_URL: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.url({ protocol: /^https?$/ }).optional(),
+    ),
     STEELE_DASHBOARD_ORIGIN: z
       .url({ protocol: /^https?$/ })
       .refine((value) => value === new URL(value).origin)
@@ -168,9 +180,7 @@ const overview = statusView(
   }),
 );
 // Live article-stage activity for the console (#479).
-const activityArticles = es
-  ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined)
-  : undefined;
+const activityArticles = es ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) : undefined;
 const activityRuns = env.data.RESTATE_INGRESS_URL
   ? restateRuns(env.data.RESTATE_INGRESS_URL)
   : undefined;
@@ -207,6 +217,19 @@ const views = [
     ...(trigger ? { actionOrigin: env.data.STEELE_DASHBOARD_ORIGIN! } : {}),
     ...(es ? { articles: indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) } : {}),
     ...(env.data.RESTATE_INGRESS_URL ? { runs: restateRuns(env.data.RESTATE_INGRESS_URL) } : {}),
+    ...(() => {
+      // External workflow inspection (#561): only a validated private UI base.
+      const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
+      if (!links) return {};
+      return {
+        restate: {
+          links,
+          ...(env.data.STEELE_RESTATE_ADMIN_URL
+            ? { lookup: restateInvocations(env.data.STEELE_RESTATE_ADMIN_URL) }
+            : {}),
+        },
+      };
+    })(),
     trace: (post) =>
       tracePost({
         post,
@@ -276,9 +299,8 @@ const views = [
 // Recoverable trash for saved drafts (#478); markers live in the content repo.
 // Writing markers mutates the content repository, so the console only offers
 // this when the deployment explicitly enables it (#478).
-const trashStore = content && env.data.STEELE_DASHBOARD_TRASH === "1"
-  ? new DraftTrashStore(content)
-  : undefined;
+const trashStore =
+  content && env.data.STEELE_DASHBOARD_TRASH === "1" ? new DraftTrashStore(content) : undefined;
 const trashAction = trashStore?.action();
 // Actions need their exact origin for the same-origin check: without it, no
 // action route is registered at all.
@@ -310,12 +332,13 @@ server.listen(env.data.STEELE_DASHBOARD_PORT, "0.0.0.0", () => {
   );
 });
 const stop = () =>
-  server.close(() =>
-    void Promise.resolve(es?.close())
-      .finally(() => {
-        operations?.close();
-      })
-      .finally(() => process.exit(0)),
+  server.close(
+    () =>
+      void Promise.resolve(es?.close())
+        .finally(() => {
+          operations?.close();
+        })
+        .finally(() => process.exit(0)),
   );
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
