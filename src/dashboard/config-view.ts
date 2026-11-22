@@ -1,8 +1,6 @@
-import {
-  inspectSettings,
-  resolveSettings,
-  type InspectedSetting,
-} from "../config/settings.js";
+import { researchTokensFromConfiguration } from "../config/research-tokens.js";
+import { RESEARCH_MAX_TOKENS } from "../config/settings.js";
+import { inspectSettings, resolveSettings, type InspectedSetting } from "../config/settings.js";
 
 /**
  * Read-only configuration page for the console (#544).
@@ -15,8 +13,9 @@ import {
  */
 
 function esc(value: string): string {
-  return value.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  return value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
 }
 
@@ -82,4 +81,32 @@ export function renderConfig(inspected: readonly InspectedSetting[]): string {
 /** The page body from the runtime environment and saved configuration file. */
 export function configPage(env: NodeJS.ProcessEnv, file: Record<string, string> = {}): string {
   return renderConfig(inspectSettings(resolveSettings(env, file)));
+}
+
+/** Fresh generic-handler read of the live research knob; never a credential file. */
+export async function currentConfigPage(
+  env: NodeJS.ProcessEnv,
+  file: Record<string, string> = {},
+): Promise<string> {
+  const resolved = resolveSettings(env, file);
+  const index = resolved.findIndex((r) => r.key === RESEARCH_MAX_TOKENS);
+  try {
+    const applied = await researchTokensFromConfiguration({ env })();
+    resolved[index] = {
+      key: RESEARCH_MAX_TOKENS,
+      value: applied.maxOutputTokens,
+      source: applied.source,
+    };
+  } catch {
+    resolved[index] = {
+      key: RESEARCH_MAX_TOKENS,
+      source: env[RESEARCH_MAX_TOKENS]
+        ? "environment"
+        : env.STEELE_CONFIG_PATH
+          ? "file"
+          : "default",
+      error: "invalid",
+    };
+  }
+  return renderConfig(inspectSettings(resolved));
 }

@@ -1,3 +1,4 @@
+import type { AppliedResearchTokens } from "../config/research-tokens.js";
 import { z } from "zod";
 /** Whitelisted provider data only: never the request, connection settings, headers or credentials. */
 export const DiscoveryDataSchema = z
@@ -25,6 +26,7 @@ export interface PartialDiscoveryBody {
   body: string;
   transport: "complete" | "incomplete" | "resource-limit";
   encoding: "base64";
+  appliedTokens?: AppliedResearchTokens;
 }
 export type DiscoveryCapture = (data: unknown) => Promise<void>;
 

@@ -1,3 +1,8 @@
+import { DEFAULT_RESEARCH_MAX_TOKENS } from "../config/settings.js";
+import {
+  researchTokensFromConfiguration,
+  type ResearchTokensReader,
+} from "../config/research-tokens.js";
 import { z } from "zod";
 import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
 import type { DiscoveryCapture, PartialDiscoveryBody } from "./discovery-data.js";
@@ -9,7 +14,6 @@ import {
 import {
   credentialForRequest,
   liveCredential,
-  readCredential,
   type CredentialProvider,
   type CredentialSource,
 } from "../config/credentials.js";
@@ -30,7 +34,7 @@ import {
 
 export const DEFAULT_SONAR_MODEL = DEFAULT_RESEARCH_MODEL;
 export const DEFAULT_SONAR_TIMEOUT_MS = 180_000;
-export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = 4_000;
+export const DEFAULT_SONAR_MAX_OUTPUT_TOKENS = DEFAULT_RESEARCH_MAX_TOKENS;
 
 export interface SonarReport {
   report: string;
@@ -96,9 +100,10 @@ export function researchEffortFromEnv(
 export interface SonarClient {
   readonly model: string;
   readonly settings?: { model: string; timeoutMs: number; maxOutputTokens: number };
+  readonly liveTokens?: boolean;
   readonly discoveryParameters?: {
     timeoutMs: number;
-    maxOutputTokens: number;
+    maxOutputTokens?: number;
     maxResponseBytes: number;
     /** Present only when an effort is configured (and supported). */
     reasoningEffort?: ReasoningEffort;
@@ -118,6 +123,7 @@ export interface OpenRouterSonarConfig {
   /** Required finite limits for a live run. */
   timeoutMs: number;
   maxOutputTokens: number;
+  tokens?: ResearchTokensReader;
   maxResponseBytes?: number;
   /** Explicit reasoning effort (#662); refused when the model cannot select it. */
   reasoningEffort?: ReasoningEffort;
@@ -174,14 +180,23 @@ export class OpenRouterSonarClient implements SonarClient {
     this.fetchImpl = config.fetch ?? fetch;
   }
 
-  /** Effective non-secret settings, for deployment checks (#317). */
+  /** Fixed constructor limits; currentSettings() resolves the live outbound limit. */
   get settings(): { model: string; timeoutMs: number; maxOutputTokens: number } {
     return { model: this.model, ...this.limits };
   }
 
+  get liveTokens(): boolean {
+    return !!this.config.tokens;
+  }
+
+  async currentSettings() {
+    return { ...this.settings, ...(this.config.tokens ? await this.config.tokens() : {}) };
+  }
+
   get discoveryParameters() {
     return {
-      ...this.limits,
+      timeoutMs: this.limits.timeoutMs,
+      ...(this.config.tokens ? {} : { maxOutputTokens: this.limits.maxOutputTokens }),
       maxResponseBytes: this.config.maxResponseBytes ?? 4 * 1024 * 1024,
       // Part of the discovery identity only when configured: omitted keeps
       // existing identities unchanged.
@@ -203,6 +218,7 @@ export class OpenRouterSonarClient implements SonarClient {
     signal: AbortSignal,
     capture?: DiscoveryCapture,
   ): Promise<SonarReport> {
+    const appliedTokens = this.config.tokens ? await this.config.tokens() : undefined;
     const timeout = AbortSignal.timeout(this.limits.timeoutMs);
     const combined = AbortSignal.any([signal, timeout]);
     const failed = () =>
@@ -228,7 +244,7 @@ export class OpenRouterSonarClient implements SonarClient {
             { role: "system", content: prompt.system },
             { role: "user", content: prompt.user },
           ],
-          max_tokens: this.limits.maxOutputTokens,
+          max_tokens: appliedTokens?.maxOutputTokens ?? this.limits.maxOutputTokens,
           ...(this.config.reasoningEffort
             ? { reasoning: { effort: this.config.reasoningEffort } }
             : {}),
@@ -255,7 +271,7 @@ export class OpenRouterSonarClient implements SonarClient {
         },
       );
     } catch (error) {
-      if (partial) await capture?.(partial);
+      if (partial) await capture?.({ ...partial, ...(appliedTokens ? { appliedTokens } : {}) });
       if (error instanceof ModelProviderError) throw error;
       throw failed();
     }
@@ -264,6 +280,7 @@ export class OpenRouterSonarClient implements SonarClient {
       body: bytes.toString("base64"),
       encoding: "base64",
       transport: "complete",
+      ...(appliedTokens ? { appliedTokens } : {}),
     });
     const replay = replaySonarDiscovery(bytes.toString("utf8"), this.model);
     if (replay.validation !== "valid" || !replay.data) throw new ModelProviderError("bad-response");
@@ -324,7 +341,7 @@ async function readBounded(
 /**
  * Configuration: OPENROUTER_API_KEY (or _FILE; the existing credential
  * boundary), STEELE_RESEARCH_MODEL, STEELE_RESEARCH_TIMEOUT_MS and
- * STEELE_RESEARCH_MAX_OUTPUT_TOKENS (defaults 180 s and 4,000 tokens).
+ * STEELE_RESEARCH_MAX_TOKENS (defaults 180 s and 4,000 tokens).
  */
 export function sonarFromEnv(
   source: CredentialSource = {},
@@ -343,7 +360,8 @@ export function sonarFromEnv(
     apiKey: liveCredential("OPENROUTER_API_KEY", source),
     model: researchModel(env),
     timeoutMs: num("STEELE_RESEARCH_TIMEOUT_MS", DEFAULT_SONAR_TIMEOUT_MS),
-    maxOutputTokens: num("STEELE_RESEARCH_MAX_OUTPUT_TOKENS", DEFAULT_SONAR_MAX_OUTPUT_TOKENS),
+    maxOutputTokens: DEFAULT_SONAR_MAX_OUTPUT_TOKENS,
+    tokens: researchTokensFromConfiguration({ env }),
     ...(researchEffortFromEnv(env) ? { reasoningEffort: researchEffortFromEnv(env)! } : {}),
     ...(env.OPENROUTER_BASE_URL ? { baseUrl: env.OPENROUTER_BASE_URL } : {}),
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
