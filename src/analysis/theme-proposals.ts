@@ -69,6 +69,11 @@ export const ThemeProposalSchema = z
     id: ProposalId,
     title: z.string().min(1).max(200),
     description: z.string().min(1).max(2000).optional(),
+    /**
+     * `source-author` (#753): the resolved post author, added from source
+     * metadata rather than proposed by the model. Absent for model themes.
+     */
+    origin: z.literal("source-author").optional(),
   })
   .strict();
 export type ThemeProposal = z.infer<typeof ThemeProposalSchema>;
@@ -84,7 +89,8 @@ export const ThemeProposalResultSchema = z
     artifact: z
       .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
       .strict(),
-    proposals: z.array(ThemeProposalSchema).max(MAX_PROPOSALS),
+    // One extra slot is reserved for the source-author theme (#753).
+    proposals: z.array(ThemeProposalSchema).max(MAX_PROPOSALS + 1),
     rejected: z.array(
       z
         .object({
@@ -185,6 +191,37 @@ export type ThemeProposalOutcome =
       attempts: number;
       malformed?: MalformedResponse[];
     };
+
+/**
+ * The theme for a resolved post author (#753), or undefined when the author
+ * is unknown. The title is the name, with the owner's configured label when
+ * there is one, so namesakes map to different themes; the description says
+ * who this is and whom it is not, from configuration only. Authorship
+ * metadata is never presented as biographical evidence.
+ */
+export function sourceAuthorTheme(
+  context: SourceContext | undefined,
+): { title: string; description: string } | undefined {
+  const author = context?.author;
+  if (!author || author.status !== "resolved") return undefined;
+  const profile = author.profile;
+  const title = (profile?.label ? `${author.author} (${profile.label})` : author.author).slice(
+    0,
+    200,
+  );
+  const basis =
+    author.basis === "source-configured"
+      ? "the configured author of this source"
+      : "named in this post's byline";
+  const parts = [
+    profile?.description ?? `${author.author}, ${basis}.`,
+    ...(profile?.excludes?.length
+      ? [`Not to be confused with: ${profile.excludes.join("; ")}.`]
+      : []),
+    "Authorship metadata identifies the person; it is not biographical evidence.",
+  ];
+  return { title, description: parts.join(" ").slice(0, 2000) };
+}
 
 export async function proposeThemes(input: {
   provider: ExtractionModelProvider;
@@ -317,6 +354,17 @@ export async function proposeThemes(input: {
       ...(parsed.data.description ? { description: parsed.data.description } : {}),
     });
   });
+
+  // A known author enters as an ordinary theme (#753), so it is mapped,
+  // researched and handed to the writer through the normal pipeline.
+  const authorTheme = sourceAuthorTheme(provenance);
+  if (authorTheme) {
+    const id = proposalId(input.post, input.source.sourceVersion, authorTheme.title);
+    if (!seen.has(id)) {
+      seen.add(id);
+      proposals.push({ id, ...authorTheme, origin: "source-author" });
+    }
+  }
 
   let result = ThemeProposalResultSchema.parse({
     schemaVersion: THEME_PROPOSALS_SCHEMA_VERSION,
