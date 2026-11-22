@@ -36,9 +36,9 @@ export interface ActivityEvent {
  * invisible.
  */
 export interface RunIndexPort {
-  recent(limit: number): Promise<
-    Array<{ publicationId: string; postId: string; sourceVersion: string }>
-  >;
+  recent(
+    limit: number,
+  ): Promise<Array<{ publicationId: string; postId: string; sourceVersion: string }>>;
 }
 
 export interface ActivityInput {
@@ -200,6 +200,10 @@ export async function collectActivity(input: ActivityInput): Promise<ActivityFee
   }
   // Newest observation first; an undated event sorts last rather than first.
   out.sort((a, b) => {
+    // Work in progress first (#479): a just-started run may not have reported
+    // a timestamp yet, and must not sort last and fall off the page.
+    const live = Number(b.state === "started") - Number(a.state === "started");
+    if (live !== 0) return live;
     const at = a.at === undefined ? Number.NEGATIVE_INFINITY : Date.parse(a.at);
     const bt = b.at === undefined ? Number.NEGATIVE_INFINITY : Date.parse(b.at);
     return bt - at;
@@ -209,8 +213,9 @@ export async function collectActivity(input: ActivityInput): Promise<ActivityFee
 
 /** Escape untrusted text for the HTML activity table. */
 function esc(value: string): string {
-  return value.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  return value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
 }
 

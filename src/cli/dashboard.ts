@@ -80,7 +80,7 @@ import { collectActivity, renderActivity } from "../dashboard/activity.js";
 import { renderConfig } from "../dashboard/config-view.js";
 import { inspectSettings, resolveSettings } from "../config/settings.js";
 import { createDashboardServer } from "../dashboard/server.js";
-import { restateInvocations, restateUiLinks } from "../dashboard/restate-links.js";
+import { restateRunIndex, restateInvocations, restateUiLinks } from "../dashboard/restate-links.js";
 
 const env = z
   .object({
@@ -228,9 +228,23 @@ const activityView =
         {
           path: "/activity",
           title: "Activity",
+          // Bounded polling so a newly started run appears without a manual reload.
+          refreshSeconds: 15,
           render: async () =>
             renderActivity(
-              await collectActivity({ articles: activityArticles, runs: activityRuns }),
+              await collectActivity({
+                articles: activityArticles,
+                runs: activityRuns,
+                // Runs on any post, not only the newest articles (#479).
+                ...(env.data.STEELE_RESTATE_ADMIN_URL
+                  ? {
+                      runIndex: restateRunIndex(
+                        env.data.STEELE_RESTATE_ADMIN_URL,
+                        activityArticles,
+                      ),
+                    }
+                  : {}),
+              }),
             ),
         },
       ]
