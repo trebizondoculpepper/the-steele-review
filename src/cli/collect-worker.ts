@@ -108,6 +108,15 @@ async function main(): Promise<number> {
           postId: item.postId,
         }),
       ),
+    onEmbeddedImages: (report, item) =>
+      console.log(
+        JSON.stringify({
+          event: "embedded-images",
+          ...report,
+          publicationId: item.publicationId,
+          postId: item.postId,
+        }),
+      ),
     owner: `collect-worker:${hostname()}:${process.pid}`,
     ...(c.STEELE_COLLECT_RETRY_DELAY_MS ? { retryDelayMs: c.STEELE_COLLECT_RETRY_DELAY_MS } : {}),
     onOutcome: (outcome, item) =>

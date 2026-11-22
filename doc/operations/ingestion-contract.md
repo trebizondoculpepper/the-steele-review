@@ -45,3 +45,12 @@ The download goes through `PublicImageFetcher`:
 The record's `previewImage.retained` is added only after the image is saved. It holds the exact pinned artifact reference, the content type and the byte size, and `previewImage.url` stays as provenance. A refused or failed download commits the record without `retained` and doesn't block collection. The image is content-addressed, so a retry or an unchanged image reuses the same artifact.
 
 This applies to new captures only: there's no backfill or refetch. Indexers select their own document paths, so they never decode image bytes, and nothing runs OCR or image understanding on them. Set `STEELE_RETAIN_PREVIEW_IMAGES=0` to turn retention off in the collector. Each item logs a `preview-image` line with its outcome: `retained`, `no-preview`, `already-retained` or `failed`.
+
+### Embedded and linked images (#277)
+
+After the thumbnail, the collector also keeps the images embedded in or linked from the captured article HTML (`supplied.articleHtml`):
+- **Candidates:** `<img src>` with its `alt` text, and links that point straight at a `.png`, `.jpg`, `.gif` or `.webp` file. Only HTTPS addresses count, and Substack's generic art is skipped.
+- **Downloads:** each distinct URL is fetched once, through the same `PublicImageFetcher`. A capture allows at most 20 fetches, 30 MB and 60 seconds.
+- **Storage:** identical bytes are stored once at the same content-addressed path as the thumbnail.
+
+The record gains `images` (`retained-images-v1`), which lists only saved images. Each entry has its pinned artifact, content type, size, `thumbnail` flag, and every source URL and alt text that led to it. The thumbnail is listed first and reused rather than fetched again. `truncated` marks that a limit stopped retention early, and `failed` counts the downloads that were left out. A partial set is normal: it never leaves a dangling reference and never blocks the capture. Each item logs an `embedded-images` line with `retained`, `failed` and `truncated`.
