@@ -38,10 +38,11 @@ describe("article paging and date sort (#508)", () => {
       expect(esSort[0]!.publishedAt!.order).toBe(order);
       // A date sentinel, not _last/_first: the latter is a 64-bit integer that
       // cannot round-trip through a JSON cursor for undated articles.
-      const missing = (esSort[0] as unknown as { publishedAt: { missing: string } }).publishedAt
+      const missing = (esSort[0] as unknown as { publishedAt: { missing: unknown } }).publishedAt
         .missing;
-      expect(missing).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-      expect(Number.isSafeInteger(Number(missing))).toBe(false);
+      // Epoch milliseconds Elasticsearch accepts (#721), safe for a JSON cursor.
+      expect(typeof missing).toBe("number");
+      expect(Number.isSafeInteger(missing)).toBe(true);
       // Tie-break keeps a page boundary from repeating or skipping rows.
       expect(esSort[1]).toEqual({ publicationId: { order: "asc" } });
       expect(esSort[2]).toEqual({ postId: { order: "asc" } });
