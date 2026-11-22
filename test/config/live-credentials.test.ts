@@ -78,6 +78,8 @@ describe("live model credentials (#738)", () => {
         (e: unknown) => e as Error,
       );
       expect(error).toBeInstanceOf(Error);
+      // A credential problem is unauthorised, never a retryable transport failure.
+      expect(error!.message).toMatch(/unauthorised/);
       expect(leaks(`${error!.message} ${error!.stack ?? ""}`)).toBe(false);
     };
     await writeFile(file, "OPENROUTER_API_KEY = [not toml");
@@ -115,6 +117,7 @@ describe("live model credentials (#738)", () => {
     await rm(file);
     const error = await client.research({ system: "s", user: "u" }, signal).catch((e) => e);
     expect(error).toBeInstanceOf(Error);
+    expect(String(error?.message)).toMatch(/unauthorised/);
     expect(leaks(String(error?.message))).toBe(false);
     expect(t.auth).toHaveLength(2);
   });
@@ -145,7 +148,7 @@ describe("live model credentials (#738)", () => {
     expect(t.auth).toEqual([`Bearer ${KEY_A}`, `Bearer ${KEY_B}`]);
     await rm(file);
     const error = await run(request).catch((e) => e);
-    expect(error).toMatchObject({ name: expect.any(String) });
+    expect(String(error?.code ?? error?.message)).toMatch(/unauthorised/);
     expect(leaks(String(error?.message))).toBe(false);
     expect(t.auth).toHaveLength(2);
   });

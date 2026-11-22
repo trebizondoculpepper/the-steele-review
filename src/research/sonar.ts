@@ -211,12 +211,15 @@ export class OpenRouterSonarClient implements SonarClient {
         : timeout.aborted
           ? new ModelProviderError("timeout")
           : new ModelProviderError("unavailable");
+    // Read once for this request, outside the transport catch, so a
+    // credential problem stays "unauthorised" and nothing is sent (#738).
+    const authorization = `Bearer ${credentialForRequest(this.config.apiKey, () => new ModelProviderError("unauthorised"))}`;
     let response: Response;
     try {
       response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${credentialForRequest(this.config.apiKey, () => new ModelProviderError("unauthorised"))}`,
+          authorization,
           "content-type": "application/json",
         },
         body: JSON.stringify({
