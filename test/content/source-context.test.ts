@@ -122,6 +122,21 @@ describe("pinned source provenance", () => {
       reason: "invalid-observation",
     });
   });
+  it("preserves a known observed byline without pretending a registry was loaded", () => {
+    const record = capture();
+    record.item.author = "Observed Author";
+    expect(sourceContextFor(record, archive).author).toEqual({
+      status: "resolved",
+      author: "Observed Author",
+      basis: "post-byline",
+    });
+    record.item.author = "One and Two";
+    expect(sourceContextFor(record, archive).author).toMatchObject({
+      status: "unknown",
+      reason: "ambiguous-byline",
+      observedByline: "One and Two",
+    });
+  });
   it("keeps unknown publication time unknown and authorship separate from medium", () => {
     const record = capture();
     delete record.item.publishedAt;

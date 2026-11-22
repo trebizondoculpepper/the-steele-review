@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { CollectionRecord } from "../collection/collection-store.js";
 import { ArtifactReferenceSchema, type ArtifactReference } from "./artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import type { PostAuthorResolution } from "./source-metadata.js";
+import { bylineAuthors, type PostAuthorResolution } from "./source-metadata.js";
 import { sourceVersionFor } from "./fulltext-document.js";
 import { writeOnce } from "../research/job.js";
 
@@ -77,32 +77,47 @@ export function temporalContext(
     offset: /(Z|[+-]\d{2}:\d{2})$/.exec(parsed.data)![1],
   });
 }
-const Author = z.discriminatedUnion("status", [
-  z
-    .object({
-      status: z.literal("resolved"),
-      author: z.string().min(1).max(200),
-      authorId: z.string().min(1).max(200).optional(),
-      basis: z.enum(["post-byline", "source-configured"]),
-      sourceMetadataVersion: z.string().min(1).max(300),
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal("unknown"),
-      reason: z.enum(["no-byline-no-default", "ambiguous-byline", "legacy-unconfigured"]),
-      sourceMetadataVersion: z.string().min(1).max(300).optional(),
-      observedByline: z.string().max(200).optional(),
-    })
-    .strict(),
-]);
+const Author = z
+  .discriminatedUnion("status", [
+    z
+      .object({
+        status: z.literal("resolved"),
+        author: z.string().min(1).max(200),
+        authorId: z.string().min(1).max(200).optional(),
+        basis: z.enum(["post-byline", "source-configured"]),
+        sourceMetadataVersion: z.string().min(1).max(300).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("unknown"),
+        reason: z.enum(["no-byline-no-default", "ambiguous-byline", "legacy-unconfigured"]),
+        sourceMetadataVersion: z.string().min(1).max(300).optional(),
+        observedByline: z.string().max(200).optional(),
+      })
+      .strict(),
+  ])
+  .superRefine((author, ctx) => {
+    if (
+      author.status === "resolved" &&
+      author.basis === "source-configured" &&
+      !author.sourceMetadataVersion
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["sourceMetadataVersion"],
+        message: "configured attribution requires its registry version",
+      });
+  });
 /** Normalise older resolved-only extraction attribution without guessing a person. */
 export function recordedSourceAttribution(value: unknown): PostAuthorResolution | undefined {
   if (!value || typeof value !== "object") return;
   const tagged = "status" in value ? value : { ...value, status: "resolved" };
   const parsed = Author.safeParse(tagged);
   if (!parsed.success) return;
-  if (parsed.data.status === "resolved") return parsed.data;
+  if (parsed.data.status === "resolved" && parsed.data.sourceMetadataVersion)
+    return { ...parsed.data, sourceMetadataVersion: parsed.data.sourceMetadataVersion };
+  if (parsed.data.status === "resolved") return;
   if (parsed.data.reason !== "legacy-unconfigured" && parsed.data.sourceMetadataVersion)
     return {
       status: "unknown",
@@ -227,6 +242,7 @@ export function sourceContextFor(
     medium = p.mediaKind;
     basis = "archived-media-kind";
   }
+  const observedAuthors = bylineAuthors(record.item.author);
   const author = attribution
     ? Author.parse({
         ...attribution,
@@ -234,11 +250,15 @@ export function sourceContextFor(
           ? { observedByline: record.item.author }
           : {}),
       })
-    : {
-        status: "unknown" as const,
-        reason: "legacy-unconfigured" as const,
-        ...(record.item.author ? { observedByline: record.item.author } : {}),
-      };
+    : observedAuthors?.length === 1
+      ? { status: "resolved" as const, author: observedAuthors[0], basis: "post-byline" as const }
+      : {
+          status: "unknown" as const,
+          reason: observedAuthors?.length
+            ? ("ambiguous-byline" as const)
+            : ("legacy-unconfigured" as const),
+          ...(record.item.author ? { observedByline: record.item.author } : {}),
+        };
   const archiveRef = contextArtifactReference(archive);
   const language = z.string().min(1).max(40).safeParse(p.transcriptLanguage);
   const originalUpload = z
