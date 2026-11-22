@@ -86,14 +86,21 @@ export function dossierViews(themes?: ThemesPort, research?: ResearchPort): Dash
       if (!dossier) {
         return `<p><a href="/dossiers">All dossiers</a></p><p class="empty">The saved dossier could not be read at its pinned version.</p>`;
       }
-      const documents = await research.forTheme(theme.id).catch(() => undefined);
+      const documents = await research
+        .forTheme(theme.id, url.searchParams.get("after") ?? undefined)
+        .catch(() => undefined);
       const claims = dossier.coverage?.length
         ? `<ul>${dossier.coverage
             .map(
               (c) =>
                 `<li>${escapeHtml(c.claimId)} — ${
                   c.status === "covered"
-                    ? `<span class="s-done">covered</span> (${c.citations.map((x) => escapeHtml(x)).join(", ")})`
+                    ? `<span class="s-done">covered</span> (${c.citations
+                        .map(
+                          (x) =>
+                            `<a href="#citation-${encodeURIComponent(x)}"><code>${escapeHtml(x)}</code></a>`,
+                        )
+                        .join(", ")})`
                     : `<span class="s-pending">gap</span>${c.reason ? `: ${escapeHtml(c.reason)}` : ""}`
                 }</li>`,
             )
@@ -103,7 +110,7 @@ export function dossierViews(themes?: ThemesPort, research?: ResearchPort): Dash
         ? `<div class="wrap"><table><thead><tr><th>Source</th><th>Passage</th></tr></thead><tbody>${dossier.citations
             .map(
               (c) =>
-                `<tr><td>${escapeHtml(c.title ?? c.url)}<br><code>${escapeHtml(c.url)}</code></td><td><blockquote>${escapeHtml(c.passages.map((p) => p.passage).join(" … "))}</blockquote></td></tr>`,
+                `<tr id="citation-${escapeHtml(c.id ?? c.url)}"><td>${c.id ? `<code>${escapeHtml(c.id)}</code><br>` : ""}${escapeHtml(c.title ?? c.url)}<br><code>${escapeHtml(c.url)}</code></td><td><blockquote>${escapeHtml(c.passages.map((p) => p.passage).join(" … "))}</blockquote></td></tr>`,
             )
             .join("")}</tbody></table></div>`
         : '<p class="empty">No citations are recorded.</p>';
@@ -120,6 +127,18 @@ export function dossierViews(themes?: ThemesPort, research?: ResearchPort): Dash
         : documents === undefined
           ? '<p class="empty">The document list is unavailable.</p>'
           : '<p class="empty">No other saved documents are associated with this theme.</p>';
+      const documentNotes =
+        documents === undefined
+          ? ""
+          : `${
+              documents.state === "partial" || documents.truncated
+                ? '<p class="empty">The document list is incomplete; later associations exist.</p>'
+                : ""
+            }${
+              documents.next
+                ? `<p><a href="/dossiers/view?${escapeHtml(new URLSearchParams({ theme: theme.id, after: documents.next }).toString())}">More documents</a></p>`
+                : ""
+            }`;
       return `<p><a href="/dossiers">All dossiers</a> · <a href="/themes/canonical/view?id=${encodeURIComponent(theme.id)}">Theme</a></p>
 <h1>${escapeHtml(dossier.title)}</h1>
 <p><code>${escapeHtml(theme.id)}</code> · ${stateBadge(coverage.state)}</p>
@@ -128,7 +147,7 @@ ${dossier.subject ? `<p>${escapeHtml(dossier.subject)}</p>` : ""}
 <h2>Coverage</h2>${claims}
 <h2>Citations</h2><p class="empty">Saved sources and quotations; a citation is not evidence that a claim is true.</p>${citations}
 <h2>Gaps</h2>${gaps}
-<h2>Associated documents</h2><p class="empty">Only saved theme/dossier associations are listed; imported and generated reports keep their recorded provenance.</p>${documentList}
+<h2>Associated documents</h2><p class="empty">Only saved theme/dossier associations are listed; imported and generated reports keep their recorded provenance.</p>${documentList}${documentNotes}
 <h2>Dossier text</h2><pre>${escapeHtml(dossier.text)}</pre>`;
     },
   };

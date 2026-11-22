@@ -24,7 +24,12 @@ afterEach(async () => {
 const theme = async (id: string, title: string) =>
   new ThemeStore(content).ensure({ id, title, createdAt: "2026-01-01T00:00:00Z" });
 
-async function saveDossier(id: string, covered: boolean, gapQuote = "Nothing found.") {
+async function saveDossier(
+  id: string,
+  covered: boolean,
+  gapQuote = "Nothing found.",
+  withGap = false,
+) {
   const body: Dossier = {
     metadata: {
       schemaVersion: 1,
@@ -32,7 +37,12 @@ async function saveDossier(id: string, covered: boolean, gapQuote = "Nothing fou
       title: `Dossier ${id}`,
       scope: `Scope of ${id}`,
       claims: covered
-        ? [{ claimId: "c1", status: "covered", citations: ["who"] }]
+        ? [
+            { claimId: "c1", status: "covered", citations: ["who"] },
+            ...(withGap
+              ? [{ claimId: "c2", status: "gap" as const, reason: gapQuote }]
+              : []),
+          ]
         : [{ claimId: "c1", status: "gap", reason: gapQuote }],
       citations: [
         {
@@ -43,7 +53,7 @@ async function saveDossier(id: string, covered: boolean, gapQuote = "Nothing fou
           checkedAt: "2026-11-20",
         },
       ],
-      gaps: covered ? [] : [gapQuote],
+      gaps: covered && !withGap ? [] : [gapQuote],
       updatedAt: "2026-11-20",
     },
     body: "Dossier summary.",
@@ -91,7 +101,7 @@ describe("dossiers section (#532)", { timeout: 60_000 }, () => {
 
   it("opens the exact dossier version with coverage, citations, gaps and documents", async () => {
     await theme("masts", "Phone masts");
-    await saveDossier("masts", false, "No independent evidence found.");
+    await saveDossier("masts", true, "No independent evidence found.", true);
     const jobId = await linkedJob("masts");
     const ref = await content.lookup("dossier/masts.md");
 
@@ -104,6 +114,9 @@ describe("dossiers section (#532)", { timeout: 60_000 }, () => {
     expect(html).toContain("https://who.example/x");
     expect(html).toContain("Associated report");
     expect(html).toContain(jobId);
+    // Citation ids are shown and linked from the coverage reference.
+    expect(html).toContain('id="citation-who"');
+    expect(html).toContain('href="#citation-who"');
     expect(html).toContain("a citation is not evidence that a claim is true");
     // Source content is escaped, never executed.
     expect(html).toContain("&lt;script&gt;");
@@ -120,5 +133,33 @@ describe("dossiers section (#532)", { timeout: 60_000 }, () => {
   it("handles unknown and malformed selections", async () => {
     expect(await render("/dossiers/view?theme=unknown")).toContain("Choose a dossier");
     expect(await render("/dossiers/view?theme=../escape")).toContain("Choose a dossier");
+  });
+});
+
+describe("dossier document continuation (#532)", { timeout: 60_000 }, () => {
+  it("offers continuation when a dossier has many associated reports", async () => {
+    await theme("masts", "Phone masts");
+    await saveDossier("masts", true);
+    for (let i = 0; i < 21; i++) {
+      const request = {
+        schemaVersion: 1,
+        origin: "manual" as const,
+        subject: `Research ${i}`,
+        question: `Question ${i}`,
+        pass: 1,
+        claims: [{ claimRecordId: "c1", statement: "A claim", themeIds: ["masts"] }],
+        corpusRefs: [],
+      };
+      const jobId = researchJobId(request);
+      await content.write(`research-jobs/${jobId}/request.json`, JSON.stringify(request));
+      await content.write(`research-jobs/${jobId}/report.md`, `# Report ${i}\n\nBody.`);
+    }
+    const first = await render("/dossiers/view?theme=masts");
+    expect(first).toContain("More documents");
+    const more = /after=([^"&]+)[^>]*>More documents/.exec(first);
+    expect(more).not.toBeNull();
+    const next = more![1]!;
+    const second = await render(`/dossiers/view?theme=masts&after=${next}`);
+    expect(second).not.toContain("More documents");
   });
 });
