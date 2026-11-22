@@ -73,7 +73,8 @@ const ClaimRecordSchema = z
           .object({
             publicationId: z.string(),
             postId: z.string(),
-            passage: z.string(),
+            // Legacy encounters may omit the passage; identity remains.
+            passage: z.string().optional(),
             occurrenceId: z.string().optional(),
           })
           .loose(),

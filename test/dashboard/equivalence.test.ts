@@ -168,3 +168,44 @@ describe("equivalence scan budget (#616)", () => {
     expect(page.unreadable).toBeLessThanOrEqual(2);
   });
 });
+
+describe("legacy occurrence visibility (#673)", { timeout: 60_000 }, () => {
+  it("keeps occurrences without a saved passage alongside readable ones", async () => {
+    const id = `claim-${"a".repeat(32)}`;
+    await content.revise(
+      `claims/${id}.json`,
+      JSON.stringify({
+        id,
+        statement: "A treaty bans weather weapons.",
+        occurrences: [
+          { publicationId: "pub", postId: "p1", occurrenceId: "sha256:" + "1".repeat(64) },
+          {
+            publicationId: "pub",
+            postId: "p2",
+            passage: "The treaty bans weather weapons.",
+            occurrenceId: "sha256:" + "2".repeat(64),
+          },
+        ],
+      }),
+      null,
+    );
+    const path = `claim-equivalence/${id}-${"1".repeat(16)}.json`;
+    await writeDecision(
+      `${id}-${"1".repeat(16)}`,
+      decision({ record: id }),
+    );
+    const detail = await savedEquivalence(content).detail(path);
+    expect(detail?.occurrences).toHaveLength(2);
+    expect(detail?.occurrencesPartial).toBe(false);
+    expect(detail?.occurrences[0]).toMatchObject({ postId: "p1" });
+    expect(detail?.occurrences[0]!.passage).toBeUndefined();
+    expect(detail?.occurrences[1]).toMatchObject({
+      postId: "p2",
+      passage: "The treaty bans weather weapons.",
+    });
+    const html = await render("/equivalence/view?path=" + encodeURIComponent(path));
+    expect(html).toContain("passage not recorded");
+    expect(html).toContain("The treaty bans weather weapons.");
+    expect(html).not.toContain("Some occurrences could not be read");
+  });
+});
