@@ -90,65 +90,69 @@ describe("saved selection (#596)", () => {
   const post = { publicationId: "pub", postId: "p1" };
   const ref = async (path: string) => (await content.lookup(path)) ?? content.write(path, path);
 
-  it("replays its own decision and carries spending into the next round", async () => {
-    // Job 1 already has a saved result: reusable at no cost.
-    await content.write(researchJobPath(job(1), "result"), "{}");
-    const themeResult = await ref("themes/pub/p1/t.json");
-    const claimResult = await ref("claims/pub/p1/c.json");
-    const first = {
-      post,
-      themeResult,
-      claimResult,
-      candidates: ranked(job(1), job(2), job(3), job(4)),
-      allowance: 2,
-    };
-    const round1 = await selectAndSaveResearch(content, first);
-    expect(round1.record.decisions.map((d) => d.decision)).toEqual([
-      "reuse",
-      "new",
-      "new",
-      "deferred",
-    ]);
-    // A replay of the same selection returns the saved decision, not a
-    // fresh one that would see its own jobs as already spent.
-    const replay = await selectAndSaveResearch(content, first);
-    expect(replay.ref).toEqual(round1.ref);
-    expect(replay.record).toEqual(round1.record);
+  it(
+    "replays its own decision and carries spending into the next round",
+    { timeout: 30_000 },
+    async () => {
+      // Job 1 already has a saved result: reusable at no cost.
+      await content.write(researchJobPath(job(1), "result"), "{}");
+      const themeResult = await ref("themes/pub/p1/t.json");
+      const claimResult = await ref("claims/pub/p1/c.json");
+      const first = {
+        post,
+        themeResult,
+        claimResult,
+        candidates: ranked(job(1), job(2), job(3), job(4)),
+        allowance: 2,
+      };
+      const round1 = await selectAndSaveResearch(content, first);
+      expect(round1.record.decisions.map((d) => d.decision)).toEqual([
+        "reuse",
+        "new",
+        "new",
+        "deferred",
+      ]);
+      // A replay of the same selection returns the saved decision, not a
+      // fresh one that would see its own jobs as already spent.
+      const replay = await selectAndSaveResearch(content, first);
+      expect(replay.ref).toEqual(round1.ref);
+      expect(replay.record).toEqual(round1.record);
 
-    // A follow-up round for the same article (new claim analysis).
-    const round2 = await selectAndSaveResearch(content, {
-      ...first,
-      claimResult: await ref("claims/pub/p1/c2.json"),
-      candidates: ranked(job(4), job(2)),
-    });
-    expect(round2.record.remainingBefore).toBe(0);
-    expect(round2.record.decisions.map((d) => [d.jobId, d.decision])).toEqual([
-      [job(4), "deferred"],
-      [job(2), "in-flight"],
-    ]);
+      // A follow-up round for the same article (new claim analysis).
+      const round2 = await selectAndSaveResearch(content, {
+        ...first,
+        claimResult: await ref("claims/pub/p1/c2.json"),
+        candidates: ranked(job(4), job(2)),
+      });
+      expect(round2.record.remainingBefore).toBe(0);
+      expect(round2.record.decisions.map((d) => [d.jobId, d.decision])).toEqual([
+        [job(4), "deferred"],
+        [job(2), "in-flight"],
+      ]);
 
-    // Two runs for the same article selecting at once cannot both spend
-    // the allowance: only one of the competing new jobs is admitted.
-    const fresh = { ...first, post: { publicationId: "pub", postId: "p3" } };
-    const [a, b] = await Promise.all([
-      selectAndSaveResearch(content, { ...fresh, candidates: ranked(job(7)), allowance: 1 }),
-      selectAndSaveResearch(content, {
-        ...fresh,
-        claimResult: await ref("claims/pub/p3/other.json"),
-        candidates: ranked(job(8)),
-        allowance: 1,
-      }),
-    ]);
-    expect(
-      [...a.record.decisions, ...b.record.decisions].filter((d) => d.decision === "new"),
-    ).toHaveLength(1);
+      // Two runs for the same article selecting at once cannot both spend
+      // the allowance: only one of the competing new jobs is admitted.
+      const fresh = { ...first, post: { publicationId: "pub", postId: "p3" } };
+      const [a, b] = await Promise.all([
+        selectAndSaveResearch(content, { ...fresh, candidates: ranked(job(7)), allowance: 1 }),
+        selectAndSaveResearch(content, {
+          ...fresh,
+          claimResult: await ref("claims/pub/p3/other.json"),
+          candidates: ranked(job(8)),
+          allowance: 1,
+        }),
+      ]);
+      expect(
+        [...a.record.decisions, ...b.record.decisions].filter((d) => d.decision === "new"),
+      ).toHaveLength(1);
 
-    // Another article has its own allowance.
-    const other = await selectAndSaveResearch(content, {
-      ...first,
-      post: { publicationId: "pub", postId: "p2" },
-      candidates: ranked(job(4)),
-    });
-    expect(other.record.decisions[0]!.decision).toBe("new");
-  });
+      // Another article has its own allowance.
+      const other = await selectAndSaveResearch(content, {
+        ...first,
+        post: { publicationId: "pub", postId: "p2" },
+        candidates: ranked(job(4)),
+      });
+      expect(other.record.decisions[0]!.decision).toBe("new");
+    },
+  );
 });

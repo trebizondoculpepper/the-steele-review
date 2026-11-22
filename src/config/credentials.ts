@@ -101,6 +101,44 @@ export function readCredential(
   return undefined;
 }
 
+/**
+ * A credential read live (#738): every call reads the current value through
+ * `readCredential`, so an atomic replacement of the canonical file is seen by
+ * the next request on an already-created adapter. Nothing is cached or
+ * copied; a missing, unreadable, invalid or conflicting configuration throws
+ * a `CredentialError` (variable and problem only) and never falls back to a
+ * previously read value.
+ */
+export type CredentialProvider = () => string;
+
+/** A live provider for `name`, checked once now so start-up still fails fast. */
+export function liveCredential(name: string, source: CredentialSource = {}): CredentialProvider {
+  const read = () => readCredential(name, { ...source, required: true });
+  read();
+  return read;
+}
+
+/**
+ * The value for one outbound request: read exactly once, so a concurrent edit
+ * cannot mix credentials within it. A configuration problem becomes the given
+ * failure before anything is sent.
+ */
+export function credentialForRequest(
+  key: string | CredentialProvider,
+  failure: () => Error,
+): string {
+  if (typeof key === "string") return key;
+  let value: string;
+  try {
+    value = key();
+  } catch {
+    // The cause names only a variable and problem, but keep the boundary fixed.
+    throw failure();
+  }
+  if (!value) throw failure();
+  return value;
+}
+
 export interface NatsConnection {
   url: string;
   token?: string;

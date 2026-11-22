@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
-import { readCredential, type CredentialSource } from "../config/credentials.js";
+import {
+  credentialForRequest,
+  liveCredential,
+  readCredential,
+  type CredentialProvider,
+  type CredentialSource,
+} from "../config/credentials.js";
 
 /**
  * Chat-completion model provider for an OpenAI-compatible endpoint
@@ -64,7 +70,8 @@ export interface ModelUsage {
 }
 
 export interface OpenRouterConfig {
-  apiKey: string;
+  /** A fixed key, or a live provider read once per outbound request (#738). */
+  apiKey: string | CredentialProvider;
   /** Provider model name, e.g. "vendor/model". */
   model: string;
   baseUrl?: string;
@@ -167,7 +174,7 @@ export class OpenRouterProvider implements ExtractionModelProvider {
       response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.config.apiKey}`,
+          authorization: `Bearer ${credentialForRequest(this.config.apiKey, () => new ModelProviderError("unauthorised"))}`,
           "content-type": "application/json",
         },
         body: JSON.stringify(body),
@@ -267,7 +274,8 @@ export function openRouterFromEnv(
   extra: Pick<OpenRouterConfig, "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens"> = {},
 ): OpenRouterProvider {
   const env = source.env ?? process.env;
-  const apiKey = readCredential("OPENROUTER_API_KEY", { ...source, required: true });
+  // Read live before each request (#738), never retained from start-up.
+  const apiKey = liveCredential("OPENROUTER_API_KEY", source);
   const model = env.STEELE_MODEL;
   if (!model) throw new Error("STEELE_MODEL: missing");
   return new OpenRouterProvider({

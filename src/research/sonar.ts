@@ -6,7 +6,13 @@ import {
   ResearchModelSchema,
   researchModel,
 } from "../config/research-model.js";
-import { readCredential, type CredentialSource } from "../config/credentials.js";
+import {
+  credentialForRequest,
+  liveCredential,
+  readCredential,
+  type CredentialProvider,
+  type CredentialSource,
+} from "../config/credentials.js";
 import {
   DEFAULT_OPENROUTER_BASE_URL,
   ModelProviderError,
@@ -105,7 +111,8 @@ export interface SonarClient {
 }
 
 export interface OpenRouterSonarConfig {
-  apiKey: string;
+  /** A fixed key, or a live provider read once per outbound request (#738). */
+  apiKey: string | CredentialProvider;
   model?: string;
   baseUrl?: string;
   /** Required finite limits for a live run. */
@@ -209,7 +216,7 @@ export class OpenRouterSonarClient implements SonarClient {
       response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.config.apiKey}`,
+          authorization: `Bearer ${credentialForRequest(this.config.apiKey, () => new ModelProviderError("unauthorised"))}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -329,7 +336,8 @@ export function sonarFromEnv(
     return n;
   };
   return new OpenRouterSonarClient({
-    apiKey: readCredential("OPENROUTER_API_KEY", { ...source, required: true }),
+    // Read live before each request (#738), never retained from start-up.
+    apiKey: liveCredential("OPENROUTER_API_KEY", source),
     model: researchModel(env),
     timeoutMs: num("STEELE_RESEARCH_TIMEOUT_MS", DEFAULT_SONAR_TIMEOUT_MS),
     maxOutputTokens: num("STEELE_RESEARCH_MAX_OUTPUT_TOKENS", DEFAULT_SONAR_MAX_OUTPUT_TOKENS),
