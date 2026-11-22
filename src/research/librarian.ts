@@ -1,3 +1,4 @@
+import type { DiscoveryAcceptance } from "./staged-need-evidence.js";
 import { canonicalNeedId, CanonicalNeedSchema } from "./canonical-need.js";
 import { researchNeedBindings, retainResearchNeedBindings } from "./need-bindings.js";
 import {
@@ -881,6 +882,7 @@ function researchSubject(p: { title: string; description?: string; origin?: stri
 
 export async function assessPostCoverage(input: {
   artifacts: GitArtifactStore;
+  discoveryAcceptance?: DiscoveryAcceptance;
   themeResult: ArtifactRef;
   claimResult: ArtifactRef;
   commission: Commission;
@@ -1194,7 +1196,10 @@ export async function assessPostCoverage(input: {
     : undefined;
   const newEvidence = new Map<string, ResearchNeedEvidence[]>();
   const evidenceArtifacts = cachedResearchEvidenceStore(input.artifacts);
-  const legacyNeedLookup = createLegacyResearchNeedLookup(evidenceArtifacts);
+  const legacyNeedLookup = createLegacyResearchNeedLookup(
+    evidenceArtifacts,
+    input.discoveryAcceptance,
+  );
   const reuseLimitations: NonNullable<CoverageRecord["reuseLimitations"]> = [];
   const jobs: CoverageRecord["jobs"] = [];
   const retainJob = (job: CoverageRecord["jobs"][number]) => {
@@ -1276,7 +1281,11 @@ export async function assessPostCoverage(input: {
               reuseLimitations.push({ claimRecordId: claim.claimRecordId, reason: legacy.reason });
           }
           if (!dossier || !proof) continue;
-          const checked = await readResearchNeedEvidence(evidenceArtifacts, proof);
+          const checked = await readResearchNeedEvidence(
+            evidenceArtifacts,
+            proof,
+            input.discoveryAcceptance,
+          );
           if (checked.citations.length === 0) continue;
           retainJob({
             jobId: checked.result.jobId,
@@ -1483,10 +1492,11 @@ export async function assessPostCoverage(input: {
       const proofs: ResearchNeedEvidence[] = [];
       for (const need of request.canonicalNeeds.needs) {
         const proof = await researchNeedEvidence(
-          input.artifacts,
+          evidenceArtifacts,
           job.resultRef,
           need,
           needBindingsRef!,
+          input.discoveryAcceptance,
         );
         proofs.push(proof);
       }

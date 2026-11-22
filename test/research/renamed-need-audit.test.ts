@@ -39,14 +39,16 @@ async function analysis(
     title?: string;
     description?: string;
     duplicateMixed?: boolean;
+    quotedBy?: string;
     statements?: string[];
     claimIds?: string[];
   } = {},
 ) {
   const assertions = options.statements ?? statements;
-  const sourceText = options.qualifier
+  const bodyText = options.qualifier
     ? assertions.join(" ").replace(assertions[1]!, `${options.qualifier} ${assertions[1]}`)
     : assertions.join(" ");
+  const sourceText = options.quotedBy ? `${options.quotedBy} said: ${bodyText}` : bodyText;
   const actualText = options.duplicateMixed ? `${sourceText} ${assertions[1]}` : sourceText;
   const post = { publicationId: "pub", postId };
   const raw = await artifacts.write(`synthetic-sources/${postId}.md`, actualText);
@@ -137,14 +139,20 @@ async function analysis(
     const occurrence = createClaimOccurrence({
       claim,
       source,
-      speaker: { kind: "author-voice" },
-      assertionKind: "assertion",
+      speaker: options.quotedBy
+        ? {
+            kind: "quoted",
+            name: options.quotedBy,
+            evidence: { start: 0, end: options.quotedBy.length },
+          }
+        : { kind: "author-voice" },
+      assertionKind: options.quotedBy ? "quotation" : "assertion",
       themes: [proposal],
     });
     return {
       claim,
       occurrence,
-      kind: "assertion" as const,
+      kind: options.quotedBy ? ("quotation" as const) : ("assertion" as const),
       themeIds: [proposal],
       classification: "themed" as const,
       claimRecordId: i === 0 ? treatyId : (options.claimIds?.[i] ?? needRecordId),
@@ -904,6 +912,151 @@ it(
       expect(second.requests).toEqual(first.requests);
       expect(second.requests.map(researchJobId)).toEqual(first.requests.map(researchJobId));
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
+  "validates actual staged research through coverage and writer archives while retaining semantic scope in discovery and support",
+  { timeout: 60000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-staged-canonical-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    await artifacts.initialise();
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      const {
+        discoverStage,
+        inventoryStage,
+        retrievalIds,
+        retrieveOneStage,
+        supportStage,
+        assembleStage,
+      } = await import("../../src/research/staged-research.js");
+      let discoveries = 0;
+      let supportCalls = 0;
+      const discoveryInputs: { user: string }[] = [];
+      const findings: { id: string; statement: string }[] = [];
+      const deps = {
+        artifacts,
+        operations,
+        owner: "synthetic-staged",
+        limits: { maxSources: 5, maxAttempts: 1, timeoutMs: 1000, maxSourceChars: 10000 },
+        sonar: {
+          model: "synthetic",
+          research: async (input: { user: string }) => {
+            discoveries++;
+            discoveryInputs.push(input);
+            return {
+              model: "synthetic",
+              report: `# Retained report\n\nIndependent treaty record: ${SHARED}`,
+              citations: [SHARED],
+            };
+          },
+        },
+        fetcher: { fetch: async (url: string) => ({ url, title: "Treaty", text }) },
+        judge: {
+          identity: "synthetic-support-v1",
+          judge: async (input: { findings: { id: string; statement: string }[] }) => {
+            supportCalls++;
+            findings.push(...input.findings);
+            return {
+              sourceType: "treaty",
+              passages: input.findings.map((f) => ({
+                findingId: f.id,
+                passage: f.statement.includes("prohibits") ? statements[0]! : statements[1]!,
+              })),
+            };
+          },
+        },
+      };
+      const item = await analysis(artifacts, "staged-first", `claim-${"d".repeat(32)}`, {
+        qualifier: "allegedly",
+        quotedBy: "Synthetic Witness",
+      });
+      const first = await assessPostCoverage({
+        artifacts,
+        ...item,
+        discoveryAcceptance: operations,
+        shortlister: new LexicalShortlister(),
+        commission: async (request) => {
+          const discovery = await discoverStage(deps, request);
+          if (discovery.kind !== "discovered") throw new Error("synthetic staged discovery failed");
+          const inventory = await inventoryStage(deps, discovery.discovery);
+          for (const id of await retrievalIds(deps, inventory)) {
+            await retrieveOneStage(deps, inventory, id);
+            await supportStage(deps, discovery.discovery, inventory, id);
+          }
+          return assembleStage(deps, discovery.discovery, inventory);
+        },
+      });
+      expect(first.record.claims.every((c) => c.status === "evidence-found")).toBe(true);
+      expect(discoveries).toBe(1);
+      expect(supportCalls).toBe(1);
+      expect(discoveryInputs[0]!.user).toContain('"kind":"quotation"');
+      expect(discoveryInputs[0]!.user).toContain('"qualifiers":["allegedly"]');
+      expect(discoveryInputs[0]!.user).toContain('"attribution":{"name":"Synthetic Witness"}');
+      expect(
+        findings
+          .map((f) => JSON.parse(f.statement))
+          .every((p) => p.kind === "quotation" && p.attribution.name === "Synthetic Witness"),
+      ).toBe(true);
+      expect(
+        findings
+          .map((f) => JSON.parse(f.statement))
+          .some((p) => p.qualifiers.includes("allegedly")),
+      ).toBe(true);
+      const laterId = `claim-${"e".repeat(32)}`;
+      const later = await analysis(artifacts, "staged-later", laterId, {
+        qualifier: "allegedly",
+        quotedBy: "Synthetic Witness",
+        reverse: true,
+      });
+      const reused = await assessPostCoverage({
+        artifacts,
+        ...later,
+        discoveryAcceptance: operations,
+        shortlister: new LexicalShortlister(),
+        commission: async () => {
+          throw new Error("staged cache hit must not commission");
+        },
+      });
+      expect(reused.record.claims.every((c) => c.reused && c.status === "evidence-found")).toBe(
+        true,
+      );
+      const pkg = await saveWriterPackage({ content: artifacts, coverage: reused.ref });
+      const savedManifest = JSON.parse(
+        await artifacts.read({
+          repository: first.record.jobs[0]!.manifest!.repository,
+          commit: first.record.jobs[0]!.manifest!.commit,
+          path: first.record.jobs[0]!.manifest!.path,
+          sha256: first.record.jobs[0]!.manifest!.hash.slice(7),
+        }),
+      );
+      expect(savedManifest.report.path).toMatch(/\/assembled\/report\.md$/);
+      expect(
+        pkg.package.claims.find((c) => c.claimRecordId === laterId)!.evidence[0]!.archived,
+      ).toEqual(savedManifest.citations[0].archivedArtifact);
+      const refused = await analysis(artifacts, "staged-refused", `claim-${"f".repeat(32)}`, {
+        qualifier: "allegedly",
+        quotedBy: "Synthetic Witness",
+      });
+      await expect(
+        assessPostCoverage({
+          artifacts,
+          ...refused,
+          discoveryAcceptance: { researchDiscoveryAccepted: () => false },
+          shortlister: new LexicalShortlister(),
+          commission: async () => {
+            throw new Error("must not recall quarantined discovery");
+          },
+        }),
+      ).rejects.toMatchObject({ code: "quarantined" });
+      expect(discoveries).toBe(1);
+      expect(supportCalls).toBe(1);
+    } finally {
+      operations.close();
       await rm(dir, { recursive: true, force: true });
     }
   },

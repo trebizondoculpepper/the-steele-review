@@ -182,7 +182,7 @@ function interpretDiscovery(
 
 /** Hash-verified, identity-bound reader for subsequent research stages; never interprets legacy report-only jobs as complete discovery. */
 export function readResearchDiscovery(
-  artifacts: GitArtifactStore,
+  artifacts: Pick<GitArtifactStore, "read" | "lookup">,
   reference: ArtifactRef,
   acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
 ) {
@@ -191,7 +191,7 @@ export function readResearchDiscovery(
 
 /** Explicit rescue reader: a retained length-limited report remains incomplete research. */
 export function readLengthLimitedResearchDiscovery(
-  artifacts: GitArtifactStore,
+  artifacts: Pick<GitArtifactStore, "read" | "lookup">,
   reference: ArtifactRef,
   acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
 ) {
@@ -199,7 +199,7 @@ export function readLengthLimitedResearchDiscovery(
 }
 
 async function readDiscovery(
-  artifacts: GitArtifactStore,
+  artifacts: Pick<GitArtifactStore, "read" | "lookup">,
   reference: ArtifactRef,
   acceptance: Pick<OperationStore, "researchDiscoveryAccepted">,
   lengthLimited: boolean,
