@@ -23,6 +23,7 @@ export const MechanicalRecordSchema = z
       "turns-exhausted",
       "deadline-exhausted",
       "provider-failed",
+      "application-format-failed",
     ]),
     turns: z
       .array(

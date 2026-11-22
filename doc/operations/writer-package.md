@@ -125,6 +125,16 @@ retains everything without approval. A restarted loop reuses identical saved
 responses; it does not buy them again. All successful payloads still require
 independent verification of their exact body and publication fields.
 
+In opt-in Markdown mode, the destination's strict converter checks the writer's
+body separately from the complete application-rendered article. Unsupported body
+syntax can use a bounded writer correction. If the body passes but immutable
+Sources quotations or other application framing cannot render, drafting stops
+with `application-format-failed` instead. The `application-format` diagnostic and
+mechanical record retain the returned response and one attempted turn; replay
+reuses that response without buying a correction. Repair the application formatter
+outside the writer; this failure never approves an article or relaxes HTML/link
+safety checks, and the pinned evidence stays unchanged.
+
 Workflow results expose mechanical-run references, not raw output. If mechanical
 repair of an editorial redraft fails, the result remains `failed` and retains the
 last valid draft and its negative verifier report for inspection. Neither record

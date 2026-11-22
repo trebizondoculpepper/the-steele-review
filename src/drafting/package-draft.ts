@@ -598,6 +598,7 @@ export type PackageDraftOutcome =
         | "provider-failed"
         | "malformed-output"
         | "invalid-draft"
+        | "application-format-failed"
         | "writer-archive-failed"
         | "writer-attempt-busy"
         | "writer-attempt-interrupted"
@@ -855,7 +856,11 @@ export async function draftFromPackage(input: {
   let draft: PackageModelDraft | undefined;
   let draftMd: MarkdownCandidate | undefined;
   let lastProblems: string[] = [];
-  let lastFailure: "provider-failed" | "malformed-output" | "invalid-draft" = "malformed-output";
+  let lastFailure:
+    | "provider-failed"
+    | "malformed-output"
+    | "invalid-draft"
+    | "application-format-failed" = "malformed-output";
   let providerError: string | undefined;
   const diagnostics: ArtifactRef[] = [];
   const writerAttempts: ArtifactRef[] = [];
@@ -1122,11 +1127,11 @@ export async function draftFromPackage(input: {
         }
       }
       // Only after the evidence checks pass (rendering needs valid indices).
-      // A Markdown body must be deliverable: check the rendered article with
-      // the destination's own strict converter before any verification (#535).
+      // Check the model-owned body separately from application-owned framing.
+      // A writer cannot repair immutable evidence appended by the application.
       if (!kind && parsedMd) {
         try {
-          markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
+          markdownToProseMirror(parsedMd.body);
         } catch (error) {
           if (!(error instanceof UnsupportedMarkdownError)) throw error;
           undeliverableBody = true;
@@ -1134,10 +1139,25 @@ export async function draftFromPackage(input: {
           issues = [{ code: "custom", path: ["body"] }];
           lastProblems = [`body uses Markdown the publisher cannot render (${error.reason})`];
         }
+        if (!kind) {
+          try {
+            markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
+          } catch (error) {
+            if (!(error instanceof UnsupportedMarkdownError)) throw error;
+            kind = "application-format";
+            issues = [{ code: "custom", path: [] }];
+            lastProblems = ["application-owned article framing cannot be rendered"];
+          }
+        }
       }
       if (kind) {
         validationFailure = kind;
-        lastFailure = kind === "evidence-validation" ? "invalid-draft" : "malformed-output";
+        lastFailure =
+          kind === "application-format"
+            ? "application-format-failed"
+            : kind === "evidence-validation"
+              ? "invalid-draft"
+              : "malformed-output";
         diagnostics.push(
           await saveDraftDiagnostic({
             content: input.content,
@@ -1163,6 +1183,12 @@ export async function draftFromPackage(input: {
           }),
         );
         turn.diagnostic = mechanicalRef(diagnostics.at(-1)!);
+        if (kind === "application-format") {
+          mechanical.outcome = "application-format-failed";
+          // Keep the response and failure inspectable, but never ask the model
+          // to change supported prose to compensate for application formatting.
+          break;
+        }
         const nextFieldRepair =
           kind === "schema-validation" && (!fieldRepair || candidateRef)
             ? metadataFieldRepair(candidate, issues)
@@ -1208,7 +1234,15 @@ export async function draftFromPackage(input: {
         reason: lastFailure,
         // The detailed validator may mention untrusted model IDs. Never return
         // those strings through CLI/status output.
-        ...(lastProblems.length > 0 ? { problems: ["evidence-validation-failed"] } : {}),
+        ...(lastProblems.length > 0
+          ? {
+              problems: [
+                lastFailure === "application-format-failed"
+                  ? "application-format-failed"
+                  : "evidence-validation-failed",
+              ],
+            }
+          : {}),
         ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
         ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
         ...(diagnostics.length ? { diagnostics } : {}),
