@@ -907,23 +907,38 @@ export class OperationStore {
       recordedAt: new Date(this.now()).toISOString(),
     });
     const key = `owner-draft-intent:${binding.publicationId}/${binding.postId}:${binding.requestId}`;
-    const slot = OwnerDraftBindingSchema.parse(
-      this.reconcileCompleted(`owner-draft-slot:${binding.versionIdentity}`, binding, []),
-    );
-    if (
-      slot.requestHash !== binding.requestHash ||
-      slot.requestId !== binding.requestId ||
-      slot.publicationId !== binding.publicationId ||
-      slot.postId !== binding.postId
-    )
-      throw new OperationStoreError("invalid-input");
-    const saved = OwnerDraftBindingSchema.parse(this.reconcileCompleted(key, slot, []));
-    if (
-      saved.requestHash !== binding.requestHash ||
-      saved.versionIdentity !== binding.versionIdentity
-    )
-      throw new OperationStoreError("invalid-input");
-    return saved;
+    const slotKey = `owner-draft-slot:${binding.versionIdentity}`;
+    return this.transaction(() => {
+      // Validate BOTH identities before changing either. A rejected changed-input
+      // retry must not reserve an unrelated version for its failed request.
+      const rows = [this.row(key), this.row(slotKey)];
+      const existing = rows.map((row) => {
+        if (!row) return undefined;
+        if (row.status !== "completed") throw new OperationStoreError("busy");
+        const saved = OwnerDraftBindingSchema.parse(JSON.parse(row.artifact!));
+        if (
+          saved.requestId !== binding.requestId ||
+          saved.publicationId !== binding.publicationId ||
+          saved.postId !== binding.postId ||
+          saved.requestHash !== binding.requestHash ||
+          saved.versionIdentity !== binding.versionIdentity
+        )
+          throw new OperationStoreError("invalid-input");
+        return saved;
+      });
+      if (existing[0] && existing[1] && JSON.stringify(existing[0]) !== JSON.stringify(existing[1]))
+        throw new OperationStoreError("invalid-input");
+      const saved = existing[0] ?? existing[1] ?? binding;
+      for (const [i, operationKey] of [key, slotKey].entries()) {
+        if (!rows[i])
+          this.db
+            .prepare(
+              "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+            )
+            .run(operationKey, JSON.stringify(saved), this.now());
+      }
+      return saved;
+    });
   }
 
   ownerDraftIntent(
