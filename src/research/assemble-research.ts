@@ -225,7 +225,7 @@ export async function assembleResearch(input: {
     );
   if (data.citationProvenance !== "provider-original")
     gaps.push("Citation list comes from the adapter's return, not the original provider envelope.");
-  gaps.push("Retrieved documents are not yet assessed as support for any claim.");
+  gaps.push(STANDING_GAP);
 
   if (citations.length > 500) {
     // The manifest contract holds at most 500 citations; the rest stay in the inventory.
@@ -248,14 +248,16 @@ export async function assembleResearch(input: {
       },
     }),
   );
-  const outcome =
-    missing === 0 &&
-    invalid === 0 &&
-    inventory.omittedEntries === 0 &&
-    citations.length <= 500 &&
-    data.citationProvenance === "provider-original"
-      ? "complete"
-      : "complete-with-gaps";
+  // The retained manifest is authoritative: after an interrupted attempt,
+  // writeOnce may have kept an earlier manifest, and the outcome must agree
+  // with it rather than with retrievals that finished since.
+  const retainedManifest = ResearchManifestSchema.parse(
+    JSON.parse(await input.artifacts.read(manifest)),
+  );
+  const outcome = outcomeOf(retainedManifest);
+  const retainedPending = retainedManifest.citations.filter(
+    (c) => c.retrievalReason === "retrieval-pending",
+  ).length;
   const result = await writeOnce(
     input.artifacts,
     `${assembledDir}/result.json`,
@@ -310,5 +312,16 @@ export async function assembleResearch(input: {
   }
   const done = await recorded(claim.kind !== "claimed");
   if (!done) throw new Error("assembly not recorded");
-  return { ...done, pending };
+  return { ...done, pending: retainedPending };
+}
+
+/** The only gap a complete result may carry: support is assessed separately. */
+const STANDING_GAP = "Retrieved documents are not yet assessed as support for any claim.";
+
+/** Complete only when every listed source was archived and no other gap is recorded. */
+function outcomeOf(m: ResearchManifest): "complete" | "complete-with-gaps" {
+  return m.citations.every((c) => c.retrieval === "archived") &&
+    m.gaps.every((g) => g === STANDING_GAP)
+    ? "complete"
+    : "complete-with-gaps";
 }
