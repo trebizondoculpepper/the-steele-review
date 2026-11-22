@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { savedFileVersion, SETTINGS } from "../../src/config/settings.js";
 import {
+  listSettingsRevisions,
   readSettingsFile,
+  restoreSettingsRevision,
   saveSettings,
   SettingsFileError,
 } from "../../src/config/settings-file.js";
@@ -100,5 +102,62 @@ describe("configuration file save (#545)", () => {
     await expect(readSettingsFile(path)).rejects.toBeInstanceOf(SettingsFileError);
     await writeFile(path, JSON.stringify({ key: 5 }));
     await expect(readSettingsFile(path)).rejects.toMatchObject({ code: "invalid" });
+  });
+});
+
+describe("configuration revision history and restore (#545)", () => {
+  it("retains the replaced revision and restores it explicitly", async () => {
+    const expected = savedFileVersion({}, salt);
+    await saveSettings(path, { expectedVersion: expected, changes: { [publicKey]: "1" }, env, salt, now });
+    const afterFirst = savedFileVersion({ [publicKey]: "1" }, salt);
+    expect(await listSettingsRevisions(path)).toContain(`${expected}.json`);
+
+    await saveSettings(path, {
+      expectedVersion: afterFirst,
+      changes: { [publicKey]: "2" },
+      env,
+      salt,
+      now,
+    });
+    expect(await listSettingsRevisions(path)).toContain(`${afterFirst}.json`);
+
+    // Restore the first saved state, presenting the version now on disk.
+    const restored = await restoreSettingsRevision(path, {
+      version: afterFirst,
+      expectedVersion: savedFileVersion({ [publicKey]: "2" }, salt),
+      salt,
+      now,
+    });
+    expect(restored).toMatchObject({ status: "restored", version: afterFirst });
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ [publicKey]: "1" });
+    expect(await readFile(`${path}.audit.log`, "utf8")).toMatch(/restore\t/);
+  });
+
+  it("refuses a restore over a configuration the operator never saw", async () => {
+    await saveSettings(path, {
+      expectedVersion: savedFileVersion({}, salt),
+      changes: { [publicKey]: "1" },
+      env,
+      salt,
+      now,
+    });
+    const restored = await restoreSettingsRevision(path, {
+      version: savedFileVersion({}, salt),
+      expectedVersion: savedFileVersion({ [publicKey]: "9" }, salt),
+      salt,
+      now,
+    });
+    expect(restored).toMatchObject({ status: "rejected", reason: "stale-version" });
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ [publicKey]: "1" });
+  });
+
+  it("refuses an unknown revision", async () => {
+    const restored = await restoreSettingsRevision(path, {
+      version: "config-file-sha256:" + "0".repeat(32),
+      expectedVersion: savedFileVersion({}, salt),
+      salt,
+      now,
+    });
+    expect(restored).toMatchObject({ status: "rejected", reason: "unknown-revision" });
   });
 });
