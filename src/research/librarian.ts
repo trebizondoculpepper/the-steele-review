@@ -1,9 +1,18 @@
+import { canonicalNeedId, CanonicalNeedSchema } from "./canonical-need.js";
+import { researchNeedBindings, retainResearchNeedBindings } from "./need-bindings.js";
+import {
+  researchNeedEvidence,
+  cachedResearchEvidenceStore,
+  createLegacyResearchNeedLookup,
+  readResearchNeedEvidence,
+  type ResearchNeedEvidence,
+} from "./need-evidence.js";
 import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
-import { ThemeMappingCatalogue } from "./theme-mappings.js";
+import { ThemeMappingCatalogue, normaliseMappingKey } from "./theme-mappings.js";
 import { listCanonicalThemes, ThemeStore } from "./theme-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
@@ -181,7 +190,9 @@ export interface ThemeEquivalenceJudge {
   decide(
     theme: { title: string; description: string },
     shortlist: Shortlist,
-  ): Promise<{ themeId: string; rationale: string } | { themeId: null; rationale: string }>;
+  ): Promise<
+    { themeId: string; rationale: string } | { themeId: null; rationale: string; abstain?: boolean }
+  >;
 }
 
 /** Threshold judge: the best candidate when its score clears the method's bar, else a new dossier. */
@@ -201,6 +212,48 @@ export class ThresholdJudge implements ThemeEquivalenceJudge {
       };
     }
     return { themeId: null, rationale: "no existing dossier is equivalent" };
+  }
+}
+
+/** New-plan policy: titles select candidates; conflicting/unknown meaning stays unresolved. */
+export class TitleFirstJudge extends ThresholdJudge {
+  override async decide(
+    theme: { title: string; description: string },
+    shortlist: Shortlist,
+  ): Promise<{ themeId: string | null; rationale: string; abstain?: boolean }> {
+    const exact = shortlist.candidates.filter(
+      (c) => normaliseMappingKey(c.title) === normaliseMappingKey(theme.title),
+    );
+    if (exact.length) {
+      const titleTokens = tokens(theme.title);
+      const meaningful = (text: string) =>
+        new Set([...tokens(text)].filter((t) => !titleTokens.has(t)));
+      const query = meaningful(theme.description);
+      const compatible = exact.filter((c) => {
+        if (
+          normaliseMappingKey(c.scope) === normaliseMappingKey(theme.description) &&
+          query.size > 0
+        )
+          return true;
+        const scope = meaningful(c.scope);
+        const overlap = [...query].filter((t) => scope.has(t)).length;
+        return overlap > 0 && overlap / new Set([...query, ...scope]).size >= 0.5;
+      });
+      if (compatible.length === 1)
+        return {
+          themeId: compatible[0]!.themeId,
+          rationale: "title-first match with compatible description scope",
+        };
+      return {
+        themeId: null,
+        abstain: true,
+        rationale:
+          compatible.length > 1
+            ? "same-title meaning remains ambiguous"
+            : "same-title description conflicts or lacks enough scope",
+      };
+    }
+    return super.decide(theme, shortlist);
   }
 }
 
@@ -240,6 +293,36 @@ export const CoverageRecordSchema = z
     post: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
     source: Ref,
     sourceContext: Ref.optional(),
+    needBindings: Ref.optional(),
+    reuseLimitations: z
+      .array(
+        z
+          .object({
+            claimRecordId: z.string().max(200),
+            reason: z.enum([
+              "legacy-proof-missing",
+              "legacy-proof-scan-bound",
+              "legacy-proof-ambiguous",
+              "semantic-group-ambiguous",
+            ]),
+          })
+          .strict(),
+      )
+      .max(10000)
+      .optional(),
+    unresolvedProposals: z
+      .array(
+        z
+          .object({
+            proposalId: z.string(),
+            title: z.string(),
+            description: z.string().max(2000),
+            reason: z.string().max(1000),
+          })
+          .strict(),
+      )
+      .max(1000)
+      .optional(),
     themeResult: Ref,
     claimResult: Ref,
     mappings: z.array(
@@ -340,6 +423,7 @@ interface AcceptedClaim {
    * from these, so a later claim merge cannot change a request's identity.
    */
   extracted: { claimRecordId: string; statement: string }[];
+  need?: z.infer<typeof CanonicalNeedSchema>;
 }
 
 function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): AcceptedClaim[] {
@@ -568,7 +652,27 @@ const OrderedRequestPlanSchema = z
         message: "research plan order must name every dossier exactly once",
       });
   });
+const CanonicalRequestPlanSchema = z
+  .object({
+    schemaVersion: z.literal(3),
+    dossiers: RequestPlanEntries,
+    order: z.array(z.string()).max(1000),
+  })
+  .strict()
+  .superRefine((p, ctx) => {
+    const keys = Object.keys(p.dossiers);
+    if (
+      p.order.length !== keys.length ||
+      new Set(p.order).size !== p.order.length ||
+      p.order.some((id) => !Object.hasOwn(p.dossiers, id))
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "research plan order must name every dossier exactly once",
+      });
+  });
 const RequestPlanSchema = z.union([
+  CanonicalRequestPlanSchema,
   z.object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries }).strict(),
   OrderedRequestPlanSchema,
 ]);
@@ -600,7 +704,9 @@ async function retainedPlan(
   post: { publicationId: string; postId: string },
   themeResult: ArtifactRef,
   claimResult: ArtifactRef,
-  proposed: () => z.infer<typeof OrderedRequestPlanSchema>,
+  proposed: () =>
+    | z.infer<typeof OrderedRequestPlanSchema>
+    | z.infer<typeof CanonicalRequestPlanSchema>,
 ): Promise<RequestPlan> {
   const key = createHash("sha256")
     .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
@@ -609,7 +715,7 @@ async function retainedPlan(
   const path = `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`;
   const existing = await artifacts.lookup(path);
   if (existing) return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
-  const ref = await writeOnce(artifacts, path, OrderedRequestPlanSchema.parse(proposed()));
+  const ref = await writeOnce(artifacts, path, RequestPlanSchema.parse(proposed()));
   return RequestPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
 }
 
@@ -748,12 +854,27 @@ export async function assessPostCoverage(input: {
   pinnedJobIds?: ReadonlySet<string>;
 }): Promise<{ record: CoverageRecord; ref: ArtifactRef }> {
   const now = (input.now ?? (() => new Date()))().toISOString();
-  const judge = input.judge ?? new ThresholdJudge();
+
   const { themes, claimRecord, post } = await readCoverageAnalysis(
     input.artifacts,
     input.themeResult,
     input.claimResult,
   );
+  const planKey = createHash("sha256")
+    .update(JSON.stringify([toRef(input.themeResult), toRef(input.claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  const priorPlanRef = await input.artifacts.lookup(
+    `librarian/request-plans/${post.publicationId}/${post.postId}/${planKey}.json`,
+  );
+  const priorPlan = priorPlanRef
+    ? RequestPlanSchema.parse(JSON.parse(await input.artifacts.read(priorPlanRef)))
+    : undefined;
+  const canonicalMode = priorPlan
+    ? priorPlan.schemaVersion === 3
+    : claimRecord.schemaVersion >= 3 && !input.pinnedJobIds?.size;
+  const judge: ThemeEquivalenceJudge =
+    input.judge ?? (canonicalMode ? new TitleFirstJudge() : new ThresholdJudge());
   const dossiers = new DossierStore(input.artifacts);
   const summaries: DossierSummary[] = [];
   const existing = new Map<string, StoredDossier>();
@@ -779,7 +900,14 @@ export async function assessPostCoverage(input: {
   const established = new Set(existing.keys());
   for (const theme of await listCanonicalThemes(new ThemeStore(input.artifacts))) {
     established.add(theme.id);
-    if (existing.has(theme.id)) continue;
+    if (existing.has(theme.id)) {
+      if (canonicalMode) {
+        const summary = summaries.find((s) => s.themeId === theme.id)!;
+        summary.title = theme.title;
+        if (theme.description) summary.scope = theme.description;
+      }
+      continue;
+    }
     summaries.push({
       themeId: theme.id,
       title: theme.title,
@@ -789,6 +917,7 @@ export async function assessPostCoverage(input: {
 
   // 1. Map proposed themes to dossiers.
   const mappings: CoverageRecord["mappings"] = [];
+  const unresolvedProposals: NonNullable<CoverageRecord["unresolvedProposals"]> = [];
   const dossierFor = new Map<string, string>();
   const titles = new Map<string, string>();
   /** Research subject per dossier from this analysis's own proposals (never editable dossier titles). */
@@ -857,8 +986,56 @@ export async function assessPostCoverage(input: {
       });
       continue;
     }
-    const shortlist = await input.shortlister.shortlist(p, summaries);
+    let shortlist = await input.shortlister.shortlist(p, summaries);
+    if (canonicalMode) {
+      const aliases = await catalogue.titleCandidates(p.title);
+      if (aliases.some((a) => !a.mapping.scope && a.mapping.status === "unresolved")) {
+        unresolvedProposals.push({
+          proposalId: p.id,
+          title: p.title,
+          description: p.description,
+          reason: "saved same-title mapping requires disambiguation",
+        });
+        continue;
+      }
+      const exact = [
+        ...summaries.filter((s) => normaliseMappingKey(s.title) === normaliseMappingKey(p.title)),
+        ...aliases
+          .filter((a) => !a.mapping.scope && established.has(a.mapping.canonicalThemeId))
+          .map((a) => ({
+            themeId: a.mapping.canonicalThemeId,
+            title: p.title,
+            scope: a.mapping.description ?? "",
+          })),
+      ];
+      const candidates = [...new Map(exact.map((s) => [s.themeId, { ...s, score: 1 }])).values()];
+      if (candidates.length > 5) {
+        unresolvedProposals.push({
+          proposalId: p.id,
+          title: p.title,
+          description: p.description,
+          reason: "same-title candidates exceed bounded disambiguation shortlist",
+        });
+        continue;
+      }
+      shortlist = {
+        ...shortlist,
+        candidates: [
+          ...candidates,
+          ...shortlist.candidates.filter((c) => !candidates.some((e) => e.themeId === c.themeId)),
+        ].slice(0, 5),
+      };
+    }
     const decision = await judge.decide(p, shortlist);
+    if (decision.themeId === null && decision.abstain) {
+      unresolvedProposals.push({
+        proposalId: p.id,
+        title: p.title,
+        description: p.description,
+        reason: decision.rationale.slice(0, 1000),
+      });
+      continue;
+    }
     let dossierId = decision.themeId ?? newDossierId(p.title);
     // A rejected equivalence must never land in the existing dossier it rejected.
     for (let n = 2; decision.themeId === null && established.has(dossierId); n++) {
@@ -937,6 +1114,22 @@ export async function assessPostCoverage(input: {
     byCanonical.set(c.key, entry);
     claims.push(entry);
   }
+  const bindings = canonicalMode
+    ? researchNeedBindings({
+        record: claimRecord,
+        source: themes.artifact,
+        themeResult: input.themeResult,
+        claimResult: input.claimResult,
+        mappings: dossierFor,
+      })
+    : undefined;
+  const needBindingsRef = bindings
+    ? await retainResearchNeedBindings(input.artifacts, bindings)
+    : undefined;
+  const newEvidence = new Map<string, ResearchNeedEvidence[]>();
+  const evidenceArtifacts = cachedResearchEvidenceStore(input.artifacts);
+  const legacyNeedLookup = createLegacyResearchNeedLookup(evidenceArtifacts);
+  const reuseLimitations: NonNullable<CoverageRecord["reuseLimitations"]> = [];
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
   const groups = new Map<string, AcceptedClaim[]>();
   for (const claim of claims) {
@@ -960,6 +1153,66 @@ export async function assessPostCoverage(input: {
         claim.proposalIds.map((id) => dossierFor.get(id)).filter((x): x is string => Boolean(x)),
       ),
     ];
+    if (canonicalMode) {
+      const entries = bindings!.entries.filter(
+        (e) => e.themeId === home && e.claimRecordId === claim.key,
+      );
+      if (new Set(entries.map((e) => e.needId)).size > 1) {
+        reuseLimitations.push({
+          claimRecordId: claim.claimRecordId,
+          reason: "semantic-group-ambiguous",
+        });
+        outcomes.set(claim.key, {
+          claimRecordId: claim.claimRecordId,
+          statement: claim.statement,
+          dossierId: home,
+          status: "not-commissioned",
+          reused: false,
+          jobIds: [],
+          citations: [],
+          reason:
+            "grouped claim has different semantic occurrence scopes; refinement required before research",
+        });
+        continue;
+      }
+      const entry = entries[0];
+      if (entry) claim.need = entry.need;
+      if (claim.need) {
+        for (const id of mapped) {
+          const dossier = existing.get(id);
+          let proof = dossier?.metadata.researchNeeds?.find(
+            (p) => canonicalNeedId(p.need) === canonicalNeedId(claim.need!),
+          );
+          if (!proof && dossier?.metadata.claims.some((c) => c.status === "covered")) {
+            const legacy = await legacyNeedLookup(claim.need);
+            if (legacy.status === "found") proof = legacy.proof;
+            else
+              reuseLimitations.push({ claimRecordId: claim.claimRecordId, reason: legacy.reason });
+          }
+          if (!dossier || !proof) continue;
+          const checked = await readResearchNeedEvidence(evidenceArtifacts, proof);
+          if (checked.citations.length === 0) continue;
+          outcomes.set(claim.key, {
+            claimRecordId: claim.claimRecordId,
+            statement: claim.statement,
+            dossierId: id,
+            status: "evidence-found",
+            reused: true,
+            jobIds: [checked.result.jobId],
+            citations: checked.citations,
+            evidenceFrom: {
+              dossier: toRef(dossier.ref),
+              citationIds: dossier.metadata.citations
+                .filter((c) =>
+                  checked.citations.some((p) => p.url === c.url && p.passage === c.passage),
+                )
+                .map((c) => c.id),
+            },
+          });
+          break;
+        }
+      }
+    }
     let homeDossier: StoredDossier | undefined;
     let prior: DossierMetadata["claims"][number] | undefined;
     for (const id of mapped) {
@@ -974,7 +1227,7 @@ export async function assessPostCoverage(input: {
         break;
       }
     }
-    if (homeDossier && prior?.status === "covered") {
+    if (!canonicalMode && homeDossier && prior?.status === "covered") {
       const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
@@ -1045,20 +1298,33 @@ export async function assessPostCoverage(input: {
     targeted: boolean,
     question?: string,
   ): ResearchRequest {
+    const canonical = canonicalMode && group.every((c) => !!c.need);
+    const needs = canonical
+      ? [...new Map(group.map((c) => [canonicalNeedId(c.need!), c.need!])).values()].sort((a, b) =>
+          canonicalNeedId(a).localeCompare(canonicalNeedId(b)),
+        )
+      : undefined;
     return {
+      ...(needs ? { canonicalNeeds: { version: "canonical-theme-needs-v1" as const, needs } } : {}),
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
       origin: targeted ? "theme" : "extraction",
       pass,
       ...(previousJobId ? { previousJobId } : {}),
       ...(targeted ? {} : { post: postRefs }),
       ...boundedClaims(
-        group
-          .flatMap((c) => c.extracted)
-          .map((e) => ({
-            claimRecordId: e.claimRecordId,
-            statement: e.statement,
+        needs
+        ? needs.map((n) => ({
+            claimRecordId: canonicalNeedId(n),
+            statement: n.proposition.statement,
             themeIds: [dossierId],
-          })),
+          }))
+        : group
+            .flatMap((c) => c.extracted)
+            .map((e) => ({
+              claimRecordId: e.claimRecordId,
+              statement: e.statement,
+              themeIds: [dossierId],
+            })),
       ),
       question: targeted
         ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
@@ -1116,9 +1382,28 @@ export async function assessPostCoverage(input: {
       ...(manifest?.warnings?.length ? { warnings: manifest.warnings } : {}),
       ...(targetedClaims ? { targetedClaims } : {}),
     });
+    let assessedGroup = group;
+    if (request.canonicalNeeds && job.status === "finished" && job.result?.outcome !== "failed") {
+      if (!job.resultRef) throw new Error("research-need-result-reference-required");
+      const proofs: ResearchNeedEvidence[] = [];
+      for (const need of request.canonicalNeeds.needs) {
+        const proof = await researchNeedEvidence(
+          input.artifacts,
+          job.resultRef,
+          need,
+          needBindingsRef!,
+        );
+        proofs.push(proof);
+      }
+      newEvidence.set(dossierId, [...(newEvidence.get(dossierId) ?? []), ...proofs]);
+      assessedGroup = group.map((c) => ({
+        ...c,
+        extracted: [{ claimRecordId: canonicalNeedId(c.need!), statement: c.statement }],
+      }));
+    }
     return {
       job,
-      assessed: assess(group, job, manifest),
+      assessed: assess(assessedGroup, job, manifest),
       partial:
         !!manifest?.retainedRecovery ||
         !!manifest?.warnings?.some((w) => w.code === "report-output-limit"),
@@ -1146,7 +1431,11 @@ export async function assessPostCoverage(input: {
       const replay = priorTargeted.get(dossierId);
       const needs = [...all]
         .filter((c) => !outcomes.get(c.key)?.reused)
-        .sort((a, b) => a.claimRecordId.localeCompare(b.claimRecordId));
+        .sort((a, b) =>
+          canonicalMode && a.need && b.need
+            ? canonicalNeedId(a.need).localeCompare(canonicalNeedId(b.need))
+            : a.claimRecordId.localeCompare(b.claimRecordId),
+        );
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
@@ -1163,7 +1452,7 @@ export async function assessPostCoverage(input: {
     input.themeResult,
     input.claimResult,
     () => ({
-      schemaVersion: 2,
+      schemaVersion: canonicalMode ? 3 : 2,
       dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
       order: commissioningOrder(
         [...groups.keys()].filter((id) => planned.has(id)),
@@ -1171,7 +1460,7 @@ export async function assessPostCoverage(input: {
       ),
     }),
   );
-  const order = plan.schemaVersion === 2 ? plan.order : Object.keys(plan.dossiers);
+  const order = plan.schemaVersion !== 1 ? plan.order : Object.keys(plan.dossiers);
   for (const dossierId of order) {
     const entry = plan.dossiers[dossierId]!;
     const all = groups.get(dossierId);
@@ -1319,7 +1608,21 @@ export async function assessPostCoverage(input: {
         dossiers,
         dossierId,
         titles.get(dossierId) ?? dossierId,
-        (m) => mergeCoverage(m, items, now),
+        (m) => ({
+          ...mergeCoverage(m, items, now),
+          ...(newEvidence.has(dossierId)
+            ? {
+                researchNeeds: [
+                  ...new Map(
+                    [...(m.researchNeeds ?? []), ...newEvidence.get(dossierId)!].map((p) => [
+                      canonicalNeedId(p.need),
+                      p,
+                    ]),
+                  ).values(),
+                ].slice(0, 1000),
+              }
+            : {}),
+        }),
         now,
       );
       dossierRefs.push({ dossierId, ref: toRef(saved.ref) });
@@ -1337,6 +1640,8 @@ export async function assessPostCoverage(input: {
   const record = CoverageRecordSchema.parse({
     schemaVersion: COVERAGE_SCHEMA_VERSION,
     post,
+    ...(needBindingsRef ? { needBindings: toRef(needBindingsRef) } : {}),
+    ...(reuseLimitations.length ? { reuseLimitations } : {}),
     source: themes.artifact,
     ...((claimRecord.sourceContext ?? themes.sourceContext)
       ? { sourceContext: claimRecord.sourceContext ?? themes.sourceContext }
@@ -1344,6 +1649,7 @@ export async function assessPostCoverage(input: {
     themeResult: toRef(input.themeResult),
     claimResult: toRef(input.claimResult),
     mappings,
+    ...(unresolvedProposals.length ? { unresolvedProposals } : {}),
     claims: [...outcomes.values()].map((o) => {
       const { reason, ...rest } = o;
       return reason ? { ...rest, reason } : rest;
