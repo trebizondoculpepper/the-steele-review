@@ -3,7 +3,7 @@ import { expect, it } from "vite-plus/test";
 import { loadPromptFile } from "../../src/prompt-files.js";
 import { DEFAULT_PACKAGE_DRAFT_PROMPT } from "../../src/drafting/package-draft.js";
 
-it("loads focused selection guidance with content-bound initial and revision identities", () => {
+it("loads focused selection and soft section budgets with content-bound prompt identities", () => {
   const initial = loadPromptFile("writer", "package-explainer");
   const revision = loadPromptFile("writer", "package-revision");
   expect(DEFAULT_PACKAGE_DRAFT_PROMPT).toEqual(initial);
@@ -17,6 +17,8 @@ it("loads focused selection guidance with content-bound initial and revision ide
     expect(prompt.instructions).toContain("context, not a checklist");
     expect(prompt.instructions).toContain("omitted claims were researched or disproved");
     expect(prompt.instructions).toContain("Sources appendix");
+    expect(prompt.instructions).toContain("usually two or three central substantive issues");
+    expect(prompt.instructions).toContain("not quotas or mechanical limits");
   }
   expect(initial.instructions).toContain("independent evidence directly answers");
   expect(revision.instructions).toContain("concise replacement or deletion");

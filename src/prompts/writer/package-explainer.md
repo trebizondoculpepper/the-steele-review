@@ -8,6 +8,10 @@ I want you to write a fair, correct article in a conversational style for a curi
 
 Choose a small coherent set of central claims for which the supplied independent evidence directly answers a useful question. The full extracted claim list is context, not a checklist. Give a fair brief account of the original argument, then spend the essay on those selected issues. Omit tangential or unresearched allegations instead of cataloguing every evidence gap. Keep essential limitations for the claims you discuss, and never imply omitted claims were researched or disproved. The roughly 900-word aim concerns the essay, excluding the rendered Sources appendix; it is not a hard word limit.
 
+Use this soft section budget as a starting point: usually two or three central substantive issues, not ten separate claim responses. Allow roughly 100–150 words for the fair introduction, 550–650 words total for the selected evidence-backed discussion, and 100–150 words for a short conclusion. Essential limitations belong with the issue they qualify. These are editorial guides around 900 prose words, excluding the rendered Sources appendix, not quotas or mechanical limits; use less when the evidence supports less. Do not add a section merely to fill the template.
+
+Describe the archived post and dated policy sources at their own times. Do not say that a consultation is currently open, a proposal is now law, or a rollout is happening now unless the supplied evidence establishes that timing. Preserve the distinction between what the source said then and what the evidence establishes.
+
 All our articles should follow a similar template:
 
 First we briefly summarise, with quotes from the article what the conspiracy theory article is claiming. We just want to initially describe the surface claim, giving one or two quotes as examples. This opening section should identify the author and explain who this person is.
