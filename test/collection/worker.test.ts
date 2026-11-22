@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { CollectionStore, collectionKey } from "../../src/collection/collection-store.js";
+import {
+  CollectionStore,
+  collectionArtifactPath,
+  collectionKey,
+  reingestKey,
+} from "../../src/collection/collection-store.js";
+import { requestReingest } from "../../src/collection/reingest.js";
 import {
   CollectionWorker,
   type CollectorPort,
@@ -798,4 +804,238 @@ describe.skipIf(!natsUrl)("CollectionWorker with JetStream", () => {
       await nats.close();
     }
   }, 30_000);
+});
+
+describe("single-item reingestion (#558)", () => {
+  /** The pending reingestion event as the collector would receive it. */
+  const delivered = (operations: OperationStore) => {
+    const due = operations.duePendingEvents(10).filter((e) => e.eventId.startsWith("reingest-"));
+    return message("backfill", new TextEncoder().encode(due[0]!.payload));
+  };
+
+  it("revises a previously collected record in place, keeping the old version", async () => {
+    const first = setup({ collect: () => textResult("Original text.") });
+    expect(await first.worker.handle(message())).toBe("collected");
+    const before = (await artifacts.lookup(collectionArtifactPath(item)))!;
+
+    // New provenance from the current processor; the text is unchanged.
+    const second = setup({
+      collect: () => ({
+        ...textResult("Original text."),
+        item: { ...item, author: "A Byline" },
+      }),
+    });
+    expect(
+      requestReingest({ operations: second.operations, item, requestId: "refresh-1" }),
+    ).toMatchObject({
+      outcome: "requested",
+    });
+    expect(await second.worker.handle(delivered(second.operations))).toBe("collected");
+
+    const after = (await artifacts.lookup(collectionArtifactPath(item)))!;
+    expect(after.path).toBe(before.path);
+    expect(after.commit).not.toBe(before.commit);
+    expect(after.sha256).not.toBe(before.sha256);
+    // The new record carries the new byline; the old version still reads its bytes.
+    expect(JSON.parse(await artifacts.read(after)).item.author).toBe("A Byline");
+    const old = await artifacts.lookupAt(before.commit, before.path);
+    expect(JSON.parse(old!.content).item.author).toBeUndefined();
+    // Downstream handoff points at the new exact version.
+    const capturedEvent = second.captured.find(
+      (c) => JSON.parse(c.body).data?.artifact?.commit === after.commit,
+    );
+    expect(capturedEvent).toBeDefined();
+  });
+
+  it("does not repeat a request, and ordinary discovery stays idempotent", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-2" });
+    expect(
+      requestReingest({ operations: second.operations, item, requestId: "refresh-2" }),
+    ).toMatchObject({
+      outcome: "already-requested",
+    });
+    const m = delivered(second.operations);
+    await second.worker.handle(m);
+    const calls = second.collectCalls();
+    // Redelivery of the same request does no second fetch.
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.collectCalls()).toBe(calls);
+    // An ordinary discovery duplicate does nothing at all.
+    expect(await second.worker.handle(message("live"))).toBe("already-collected");
+    expect(second.collectCalls()).toBe(calls);
+    expect(second.operations.operationStatus(reingestKey(item, "refresh-2"))?.status).toBe(
+      "completed",
+    );
+  });
+
+  /** A media post first collected with a transcript of upload `uploadId`. */
+  const mediaPost = (uploadId: string, acquiredAt = "2026-11-22T10:00:00.000Z") =>
+    ({
+      kind: "transcription-required",
+      item,
+      articleText: "Edited article body.",
+      media: { kind: "audio", url: "https://cdn.example/a.mp3", durationSeconds: 60 },
+      provenance: {
+        ...provenance,
+        acquiredAt,
+        originalMediaUploadId: uploadId,
+        originalMedium: "audio",
+      },
+    }) as never;
+  const firstWithTranscript = async (uploadId: string) => {
+    const first = setup({
+      collect: () => ({
+        ...textResult("Spoken words."),
+        provenance: {
+          ...provenance,
+          originalMediaUploadId: uploadId,
+          mediaUploadId: uploadId,
+          mediaUploadKind: "audio" as const,
+          transcriptVariant: "aligned" as const,
+        },
+      }),
+    });
+    await first.worker.handle(message());
+  };
+  const noTranscriber = () => {
+    const calls = { n: 0 };
+    return {
+      calls,
+      transcriber: {
+        transcribe: async () => {
+          calls.n++;
+          throw new Error("must not transcribe");
+        },
+      },
+    };
+  };
+
+  it("reuses the transcript of the same media, with fresh article text and source provenance", async () => {
+    await firstWithTranscript("upload-1");
+    const t = noTranscriber();
+    const second = setup({ collect: () => mediaPost("upload-1"), transcriber: t.transcriber });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-3" });
+    expect(await second.worker.handle(delivered(second.operations))).toBe("collected");
+    expect(t.calls.n).toBe(0);
+    const record = JSON.parse(
+      await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!),
+    );
+    // The fresh article body is combined with the reused transcript.
+    expect(record.text).toBe("Edited article body.\n\nSpoken words.");
+    expect(record.reingestion).toEqual({ requestId: "refresh-3" });
+    // Fresh source observations, transcript facts carried over.
+    expect(record.provenance).toMatchObject({
+      acquiredAt: "2026-11-22T10:00:00.000Z",
+      originalMedium: "audio",
+      method: "supplied-transcript",
+      // The retained transcript keeps its own upload identity.
+      mediaUploadId: "upload-1",
+      mediaUploadKind: "audio",
+      transcriptVariant: "aligned",
+    });
+  });
+
+  it("never reuses a transcript from different or unverifiable media", async () => {
+    await firstWithTranscript("upload-1");
+    const t = noTranscriber();
+    const second = setup({ collect: () => mediaPost("upload-2"), transcriber: t.transcriber });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-6" });
+    expect(await second.worker.handle(delivered(second.operations))).toBe(
+      "transcription-unavailable",
+    );
+    expect(t.calls.n).toBe(0);
+    expect(
+      JSON.parse(await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!))
+        .text,
+    ).toBe("Spoken words.");
+  });
+
+  it("finishes the hand-off from its own committed version on a retry, without fetching", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({
+      collect: () => ({ kind: "unavailable", item, reason: "gone" }) as never,
+    });
+    requestReingest({ operations: second.operations, item, requestId: "refresh-7" });
+    const m = delivered(second.operations);
+    const existing = (await second.store.existing(item))!;
+    await artifacts.revise(
+      collectionArtifactPath(item),
+      `${JSON.stringify({ ...existing.record, reingestion: { requestId: "refresh-7" } }, null, 2)}\n`,
+      existing.artifact.sha256,
+    );
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.collectCalls()).toBe(0);
+    expect(second.operations.operationStatus(reingestKey(item, "refresh-7"))?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("completes an exhausted reingestion from its own committed version", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-5" });
+    const m = delivered(second.operations);
+    // The request's version was committed, then the operation ran out of attempts.
+    const existing = (await second.store.existing(item))!;
+    await artifacts.revise(
+      collectionArtifactPath(item),
+      `${JSON.stringify({ ...existing.record, reingestion: { requestId: "refresh-5" } }, null, 2)}\n`,
+      existing.artifact.sha256,
+    );
+    const key = reingestKey(item, "refresh-5");
+    const claim = second.operations.claim(key, "crashed", 60_000);
+    if (claim.kind !== "claimed") throw new Error(claim.kind);
+    second.operations.fail(claim.claim, "crashed", false);
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.operations.operationStatus(key)?.status).toBe("completed");
+    const current = (await artifacts.lookup(collectionArtifactPath(item)))!;
+    expect(
+      second.captured.some((c) => JSON.parse(c.body).data?.artifact?.commit === current.commit),
+    ).toBe(true);
+  });
+
+  it("refuses a second request for a post while one is still in flight", async () => {
+    const w = setup({});
+    await w.worker.handle(message());
+    expect(requestReingest({ operations: w.operations, item, requestId: "first" }).outcome).toBe(
+      "requested",
+    );
+    expect(requestReingest({ operations: w.operations, item, requestId: "second" })).toMatchObject({
+      outcome: "conflicting-request",
+    });
+    // Once the first completes, a new request is accepted.
+    await w.worker.handle(delivered(w.operations));
+    expect(requestReingest({ operations: w.operations, item, requestId: "second" }).outcome).toBe(
+      "requested",
+    );
+  });
+
+  it("keeps an exhausted reingestion retryable when the archive cannot be read", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-8" });
+    const m = delivered(second.operations);
+    const key = reingestKey(item, "refresh-8");
+    const claim = second.operations.claim(key, "crashed", 60_000);
+    if (claim.kind !== "claimed") throw new Error(claim.kind);
+    second.operations.fail(claim.claim, "crashed", false);
+    second.store.existing = async () => {
+      throw new Error("archive unavailable");
+    };
+    expect(await second.worker.handle(m)).toBe("retry");
+    expect(m.acked).toBe(0);
+  });
+
+  it("refuses to reingest a post that was never collected", async () => {
+    const w = setup({});
+    requestReingest({ operations: w.operations, item, requestId: "refresh-4" });
+    expect(await w.worker.handle(delivered(w.operations))).toBe("unavailable");
+    expect(await artifacts.lookup(collectionArtifactPath(item))).toBeUndefined();
+  });
 });

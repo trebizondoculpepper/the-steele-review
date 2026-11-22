@@ -20,6 +20,7 @@ import {
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import type { MediaCandidate, TranscriptionJob } from "../transcription/adapter.js";
 import type { CollectionRecord, CollectionStore } from "./collection-store.js";
+import { reingestKey } from "./collection-store.js";
 
 /**
  * Collection worker: consumes validated discovery events (live and backfill
@@ -107,6 +108,38 @@ export interface CollectionWorkerConfig {
 
 const encoder = new TextEncoder();
 
+/**
+ * True only when the archived transcript provably belongs to the media just
+ * observed: both records name the same upload identity (#558).
+ */
+function sameMedia(
+  previous: CollectionRecord,
+  acquired: { provenance: Record<string, unknown> },
+): boolean {
+  const before = previous.provenance.originalMediaUploadId;
+  const now = acquired.provenance.originalMediaUploadId;
+  return typeof before === "string" && typeof now === "string" && before === now;
+}
+
+/** Provenance fields that describe the transcript itself, not the source fetch. */
+const TRANSCRIPT_FIELDS = [
+  "method",
+  "transcriptionProvider",
+  "transcriptionModel",
+  "transcriptLanguage",
+  "machineGenerated",
+  "mediaKind",
+  "transcriptionConfidence",
+  "transcriptionComplete",
+  // The transcript's own upload identity and variant (supplied transcripts).
+  "mediaUploadId",
+  "mediaUploadKind",
+  "transcriptVariant",
+] as const;
+function transcriptProvenance(p: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(TRANSCRIPT_FIELDS.filter((k) => k in p).map((k) => [k, p[k]]));
+}
+
 export class CollectionWorker {
   private readonly leaseMs: number;
   private readonly retryDelayMs: number;
@@ -178,10 +211,12 @@ export class CollectionWorker {
     let item: SubstackItem;
     let reason: IngestionReason;
     let causationId: string;
+    let reingestRequestId: string | undefined;
     try {
       const event = parseDiscoveryEvent(new TextDecoder().decode(message.data));
-      const { ingestionReason, ...rest } = event.data!;
+      const { ingestionReason, reingestRequestId: requestId, ...rest } = event.data!;
       item = rest;
+      reingestRequestId = requestId;
       reason = ingestionReason;
       causationId = event.id;
     } catch {
@@ -189,10 +224,19 @@ export class CollectionWorker {
       return { result: "invalid-event" };
     }
 
-    const claimResult = await this.config.store.begin(item, this.config.owner, this.leaseMs, {
-      maxAttempts: this.config.maxAttempts,
-      eventsFor: this.eventsFor(causationId),
-    });
+    // A deliberate reingestion (#558) runs under its own request operation;
+    // ordinary discovery of an already-collected post still does nothing.
+    const claimResult = reingestRequestId
+      ? this.config.operations.claim(
+          reingestKey(item, reingestRequestId),
+          this.config.owner,
+          this.leaseMs,
+          this.config.maxAttempts,
+        )
+      : await this.config.store.begin(item, this.config.owner, this.leaseMs, {
+          maxAttempts: this.config.maxAttempts,
+          eventsFor: this.eventsFor(causationId),
+        });
     if (claimResult.kind === "completed") {
       await message.ack();
       await this.dispatchPending(signal);
@@ -203,6 +247,28 @@ export class CollectionWorker {
       return { result: "busy", item };
     }
     if (claimResult.kind === "exhausted") {
+      // A reingestion whose own version was committed before a crash on its
+      // last attempt is completed from that version, never left disconnected.
+      if (reingestRequestId) {
+        let current: Awaited<ReturnType<CollectionStore["existing"]>>;
+        try {
+          current = await this.config.store.existing(item);
+        } catch {
+          // Unknown is not "nothing to recover": keep the delivery retryable.
+          message.nak(this.retryDelayMs);
+          return { result: "retry", item };
+        }
+        if (current?.record.reingestion?.requestId === reingestRequestId) {
+          this.config.operations.reconcileCompleted(
+            reingestKey(item, reingestRequestId),
+            current.artifact,
+            this.eventsFor(causationId)(current.artifact, current.record),
+          );
+          await message.ack();
+          await this.dispatchPending(signal);
+          return { result: "already-collected", item };
+        }
+      }
       await message.ack();
       return { result: "exhausted", item };
     }
@@ -224,7 +290,31 @@ export class CollectionWorker {
         message.nak(this.retryDelayMs);
         return { result: "retry", item };
       }
-      if (committed) {
+      // Reingestion replaces the current record and needs one to replace.
+      const previous = reingestRequestId ? committed : undefined;
+      if (reingestRequestId && !previous) {
+        this.config.store.fail(claim, "nothing-to-reingest", false);
+        await message.ack();
+        return { result: "unavailable", item };
+      }
+      // This request already committed its version before an interruption:
+      // complete the hand-off from it rather than fetching again.
+      if (previous && previous.record.reingestion?.requestId === reingestRequestId) {
+        try {
+          this.config.operations.complete(
+            claim,
+            previous.artifact,
+            this.eventsFor(causationId)(previous.artifact, previous.record),
+          );
+        } catch {
+          message.nak(this.retryDelayMs);
+          return { result: "retry", item };
+        }
+        await message.ack();
+        await this.dispatchPending(signal);
+        return { result: "already-collected", item };
+      }
+      if (committed && !reingestRequestId) {
         try {
           await this.config.store.commit(claim, committed.record, (artifact) =>
             this.eventsFor(causationId)(artifact, committed.record),
@@ -266,6 +356,43 @@ export class CollectionWorker {
           },
           ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
           provenance: { ...acquired.provenance },
+        };
+      } else if (
+        acquired.kind === "transcription-required" &&
+        previous?.record.supplied.transcript?.length &&
+        !sameMedia(previous.record, acquired)
+      ) {
+        // The archived transcript cannot be proved to belong to this media:
+        // never reuse speech from another recording, and never pay to
+        // retranscribe without an explicit decision.
+        this.config.store.fail(claim, "transcript-media-unverified", false);
+        await message.ack();
+        return { result: "transcription-unavailable", item };
+      } else if (
+        acquired.kind === "transcription-required" &&
+        previous?.record.supplied.transcript?.length
+      ) {
+        // Reingestion never repeats paid transcription when the current
+        // record already holds a transcript of this item: reuse it, with its
+        // recorded provenance.
+        const t = previous.record;
+        method = t.provenance.method;
+        // Fresh article body from this fetch; only the transcript is reused.
+        const transcriptText = t.supplied.transcript!.map((s) => s.text).join(" ");
+        record = {
+          item: { ...item, author: acquired.item.author },
+          ingestionReason: reason,
+          text: [acquired.articleText, transcriptText].filter(Boolean).join("\n\n"),
+          complete: t.complete,
+          supplied: { transcript: t.supplied.transcript! },
+          ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
+          // Fresh source observations from this fetch, plus only the
+          // transcript-specific facts of the reused transcript.
+          provenance: {
+            ...acquired.provenance,
+            ...transcriptProvenance(t.provenance),
+            method: t.provenance.method,
+          },
         };
       } else if (acquired.kind === "transcription-required") {
         if (!this.config.transcriber || acquired.media.kind !== "audio") {
@@ -347,9 +474,17 @@ export class CollectionWorker {
       }
 
       try {
-        await this.config.store.commit(claim, record, (artifact) =>
-          this.eventsFor(causationId)(artifact, record),
-        );
+        if (previous) {
+          record = { ...record, reingestion: { requestId: reingestRequestId! } };
+          const final = record;
+          await this.config.store.reingest(claim, final, previous.artifact.sha256, (artifact) =>
+            this.eventsFor(causationId)(artifact, final),
+          );
+        } else {
+          await this.config.store.commit(claim, record, (artifact) =>
+            this.eventsFor(causationId)(artifact, record),
+          );
+        }
       } catch {
         // Nothing was recorded as complete; temporary media is released and the
         // input is redelivered later.

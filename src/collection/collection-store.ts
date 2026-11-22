@@ -68,6 +68,15 @@ export const CollectionRecordSchema = z
       .strict(),
     /** The post's own preview image (#277); absent when it is not post-specific. */
     previewImage: PreviewImageSchema.optional(),
+    /**
+     * Set when this version was produced by a deliberate reingestion (#558):
+     * its stable request ID, so an interrupted request can recognise and
+     * complete its own committed version. Absent for ordinary collection.
+     */
+    reingestion: z
+      .object({ requestId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/) })
+      .strict()
+      .optional(),
     provenance: z.looseObject({
       sourceUrl: z.url(),
       acquiredAt: z.iso.datetime({ offset: true }),
@@ -95,6 +104,14 @@ export function collectionArtifactPath(
   item: Pick<SubstackItem, "publicationId" | "postId">,
 ): string {
   return `substack/${item.publicationId}/${item.postId}/collected.json`;
+}
+
+/** Operation key for one deliberate reingestion request (#558). */
+export function reingestKey(
+  item: Pick<SubstackItem, "publicationId" | "postId">,
+  requestId: string,
+): string {
+  return `reingest:substack/${item.publicationId}/${item.postId}/${requestId}`;
 }
 
 export interface CommitResult {
@@ -181,6 +198,36 @@ export class CollectionStore {
     }
     this.operations.complete(claim, artifact, eventsFor(artifact));
     return { artifact, reconciled };
+  }
+
+  /**
+   * Reingestion (#558): replace the current record at its same stable path
+   * with a new Git commit, only if it is still the version read when the
+   * request started (`expectedSha256`). Old versions stay readable at their
+   * commits. Completion and the downstream events are recorded in the same
+   * state transaction as for first collection. A retry after a crash between
+   * the commit and completion adopts the identical record already committed.
+   * A concurrent change fails with `stale-revision` and nothing is replaced.
+   */
+  async reingest(
+    claim: OperationClaim,
+    record: CollectionRecord,
+    expectedSha256: string,
+    eventsFor: (artifact: ArtifactRef) => PendingEventInput[],
+  ): Promise<ArtifactRef> {
+    const valid = CollectionRecordSchema.parse(record);
+    if (
+      !claim.key.startsWith(`reingest:substack/${valid.item.publicationId}/${valid.item.postId}/`)
+    ) {
+      throw new Error("claim does not match record item");
+    }
+    const artifact = await this.artifacts.revise(
+      collectionArtifactPath(valid.item),
+      `${JSON.stringify(valid, null, 2)}\n`,
+      expectedSha256,
+    );
+    this.operations.complete(claim, artifact, eventsFor(artifact));
+    return artifact;
   }
 
   /** Release a failed attempt; retryable failures stay claimable until attempts run out. */

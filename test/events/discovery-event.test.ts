@@ -135,6 +135,7 @@ describe("schema export", () => {
         "postId",
         "publicationId",
         "publishedAt",
+        "reingestRequestId",
         "title",
         "updatedAt",
         "url",
