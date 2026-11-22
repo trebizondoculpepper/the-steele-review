@@ -22,6 +22,7 @@ import {
   readDummyDeliveryProof,
 } from "../../src/publishing/approved-article.js";
 import { approvedReport } from "./approval-fixtures.js";
+import { articlePaths } from "../../src/drafting/article-identity.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -149,6 +150,61 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     await expect(readDummyDeliveryProof(content, differentDraft)).rejects.toThrow("does not prove");
     expect(await handle("dummy-b")).toMatchObject({ action: "ack", outcome: "reused" });
     expect(await readDummyDeliveryProof(content, data)).toEqual({ a: a.receipt, b: b.receipt });
+  });
+
+  it("delivers the exact approved version after a newer revision of the same article (#580)", async () => {
+    const report = await approved();
+    const { data } = await recordApproval({ content, operations, report });
+    const payload = operations.duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)[0].payload;
+    base = Date.parse(data.approvedAt);
+    const approvedRef = {
+      repository: data.draft.repository,
+      commit: data.draft.commit,
+      path: data.draft.path,
+      sha256: data.draft.hash.replace(/^sha256:/, ""),
+    };
+    const approvedBody = await content.read(approvedRef);
+    // The approved generation is never the in-place canonical document.
+    expect(data.draft.path).not.toMatch(/\/article\.md$/);
+
+    // The logical article moves on: its canonical body now holds newer text.
+    const paths = articlePaths({ publicationId: "pub", postId: "p1" });
+    const v1 = await content.revise(paths.body, approvedBody, null);
+    const newer = `${approvedBody}\n\nA later, unapproved paragraph.\n`;
+    const v2 = await content.revise(paths.body, newer, v1.sha256);
+    expect(v2.sha256).not.toBe(data.draft.hash.replace(/^sha256:/, ""));
+
+    const site = new SimulatedDestination("site", "draft");
+    const out = await handleApprovedArticle({
+      payload,
+      destination: site,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+      now: at(0),
+    });
+    expect(out).toMatchObject({ action: "ack", outcome: "delivered" });
+    // Exactly the approved bytes were sent, never the newer canonical text.
+    expect(site.deliveries).toHaveLength(1);
+    expect(site.deliveries[0]).not.toContain("A later, unapproved paragraph.");
+    // A retry reuses the recorded result and still never adopts the newer text.
+    const again = await handleApprovedArticle({
+      payload,
+      destination: site,
+      schedule: { delayMs: 0 },
+      content,
+      operations,
+      owner: "t",
+      now: at(1),
+    });
+    expect(again).toMatchObject({ action: "ack", outcome: "reused" });
+    expect(site.deliveries).toHaveLength(1);
+    // The newer revision inherits no approval: no event names its hash.
+    const events = operations
+      .duePendingEvents(50, ARTICLE_APPROVED_SUBJECT)
+      .map((e) => JSON.parse(e.payload).data.draft.hash);
+    expect(events).not.toContain(`sha256:${v2.sha256}`);
   });
 
   it("reconciles an uncertain delivery before retrying, so it is never sent twice", async () => {
