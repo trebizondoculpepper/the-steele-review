@@ -106,6 +106,11 @@ export interface SearchHit {
   id: string;
   score: number;
   source: unknown;
+  /**
+   * The hit's sort tuple, when the search asked for one (#508). Paging needs
+   * it verbatim for `search_after`; dropping it makes the next page impossible.
+   */
+  sort?: unknown[];
 }
 
 export const MAX_SEARCH_RESULTS = 50;
@@ -271,7 +276,7 @@ export class ElasticsearchController {
   async search(
     index: string,
     query: unknown,
-    options: { size?: number; timeoutMs?: number; sort?: unknown } = {},
+    options: { size?: number; timeoutMs?: number; sort?: unknown; searchAfter?: unknown[] } = {},
   ): Promise<SearchHit[]> {
     const size = Math.max(1, Math.min(options.size ?? 10, MAX_SEARCH_RESULTS));
     const timeoutMs = Math.min(60_000, Math.max(1_000, options.timeoutMs ?? 10_000));
@@ -283,6 +288,7 @@ export class ElasticsearchController {
           size,
           _source: true,
           ...(options.sort ? { sort: options.sort as never } : {}),
+          ...(options.searchAfter ? { search_after: options.searchAfter as never } : {}),
         },
         { requestTimeout: timeoutMs, maxRetries: 0 },
       );
@@ -290,6 +296,9 @@ export class ElasticsearchController {
         id: hit._id,
         score: hit._score ?? 0,
         source: hit._source,
+        ...((hit as { sort?: unknown[] }).sort === undefined
+          ? {}
+          : { sort: (hit as { sort?: unknown[] }).sort }),
       }));
     } catch (error) {
       throw classifyIndexingError(error);
@@ -336,6 +345,9 @@ export class ElasticsearchController {
         id: hit._id,
         score: hit._score ?? 0,
         source: hit._source,
+        ...((hit as { sort?: unknown[] }).sort === undefined
+          ? {}
+          : { sort: (hit as { sort?: unknown[] }).sort }),
       }));
     } catch (error) {
       throw classifyIndexingError(error);

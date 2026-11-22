@@ -28,10 +28,24 @@ export interface ArchivedArticle {
   sourceVersion: string;
 }
 
+export type ArticleSort = "newest" | "oldest";
+
+export interface ArticlePage {
+  entries: ArchivedArticle[];
+  /** Opaque cursor for the next page; absent when the listing is exhausted. */
+  next?: string;
+}
+
 export interface RecentArticlesPort {
   recent(limit: number): Promise<ArchivedArticle[]>;
   /** The indexed revision of one post, or undefined when it is not indexed. */
   find(publicationId: string, postId: string): Promise<ArchivedArticle | undefined>;
+  /**
+   * Bounded, ordered paging across the whole collection (#508). Optional so a
+   * port that only offers `recent` still works: the view then says the full
+   * listing is unavailable rather than pretending to page.
+   */
+  page?(options: { sort: ArticleSort; after?: string; limit: number }): Promise<ArticlePage>;
 }
 
 export type RunState =

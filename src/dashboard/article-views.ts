@@ -56,12 +56,35 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
   const list: DashboardView = {
     path: "/articles",
     title: "Articles",
-    async render() {
+    async render(url: URL) {
       if (!deps.articles) {
         return '<p class="empty">The article index is not configured for the dashboard.</p>';
       }
-      const recent = await deps.articles.recent(RECENT_LIMIT);
-      if (recent.length === 0) return '<p class="empty">No archived articles are indexed yet.</p>';
+      const sort = url.searchParams.get("sort") === "oldest" ? "oldest" : "newest";
+      const after = url.searchParams.get("after") ?? undefined;
+      // Paging covers the whole collection when the port supports it; a port
+      // that only offers `recent` keeps the previous bounded behaviour.
+      const page = deps.articles.page
+        ? await deps.articles.page({
+            sort,
+            limit: RECENT_LIMIT,
+            ...(after ? { after } : {}),
+          })
+        : { entries: await deps.articles.recent(RECENT_LIMIT) };
+      const recent = page.entries;
+      const pagingControls = deps.articles.page
+        ? `<p class="sorting">Sort: ${
+            sort === "newest"
+              ? "<strong>newest first</strong> · <a href=\"/articles?sort=oldest\">oldest first</a>"
+              : "<a href=\"/articles?sort=newest\">newest first</a> · <strong>oldest first</strong>"
+          }</p>${
+            page.next
+              ? `<p class="paging"><a href="/articles?sort=${sort}&after=${encodeURIComponent(page.next)}">Next page</a></p>`
+              : ""
+          }`
+        : "";
+      if (recent.length === 0)
+        return `${pagingControls}<p class="empty">No archived articles are indexed yet.</p>`;
       const rowsHtml = await Promise.all(
         recent.map(async (a) => {
           let summary = "unknown";
@@ -100,7 +123,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       );
       return `<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
 <div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
-<tbody>${rowsHtml.join("")}</tbody></table></div>`;
+<tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}`;
     },
   };
 
