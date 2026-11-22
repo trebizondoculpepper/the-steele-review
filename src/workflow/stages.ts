@@ -44,6 +44,8 @@ import { researchJobId, type ResearchRequest } from "../research/job.js";
 import {
   assessPostCoverage,
   CoverageRecordSchema,
+  rankResearchRequests,
+  saveResearchSelection,
   type CommissionedJob,
   type ThemeShortlister,
 } from "../research/librarian.js";
@@ -163,7 +165,14 @@ export function articleStages(deps: {
         return { jobId: "planning", status: "busy" };
       },
     });
-    return requests;
+    // Most useful gap first (#533): the workflow commissions the first
+    // `researchRequestLimit` of this order, and the ranking is saved.
+    const ranked = rankResearchRequests(requests);
+    const theme = JSON.parse(await deps.content.read(themes)) as {
+      post: { publicationId: string; postId: string };
+    };
+    await saveResearchSelection(deps.content, theme.post, themes, claims, ranked);
+    return ranked.map((r) => r.request);
   };
 
   return {

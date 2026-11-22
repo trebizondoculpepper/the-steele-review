@@ -374,7 +374,8 @@ function assess(
       out.set(claim.key, {
         status: "not-commissioned",
         citations: [],
-        reason: "article research request limit reached",
+        reason:
+          "not selected: the article's new-research allowance went to higher-ranked evidence gaps (see the saved research selection)",
       });
       continue;
     }
@@ -1309,4 +1310,74 @@ export async function assessPostCoverage(input: {
   const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
   if (saveError) throw saveError;
   return { record: stored, ref };
+}
+
+/** One ranked research candidate for an article (#533). */
+export interface RankedResearchRequest {
+  request: ResearchRequest;
+  jobId: string;
+  rank: number;
+  /** Claims in the request that still need evidence. */
+  claimsNeedingEvidence: number;
+  rationale: string;
+}
+
+/**
+ * Order an article's candidate research requests by usefulness (#533): the
+ * gap with the most claims still needing evidence first, so a small new-job
+ * allowance buys the most coverage. Ties break on the stable job ID, so the
+ * order (and therefore the selected job) is deterministic on every retry.
+ * Requests only ever contain claims that need evidence: reused coverage is
+ * never re-requested.
+ */
+export function rankResearchRequests(requests: ResearchRequest[]): RankedResearchRequest[] {
+  return requests
+    .map((request) => ({ request, jobId: researchJobId(request), n: request.claims.length }))
+    .sort((a, b) => b.n - a.n || a.jobId.localeCompare(b.jobId))
+    .map((r, i) => ({
+      request: r.request,
+      jobId: r.jobId,
+      rank: i + 1,
+      claimsNeedingEvidence: r.n,
+      rationale:
+        i === 0
+          ? `most claims still needing evidence (${r.n})`
+          : `${r.n} claim(s) still needing evidence; ranked below larger gaps (job ID breaks ties)`,
+    }));
+}
+
+/**
+ * Save the ranked candidates for one analysis, write-once (#533): which
+ * requests were considered, in which order and why. The workflow commissions
+ * the first `researchRequestLimit` of them; the coverage record shows which
+ * were commissioned and marks the rest as not selected.
+ */
+export async function saveResearchSelection(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  ranked: RankedResearchRequest[],
+): Promise<ArtifactRef> {
+  const key = createHash("sha256")
+    .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  return writeOnce(
+    artifacts,
+    `librarian/research-selection/${post.publicationId}/${post.postId}/${key}.json`,
+    {
+      schemaVersion: 1,
+      themeResult: toRef(themeResult),
+      claimResult: toRef(claimResult),
+      candidates: ranked.map((r) => ({
+        rank: r.rank,
+        jobId: r.jobId,
+        origin: r.request.origin,
+        themeIds: [...new Set(r.request.claims.flatMap((c) => c.themeIds))],
+        claimsNeedingEvidence: r.claimsNeedingEvidence,
+        rationale: r.rationale,
+      })),
+    },
+  );
 }
