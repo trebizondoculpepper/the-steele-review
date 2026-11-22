@@ -165,7 +165,11 @@ const asDecision = (raw: unknown): EditorialDecisionView | undefined => {
   };
 };
 
-export function savedReviews(content: Store): ReviewHistoryPort {
+export function savedReviews(
+  content: Store,
+  options: { windowSize?: number } = {},
+): ReviewHistoryPort {
+  const windowSize = options.windowSize ?? REVIEW_SCAN;
   return {
     async forPost(post, page = 0, windowAfter?: string) {
       const start = Number.isInteger(page) && page >= 0 ? page : 0;
@@ -191,17 +195,20 @@ export function savedReviews(content: Store): ReviewHistoryPort {
         }
         paths.push(...batch);
         if (batch.length < LIST_PAGE) break;
-        if (paths.length >= REVIEW_SCAN) {
+        if (paths.length >= windowSize) {
           // More reports exist: the next window starts after this one.
-          windowEnd = paths[REVIEW_SCAN - 1];
+          windowEnd = paths[windowSize - 1];
           break;
         }
         after = batch.at(-1);
       }
+      // A short final batch can still exceed the window; the extra paths belong
+      // to the next window.
+      if (!windowEnd && paths.length > windowSize) windowEnd = paths[windowSize - 1];
       if (unreadableListing && paths.length === 0) {
         return { state: "unavailable", reviews: [], editorial: [], truncated: false };
       }
-      if (paths.length > REVIEW_SCAN) paths = paths.slice(0, REVIEW_SCAN);
+      if (paths.length > windowSize) paths = paths.slice(0, windowSize);
       // The listing stopped early only when the call budget ran out mid-window.
       if (!windowEnd && paths.length >= LIST_PAGE * 10) truncated = true;
 
