@@ -91,7 +91,7 @@ export function classifyFindings(document: string): {
     // Every finding must say where, what is wrong and why; a bare heading,
     // or one missing any of those, is not a complete finding.
     const field = (section: string, name: string) =>
-      new RegExp(`^\\s*-\\s*${name}:\\s*\\S`, "im").test(section);
+      new RegExp(`^[ \\t]*-[ \\t]*${name}:[ \\t]*\\S`, "im").test(section);
     const complete = sections.every(
       (s) => field(s, "Where") && field(s, "What is wrong") && field(s, "Why"),
     );
