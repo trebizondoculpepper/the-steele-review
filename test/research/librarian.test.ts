@@ -36,6 +36,7 @@ async function analysis(
   claims: { id: string; statement: string }[],
   title = "Weather warfare",
   schemaVersion: 2 | 3 = 2,
+  description = "Claims of weather modification as a weapon",
 ) {
   const post = { publicationId: "pub", postId };
   await proposeThemes({
@@ -43,7 +44,7 @@ async function analysis(
       modelVersion: "fake/m",
       complete: async () =>
         JSON.stringify({
-          themes: [{ title, description: "Claims of weather modification as a weapon" }],
+          themes: [{ title, description }],
         }),
     },
     artifacts,
@@ -646,7 +647,9 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
-    const b = await analysis("p2", [claims[1]], "Mercury");
+    // Same title, different meaning: the saved mapping is not inherited, so the
+    // judge decides, and its rejection gives a separate theme (#531).
+    const b = await analysis("p2", [claims[1]], "Mercury", 2, "The planet Mercury and its orbit");
     const rejecting = { decide: async () => ({ themeId: null, rationale: "different subject" }) };
     const second = await assessPostCoverage({
       artifacts,
@@ -1044,5 +1047,48 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
       judge: accept,
     });
     expect(researchJobId(again.requests[0]!)).toBe(researchJobId(first.requests[0]!));
+describe("mappings first (#531)", { timeout: 60_000 }, () => {
+  it("reuses a newly established theme for compatible wording on another post without a decision", async () => {
+    const r = researcher(() => ({ passages: [] }));
+    const a = await analysis("p1", [claims[0]!], "Mercury");
+    const first = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const b = await analysis("p2", [claims[1]!], "Mercury");
+    const mustNotDecide = {
+      decide: async () => {
+        throw new Error("no decision for a compatible mapping");
+      },
+    };
+    const second = await assessPostCoverage({
+      artifacts,
+      ...b,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+      judge: mustNotDecide,
+    });
+    expect(second.record.mappings[0]).toMatchObject({
+      dossierId: first.record.mappings[0]!.dossierId,
+      method: "catalogue",
+    });
+  });
+
+  it("keeps the mapping when research then fails", async () => {
+    const a = await analysis("p1", [claims[0]!], "Mercury");
+    const out = await assessPostCoverage({
+      artifacts,
+      ...a,
+      commission: researcher(() => "failed").commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const { ThemeMappingCatalogue } = await import("../../src/research/theme-mappings.js");
+    const saved = await new ThemeMappingCatalogue(artifacts).lookup({
+      proposal: "Mercury",
+      description: "Claims of weather modification as a weapon",
+    });
+    expect(saved?.canonicalThemeId).toBe(out.record.mappings[0]!.dossierId);
   });
 });
