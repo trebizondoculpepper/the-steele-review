@@ -1,3 +1,8 @@
+import {
+  assertEditorialBaseCurrent,
+  EditorialContinuationError,
+} from "../drafting/editorial-continuation.js";
+import { editorialLineageRefs } from "../content/editorial-lineage.js";
 import { parseJudgmentDocument, emptyGuidance } from "../drafting/judgment-document.js";
 import { reportCreditExhausted } from "../observability/provider-condition.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
@@ -16,7 +21,7 @@ import {
 } from "../drafting/editorial-judgment.js";
 import { durableEditorialProvider } from "../drafting/editorial-provider.js";
 import { loadArticleForReview } from "../drafting/package-verify.js";
-import { draftFromPackage } from "../drafting/package-draft.js";
+import { draftFromPackage, DraftGuardStop, DraftCreditStop } from "../drafting/package-draft.js";
 import { commitArticleRevision } from "../drafting/article-revisions.js";
 import { isCanonicalArticlePath } from "../drafting/article-identity.js";
 import { artifactReference, artifactRef, sameArtifact } from "../drafting/publication-payload.js";
@@ -70,7 +75,7 @@ export function editorialStages(deps: {
       await bound(version, pkg);
       return version;
     },
-    async assess(version, pkg, attemptId, recoveryId) {
+    async assess(version, pkg, attemptId, recoveryId, lineage) {
       if (!deps.assessor) throw new StageError("editorial", "assessor-unconfigured");
       const loaded = await bound(version, pkg);
       const provider = durableEditorialProvider({
@@ -83,6 +88,7 @@ export function editorialStages(deps: {
           artifactReference(version.metadata),
           artifactReference(version.draft),
           artifactReference(loaded.publication.ref),
+          ...editorialLineageRefs(lineage).map(artifactReference),
         ],
         promptVersion: DEFAULT_ASSESSOR_PROMPT.version,
         recoveryId,
@@ -107,7 +113,7 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async judge(assessment, attemptId, recoveryId, history) {
+    async judge(assessment, attemptId, recoveryId, history, lineage) {
       if (!deps.judge) throw new StageError("editorial", "judge-unconfigured");
       const record = AssessmentRecordSchema.parse(JSON.parse(await deps.content.read(assessment)));
       const provider = durableEditorialProvider({
@@ -116,7 +122,12 @@ export function editorialStages(deps: {
         purpose: "judge",
         package: artifactRef(record.package),
         source: record.source,
-        context: [record.body, record.publication, ...(history?.map((x) => x.judgment) ?? [])],
+        context: [
+          record.body,
+          record.publication,
+          ...(history?.map((x) => x.judgment) ?? []),
+          ...editorialLineageRefs(lineage).map(artifactReference),
+        ],
         promptVersion: DEFAULT_JUDGE_PROMPT.version,
         recoveryId,
       });
@@ -145,7 +156,7 @@ export function editorialStages(deps: {
           : {}),
       };
     },
-    async revise(version, pkg, judgment, number, sourceUrl, recoveryId) {
+    async revise(version, pkg, judgment, number, sourceUrl, recoveryId, lineage) {
       const loaded = await bound(version, pkg);
       const decision = JudgmentRecordSchema.parse(JSON.parse(await deps.content.read(judgment)));
       if (
@@ -173,37 +184,73 @@ export function editorialStages(deps: {
           : []),
       ];
       if (!feedback.length) throw new StageError("editorial", "revision-guidance-empty");
-      const out = await draftFromPackage({
-        ...deps,
-        package: pkg,
-        provider: deps.writer,
-        sourceUrl,
-        ...(recoveryId ? { writerRecoveryId: recoveryId } : {}),
-        previousDraft: {
-          ref: version.draft,
-          markdown: loaded.markdown,
-          metadataRef: version.metadata,
-          ...(loaded.meta.fields ? { fields: loaded.meta.fields } : {}),
-        },
-        revisionInputs: [version.metadata, judgment, artifactRef(decision.assessment)],
-        revision: {
-          number,
-          feedback,
-          ...(!emptyGuidance(guidance.acceptedMinorObservations)
+      let out;
+      try {
+        out = await draftFromPackage({
+          ...deps,
+          package: pkg,
+          provider: deps.writer,
+          sourceUrl,
+          ...(recoveryId ? { writerRecoveryId: recoveryId } : {}),
+          previousDraft: {
+            ref: version.draft,
+            markdown: loaded.markdown,
+            metadataRef: version.metadata,
+            ...(loaded.meta.fields ? { fields: loaded.meta.fields } : {}),
+          },
+          ...(lineage
             ? {
-                observations: [
-                  {
-                    passage: "Accepted minor observations",
-                    reason: guidance.acceptedMinorObservations,
-                  },
-                ],
+                lineage,
+                beforeNewGeneration: () =>
+                  assertEditorialBaseCurrent(deps.content, {
+                    body: artifactReference(version.draft),
+                    metadata: artifactReference(version.metadata),
+                  }),
               }
             : {}),
-        },
-      });
+          revisionInputs: [
+            version.metadata,
+            judgment,
+            artifactRef(decision.assessment),
+            ...editorialLineageRefs(lineage),
+          ],
+          revision: {
+            number,
+            feedback,
+            ...(!emptyGuidance(guidance.acceptedMinorObservations)
+              ? {
+                  observations: [
+                    {
+                      passage: "Accepted minor observations",
+                      reason: guidance.acceptedMinorObservations,
+                    },
+                  ],
+                }
+              : {}),
+          },
+        });
+      } catch (error) {
+        const cause = error instanceof DraftGuardStop ? error.failure : error;
+        if (lineage && cause instanceof EditorialContinuationError)
+          return {
+            failure: cause.code,
+            ...(error instanceof DraftGuardStop ? error.retention : {}),
+          };
+        if (lineage && error instanceof DraftCreditStop)
+          return {
+            failure: "credit-exhausted",
+            mechanicalRun: error.mechanicalRun,
+            retainedAttempts: error.writerAttempts,
+            diagnostics: error.diagnostics,
+          };
+        throw cause;
+      }
       if (out.status !== "drafted")
         return {
           failure: out.status === "failed" ? out.reason : out.status,
+          ...("writerAttempts" in out && out.writerAttempts
+            ? { retainedAttempts: out.writerAttempts }
+            : {}),
           ...("mechanicalRun" in out && out.mechanicalRun
             ? { mechanicalRun: out.mechanicalRun }
             : {}),
@@ -221,7 +268,11 @@ export function editorialStages(deps: {
         metadata: committed.metadata,
       };
       await bound(next, pkg);
-      return { version: next, mechanicalRun: out.mechanicalRun };
+      return {
+        version: next,
+        mechanicalRun: out.mechanicalRun,
+        retainedAttempts: out.writerAttempts,
+      };
     },
     approve: (report) =>
       recordApproval({

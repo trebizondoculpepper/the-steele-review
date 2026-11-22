@@ -81,6 +81,33 @@ const requireMatch = (ok: unknown, code: EditorialContinuationError["code"]) => 
 const equal = (a: ArtifactReference | undefined, b: ArtifactReference | undefined) =>
   a && b ? sameArtifact(a, b) : a === b;
 
+/** Current canonical snapshot proof, reusable immediately before a new paid edit. */
+export async function assertEditorialBaseCurrent(
+  content: Pick<GitArtifactStore, "lookup" | "lookupAt">,
+  version: { body: ArtifactReference; metadata: ArtifactReference },
+) {
+  const [currentBody, currentMetadata, bodyAtMetadata, bodyAtSelected] = await Promise.all([
+    content.lookup(version.body.path),
+    content.lookup(version.metadata.path),
+    content.lookupAt(version.metadata.commit, version.body.path),
+    content.lookupAt(version.body.commit, version.body.path),
+  ]);
+  requireMatch(
+    currentBody &&
+      currentMetadata &&
+      bodyAtMetadata &&
+      bodyAtSelected &&
+      equal(artifactReference(currentBody), artifactReference(bodyAtMetadata.ref)) &&
+      equal(artifactReference(currentBody), artifactReference(bodyAtSelected.ref)) &&
+      equal(
+        artifactReference({ ...bodyAtSelected.ref, commit: version.body.commit }),
+        version.body,
+      ) &&
+      equal(artifactReference(currentMetadata), version.metadata),
+    "stale-base",
+  );
+}
+
 /**
  * Read-only exact-chain validation, before a paid capability is supplied.
  * The intent row does not prove workflow completion. The continuation entrypoint
@@ -298,29 +325,10 @@ export async function readEditorialContinuation(input: {
       if (i === versions.length - 1)
         requireMatch(equal(judgment.publication, request.publication), "version-mismatch");
     }
-    const [currentBody, currentMetadata, bodyAtMetadata, bodyAtSelected] = await Promise.all([
-      input.content.lookup(paths.body),
-      input.content.lookup(paths.metadata),
-      input.content.lookupAt(request.metadata.commit, paths.body),
-      input.content.lookupAt(request.body.commit, paths.body),
-    ]);
-    // A metadata-only revision can validly pin unchanged body bytes at its
-    // pair commit. Compare the current body's actual last-change ref with
-    // that snapshot too, so a later edit/revert cannot masquerade as this base.
-    requireMatch(
-      currentBody &&
-        currentMetadata &&
-        bodyAtMetadata &&
-        bodyAtSelected &&
-        equal(artifactReference(currentBody), artifactReference(bodyAtMetadata.ref)) &&
-        equal(artifactReference(currentBody), artifactReference(bodyAtSelected.ref)) &&
-        equal(
-          artifactReference({ ...bodyAtSelected.ref, commit: request.body.commit }),
-          request.body,
-        ) &&
-        equal(artifactReference(currentMetadata), request.metadata),
-      "stale-base",
-    );
+    await assertEditorialBaseCurrent(input.content, {
+      body: request.body,
+      metadata: request.metadata,
+    });
     return {
       version: request.version,
       request,
