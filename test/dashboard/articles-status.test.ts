@@ -33,6 +33,10 @@ describe("article status filtering (#510)", () => {
     expect(statusBucket("credit-exhausted")).toBe("failed");
     expect(statusBucket("running")).toBe("pending");
     expect(statusBucket("not-started")).toBe("not-started");
+    // An unreadable run state is not an unverified article.
+    expect(statusBucket("unknown")).toBe("unknown");
+    expect(statusBucket("unavailable")).toBe("unknown");
+    expect(statusBucket("not-configured")).toBe("unknown");
   });
 
   it("filters to approved only, never mixing rejected verification in", async () => {
@@ -96,6 +100,25 @@ describe("article status filtering (#510)", () => {
     // away, and the cursor still points at the next page so nothing is lost.
     expect(html).toContain("Showing 25 archived articles");
     expect(html).toContain("Next page");
+  });
+
+  it("keeps unavailable runs out of the unverified bucket", async () => {
+    const v = articleViews({
+      canTrigger: false,
+      articles: {
+        recent: async () => [article("p1"), article("p2")],
+        find: async () => undefined,
+      },
+      runs: {
+        status: async (a: { postId: string }) =>
+          a.postId === "p1" ? { state: "unavailable" } : finished("rejected"),
+      },
+    }).find((x) => x.path === "/articles")!;
+    const unverified = await v.render(new URL("https://x/articles?status=unverified"));
+    expect(unverified).toContain(">p2<");
+    expect(unverified).not.toContain(">p1<");
+    const unknown = await v.render(new URL("https://x/articles?status=unknown"));
+    expect(unknown).toContain(">p1<");
   });
 
   it("ignores an unknown status value instead of failing", async () => {

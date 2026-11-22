@@ -57,6 +57,7 @@ export const ARTICLE_STATUS_FILTERS = [
   "evidence-gap",
   "unverified",
   "approved",
+  "unknown",
 ] as const;
 export type ArticleStatusFilter = (typeof ARTICLE_STATUS_FILTERS)[number];
 
@@ -74,12 +75,15 @@ export function statusBucket(summary: string): Exclude<ArticleStatusFilter, "all
     case "evidence-gap":
       return "evidence-gap";
     case "rejected":
+    case "drafted-unverified":
     case "unverified":
       return "unverified";
     case "verified":
       return "approved";
+    // No readable run state (unavailable, not configured, unreadable) is not
+    // evidence that verification was unverified.
     default:
-      return "unverified";
+      return "unknown";
   }
 }
 
