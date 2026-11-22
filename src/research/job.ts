@@ -99,7 +99,7 @@ export const ResearchRequestSchema = z
     if (r.canonicalNeeds) {
       const needs = r.canonicalNeeds.needs;
       if (
-        (r.origin !== "theme" && r.origin !== "extraction") ||
+        r.origin !== "theme" ||
         needs.length !== r.claims.length ||
         needs.some(
           (n) =>

@@ -762,7 +762,7 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
 describe("librarian coverage across extraction schema versions", () => {
   it("accepts claims from a version 3 extraction", async () => {
     const { themeResult, claimResult } = await analysis("p3", claims, "Weather warfare", 3);
-    const r = researcher(() => ({ passages: [{ claimRecordId: "claim-treaty", url: SHARED }] }));
+    const r = researcher(() => "busy");
     const { record } = await assessPostCoverage({
       artifacts,
       themeResult,
@@ -770,6 +770,8 @@ describe("librarian coverage across extraction schema versions", () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
+    expect(r.requests[0]!.canonicalNeeds!.needs.every((n) => !!n.occurrenceScope)).toBe(true);
+    expect(record.claims.every((c) => c.status === "pending")).toBe(true);
     expect(record.claims.map((c) => c.claimRecordId).sort()).toEqual([
       "claim-payment",
       "claim-treaty",

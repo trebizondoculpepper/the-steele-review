@@ -241,40 +241,58 @@ export type LegacyNeedLookup =
     };
 /** Exact immutable reads may be shared within one assessment, never across mutable path lookups. */
 export function cachedResearchEvidenceStore(artifacts: EvidenceStore): EvidenceStore {
-  const reads = new Map<string, Promise<string>>();
+  const values = new Map<string, string>();
+  const inFlight = new Map<string, Promise<string>>();
+  let chars = 0;
+  const maxChars = 16 * 1024 * 1024; // At most roughly 32 MiB of UTF-16 source text.
   return {
     lookup: artifacts.lookup.bind(artifacts),
     lookupAt: artifacts.lookupAt.bind(artifacts),
     list: artifacts.list.bind(artifacts),
     read: (ref) => {
       const key = JSON.stringify(reference(ref));
-      let value = reads.get(key);
-      if (!value) {
-        value = artifacts.read(ref);
-        reads.set(key, value);
-      }
-      return value;
+      const saved = values.get(key);
+      if (saved !== undefined) return Promise.resolve(saved);
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+      const read = artifacts
+        .read(ref)
+        .then((value) => {
+          if (value.length <= maxChars) {
+            while (chars + value.length > maxChars || values.size >= 2048) {
+              const oldest = values.keys().next().value;
+              if (oldest === undefined) break;
+              chars -= values.get(oldest)!.length;
+              values.delete(oldest);
+            }
+            values.set(key, value);
+            chars += value.length;
+          }
+          return value;
+        })
+        .finally(() => {
+          inFlight.delete(key);
+        });
+      inFlight.set(key, read);
+      return read;
     },
   };
 }
+
 /** One bounded index per assessment, not a complete corpus scan for every claim. */
 export function createLegacyResearchNeedLookup(
   artifacts: EvidenceStore,
 ): (need: z.infer<typeof CanonicalNeedSchema>) => Promise<LegacyNeedLookup> {
-  const reads = new Map<string, Promise<string>>();
+  const refs = new Set<string>();
+  const retained = cachedResearchEvidenceStore(artifacts);
   const cached: EvidenceStore = {
-    lookup: artifacts.lookup.bind(artifacts),
-    lookupAt: artifacts.lookupAt.bind(artifacts),
-    list: artifacts.list.bind(artifacts),
-    read: (ref: ArtifactRef) => {
+    ...retained,
+    read: (ref) => {
       const key = JSON.stringify(reference(ref));
-      let value = reads.get(key);
-      if (!value) {
-        if (reads.size >= 20000) throw new LegacyProofLimitError("research-need-legacy-read-limit");
-        value = artifacts.read(ref);
-        reads.set(key, value);
-      }
-      return value;
+      if (!refs.has(key) && refs.size >= 20000)
+        throw new LegacyProofLimitError("research-need-legacy-read-limit");
+      refs.add(key);
+      return retained.read(ref);
     },
   };
   let index: Promise<Map<string, z.infer<typeof ResearchRequestSchema>[]>> | undefined;
@@ -341,7 +359,10 @@ export function createLegacyResearchNeedLookup(
           status: "unavailable",
           reason: ambiguous.has(id) ? "legacy-proof-ambiguous" : "legacy-proof-missing",
         };
-      })();
+      })().catch((error) => {
+        if (!(error instanceof LegacyProofLimitError)) throw error;
+        return { status: "unavailable", reason: "legacy-proof-scan-bound" } as const;
+      });
       results.set(id, result);
     }
     return result;

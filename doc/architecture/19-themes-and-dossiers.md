@@ -39,10 +39,17 @@ bylines, post metadata and extraction record identifiers remain provenance, not
 shared need identity. Conservative Unicode and whitespace normalization preserves
 case, punctuation, quantities and negation. Missing or context-dependent semantic
 fields bind the need to its exact source/analysis occurrence; an accepted contract
-version alone does not establish equivalence.
+version alone does not establish equivalence. A full but unnamed generic claim
+without an explicit entity, resolved date or quoted-speaker scope also remains
+occurrence-specific; its display wording does not supply the missing scope.
 
 Before dispatch, the librarian saves a separate immutable analysis-to-need binding.
-Full seed jobs and targeted enhancements retain exact request, result, manifest,
+Both full seed jobs and targeted enhancements execute post-free canonical-theme
+requests, including while a previous job is still pending. Their common Markdown
+question and prompt identity are retained in the plan and use the canonical topic
+ID rather than a proposal alias. Batches are ordered by semantic need identity.
+Per-analysis source provenance remains in the separate binding. They retain exact
+request, result, manifest,
 raw report and occurrence-binding references. Reuse validates that chain and the
 archived independent supporting passage, then projects it onto current claim IDs.
 Coverage retains the supporting job references so the writer receives the same
