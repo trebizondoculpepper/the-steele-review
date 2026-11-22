@@ -86,12 +86,15 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
 
   /** A researcher stand-in: saves a manifest/result per request and records calls. */
   function researcher(
-    plan: (
-      req: ResearchRequest,
-    ) =>
+    plan: (req: ResearchRequest) =>
       | "busy"
       | "failed"
-      | { passages: { claimRecordId: string; url: string; monitored?: boolean }[] },
+      | {
+          passages: { claimRecordId: string; url: string; monitored?: boolean }[];
+          /** Archived theme-background sources with no claim passage (#748). */
+          background?: string[];
+          report?: string;
+        },
   ) {
     const requests: ResearchRequest[] = [];
     const commission: Commission = async (request) => {
@@ -107,13 +110,21 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
           failure: "provider-error" as const,
           finishedAt: "2026-01-01T00:00:00Z",
         };
-        const resultRef = await put(
-          `research-jobs/${jobId}/result.json`,
-          JSON.stringify(result),
-        );
+        const resultRef = await put(`research-jobs/${jobId}/result.json`, JSON.stringify(result));
         return { jobId, status: "finished", result, resultRef };
       }
-      const report = await put(`research-jobs/${jobId}/report.md`, "# report\n");
+      const report = await put(`research-jobs/${jobId}/report.md`, outcome.report ?? "# report\n");
+      const background = await Promise.all(
+        (outcome.background ?? []).map(async (url, i) => ({
+          url,
+          retrieval: "archived",
+          support: "unverified",
+          archivedArtifact: ref(
+            await put(`research-jobs/${jobId}/sources/${i}.txt`, `Snapshot of ${url}`),
+          ),
+          passages: [],
+        })),
+      );
       const urls = [...new Set(outcome.passages.map((p) => p.url))];
       const manifest = await put(
         `research-jobs/${jobId}/manifest.json`,
@@ -121,19 +132,21 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
           schemaVersion: 1,
           jobId,
           report: ref(report),
-          citations: urls.map((url) => ({
-            url,
-            retrieval: "archived",
-            ...(outcome.passages.find((p) => p.url === url)?.monitored
-              ? { sourceType: "monitored-source", support: "unverified" }
-              : { support: "supported" }),
-            passages: outcome.passages
-              .filter((p) => p.url === url)
-              .map((p) => ({
-                claimRecordId: p.claimRecordId,
-                passage: `Article I text for ${p.claimRecordId}`,
-              })),
-          })),
+          citations: urls
+            .map((url) => ({
+              url,
+              retrieval: "archived",
+              ...(outcome.passages.find((p) => p.url === url)?.monitored
+                ? { sourceType: "monitored-source", support: "unverified" }
+                : { support: "supported" }),
+              passages: outcome.passages
+                .filter((p) => p.url === url)
+                .map((p) => ({
+                  claimRecordId: p.claimRecordId,
+                  passage: `Article I text for ${p.claimRecordId}`,
+                })),
+            }))
+            .concat(background as never[]),
           gaps: [],
           provider: { model: "fixture" },
         }),
@@ -145,10 +158,7 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
         manifest: ref(manifest),
         finishedAt: "2026-01-01T00:00:00Z",
       };
-      const resultRef = await put(
-        `research-jobs/${jobId}/result.json`,
-        JSON.stringify(result),
-      );
+      const resultRef = await put(`research-jobs/${jobId}/result.json`, JSON.stringify(result));
       return { jobId, status: "finished", result, resultRef };
     };
     return { commission, requests };

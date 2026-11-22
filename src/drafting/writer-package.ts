@@ -157,9 +157,78 @@ export const WriterPackageSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Theme-level research context (#748), separate from claim support.
+     * Optional so earlier packages stay valid. Material here is background
+     * about a mapped theme: it is never evidence for a particular claim, and
+     * no passage is attached to an uncovered claim.
+     */
+    themeContext: z
+      .object({
+        version: z.literal("theme-context-v1"),
+        status: z.enum(["available", "gap"]),
+        reason: z.string().optional(),
+        /** A bound was reached; more saved material exists than is carried. */
+        truncated: z.boolean().optional(),
+        reports: z.array(
+          z
+            .object({
+              dossierId: z.string(),
+              jobId: z.string(),
+              manifest: Ref,
+              report: Ref,
+              /** Bounded excerpt of the saved research report. */
+              excerpt: z.string(),
+              excerptTruncated: z.boolean().optional(),
+              citations: z.array(
+                z
+                  .object({
+                    url: z.string(),
+                    /** The archived snapshot of this source, pinned. */
+                    archived: Ref,
+                    sourceType: z.string().optional(),
+                  })
+                  .strict(),
+              ),
+            })
+            .strict(),
+        ),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type WriterPackage = z.infer<typeof WriterPackageSchema>;
+
+/** Bounds on theme context (#748). */
+export const MAX_THEME_REPORTS = 5;
+export const MAX_THEME_CITATIONS = 30;
+export const MAX_THEME_EXCERPT_CHARS = 3_000;
+
+/**
+ * Sources the writer may cite for wider context, in index order: the
+ * independently cited background passages, then archived theme-context
+ * sources (#748). Theme-context sources are labelled as theme background,
+ * never as support for a claim.
+ */
+export function contextSources(
+  pkg: WriterPackage,
+): { url: string; passage: string; kind: "background" | "theme-context" }[] {
+  return [
+    ...(pkg.context?.background.passages ?? []).map((p) => ({
+      url: p.url,
+      passage: p.passage,
+      kind: "background" as const,
+    })),
+    ...(pkg.themeContext?.reports ?? []).flatMap((r) =>
+      r.citations.map((c) => ({
+        url: c.url,
+        passage: `Theme background from research on ${r.dossierId}; not checked against a specific claim.`,
+        kind: "theme-context" as const,
+      })),
+    ),
+  ];
+}
 
 export class PackageInputError extends Error {
   constructor(reason: string) {
@@ -319,11 +388,45 @@ export async function buildWriterPackage(input: {
   // a claim's evidence is resolved from the jobs that supported it, never from
   // another job that happened to fetch the same URL.
   const archivedByJobUrl = new Map<string, z.infer<typeof Ref>>();
+  // Theme context (#748): saved research for this post's mapped themes, in
+  // job order, bounded. Only jobs this coverage record names, for themes
+  // this post maps to, so unrelated theme material is never injected.
+  const mappedThemes = new Set(record.mappings.map((m) => m.dossierId));
+  const themeReports: NonNullable<WriterPackage["themeContext"]>["reports"] = [];
+  let themeCitations = 0;
+  let themeTruncated = false;
   for (const job of record.jobs) {
     if (!job.manifest) continue;
     const manifest = ResearchManifestSchema.parse(
       JSON.parse(await readPinned(input.content, job.manifest, `manifest for ${job.jobId}`)),
     );
+    if (mappedThemes.has(job.dossierId) && !themeReports.some((r) => r.jobId === job.jobId)) {
+      if (themeReports.length >= MAX_THEME_REPORTS) {
+        themeTruncated = true;
+      } else {
+        const text = await readPinned(input.content, manifest.report, `report for ${job.jobId}`);
+        const archived = manifest.citations.filter(
+          (c) => c.retrieval === "archived" && c.archivedArtifact,
+        );
+        const room = Math.max(0, MAX_THEME_CITATIONS - themeCitations);
+        if (archived.length > room) themeTruncated = true;
+        const kept = archived.slice(0, room);
+        themeCitations += kept.length;
+        themeReports.push({
+          dossierId: job.dossierId,
+          jobId: job.jobId,
+          manifest: job.manifest,
+          report: manifest.report,
+          excerpt: text.slice(0, MAX_THEME_EXCERPT_CHARS),
+          ...(text.length > MAX_THEME_EXCERPT_CHARS ? { excerptTruncated: true } : {}),
+          citations: kept.map((c) => ({
+            url: c.url,
+            archived: c.archivedArtifact!,
+            ...(c.sourceType ? { sourceType: c.sourceType } : {}),
+          })),
+        });
+      }
+    }
     for (const c of manifest.citations) {
       if (c.archivedArtifact)
         archivedByJobUrl.set(JSON.stringify([job.jobId, c.url]), c.archivedArtifact);
@@ -452,6 +555,20 @@ export async function buildWriterPackage(input: {
     status: packageClaims.some((c) => c.status === "covered") ? "ready" : "evidence-gap",
     post: record.post,
     source: { artifact: record.source, sourceVersion: themes.sourceVersion, ...original },
+    themeContext:
+      themeReports.length > 0
+        ? {
+            version: "theme-context-v1",
+            status: "available",
+            ...(themeTruncated ? { truncated: true } : {}),
+            reports: themeReports,
+          }
+        : {
+            version: "theme-context-v1",
+            status: "gap",
+            reason: "no saved research report for this post's mapped themes",
+            reports: [],
+          },
     coverage: {
       repository: input.coverage.repository,
       commit: input.coverage.commit,

@@ -193,6 +193,62 @@ describe("writer evidence package (#148)", { timeout: 60_000 }, () => {
     expect(pkg.claims.every((c) => c.status === "gap" && c.evidence.length === 0)).toBe(true);
   });
 
+  it("carries theme research context with zero claim support, never as claim evidence (#748)", async () => {
+    const THEME_SOURCE = "https://archive.example.org/enmod-history";
+    const { ref } = await coverageFor(() => ({
+      passages: [],
+      background: [THEME_SOURCE],
+      report: "# Weather warfare\n\nThe ENMOD Convention of 1977 frames this theme.",
+    }));
+    const { package: pkg } = await saveWriterPackage({ content, coverage: ref });
+    // No claim is supported, and none is made to look supported.
+    expect(pkg.status).toBe("evidence-gap");
+    expect(pkg.claims.every((c) => c.status === "gap" && c.evidence.length === 0)).toBe(true);
+    // The theme material survives, with exact archived citations.
+    expect(pkg.themeContext).toMatchObject({ version: "theme-context-v1", status: "available" });
+    const [report] = pkg.themeContext!.reports;
+    expect(report!.excerpt).toContain("ENMOD Convention of 1977");
+    expect(report!.dossierId).toBe(pkg.dossiers[0]!.dossierId);
+    expect(report!.citations).toHaveLength(1);
+    expect(report!.citations[0]!.url).toBe(THEME_SOURCE);
+    const snapshot = report!.citations[0]!.archived;
+    expect(
+      await content.read({
+        repository: snapshot.repository,
+        commit: snapshot.commit,
+        path: snapshot.path,
+        sha256: snapshot.hash.replace(/^sha256:/, ""),
+      }),
+    ).toBe(`Snapshot of ${THEME_SOURCE}`);
+  });
+
+  it("does not inject research for a theme this post does not map (#748)", async () => {
+    const { ref, record } = await coverageFor(() => ({
+      passages: [],
+      background: ["https://archive.example.org/mapped"],
+    }));
+    const altered = await content.write(
+      "fixtures/coverage-unmapped-job.json",
+      JSON.stringify({
+        ...record,
+        jobs: record.jobs.map((j) => ({ ...j, dossierId: "some-unrelated-theme" })),
+      }),
+    );
+    const { package: pkg } = await saveWriterPackage({ content, coverage: altered });
+    expect(pkg.themeContext).toMatchObject({ status: "gap", reports: [] });
+    expect(ref.path).not.toBe(altered.path);
+  });
+
+  it("reads a package saved before theme context existed (#748)", async () => {
+    const { ref } = await coverageFor(() => ({
+      passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+    }));
+    const { package: pkg } = await saveWriterPackage({ content, coverage: ref });
+    const { themeContext: _drop, ...older } = pkg;
+    const { WriterPackageSchema } = await import("../../src/drafting/writer-package.js");
+    expect(WriterPackageSchema.parse(older).themeContext).toBeUndefined();
+  });
+
   it("refuses missing or mismatched inputs and pending research", async () => {
     await expect(
       saveWriterPackage({
