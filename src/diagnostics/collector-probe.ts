@@ -1,6 +1,6 @@
 import type { NatsConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
-import { NatsController } from "../controllers/nats.js";
+import { brokerCheck, consumerCheck } from "./probe-checks.js";
 import { runRoleProbe, type RoleProbeReport } from "./role-probe.js";
 import { stateProbeFor, type StateProbeOptions } from "./runtime-status.js";
 
@@ -26,30 +26,11 @@ export async function probeCollector(config: CollectorProbeConfig): Promise<Role
   return runRoleProbe(
     "collector",
     [
-      {
-        name: "broker",
-        ...(nats
-          ? { run: (signal) => new NatsController(nats.url, nats.token).check(signal) }
-          : {}),
-      },
+      { name: "broker", ...(nats ? { run: brokerCheck(nats) } : {}) },
       {
         name: "consumer",
         ...(nats && config.stream && config.consumer
-          ? {
-              run: async (signal) => {
-                const controller = new NatsController(nats.url, nats.token);
-                const close = () => void controller.close().catch(() => undefined);
-                signal.addEventListener("abort", close, { once: true });
-                try {
-                  await controller.connect("steele-collector-probe");
-                  // Reads consumer info only; a missing consumer fails here.
-                  await controller.consumerPosition(config.stream!, config.consumer!);
-                } finally {
-                  signal.removeEventListener("abort", close);
-                  await controller.close().catch(() => undefined);
-                }
-              },
-            }
+          ? { run: consumerCheck(nats, config.stream, config.consumer, "steele-collector-probe") }
           : {}),
       },
       {
