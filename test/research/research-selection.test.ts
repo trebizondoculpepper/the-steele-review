@@ -7,6 +7,7 @@ import { researchJobId, type ResearchRequest } from "../../src/research/job.js";
 import {
   originalOrder,
   rankResearchRequests,
+  retainedOrdering,
   saveResearchSelection,
 } from "../../src/research/librarian.js";
 
@@ -116,5 +117,18 @@ describe("research selection (#533)", () => {
     const kept = originalOrder(requests);
     expect(kept.map((r) => r.request)).toEqual(requests);
     expect(kept[0]!.rationale).toMatch(/before ranking/);
+  });
+
+  it("decides the ordering once per analysis and keeps it on retry", async () => {
+    const themeResult = await artifacts.write("theme-proposals/pub/p1/r.json", "{}");
+    const claimResult = await artifacts.write("claim-extractions/pub/p1/r.json", "{}");
+    const post = { publicationId: "pub", postId: "p1" };
+    expect(
+      await retainedOrdering(artifacts, post, themeResult, claimResult, async () => "ranked"),
+    ).toBe("ranked");
+    // A retry after this planning wrote coverage would decide "original": the saved decision wins.
+    expect(
+      await retainedOrdering(artifacts, post, themeResult, claimResult, async () => "original"),
+    ).toBe("ranked");
   });
 });

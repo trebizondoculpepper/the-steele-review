@@ -1341,6 +1341,32 @@ export function originalOrder(requests: ResearchRequest[]): RankedResearchReques
   }));
 }
 
+/**
+ * The research ordering for one analysis, decided once and saved write-once
+ * (#533): the first decision is kept, so retries never switch between the
+ * original and the ranked order.
+ */
+export async function retainedOrdering(
+  artifacts: GitArtifactStore,
+  post: { publicationId: string; postId: string },
+  themeResult: ArtifactRef,
+  claimResult: ArtifactRef,
+  decide: () => Promise<"ranked" | "original">,
+): Promise<"ranked" | "original"> {
+  const key = createHash("sha256")
+    .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
+    .digest("hex")
+    .slice(0, 32);
+  const path = `librarian/research-ordering/${post.publicationId}/${post.postId}/${key}.json`;
+  const Saved = z
+    .object({ schemaVersion: z.literal(1), ordering: z.enum(["ranked", "original"]) })
+    .strict();
+  const existing = await artifacts.lookup(path);
+  if (existing) return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
+  const ref = await writeOnce(artifacts, path, { schemaVersion: 1, ordering: await decide() });
+  return Saved.parse(JSON.parse(await artifacts.read(ref))).ordering;
+}
+
 /** True when this exact analysis was already assessed (any saved coverage record). */
 export async function analysedBefore(
   artifacts: GitArtifactStore,
