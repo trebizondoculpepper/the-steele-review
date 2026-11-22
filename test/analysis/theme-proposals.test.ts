@@ -130,6 +130,8 @@ describe("proposeThemes", () => {
       source,
       sourceContext: first,
     });
+    const rediscovered = await saveSourceContext(content, sourceContextFor(captured, archive));
+    expect(rediscovered).toEqual(first);
     const b = await proposeThemes({
       provider,
       artifacts: content,
