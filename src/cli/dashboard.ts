@@ -71,6 +71,7 @@ import { assessmentViews } from "../dashboard/assessment-views.js";
 import { savedJudgments } from "../dashboard/judgments.js";
 import { judgmentViews } from "../dashboard/judgment-views.js";
 import { researchBrowseViews } from "../dashboard/research-browse-views.js";
+import { claimBrowseViews } from "../dashboard/claim-browse-views.js";
 import { DraftTrashStore } from "../dashboard/draft-trash.js";
 import { collectActivity, renderActivity } from "../dashboard/activity.js";
 import { renderConfig } from "../dashboard/config-view.js";
@@ -315,6 +316,7 @@ const views = [
   ...(content ? assessmentViews(savedAssessments(content)) : []),
   ...(content ? judgmentViews(savedJudgments(content)) : []),
   ...(content ? researchBrowseViews(savedResearch(content)) : []),
+  ...(content ? claimBrowseViews(content, savedClaims(content, archive)) : []),
   // Saved research reports and dossiers, read-only (#507).
   ...researchViews(content ? savedResearch(content) : undefined),
   // Preserve old bookmarks without a second navigation entry or placeholder.
