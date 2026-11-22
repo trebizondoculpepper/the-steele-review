@@ -390,6 +390,11 @@ describe("selected publisher through real NATS", { timeout: 120000 }, () => {
   it("waits across empty one-second fetches for selected delayed redelivery", async () => {
     const selected = await approved(),
       target = destination(true);
+    await nats.publish(
+      ARTICLE_APPROVED_SUBJECT,
+      new TextEncoder().encode('{"unrelated":"later"}'),
+      { msgId: "later" },
+    );
     const first = await runSelectedPublisher({
       selection: { eventId: selected.eventId, sequence: selected.sequence, waitMs: 4000 },
       nats,
@@ -406,11 +411,25 @@ describe("selected publisher through real NATS", { timeout: 120000 }, () => {
     expect(second).toMatchObject({ status: "delivered", consumer: first.consumer });
     expect(Date.now() - began).toBeGreaterThan(1000);
     expect(target.creates).toBe(1);
+    expect(await nats.consumerPosition(stream, first.consumer)).toMatchObject({
+      deliveredSequence: selected.sequence,
+      ackFloorSequence: selected.sequence,
+      pending: 1,
+      ackPending: 0,
+    });
+    expect(
+      (await (await nats.manager()).consumers.info(stream, first.consumer)).config.max_ack_pending,
+    ).toBe(1);
   });
 
   it("keeps the original total receive deadline while waiting for later redelivery", async () => {
     const selected = await approved(),
       target = destination(true);
+    await nats.publish(
+      ARTICLE_APPROVED_SUBJECT,
+      new TextEncoder().encode('{"unrelated":"later"}'),
+      { msgId: "later" },
+    );
     const first = await runSelectedPublisher({
       selection: { eventId: selected.eventId, sequence: selected.sequence, waitMs: 4000 },
       nats,
@@ -434,6 +453,9 @@ describe("selected publisher through real NATS", { timeout: 120000 }, () => {
     expect(target.creates).toBe(1);
     expect(await nats.consumerPosition(stream, first.consumer)).toMatchObject({
       ackFloorSequence: 0,
+      deliveredSequence: selected.sequence,
+      pending: 1,
+      ackPending: 1,
     });
   });
 

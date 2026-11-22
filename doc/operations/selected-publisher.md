@@ -23,6 +23,10 @@ Missing or mismatched proof stops without provisioning or destination effects.
 Explicit provisioning uses a stable `selected-<digest>` durable derived from the
 stream, event, sequence and destination/action, starting at that exact retained
 sequence. It refuses incompatible existing consumer configuration. It never uses
+more than one outstanding delivery: a selected event waiting after a delayed NAK
+cannot be bypassed by a later unrelated event, including on reconnect. A reused
+scoped consumer with a wider outstanding-delivery policy is refused, not silently
+modified. Continuous consumer defaults are unchanged. It never uses
 new-only delivery (which would miss an event already retained), changes the
 continuous durable, or creates a stream. Reconnect with the same event, sequence
 and destination; do not invent another identity to bypass uncertainty.

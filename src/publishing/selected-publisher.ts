@@ -95,6 +95,7 @@ export async function runSelectedPublisher(input: {
     name: consumer,
     filterSubject: ARTICLE_APPROVED_SUBJECT,
     startSequence: selection.sequence,
+    maxAckPending: 1,
     maxDeliver: 10,
   });
   const position = await input.nats.consumerPosition(input.stream, consumer);

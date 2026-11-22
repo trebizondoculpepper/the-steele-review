@@ -50,3 +50,51 @@ it("validates explicit start policy before broker access and refuses an incompat
     }),
   ).rejects.toBeInstanceOf(ConsumerConflictError);
 });
+
+it("refuses invalid or wider outstanding-delivery policies without modifying a consumer", async () => {
+  let calls = 0;
+  const offline = {
+    manager: async () => {
+      calls++;
+      throw new Error("must not connect");
+    },
+  } as Pick<NatsController, "manager">;
+  await expect(
+    provisionDurableConsumer(offline, {
+      stream: "S",
+      name: "selected",
+      filterSubject: "a.b",
+      maxAckPending: 0,
+    }),
+  ).rejects.toThrow("invalid consumer max ack pending");
+  expect(calls).toBe(0);
+  let updates = 0;
+  const existing = {
+    manager: async () => ({
+      consumers: {
+        info: async () => ({
+          config: {
+            filter_subject: "a.b",
+            ack_policy: "explicit",
+            deliver_policy: "by_start_sequence",
+            opt_start_seq: 4,
+            max_ack_pending: 1000,
+          },
+        }),
+        update: async () => {
+          updates++;
+        },
+      },
+    }),
+  } as unknown as Pick<NatsController, "manager">;
+  await expect(
+    provisionDurableConsumer(existing, {
+      stream: "S",
+      name: "selected",
+      filterSubject: "a.b",
+      startSequence: 4,
+      maxAckPending: 1,
+    }),
+  ).rejects.toBeInstanceOf(ConsumerConflictError);
+  expect(updates).toBe(0);
+});

@@ -80,6 +80,8 @@ export interface DurableConsumerConfig {
   newOnly?: boolean;
   /** Explicit selected-message start; incompatible with newOnly. */
   startSequence?: number;
+  /** Explicit outstanding-delivery bound; absent leaves existing defaults alone. */
+  maxAckPending?: number;
   /** How long a delivered message may stay unacknowledged before redelivery. */
   ackWaitMs?: number;
   /** Bound on deliveries per message. */
@@ -110,6 +112,13 @@ export async function provisionDurableConsumer(
     (config.newOnly || !Number.isSafeInteger(config.startSequence) || config.startSequence < 1)
   )
     throw new Error("invalid consumer start sequence");
+  if (
+    config.maxAckPending !== undefined &&
+    (!Number.isSafeInteger(config.maxAckPending) ||
+      config.maxAckPending < 1 ||
+      config.maxAckPending > 1_000_000)
+  )
+    throw new Error("invalid consumer max ack pending");
   const jsm = await nats.manager();
   let existing;
   try {
@@ -123,6 +132,8 @@ export async function provisionDurableConsumer(
     if (
       existing.config.filter_subject !== config.filterSubject ||
       existing.config.ack_policy !== AckPolicy.Explicit ||
+      (config.maxAckPending !== undefined &&
+        existing.config.max_ack_pending !== config.maxAckPending) ||
       (config.startSequence !== undefined &&
         (existing.config.deliver_policy !== DeliverPolicy.StartSequence ||
           existing.config.opt_start_seq !== config.startSequence ||
@@ -147,6 +158,7 @@ export async function provisionDurableConsumer(
     durable_name: config.name,
     filter_subject: config.filterSubject,
     ack_policy: AckPolicy.Explicit,
+    ...(config.maxAckPending === undefined ? {} : { max_ack_pending: config.maxAckPending }),
     ...(config.newOnly ? { deliver_policy: DeliverPolicy.New } : {}),
     ...(config.startSequence === undefined
       ? {}
