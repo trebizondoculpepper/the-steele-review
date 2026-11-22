@@ -54,7 +54,10 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
         description: "Dossier theme ID (dossiers only)",
       },
     },
-    sorts: ["title", "path", "date"],
+    // The reader provides one stable stored order. Title/date sorts cannot be
+    // applied across a resumable scan without loading the whole archive, so
+    // they are not offered rather than shown as page-local ordering.
+    sorts: ["stored"],
     async search(query) {
       const limitations: string[] = [];
       const rows: ResearchBrowseRow[] = [];
@@ -93,6 +96,12 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
           break;
         }
         unreadable += page.unreadable;
+        // Every reader window costs work, even when filters match nothing.
+        examined += Math.max(1, page.rows.length);
+        if (examined > RESEARCH_BROWSE_SCAN) {
+          complete = false;
+          break;
+        }
         for (const row of page.rows) {
           examined++;
           cursor = row.path;
@@ -114,16 +123,8 @@ export function researchCollection(research: ResearchPort): CollectionAdapter & 
         cursor = page.next;
       }
       if (examined >= RESEARCH_BROWSE_SCAN && rows.length < query.limit) complete = false;
-      // Sort applies within the returned page; the reader's stable listing
-      // order is what pagination and cursors follow.
-      const sortKey = (r: ResearchBrowseRow) =>
-        query.sort === "path" ? r.id : query.sort === "date" ? (r.date ?? "") : r.summary;
-      rows.sort((a, b) => {
-        const ka = sortKey(a);
-        const kb = sortKey(b);
-        const cmp = ka.localeCompare(kb) || a.id.localeCompare(b.id);
-        return query.direction === "desc" ? -cmp : cmp;
-      });
+      // Stored order only: pagination and the cursor follow the reader's
+      // stable listing, and the page does not pretend to a global sort.
       const pageRows = rows;
       // A page that stopped at the scan budget still has an examined position
       // to resume from, even when it holds few or no matches.

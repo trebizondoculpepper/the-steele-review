@@ -96,15 +96,15 @@ describe("research browser (#620)", { timeout: 60_000 }, () => {
     expect(text).not.toContain("Imported treaty report");
   });
 
-  it("sorts deterministically and reaches every document through a cursor", async () => {
+  it("reaches every document through a cursor in stored order", async () => {
     await seed();
     const seen = new Set<string>();
-    let page = await render("/research/browse?sort=path&limit=1");
+    let page = await render("/research/browse?sort=stored&limit=1");
     for (;;) {
       for (const m of page.matchAll(/\/research\/view\?path=([^&"]+)/g)) seen.add(m[1]!);
       const next = /after=([^"&]+)/.exec(page)?.[1];
       if (!next) break;
-      page = await render(`/research/browse?sort=path&limit=1&after=${next}`);
+      page = await render(`/research/browse?sort=stored&limit=1&after=${next}`);
       expect(seen.size).toBeLessThan(10);
     }
     expect(seen.size).toBe(3);
@@ -113,7 +113,7 @@ describe("research browser (#620)", { timeout: 60_000 }, () => {
   it("rejects unsupported filters/sorts and reports invalid page links safely", async () => {
     await seed();
     expect(await render("/research/browse?f.unknown=x")).toContain("not valid");
-    expect(await render("/research/browse?sort=unknown")).toContain("not valid");
+    expect(await render("/research/browse?sort=title")).toContain("not valid");
     const html = await render("/research/browse?after=not-a-cursor");
     expect(html).toContain("page link was not valid");
     expect(html).toContain("Masts dossier");

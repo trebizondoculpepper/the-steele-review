@@ -32,9 +32,7 @@ export function researchBrowseViews(research?: ResearchPort): DashboardView[] {
       const f = (raw.filters ?? {}) as Record<string, string>;
       const option = (v: string, label: string) =>
         `<option value="${v}"${f.kind === v ? " selected" : ""}>${escapeHtml(label)}</option>`;
-      const sortOption = (v: string, label: string) =>
-        `<option value="${v}"${(raw.sort ?? "title") === v ? " selected" : ""}>${escapeHtml(label)}</option>`;
-      const form = `<form method="get" action="/research/browse"><label>Text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Kind <select name="f.kind"><option value="">any</option>${option("dossier", "dossier")}${option("imported-report", "imported report")}${option("generated-report", "generated report")}</select></label> <label>Subject <input name="f.subject" value="${escapeHtml(f.subject ?? "")}" maxlength="200"></label> <label>Dossier theme <input name="f.theme" value="${escapeHtml(f.theme ?? "")}" maxlength="100"></label> <label>Sort <select name="sort">${sortOption("title", "title")}${sortOption("path", "path")}${sortOption("date", "date")}</select></label> <label>Order <select name="dir"><option value="asc"${(raw.direction ?? "desc") === "desc" ? "" : " selected"}>ascending</option><option value="desc"${raw.direction === "desc" ? " selected" : ""}>descending</option></select></label> <button>Search</button></form>`;
+      const form = `<form method="get" action="/research/browse"><label>Text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Kind <select name="f.kind"><option value="">any</option>${option("dossier", "dossier")}${option("imported-report", "imported report")}${option("generated-report", "generated report")}</select></label> <label>Subject <input name="f.subject" value="${escapeHtml(f.subject ?? "")}" maxlength="200"></label> <label>Dossier theme <input name="f.theme" value="${escapeHtml(f.theme ?? "")}" maxlength="100"></label> <input type="hidden" name="sort" value="stored"> <button>Search</button></form>`;
       let page;
       try {
         page = await queryCollection(adapter, raw);
@@ -59,7 +57,7 @@ export function researchBrowseViews(research?: ResearchPort): DashboardView[] {
         const filtered = q || Object.values(f).some(Boolean);
         return `${form}${notes}<p class="empty">${filtered ? "No saved documents match this search." : "No research documents have been saved yet."}</p>${next}`;
       }
-      return `${form}${notes}<p>Dossiers, imported reports and generated job reports are separate kinds and never promoted into each other. Opening a row reads exactly the shown commit; a citation or summary is not evidence that a claim is true.</p>
+      return `${form}${notes}<p>Dossiers, imported reports and generated job reports are separate kinds and never promoted into each other. Rows are in the reader's stable stored order. Opening a row reads exactly the shown commit; a citation or summary is not evidence that a claim is true.</p>
 <div class="wrap"><table><thead><tr><th>Document</th><th>Kind</th><th>Subject</th><th>Date</th><th>Version</th></tr></thead><tbody>${rows}</tbody></table></div>${next}`;
     },
   };
