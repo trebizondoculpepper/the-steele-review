@@ -131,8 +131,10 @@ export function isRevisablePath(path: string): boolean {
   );
 }
 
-export function sha256(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
+export function sha256(content: string | Uint8Array): string {
+  return typeof content === "string"
+    ? createHash("sha256").update(content, "utf8").digest("hex")
+    : createHash("sha256").update(content).digest("hex");
 }
 
 interface GitResult {
@@ -180,7 +182,7 @@ export class GitArtifactStore {
     this.git = config.gitBinary ?? "git";
   }
 
-  private run(args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}) {
+  private run(args: string[], options: { input?: string | Buffer; env?: NodeJS.ProcessEnv } = {}) {
     return new Promise<GitResult>((resolve, reject) => {
       const child = execFile(
         this.git,
@@ -208,7 +210,8 @@ export class GitArtifactStore {
       // Git may exit before reading all input (e.g. repository unavailable);
       // route the resulting EPIPE into the promise instead of crashing.
       child.stdin?.on("error", (error) => reject(Object.assign(error, { stderr: "" })));
-      if (options.input !== undefined) child.stdin?.end(options.input, "utf8");
+      if (typeof options.input === "string") child.stdin?.end(options.input, "utf8");
+      else if (options.input !== undefined) child.stdin?.end(options.input);
       else child.stdin?.end();
     });
   }
@@ -257,6 +260,22 @@ export class GitArtifactStore {
     return undefined;
   }
 
+  /** Raw blob bytes, never decoded as text (#277). */
+  private blobBytes(blob: string): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      execFile(
+        this.git,
+        ["-C", this.config.repoPath, "cat-file", "blob", blob],
+        {
+          env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1" },
+          maxBuffer: this.maxBytes + 1024 * 1024,
+          encoding: "buffer",
+        },
+        (error, stdout) => (error ? reject(new ArtifactStoreError("git-failed")) : resolve(stdout)),
+      );
+    });
+  }
+
   private async blobContent(blob: string): Promise<string> {
     try {
       return (await this.run(["cat-file", "blob", blob])).stdout;
@@ -276,6 +295,22 @@ export class GitArtifactStore {
   }
 
   /**
+   * Write one binary artifact (#277), with the same write-once, size-bounded,
+   * content-hashed semantics as `write`: the hash is over the exact bytes,
+   * identical bytes at the same path return the existing reference, and
+   * different bytes are an `immutable-conflict`. Only for paths a caller
+   * reserves for raw files (for example images); indexers select their own
+   * document paths and never decode these.
+   */
+  writeBinary(path: string, bytes: Uint8Array, expectedSha256?: string): Promise<ArtifactRef> {
+    if (isRevisablePath(path)) return Promise.reject(new ArtifactStoreError("invalid-path"));
+    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const task = this.queue.then(() => this.writeRetrying(path, buffer, expectedSha256));
+    this.queue = task.catch(() => undefined);
+    return task;
+  }
+
+  /**
    * Several processes may write to one repository (the article worker and the
    * destination publishers, #315). The compare-and-swap ref update makes a lost
    * race fail with `concurrent-update` and never lose a commit; the write is
@@ -284,7 +319,7 @@ export class GitArtifactStore {
    */
   private async writeRetrying(
     path: string,
-    content: string,
+    content: string | Buffer,
     expectedSha256?: string,
   ): Promise<ArtifactRef> {
     for (let attempt = 1; ; attempt++) {
@@ -308,7 +343,7 @@ export class GitArtifactStore {
 
   private async writeNow(
     path: string,
-    content: string,
+    content: string | Buffer,
     expectedSha256?: string,
   ): Promise<ArtifactRef> {
     assertArtifactPath(path);
@@ -350,7 +385,7 @@ export class GitArtifactStore {
   /** Commit one blob at a path on top of `parent` with a compare-and-swap ref update. */
   private async commitBlob(
     path: string,
-    content: string,
+    content: string | Buffer,
     parent: string | undefined,
     message: string,
     beforeCommit?: () => void,
@@ -360,7 +395,7 @@ export class GitArtifactStore {
 
   /** One commit containing every given document (all or nothing). */
   private async commitBlobs(
-    entries: { path: string; content: string }[],
+    entries: { path: string; content: string | Buffer }[],
     parent: string | undefined,
     message: string,
     beforeCommit?: () => void,
@@ -571,7 +606,9 @@ export class GitArtifactStore {
     if (!head) return undefined;
     const blob = await this.entryAt(head, path);
     if (blob === undefined) return undefined;
-    const content = await this.blobContent(blob);
+    // Hash the stored bytes: identical to the UTF-8 text hash for documents,
+    // and correct for binary artifacts (#277).
+    const content = await this.blobBytes(blob);
     const commit = isRevisablePath(path)
       ? await this.latestCommit(head, path)
       : await this.introducingCommit(head, path);
@@ -637,12 +674,14 @@ export class GitArtifactStore {
     }
     const blob = await this.entryAt(at, path);
     if (blob === undefined) return undefined;
-    const content = await this.blobContent(blob);
+    const bytes = await this.blobBytes(blob);
+    const content = bytes.toString("utf8");
     const commit = isRevisablePath(path)
       ? await this.latestCommit(at, path)
       : await this.introducingCommit(at, path);
     return {
-      ref: { repository: this.config.repository, commit, path, sha256: sha256(content) },
+      // The reference hashes the stored bytes (#277); content is the text view.
+      ref: { repository: this.config.repository, commit, path, sha256: sha256(bytes) },
       content,
     };
   }
@@ -836,5 +875,18 @@ export class GitArtifactStore {
     const content = await this.blobContent(blob);
     if (sha256(content) !== valid.sha256) throw new ArtifactStoreError("hash-mismatch");
     return content;
+  }
+
+  /** Read the exact referenced binary artifact as bytes and verify their hash (#277). */
+  async readBinary(ref: ArtifactRef): Promise<Buffer> {
+    const valid = ArtifactRefSchema.parse(ref);
+    if (valid.repository !== this.config.repository) throw new ArtifactStoreError("not-found");
+    assertArtifactPath(valid.path);
+    if (!(await this.commitExists(valid.commit))) throw new ArtifactStoreError("not-found");
+    const blob = await this.entryAt(valid.commit, valid.path);
+    if (blob === undefined) throw new ArtifactStoreError("not-found");
+    const bytes = await this.blobBytes(blob);
+    if (sha256(bytes) !== valid.sha256) throw new ArtifactStoreError("hash-mismatch");
+    return bytes;
   }
 }
