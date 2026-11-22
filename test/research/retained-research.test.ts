@@ -296,6 +296,47 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     expect(f.sonar.research).not.toHaveBeenCalled();
   });
 
+  it("does not automatically follow up a historical retained partial manifest without the new warning field", async () => {
+    const f = await seeded(),
+      d = deps();
+    const recovered = await recoverRetainedResearch({
+      ...d,
+      discovery: f.discovery,
+      failedResult: f.failedResult,
+    });
+    if (recovered.status !== "recovered") throw new Error("unexpected busy");
+    const original = recovered.result.manifest!;
+    const manifest = JSON.parse(
+      await artifacts.read({ ...original, sha256: original.hash.slice(7) }),
+    );
+    delete manifest.warnings;
+    const legacyManifest = await artifacts.write(
+      "fixtures/historical-retained-manifest.json",
+      JSON.stringify(manifest),
+    );
+    const { warnings: _omitted, ...historical } = recovered.result;
+    const legacyResult = await artifacts.write(
+      "fixtures/historical-retained-result.json",
+      JSON.stringify({ ...historical, manifest: ref(legacyManifest) }),
+    );
+    let commissions = 0;
+    const coverage = await assessPostCoverage({
+      artifacts,
+      themeResult: f.themes,
+      claimResult: f.claims,
+      shortlister: new LexicalShortlister(),
+      consequential: () => true,
+      commission: async () => {
+        commissions++;
+        return { status: "finished", jobId: recovered.binding.jobId, resultRef: legacyResult };
+      },
+    });
+    expect(commissions).toBe(1);
+    expect(coverage.record.claims.find((c) => c.claimRecordId === "claim-payment")?.status).toBe(
+      "no-independent-evidence",
+    );
+    expect(JSON.parse(await artifacts.read(legacyResult))).not.toHaveProperty("warnings");
+  });
   it("retrieves and independently checks retained annotations, then normal research/curation builds supported-only package with zero discovery calls", async () => {
     const f = await seeded(),
       d = deps(),

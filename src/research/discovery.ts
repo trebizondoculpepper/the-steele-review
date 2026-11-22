@@ -251,6 +251,7 @@ async function readDiscovery(
       parsed.validation !== (lengthLimited ? "length-limit" : "valid") ||
       returned.transport !== "complete" ||
       !parsed.data ||
+      (lengthLimited && !parsed.data.report.trim()) ||
       result.validation !== parsed.validation ||
       result.completion !== parsed.completion
     )

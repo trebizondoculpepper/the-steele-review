@@ -11,6 +11,7 @@ import {
   captureResearchDiscovery,
   discoveryIdentity,
   readResearchDiscovery,
+  readLengthLimitedResearchDiscovery,
   ResearchDiscoveryError,
   type DiscoveryData,
   type DiscoveryCapture,
@@ -174,6 +175,24 @@ describe("durable research discovery", { timeout: 60000 }, () => {
       expect(invoke).toHaveBeenCalledTimes(1);
     },
   );
+  it("never treats empty historical length-limited data as a recoverable partial report", async () => {
+    const invoke = async (capture: DiscoveryCapture) => {
+      await capture(
+        JSON.stringify({
+          model: data.model,
+          choices: [{ message: { content: "  " }, finish_reason: "length" }],
+        }),
+      );
+      throw new ModelProviderError("bad-response");
+    };
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    const result = (await artifacts.lookup(`${path()}/result.json`))!;
+    await expect(
+      readLengthLimitedResearchDiscovery(artifacts, result, operations),
+    ).rejects.toMatchObject({ code: "invalid-report" });
+  });
   it("never recalls after an ambiguous no-response failure", async () => {
     let calls = 0;
     const invoke = async () => {
