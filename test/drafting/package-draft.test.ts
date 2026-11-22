@@ -256,6 +256,73 @@ describe("drafting from a writer package (#149)", { timeout: 60_000 }, () => {
     });
   });
 
+  it("keeps citation corrections within each claim's evidence options", async () => {
+    const original = await packageRef();
+    const pkg = WriterPackageSchema.parse(JSON.parse(await content.read(original)));
+    const evidence = (i: number) => ({
+      url: `https://evidence.example/source-${i}`,
+      passage: `Synthetic independent passage ${i}.`,
+    });
+    pkg.claims[0] = { ...pkg.claims[0], status: "covered", evidence: [evidence(0)] };
+    pkg.claims[1] = {
+      ...pkg.claims[1],
+      status: "covered",
+      coverage: "supported",
+      evidence: Array.from({ length: 5 }, (_, i) => evidence(i)),
+    };
+    const ref = await content.write(
+      "writer-packages/synthetic-citation-options.json",
+      JSON.stringify(pkg),
+    );
+    const draft = JSON.parse(GOOD);
+    draft.responses = [
+      {
+        claimRecordId: pkg.claims[0].claimRecordId,
+        verdict: "supported",
+        text: "A bounded factual conclusion.",
+        evidence: [4],
+      },
+    ];
+    expect(draftProblems(pkg, draft)).toContain(
+      `claim ${pkg.claims[0].claimRecordId} cites unknown evidence 4`,
+    );
+    // A controlled fake returns a supported restructuring under the eligible
+    // claim. This checks handoff/validation, not a real model's compliance.
+    draft.responses[0].claimRecordId = pkg.claims[1].claimRecordId;
+    expect(draftProblems(pkg, draft)).toEqual([]);
+    const provider = {
+      modelVersion: "fake/citation-correction",
+      complete: async (request: { system: string; user: string }) => {
+        const input = JSON.parse(request.user);
+        expect(input.revision.instruction).toContain(
+          "Each response may cite only the evidence options supplied for its own",
+        );
+        expect(input.claims.map((c: { evidence: unknown[] }) => c.evidence.length)).toEqual([1, 5]);
+        expect(input.revision.feedback[0].reason).toContain("eligible claim");
+        return JSON.stringify(draft);
+      },
+    };
+    const out = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://source.example/post",
+      revision: {
+        number: 1,
+        feedback: [
+          {
+            passage: "A bounded factual conclusion.",
+            reason:
+              "Restructure under an eligible claim with the required supplied source, or omit this detail.",
+          },
+        ],
+      },
+    });
+    expect(out.status).toBe("drafted");
+  });
+
   it("reuses the saved draft on retry without another model call", async () => {
     const ref = await packageRef();
     const provider = model(GOOD);

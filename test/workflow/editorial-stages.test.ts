@@ -82,6 +82,22 @@ async function seeded(
   return { stages, version, pkg: artifactRef(report.package) };
 }
 describe("typed editorial stages and judgment-backed delivery", { timeout: 60000 }, () => {
+  it("hands the judge feasible citation-correction capabilities without relaxing approval", async () => {
+    const f = await seeded({
+      judge: async (request) => {
+        expect(request.system).toContain(
+          "global display numbers, not writer-local evidence indices",
+        );
+        expect(request.system).toContain("it cannot borrow another claim's index");
+        expect(request.system).toContain("or approve an unsupported factual sentence");
+        return APPROVE;
+      },
+    });
+    const assessment = await f.stages.assess(f.version, f.pkg, "citation-capability-assess");
+    const judgment = await f.stages.judge(assessment.ref, "citation-capability-judge");
+    expect(judgment.decision).toBe("approve");
+  });
+
   it("approves actual assessment/judgment refs, delivers exact fields twice independently and reconciles uncertainty", async () => {
     const { stages, version, pkg } = await seeded();
     const assessed = await stages.assess(version, pkg, "fixture:assessment:0");
