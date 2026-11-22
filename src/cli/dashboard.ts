@@ -65,6 +65,7 @@ import { dossierViews } from "../dashboard/dossier-views.js";
 import { savedEquivalence } from "../dashboard/equivalence.js";
 import { equivalenceViews } from "../dashboard/equivalence-views.js";
 import { mappingViews } from "../dashboard/mapping-views.js";
+import { themesBrowseViews } from "../dashboard/themes-browse-views.js";
 import { savedAssessments } from "../dashboard/assessments.js";
 import { assessmentViews } from "../dashboard/assessment-views.js";
 import { savedJudgments } from "../dashboard/judgments.js";
@@ -310,6 +311,7 @@ const views = [
   ...(content ? dossierViews(savedThemes(content), savedResearch(content)) : []),
   ...(content ? equivalenceViews(savedEquivalence(content)) : []),
   ...mappingViews(content),
+  ...themesBrowseViews(content ? savedThemes(content) : undefined, content),
   ...(content ? assessmentViews(savedAssessments(content)) : []),
   ...(content ? judgmentViews(savedJudgments(content)) : []),
   ...(content ? researchBrowseViews(savedResearch(content)) : []),
