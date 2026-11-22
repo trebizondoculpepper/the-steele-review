@@ -105,10 +105,17 @@ export function renderEditorialTimeline(
   if (emptyButComplete) {
     return `<h2>Editorial timeline</h2><p class="empty">No assessor or judge attempts are saved for this article yet. This is not approval.</p>`;
   }
+  const when = (iso: string) => {
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
   const entries: TimelineEntry[] = [
     ...data.assessments.map((row) => ({ at: row.assessedAt, kind: "assessment" as const, row })),
     ...data.judgments.map((row) => ({ at: row.decidedAt, kind: "judgment" as const, row })),
-  ].sort((a, b) => a.at.localeCompare(b.at) || a.kind.localeCompare(b.kind));
+  ].sort(
+    (a, b) =>
+      when(a.at) - when(b.at) || a.at.localeCompare(b.at) || a.kind.localeCompare(b.kind),
+  );
 
   const rows = entries
     .map((entry) => {
