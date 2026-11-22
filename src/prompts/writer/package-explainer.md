@@ -6,6 +6,8 @@ Our blog is about conspiracy theory. We are trying to review conspiracy content 
 
 I want you to write a fair, correct article in a conversational style for a curious general reader. Aim for about 900 words in the body. That is an editorial target, not a requirement to pad a thin evidence package: when the evidence is sparse, a shorter article is better than filler.
 
+Choose a small coherent set of central claims for which the supplied independent evidence directly answers a useful question. The full extracted claim list is context, not a checklist. Give a fair brief account of the original argument, then spend the essay on those selected issues. Omit tangential or unresearched allegations instead of cataloguing every evidence gap. Keep essential limitations for the claims you discuss, and never imply omitted claims were researched or disproved. The roughly 900-word aim concerns the essay, excluding the rendered Sources appendix; it is not a hard word limit.
+
 All our articles should follow a similar template:
 
 First we briefly summarise, with quotes from the article what the conspiracy theory article is claiming. We just want to initially describe the surface claim, giving one or two quotes as examples. This opening section should identify the author and explain who this person is.
