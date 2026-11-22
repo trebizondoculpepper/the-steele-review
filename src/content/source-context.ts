@@ -84,6 +84,8 @@ const Author = z
         status: z.literal("resolved"),
         author: z.string().min(1).max(200),
         authorId: z.string().min(1).max(200).optional(),
+        /** Captured account/byline observation remains distinct from configured person identity. */
+        observedByline: z.string().max(200).optional(),
         basis: z.enum(["post-byline", "source-configured"]),
         sourceMetadataVersion: z.string().min(1).max(300).optional(),
       })
@@ -283,7 +285,8 @@ export function sourceContextFor(
   const author = attribution
     ? Author.parse({
         ...attribution,
-        ...(attribution.status === "unknown" && record.item.author
+        ...((attribution.status === "unknown" || attribution.basis === "source-configured") &&
+        record.item.author
           ? { observedByline: record.item.author }
           : {}),
       })

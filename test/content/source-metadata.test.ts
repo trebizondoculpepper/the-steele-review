@@ -4,6 +4,7 @@ import {
   authorVoiceAuthor,
   parseSourceMetadata,
   resolvePostAuthor,
+  postAttribution,
 } from "../../src/content/source-metadata.js";
 
 // Synthetic sources only: no real publication names or URLs.
@@ -73,7 +74,9 @@ describe("source metadata attribution (#462)", () => {
       resolvePostAuthor({ sourceId: "synthetic-feed", metadata: changed }),
     );
     expect(after).not.toBe(before);
-    expect(before).toMatch(/^source-configured:Configured Author:source-metadata-sha256:[0-9a-f]{64}$/);
+    expect(before).toMatch(
+      /^source-configured:Configured Author:source-metadata-sha256:[0-9a-f]{64}$/,
+    );
   });
 
   it("rejects a duplicate source identity in configuration", () => {
@@ -84,4 +87,68 @@ describe("source metadata attribution (#462)", () => {
       ]),
     ).toThrow(/configured twice/);
   });
+  it.each(["array", "document"])(
+    "resolves configured account labels in the %s format, preserving genuine people",
+    (format) => {
+      const source = {
+        sourceId: "synthetic-feed",
+        sourceType: "substack",
+        displayName: "Synthetic Feed",
+        defaultAuthor: "Configured Person",
+        defaultAuthorId: "configured-person",
+        sourceAccountBylines: ["Synthetic News and Views"],
+      };
+      const metadata = parseSourceMetadata(
+        format === "array"
+          ? [source]
+          : {
+              schemaVersion: 1,
+              revision: 1,
+              sources: [
+                {
+                  id: source.sourceId,
+                  type: source.sourceType,
+                  name: source.displayName,
+                  defaultAuthor: { id: source.defaultAuthorId, name: source.defaultAuthor },
+                  sourceAccountBylines: source.sourceAccountBylines,
+                },
+              ],
+            },
+      );
+      expect(
+        postAttribution(metadata, {
+          publicationId: "synthetic-feed",
+          author: "  SYNTHETIC News  and Views ",
+        }),
+      ).toMatchObject({
+        author: "Configured Person",
+        authorId: "configured-person",
+        basis: "source-configured",
+      });
+      expect(
+        postAttribution(metadata, { publicationId: "synthetic-feed", author: "Guest Person" }),
+      ).toMatchObject({ author: "Guest Person", basis: "post-byline" });
+      expect(
+        postAttribution(metadata, {
+          publicationId: "synthetic-feed",
+          author: "Person One and Person Two",
+        }),
+      ).toMatchObject({ status: "unknown", reason: "ambiguous-byline" });
+      expect(postAttribution(metadata, { publicationId: "unknown" })).toMatchObject({
+        status: "unknown",
+        reason: "no-byline-no-default",
+      });
+      const withoutAlias = parseSourceMetadata([{ ...source, sourceAccountBylines: undefined }]);
+      expect(metadata.version).not.toBe(withoutAlias.version);
+      const noPerson = parseSourceMetadata([
+        { ...source, defaultAuthor: undefined, defaultAuthorId: undefined },
+      ]);
+      expect(
+        postAttribution(noPerson, {
+          publicationId: "synthetic-feed",
+          author: "Synthetic News and Views",
+        }),
+      ).toMatchObject({ status: "unknown", reason: "no-byline-no-default" });
+    },
+  );
 });

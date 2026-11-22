@@ -1,3 +1,4 @@
+import { parseSourceMetadata, postAttribution } from "../../src/content/source-metadata.js";
 import { describe, expect, it } from "vite-plus/test";
 import {
   sourceContextFor,
@@ -179,5 +180,32 @@ describe("pinned source provenance", () => {
     expect(sourceContextVersion(context)).not.toBe(
       sourceContextVersion({ ...context, originalMedium: "video" }),
     );
+  });
+  it("keeps observed account and configured person distinct and invalidates context on alias changes", () => {
+    const record = capture();
+    record.item.author = "Synthetic Account";
+    record.provenance.originalMedium = "video";
+    const source = {
+      sourceId: "synthetic",
+      sourceType: "substack",
+      displayName: "Synthetic",
+      defaultAuthor: "Configured Person",
+    };
+    const old = parseSourceMetadata([source]);
+    const configured = parseSourceMetadata([
+      { ...source, sourceAccountBylines: ["Synthetic Account"] },
+    ]);
+    const before = sourceContextFor(record, archive, postAttribution(old, record.item));
+    const after = sourceContextFor(record, archive, postAttribution(configured, record.item));
+    expect(after.author).toMatchObject({
+      author: "Configured Person",
+      observedByline: "Synthetic Account",
+      basis: "source-configured",
+      sourceMetadataVersion: configured.version,
+    });
+    expect(after.originalMedium).toBe("video");
+    expect(before.author).toMatchObject({ author: "Synthetic Account", basis: "post-byline" });
+    expect(sourceContextVersion(after)).not.toBe(sourceContextVersion(before));
+    expect(record.item.author).toBe("Synthetic Account");
   });
 });
