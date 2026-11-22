@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
+import { parse as parseToml, type TomlTable } from "smol-toml";
 
 /**
  * The application's secrets boundary (#129).
  *
- * Credentials arrive either directly in an environment variable (local
- * development) or, as deployed, in a read-only mounted file named by
- * `<NAME>_FILE`. This module reads them, validates them, and hands each
+ * Credentials arrive from a canonical TOML file named by `<NAME>_CONFIG_FILE`,
+ * or through explicit legacy environment/raw-file inputs. This module
+ * reads them without materializing derived files and hands each
  * controller only the credentials it needs. Workers never receive a generic
  * secret-store handle, and nothing here ever puts a credential value or a
  * secret file's path into an error message.
@@ -13,7 +14,7 @@ import { readFileSync } from "node:fs";
  * Connection URLs are treated as sensitive too: they may carry user info.
  */
 
-export type CredentialProblem = "missing" | "unreadable" | "empty" | "conflict";
+export type CredentialProblem = "missing" | "unreadable" | "empty" | "conflict" | "invalid";
 
 /** A setup error that names the variable and the problem, never the value or path. */
 export class CredentialError extends Error {
@@ -34,8 +35,9 @@ export interface CredentialSource {
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /**
- * Read one credential from `<name>` or the file named by `<name>_FILE`.
- * Setting both is a conflict. An empty value or file is an error, not an
+ * Read one credential from `<name>`, `<name>_FILE`, or the top-level `<name>`
+ * string in the canonical TOML file named by `<name>_CONFIG_FILE`.
+ * Combining canonical and legacy sources is a conflict. An empty value or file is an error, not an
  * absent credential.
  */
 export function readCredential(
@@ -55,6 +57,31 @@ export function readCredential(
   const readFile = options.readFile ?? ((p: string) => readFileSync(p, "utf8"));
   const direct = env[name];
   const file = env[`${name}_FILE`];
+  const canonical = env[`${name}_CONFIG_FILE`];
+  if (canonical !== undefined) {
+    // Even an empty legacy input is a conflicting configuration authority.
+    if (direct !== undefined || file !== undefined) throw new CredentialError(name, "conflict");
+    if (canonical.trim() === "") throw new CredentialError(name, "empty");
+    let raw: string;
+    try {
+      raw = readFile(canonical);
+    } catch {
+      throw new CredentialError(name, "unreadable");
+    }
+    let parsed: TomlTable;
+    try {
+      if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error();
+      parsed = parseToml(raw);
+    } catch {
+      // Parser diagnostics can include file contents: never retain the cause.
+      throw new CredentialError(name, "invalid");
+    }
+    if (!Object.hasOwn(parsed, name)) throw new CredentialError(name, "missing");
+    const selected = parsed[name];
+    if (typeof selected !== "string") throw new CredentialError(name, "invalid");
+    if (selected.trim() === "") throw new CredentialError(name, "empty");
+    return selected;
+  }
   if (direct !== undefined && direct !== "" && file !== undefined && file !== "") {
     throw new CredentialError(name, "conflict");
   }
