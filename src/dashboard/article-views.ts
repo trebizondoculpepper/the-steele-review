@@ -9,6 +9,7 @@ import {
   type ReceiptsPort,
   type RecentArticlesPort,
   type RunStatusPort,
+  type ArchivedArticle,
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import type { ThemesPort } from "./themes.js";
@@ -44,6 +45,44 @@ const badge = (state: string, text = state) =>
   `<span class="s-${escapeHtml(state)}">${escapeHtml(text)}</span>`;
 const date = (iso?: string) => (iso ? escapeHtml(iso.slice(0, 10)) : "undated");
 
+/** Run-status filter for the Articles list (#510). Editorial outcome, not just workflow state. */
+/** Bounded scan when filtering by run status: run state is not an index field. */
+export const STATUS_FILTER_PAGES = 5;
+
+export const ARTICLE_STATUS_FILTERS = [
+  "all",
+  "not-started",
+  "pending",
+  "failed",
+  "evidence-gap",
+  "unverified",
+  "approved",
+] as const;
+export type ArticleStatusFilter = (typeof ARTICLE_STATUS_FILTERS)[number];
+
+/** Which filter bucket a rendered summary belongs to. */
+export function statusBucket(summary: string): Exclude<ArticleStatusFilter, "all"> {
+  switch (summary) {
+    case "not-started":
+      return "not-started";
+    case "pending":
+    case "running":
+      return "pending";
+    case "failed":
+    case "credit-exhausted":
+      return "failed";
+    case "evidence-gap":
+      return "evidence-gap";
+    case "rejected":
+    case "unverified":
+      return "unverified";
+    case "verified":
+      return "approved";
+    default:
+      return "unverified";
+  }
+}
+
 export function articleViews(deps: ArticleViewDeps): DashboardView[] {
   const recoveryLink = (publicationId: string, postId: string, revision: string) =>
     escapeHtml(
@@ -62,55 +101,101 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       }
       const sort = url.searchParams.get("sort") === "oldest" ? "oldest" : "newest";
       const after = url.searchParams.get("after") ?? undefined;
-      // Paging covers the whole collection when the port supports it; a port
-      // that only offers `recent` keeps the previous bounded behaviour.
-      const page = deps.articles.page
-        ? await deps.articles.page({
-            sort,
-            limit: RECENT_LIMIT,
-            ...(after ? { after } : {}),
-          })
-        : { entries: await deps.articles.recent(RECENT_LIMIT) };
-      const recent = page.entries;
-      const pagingControls = deps.articles.page
-        ? `<p class="sorting">Sort: ${
-            sort === "newest"
-              ? "<strong>newest first</strong> · <a href=\"/articles?sort=oldest\">oldest first</a>"
-              : "<a href=\"/articles?sort=newest\">newest first</a> · <strong>oldest first</strong>"
-          }</p>${
-            page.next
-              ? `<p class="paging"><a href="/articles?sort=${sort}&after=${encodeURIComponent(page.next)}">Next page</a></p>`
-              : ""
-          }`
-        : "";
-      if (recent.length === 0)
-        return `${pagingControls}<p class="empty">No archived articles are indexed yet.</p>`;
-      const rowsHtml = await Promise.all(
-        recent.map(async (a) => {
-          let summary = "unknown";
-          if (deps.runs) {
-            try {
-              const s = await deps.runs.status(a);
-              if (s.state === "finished" && isCreditBlocked(s.result.reason)) {
-                // Per-run only: a historical failure must not banner the page.
-                summary = "credit-exhausted";
-              } else if (s.state === "finished") {
-                // Editorial meaning, not just workflow termination (#486).
-                summary =
-                  s.result.outcome === "failed"
-                    ? "failed"
-                    : s.result.outcome === "rejected"
-                      ? "rejected"
-                      : s.result.outcome === "evidence-gap"
-                        ? "evidence-gap"
-                        : s.result.outcome === "drafted-unverified"
-                          ? "unverified"
-                          : "verified";
-              } else summary = s.state === "running" ? "pending" : s.state;
-            } catch {
-              summary = "unknown";
-            }
+      const requested = url.searchParams.get("status") ?? "all";
+      const filter: ArticleStatusFilter = (ARTICLE_STATUS_FILTERS as readonly string[]).includes(
+        requested,
+      )
+        ? (requested as ArticleStatusFilter)
+        : "all";
+
+      /** Editorial summary for one archived revision (#486, #510). */
+      const summaryFor = async (a: ArchivedArticle): Promise<string> => {
+        if (!deps.runs) return "unknown";
+        try {
+          const s = await deps.runs.status(a);
+          if (s.state === "finished" && isCreditBlocked(s.result.reason)) return "credit-exhausted";
+          if (s.state === "finished") {
+            return s.result.outcome === "failed"
+              ? "failed"
+              : s.result.outcome === "rejected"
+                ? "rejected"
+                : s.result.outcome === "evidence-gap"
+                  ? "evidence-gap"
+                  : s.result.outcome === "drafted-unverified"
+                    ? "unverified"
+                    : "verified";
           }
+          return s.state === "running" ? "pending" : s.state;
+        } catch {
+          return "unknown";
+        }
+      };
+
+      // A status filter has to look past the current page, because the run
+      // state is not part of the index query. The scan is bounded so a filter
+      // that matches nothing cannot walk the whole archive.
+      const rows: Array<{ article: ArchivedArticle; summary: string }> = [];
+      let cursor = after;
+      let next: string | undefined;
+      const pages = filter === "all" ? 1 : STATUS_FILTER_PAGES;
+      for (let i = 0; i < pages; i++) {
+        const p = deps.articles.page
+          ? await deps.articles.page({
+              sort,
+              limit: RECENT_LIMIT,
+              ...(cursor ? { after: cursor } : {}),
+            })
+          : { entries: await deps.articles.recent(RECENT_LIMIT) };
+        const withSummary = await Promise.all(
+          p.entries.map(async (article) => ({ article, summary: await summaryFor(article) })),
+        );
+        rows.push(
+          ...(filter === "all"
+            ? withSummary
+            : withSummary.filter((r) => statusBucket(r.summary) === filter)),
+        );
+        next = p.next;
+        if (!p.next || rows.length >= RECENT_LIMIT) break;
+        cursor = p.next;
+      }
+      const visible = rows.slice(0, RECENT_LIMIT);
+      const query = (over: Record<string, string | undefined>) => {
+        const params = new URLSearchParams();
+        const merged = { sort, status: filter === "all" ? undefined : filter, ...over };
+        for (const [k, v] of Object.entries(merged)) if (v) params.set(k, v);
+        const qs = params.toString();
+        return `/articles${qs ? `?${qs}` : ""}`;
+      };
+      const filterLinks = `<p class="filtering">Status: ${(
+        ARTICLE_STATUS_FILTERS as readonly ArticleStatusFilter[]
+      )
+        .map((f) =>
+          f === filter
+            ? `<strong>${f}</strong>`
+            : `<a href="${escapeHtml(query({ status: f === "all" ? undefined : f, after: undefined }))}">${f}</a>`,
+        )
+        .join(" · ")}</p>`;
+      const pagingControls = `${filterLinks}${
+        deps.articles.page
+          ? `<p class="sorting">Sort: ${
+              sort === "newest"
+                ? `<strong>newest first</strong> · <a href="${escapeHtml(query({ sort: "oldest", after: undefined }))}">oldest first</a>`
+                : `<a href="${escapeHtml(query({ sort: "newest", after: undefined }))}">newest first</a> · <strong>oldest first</strong>`
+            }</p>${
+              next
+                ? `<p class="paging"><a href="${escapeHtml(query({ after: next }))}">Next page</a></p>`
+                : ""
+            }`
+          : ""
+      }`;
+      if (visible.length === 0)
+        return `${pagingControls}<p class="empty">${
+          filter === "all"
+            ? "No archived articles are indexed yet."
+            : `No archived articles currently have the status “${escapeHtml(filter)}”.`
+        }</p>`;
+      const rowsHtml = await Promise.all(
+        visible.map(async ({ article: a, summary }) => {
           const action = deps.canTrigger
             ? `<td>${
                 /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
@@ -121,7 +206,9 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
           return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
-      return `<p>The ${recent.length} most recent archived articles, newest first. Run status is for the archived revision.</p>
+      return `<p>Showing ${visible.length} archived article${visible.length === 1 ? "" : "s"}${
+        filter === "all" ? "" : ` with status “${escapeHtml(filter)}”`
+      }, ${sort === "newest" ? "newest" : "oldest"} first. Run status is for the archived revision.</p>
 <div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}`;
     },
