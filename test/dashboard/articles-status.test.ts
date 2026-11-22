@@ -73,6 +73,31 @@ describe("article status filtering (#510)", () => {
     expect(empty).toContain("No archived articles currently have the status");
   });
 
+  it("keeps every scanned match instead of dropping the overflow", async () => {
+    // Two index pages, each fully matching: both pages' rows must be shown.
+    let page = 0;
+    const v = articleViews({
+      canTrigger: false,
+      articles: {
+        recent: async () => [],
+        find: async () => undefined,
+        page: async () => {
+          page++;
+          return {
+            entries: Array.from({ length: 25 }, (_, i) => article(`p${page}-${i}`)),
+            ...(page === 1 ? { next: "cursor-2" } : {}),
+          };
+        },
+      },
+      runs: { status: async () => finished("verified") },
+    }).find((x) => x.path === "/articles")!;
+    const html = await v.render(new URL("https://x/articles?status=approved"));
+    // The page stops at one page's worth of matches rather than slicing them
+    // away, and the cursor still points at the next page so nothing is lost.
+    expect(html).toContain("Showing 25 archived articles");
+    expect(html).toContain("Next page");
+  });
+
   it("ignores an unknown status value instead of failing", async () => {
     const v = view({ p1: finished("verified") });
     const html = await v.render(new URL("https://x/articles?status=nonsense"));

@@ -155,10 +155,13 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
             : withSummary.filter((r) => statusBucket(r.summary) === filter)),
         );
         next = p.next;
-        if (!p.next || rows.length >= RECENT_LIMIT) break;
+        if (!p.next) break;
+        // Stop only on an exhausted listing. Slicing here would discard matches
+        // already scanned while `next` jumped past them.
+        if (rows.length >= RECENT_LIMIT) break;
         cursor = p.next;
       }
-      const visible = rows.slice(0, RECENT_LIMIT);
+      const visible = rows;
       const query = (over: Record<string, string | undefined>) => {
         const params = new URLSearchParams();
         const merged = { sort, status: filter === "all" ? undefined : filter, ...over };
