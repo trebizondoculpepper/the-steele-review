@@ -1,3 +1,4 @@
+import type { EditorialPolicyObservation } from "../config/editorial-live-policy.js";
 import { isEditorialStorageFailure } from "../drafting/editorial-provider.js";
 import {
   WriterRecoveryGuardError,
@@ -28,6 +29,20 @@ export class EditorialLoopPersistenceError extends Error {
 export async function runEditorialLoop(input: {
   stages: EditorialStages;
   policy: EditorialPolicy;
+  /** Only a serialized new workflow contract supplies these ports. */
+  livePolicy?: {
+    read(): Promise<EditorialPolicyObservation>;
+    authorize(input: {
+      version: { draft: Ref; metadata: Ref };
+      assessment: Ref;
+      judgment: Ref;
+      assessments: Ref[];
+      judgments: Ref[];
+      revisions: { draft: Ref; metadata: Ref }[];
+      mechanicalRuns: Ref[];
+      policy: EditorialPolicyObservation;
+    }): Promise<{ eventId: string }>;
+  };
   draft: Ref;
   package: Ref;
   sourceUrl: string;
@@ -52,7 +67,19 @@ export async function runEditorialLoop(input: {
   ): Promise<void>;
   save(history: Omit<EditorialHistory, "summary">): Promise<Ref>;
 }) {
-  const deadline = input.deadlineAt ?? (await input.now()) + input.policy.deadlineMs;
+  const startedAt = input.deadlineAt !== undefined && !input.livePolicy ? 0 : await input.now();
+  let deadline = input.deadlineAt ?? startedAt + input.policy.deadlineMs;
+  const policyObservations: EditorialPolicyObservation[] = [];
+  let policy = input.policy;
+  let appliedPolicy: EditorialPolicyObservation | undefined;
+  let draftAuthorizationEvent: string | undefined;
+  const observe = async (phase: string, round: number) => {
+    if (!input.livePolicy) return;
+    appliedPolicy = await input.step(`editorial-policy-${phase}-${round}`, input.livePolicy.read);
+    policyObservations.push(appliedPolicy);
+    policy = appliedPolicy.policy;
+    deadline = startedAt + policy.deadlineMs;
+  };
   let version =
     input.initialVersion ??
     (await input.step("editorial-prepare", () => input.stages.prepare(input.draft, input.package)));
@@ -78,7 +105,8 @@ export async function runEditorialLoop(input: {
   const retainedControlArtifacts: Ref[] = [];
   const reusedAssessments: Ref[] = [];
   try {
-    for (let round = 0; round <= input.policy.maxRevisions; round++) {
+    for (let round = 0; round <= (input.livePolicy ? 5 : input.policy.maxRevisions); round++) {
+      await observe("assess", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -107,6 +135,12 @@ export async function runEditorialLoop(input: {
         reason = `assessment: ${assessment.operationalFailure}`;
         break;
       }
+      if (await expired()) {
+        terminal = "deadline";
+        reason = "editorial deadline reached";
+        break;
+      }
+      await observe("judge", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -151,6 +185,35 @@ export async function runEditorialLoop(input: {
         reason = `editorial judgment ${judgment.state}`;
         break;
       }
+      await observe("decision", round);
+      if (await expired()) {
+        terminal = "deadline";
+        reason = "editorial deadline reached";
+        break;
+      }
+      const exhausted = round >= policy.maxRevisions;
+      if (
+        input.livePolicy &&
+        policy.onExhausted === "create-unpublished-draft" &&
+        (judgment.decision === "approve" || exhausted)
+      ) {
+        const authorized = await input.step("editorial-authorize-draft", () =>
+          input.livePolicy!.authorize({
+            version,
+            assessment: assessment.ref,
+            judgment: judgment.ref,
+            assessments,
+            judgments,
+            revisions,
+            mechanicalRuns,
+            policy: appliedPolicy!,
+          }),
+        );
+        draftAuthorizationEvent = authorized.eventId;
+        terminal = judgment.decision === "approve" ? "approved" : "unresolved";
+        reason = judgment.decision === "approve" ? "" : "editorial revision limit reached";
+        break;
+      }
       if (judgment.decision === "approve") {
         await input.progress("approve", round);
         const approval = await input.step("editorial-record-approval", () =>
@@ -161,7 +224,7 @@ export async function runEditorialLoop(input: {
         reason = "";
         break;
       }
-      if (round === input.policy.maxRevisions) break;
+      if (exhausted) break;
       await input.progress("revise", round + 1);
       revisionAttempts++;
       const revised = await input.step(`editorial-revise-${round + 1}`, () =>
@@ -188,7 +251,11 @@ export async function runEditorialLoop(input: {
       revisions.push(version);
     }
   } catch (error) {
-    if (!input.lineage || (input.initialAssessment && isEditorialStorageFailure(error)))
+    if (
+      input.livePolicy ||
+      !input.lineage ||
+      (input.initialAssessment && isEditorialStorageFailure(error))
+    )
       throw error;
     terminal = "operational-stop";
     reason =
@@ -208,6 +275,9 @@ export async function runEditorialLoop(input: {
     diagnostics,
     ...(input.lineage ? { retainedWriterAttempts, revisionAttempts } : {}),
     ...(input.initialAssessment ? { reusedAssessments, retainedControlArtifacts } : {}),
+    ...(input.livePolicy
+      ? { policyObservations, ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}) }
+      : {}),
     terminal,
   };
   let summary: Ref;
@@ -229,5 +299,6 @@ export async function runEditorialLoop(input: {
     history: { ...history, summary },
     reason,
     approvalEvent,
+    ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}),
   };
 }

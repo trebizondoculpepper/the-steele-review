@@ -221,3 +221,100 @@ describe("versioned journaled editorial loop", () => {
     expect(f.counts()).toEqual({ assessed: 0, judged: 0, revised: 0, approved: 0 });
   });
 });
+
+describe("explicit live-policy editorial contract", () => {
+  const observation = (maxRevisions: number, onExhausted: "stop" | "create-unpublished-draft") => ({
+    version: "live-editorial-policy-v1" as const,
+    revision: "config-sha256:" + "a".repeat(32),
+    policy: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions, onExhausted },
+  });
+  it("applies a changed exhaustion action at the next decision without another revision", async () => {
+    const f = fixture(true);
+    let current = observation(1, "stop");
+    const judge = f.stages.judge;
+    f.stages.judge = async (...args) => {
+      const result = await judge(...args);
+      if (f.counts().judged === 2) current = observation(1, "create-unpublished-draft");
+      return result;
+    };
+    const authorize = vi.fn(async () => ({ eventId: "draft-only-event" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, authorize },
+    });
+    expect(f.counts()).toEqual({ assessed: 2, judged: 2, revised: 1, approved: 0 });
+    expect(result.history.terminal).toBe("unresolved");
+    expect(result.draftAuthorizationEvent).toBe("draft-only-event");
+    expect(authorize.mock.calls).toHaveLength(1);
+    expect(result.history.policyObservations).toHaveLength(6);
+    current = observation(0, "stop");
+    await runEditorialLoop({ ...f.args, livePolicy: { read: async () => current, authorize } });
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(f.counts().revised).toBe(1);
+  });
+  it("applies a reduced revision limit and stop at the next decision", async () => {
+    const f = fixture(true);
+    let current = observation(3, "create-unpublished-draft");
+    const judge = f.stages.judge;
+    f.stages.judge = async (...args) => {
+      const result = await judge(...args);
+      current = observation(0, "stop");
+      return result;
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, authorize },
+    });
+    expect(result.history.terminal).toBe("unresolved");
+    expect(f.counts()).toEqual({ assessed: 1, judged: 1, revised: 0, approved: 0 });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+  it("authorizes only a draft on initial approval when draft mode is active, preserving verdict", async () => {
+    const f = fixture();
+    f.stages.judge = async () => ({
+      ref: ref("judgments/approved.json"),
+      state: "decided",
+      decision: "approve",
+    });
+    const authorize = vi.fn(async () => ({ eventId: "draft-only-event" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => observation(1, "create-unpublished-draft"), authorize },
+    });
+    expect(result.history.terminal).toBe("approved");
+    expect(result.approvalEvent).toBeUndefined();
+    expect(result.draftAuthorizationEvent).toBe("draft-only-event");
+    expect(f.counts().revised).toBe(0);
+    expect(f.counts().approved).toBe(0);
+  });
+  it("never treats provider failure as exhaustion or drafts after invalid live configuration", async () => {
+    const f = fixture(true);
+    f.stages.judge = async () => ({
+      ref: ref("judgments/failed.json"),
+      state: "provider-failed",
+      decision: "none",
+    });
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => observation(0, "create-unpublished-draft"), authorize },
+    });
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(authorize).not.toHaveBeenCalled();
+    const fresh = fixture(true);
+    await expect(
+      runEditorialLoop({
+        ...fresh.args,
+        livePolicy: {
+          read: async () => {
+            throw new Error("configuration unavailable");
+          },
+          authorize,
+        },
+      }),
+    ).rejects.toThrow("configuration unavailable");
+    expect(fresh.counts().assessed).toBe(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+});

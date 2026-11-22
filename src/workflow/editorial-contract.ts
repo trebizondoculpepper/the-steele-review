@@ -1,3 +1,4 @@
+import type { EditorialPolicyObservation } from "../config/editorial-live-policy.js";
 import type { ExpectedWriterRecovery } from "../drafting/writer-attempts.js";
 import type { EditorialLineage } from "../content/editorial-lineage.js";
 import type { JudgmentHistory } from "../content/judgment-history.js";
@@ -121,6 +122,9 @@ export interface EditorialHistory {
   reusedAssessments?: Ref[];
   retainedControlArtifacts?: Ref[];
   revisionAttempts?: number;
+  /** Present only for the explicit live-policy workflow contract. */
+  policyObservations?: EditorialPolicyObservation[];
+  draftAuthorizationEvent?: string;
   terminal: "approved" | "unresolved" | "operational-stop" | "deadline";
   summary: Ref;
 }
