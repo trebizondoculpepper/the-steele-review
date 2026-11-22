@@ -416,7 +416,12 @@ export async function verifyWithRevisions(input: {
       };
     const draftRef = toArtifactRef(verified.report.draft);
     if (!article) {
-      article = await commit({ draft: draftRef, metadata });
+      try {
+        article = await commit({ draft: draftRef, metadata });
+      } catch {
+        // The generation could not be read back: stop before any model call.
+        return { outcome: "failed", reason: "draft-unavailable", revisions };
+      }
       if (!article) return { outcome: "failed", reason: "article-conflict", revisions };
     }
     if (verified.report.outcome === "approved") {

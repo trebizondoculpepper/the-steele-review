@@ -61,7 +61,14 @@ export type ArticleCommitOutcome =
     }
   | { status: "conflict" };
 
-type Store = Pick<GitArtifactStore, "lookup" | "read" | "revise" | "write">;
+type Store = Pick<GitArtifactStore, "lookup" | "read" | "reviseAll" | "write">;
+
+const IntentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    base: z.object({ body: z.string().nullable(), metadata: z.string().nullable() }).strict(),
+  })
+  .strict();
 
 const plainRef = (r: ArtifactRef) => ({
   repository: r.repository,
@@ -101,21 +108,46 @@ export async function commitArticleRevision(input: {
 
   const body = await input.content.read(input.generation.draft);
   const metadata = await input.content.read(input.generation.metadata);
-  const base =
-    input.base === "current"
-      ? {
-          body: (await input.content.lookup(paths.body))?.sha256 ?? null,
-          metadata: (await input.content.lookup(paths.metadata))?.sha256 ?? null,
-        }
-      : input.base;
+  // Pin the base durably BEFORE touching the article: a retry after a crash
+  // reuses this exact base and never re-resolves "current", so it cannot
+  // adopt (and overwrite) a newer generation that completed in between.
+  const intentPath = `${paths.dir}/intents/${generationId}.json`;
+  const pinned = await input.content.lookup(intentPath);
+  let base: { body: string | null; metadata: string | null };
+  if (pinned) {
+    base = IntentSchema.parse(JSON.parse(await input.content.read(pinned))).base;
+  } else {
+    base =
+      input.base === "current"
+        ? {
+            body: (await input.content.lookup(paths.body))?.sha256 ?? null,
+            metadata: (await input.content.lookup(paths.metadata))?.sha256 ?? null,
+          }
+        : input.base;
+    try {
+      await input.content.write(
+        intentPath,
+        `${JSON.stringify(IntentSchema.parse({ schemaVersion: 1, base }), null, 2)}\n`,
+      );
+    } catch (error) {
+      // A concurrent attempt at the same generation pinned it first: use that.
+      if (!(error instanceof ArtifactStoreError && error.code === "immutable-conflict"))
+        throw error;
+      const winner = await input.content.lookup(intentPath);
+      if (!winner) throw error;
+      base = IntentSchema.parse(JSON.parse(await input.content.read(winner))).base;
+    }
+  }
 
   let bodyRef: ArtifactRef;
   let metadataRef: ArtifactRef;
   try {
-    // `revise` adopts identical content already in place (a crashed retry)
-    // and rejects any other unexpected version as stale.
-    bodyRef = await input.content.revise(paths.body, body, base.body);
-    metadataRef = await input.content.revise(paths.metadata, metadata, base.metadata);
+    // One atomic commit for body and metadata: a rejected update changes
+    // neither. Identical content already in place counts as applied.
+    [bodyRef, metadataRef] = (await input.content.reviseAll([
+      { path: paths.body, content: body, expectedSha256: base.body },
+      { path: paths.metadata, content: metadata, expectedSha256: base.metadata },
+    ])) as [ArtifactRef, ArtifactRef];
   } catch (error) {
     if (error instanceof ArtifactStoreError && error.code === "stale-revision") {
       // A concurrent writer may have completed this same generation first.

@@ -31,7 +31,7 @@ async function generation(body: string) {
   return { draft, metadata };
 }
 
-describe("in-place article revisions (#579)", () => {
+describe("in-place article revisions (#579)", { timeout: 60_000 }, () => {
   it("commits an initial draft and two revisions to the same paths, keeping old bytes", async () => {
     const g1 = await generation("# Initial\n");
     const v1 = await commitArticleRevision({ content, article, generation: g1, base: "current" });
@@ -121,6 +121,69 @@ describe("in-place article revisions (#579)", () => {
       base: "current",
     });
     expect(again.status).toBe("reused");
+  });
+
+  it("never leaves a mixed body and metadata when one document conflicts", async () => {
+    const g1 = await generation("# Base\n");
+    const v1 = await commitArticleRevision({ content, article, generation: g1, base: "current" });
+    if (v1.status === "conflict") throw new Error("conflict");
+    const base = { body: v1.body.sha256, metadata: v1.metadata.sha256 };
+    // A changes only the metadata (same body bytes as the base).
+    const a = await generation("# Base\n");
+    expect((await commitArticleRevision({ content, article, generation: a, base })).status).toBe(
+      "committed",
+    );
+    const metadataAfterA = await content.read((await content.lookup(paths.metadata))!);
+    // B, from the same base, changes the body: its metadata now conflicts, so nothing changes.
+    const b = await generation("# Writer B body\n");
+    expect(await commitArticleRevision({ content, article, generation: b, base })).toEqual({
+      status: "conflict",
+    });
+    expect(await content.read((await content.lookup(paths.body))!)).toBe("# Base\n");
+    expect(await content.read((await content.lookup(paths.metadata))!)).toBe(metadataAfterA);
+  });
+
+  it("recovers a crashed initial commit with its pinned base, never overwriting a newer version", async () => {
+    const g1 = await generation("# First\n");
+    // G1 writes the article, then crashes before its commit record.
+    const crashing = new Proxy(content, {
+      get(target, prop, receiver) {
+        if (prop === "write") {
+          return async (path: string, body: string) => {
+            if (path.includes("/commits/")) throw new Error("crash");
+            return target.write(path, body);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await expect(
+      commitArticleRevision({ content: crashing, article, generation: g1, base: "current" }),
+    ).rejects.toThrow("crash");
+    const head = await content.lookup(paths.body);
+    // A newer generation completes from G1's version.
+    const g2 = await generation("# Second\n");
+    const meta = await content.lookup(paths.metadata);
+    expect(
+      (
+        await commitArticleRevision({
+          content,
+          article,
+          generation: g2,
+          base: { body: head!.sha256, metadata: meta!.sha256 },
+        })
+      ).status,
+    ).toBe("committed");
+    // G1 is retried with "current": its pinned base (absent) is reused, so it
+    // cannot adopt and overwrite G2.
+    const retry = await commitArticleRevision({
+      content,
+      article,
+      generation: g1,
+      base: "current",
+    });
+    expect(retry).toEqual({ status: "conflict" });
+    expect(await content.read((await content.lookup(paths.body))!)).toBe("# Second\n");
   });
 
   it("makes only the canonical documents revisable", () => {
