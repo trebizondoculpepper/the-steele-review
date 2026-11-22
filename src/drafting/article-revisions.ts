@@ -37,7 +37,7 @@ const Ref = z
   })
   .strict();
 
-const CommitRecordSchema = z
+export const CommitRecordSchema = z
   .object({
     schemaVersion: z.literal(1),
     article: z.string(),

@@ -12,6 +12,7 @@ import { GitArtifactStore, type ArtifactRef } from "../../src/controllers/artifa
 import { draftViews } from "../../src/dashboard/draft-views.js";
 import { DRAFT_PAGE, draftInventory } from "../../src/dashboard/drafts.js";
 import { DraftTrashStore } from "../../src/dashboard/draft-trash.js";
+import { commitArticleRevision } from "../../src/drafting/article-revisions.js";
 
 let dir: string;
 let content: GitArtifactStore;
@@ -313,5 +314,79 @@ describe("trashed drafts leave the active listing (#478)", () => {
     const filtered = await draftInventory(content, undefined, trash).page({});
     // Whatever remains is still reachable rather than an empty page.
     expect(filtered.entries.every((e) => e.path !== first!.path)).toBe(true);
+  });
+});
+
+describe("one logical article with its revision history (#581)", { timeout: 60_000 }, () => {
+  it("groups an initial draft and two revisions, marks the current one, and keeps a legacy draft", async () => {
+    const article = { publicationId: "pub", postId: "p1" };
+    const generation = async (markdown: string, title: string) => {
+      const d = await saveDraft("p1", markdown, title);
+      return {
+        draft: d.md,
+        metadata: (await content.lookup(d.metadata))!,
+        metadataPath: d.metadata,
+      };
+    };
+    const g1 = await generation("# First <script>x</script>\n", "First version");
+    // The first version was approved before the article moved on.
+    await report("p1", ref(g1.draft), "approved", g1.metadataPath);
+    const v1 = await commitArticleRevision({ content, article, generation: g1, base: "current" });
+    if (v1.status === "conflict") throw new Error("conflict");
+    const g2 = await generation("# Second\n", "Second version");
+    const v2 = await commitArticleRevision({
+      content,
+      article,
+      generation: g2,
+      base: { body: v1.body.sha256, metadata: v1.metadata.sha256 },
+    });
+    if (v2.status === "conflict") throw new Error("conflict");
+    const g3 = await generation("# Third\n", "Third version");
+    await commitArticleRevision({
+      content,
+      article,
+      generation: g3,
+      base: { body: v2.body.sha256, metadata: v2.metadata.sha256 },
+    });
+    // A legacy hash-named draft that was never committed to an article.
+    await saveDraft("p1", "# Legacy\n", "Legacy draft");
+
+    const inventory = draftInventory(content);
+    const page = await inventory.page({ publicationId: "pub", postId: "p1" });
+    const byTitle = new Map(page.entries.map((e) => [e.title, e]));
+    expect(byTitle.get("First version")?.article).toMatchObject({ version: 1, current: false });
+    expect(byTitle.get("Third version")?.article).toMatchObject({ version: 3, current: true });
+    expect(byTitle.get("Legacy draft")?.article).toBeUndefined();
+    // The older version keeps its own approval; the current one is not approved.
+    expect(byTitle.get("First version")?.status).toBe("approved");
+    expect(byTitle.get("Third version")?.status).toBe("unverified");
+
+    const id = byTitle.get("Third version")!.article!.id;
+    const history = await inventory.article("pub", "p1", id);
+    expect(history?.versions.map((v) => [v.version, v.current])).toEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+    ]);
+
+    const [, , articleView] = draftViews(inventory);
+    const html = await articleView!.render(
+      new URL(
+        `http://x/drafts/article?${new URLSearchParams({ publication: "pub", post: "p1", id })}`,
+      ),
+    );
+    expect(html).toContain("The current version is version 3, and it is not approved.");
+    expect(html).toContain("An older version (1) was approved; that approval does not carry over.");
+    expect(html).not.toContain("<script>x</script>");
+    const [list] = draftViews(inventory);
+    const listing = await list!.render(new URL("http://x/drafts?publication=pub&post=p1"));
+    expect(listing).toContain("version 3</a> (current)");
+    expect(listing).toContain("not committed to an article");
+  });
+
+  it("returns nothing for an unknown or malformed article id", async () => {
+    const inventory = draftInventory(content);
+    expect(await inventory.article("pub", "p1", `article-${"0".repeat(24)}`)).toBeUndefined();
+    expect(await inventory.article("pub", "p1", "../x")).toBeUndefined();
   });
 });
