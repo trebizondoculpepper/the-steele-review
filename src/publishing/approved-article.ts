@@ -244,7 +244,7 @@ const SavedPreviewSchema = z.looseObject({
   publication: PublicationPayloadSchema.optional(),
 });
 
-async function readApprovedContent(
+export async function readApprovedContent(
   content: Pick<GitArtifactStore, "read">,
   article: ArticleApprovedData,
 ) {
@@ -312,6 +312,34 @@ export async function readDummyDeliveryProof(
   };
   const [a, b] = await Promise.all([read("dummy-a"), read("dummy-b")]);
   return a && b ? { a, b } : undefined;
+}
+
+/** Read the exact destination receipt for acknowledgement/reconnect recovery. */
+export async function readDestinationDeliveryProof(
+  content: Pick<GitArtifactStore, "lookup" | "read">,
+  article: ArticleApprovedData,
+  destination: Pick<DestinationAdapter, "name" | "action">,
+  expectedSimulated?: boolean,
+): Promise<ArtifactRef | undefined> {
+  const approved = ArticleApprovedDataSchema.parse(article);
+  const checked = await readApprovedContent(content, approved);
+  const publicationHash =
+    checked.publication?.mode === "structured" ? checked.publication.contentHash : undefined;
+  const ref = await content.lookup(
+    `${deliveryDirectory(approved, destination, publicationHash ?? approved.draft.hash)}/receipt.json`,
+  );
+  if (!ref) return undefined;
+  const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+  if (
+    receipt.destination !== destination.name ||
+    receipt.action !== destination.action ||
+    (expectedSimulated !== undefined && receipt.simulated !== expectedSimulated) ||
+    receipt.draftHash !== approved.draft.hash ||
+    receipt.publicationHash !== publicationHash ||
+    (publicationHash !== undefined && !receipt.publication)
+  )
+    throw new ApprovalError("receipt does not prove the selected publication");
+  return ref;
 }
 
 /** Handle one approved-article delivery for one destination. */
