@@ -101,6 +101,37 @@ The owner-authorized draft-only exception uses a distinct V2 authorization envel
 
 An operator may deliberately rerun an unchanged article with `article-run --request-id <stable-id>`. The typed state controller records the request/input binding before submission and provides a new workflow identity without changing the true source version or deleting the old result. Repeating the same request attaches to that attempt; changing its inputs is a conflict, and another intentional attempt needs a different request ID. Status inspection follows the recorded attempt key. This is separate from the dashboard's credit-only recovery action.
 
-`STEELE_EDITORIAL_MAX_REVISIONS`, `STEELE_EDITORIAL_EXHAUSTION_ACTION` and `STEELE_EDITORIAL_DEADLINE_MS` configure new submissions through the shared settings registry; CLI overrides are `--editorial-revisions` and `--editorial-deadline-ms`. The current implementation saves the effective policy in each input. The owner has since required live configuration: future decisions in a running attempt must read the current validated policy through the configuration handler. Record the non-secret values actually applied at each decision for audit and deterministic replay, without copying credentials or treating the original input as a permanent configuration cache. Preserve the existing journal contract when replaying completed decisions; a versioned implementation must add live checks at future boundaries. Live pause/stop and destination permissions are also checked immediately before new external effects, including retry and saved-intent paths. Research allowance and publishing permissions remain separate controls. See [live configuration authority](07-runtime-and-operations.md#live-configuration-authority-owner-decision); the follow-up implementation must preserve old journals while removing submission-only settings behavior.
+`STEELE_EDITORIAL_MAX_REVISIONS`, `STEELE_EDITORIAL_EXHAUSTION_ACTION` and
+`STEELE_EDITORIAL_DEADLINE_MS` are defined in the shared settings registry.
+Historical `assess-judge-v1` inputs retain their submission-time policy and legacy
+CLI overrides, so their journals and request hashes remain reproducible. New
+`live-policy-v1` normal inputs carry no editorial configuration snapshot: future
+decisions obtain a coherent validated observation from the configuration handler.
+Record only the non-secret applied policy and its revision; never copy credentials
+or the complete configuration. Live stop/target checks also govern future delivery
+effects, including receipt and saved-intent paths. Research allowance and publishing
+permissions remain separate controls. See [live configuration authority](07-runtime-and-operations.md#live-configuration-authority-owner-decision).
 
-Revision counting (#734): the initial assessment and judgment are not a revision round. A limit of 1 allows one substantive rewrite after the initial review, and 0 allows none. The exhaustion action, `stop` (the default) or `create-unpublished-draft`, says what happens when the limit is reached without approval. An unsupported action fails validation rather than falling back. Like the other editorial values it is currently resolved at submission. A non-default action is recorded in the input; no value means `stop`, so earlier inputs and their request hashes are unchanged. Submission currently reads these editorial values from the process environment (and CLI overrides) only. A value present only in the saved settings file is shown by the settings browser, but new runs don't use it until the environment carries it. Applying the action is #731/#735, and nothing is delivered because of this setting.
+The initial assessment/judgment does not count as a revision. A limit of 1 allows
+one substantive rewrite, and 0 allows none. At exhaustion, `stop` preserves the
+unresolved result. The explicitly owner-authorized `create-unpublished-draft`
+exception is capability-limited and never changes a REVISE verdict into APPROVE.
+Unsupported actions fail validation. Current settings-file changes govern the next
+new normal-flow decision without restarting; completed decisions replay unchanged.
+
+### Live configured normal article drafts
+
+An explicit serialized `live-policy-v1` normal ArticleRun contract may apply the
+owner's configured unpublished-draft exhaustion policy. It adds named durable
+policy observations; absent selectors retain old steps and input behavior. Current
+configuration governs future decisions, while replay preserves completed applied
+observations. Never infer the new sequence from deployed methods or an environment
+flag alone.
+
+This flow seals its own exact recorded-attempt/output/review/mechanical proof; it
+must not forge a terminal retained-recovery parent. Authorization is distinct from
+factual approval and commits with the existing state-controller outbox. The V2
+capability-limited event, both independent dummy receipts and selected one-event
+Substack consumer are the shared delivery path. Only an unpublished editable draft
+without email is authorized, with current action and target checks before future
+external effects. See [configured unpublished drafts](../editorial-draft-policy.md).

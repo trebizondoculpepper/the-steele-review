@@ -69,6 +69,16 @@ export interface NewDraft {
   bylines?: string[];
 }
 
+/** Pure adapter-owned target binding; requires no session or transport. */
+export function substackDraftOriginIdentity(origin: string): string {
+  const url = new URL(origin);
+  if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.username)
+    throw new Error("substack: invalid draft origin");
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(["substack-draft-origin-v1", url.origin]))
+    .digest("hex")}`;
+}
+
 export class SubstackClient {
   /** Opaque publication binding for draft-only authorizations; never exposes the origin. */
   readonly draftTargetIdentity: string;
@@ -82,9 +92,7 @@ export class SubstackClient {
       throw new Error("substack origin must be a bare https origin");
     }
     this.origin = url.origin;
-    this.draftTargetIdentity = `sha256:${createHash("sha256")
-      .update(JSON.stringify(["substack-draft-origin-v1", this.origin]))
-      .digest("hex")}`;
+    this.draftTargetIdentity = substackDraftOriginIdentity(this.origin);
     this.timeoutMs = config.timeoutMs ?? 20_000;
     this.fetchImpl = config.fetch ?? fetch;
   }

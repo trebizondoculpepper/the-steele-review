@@ -1,3 +1,11 @@
+import { editorialPolicyFromConfiguration } from "../config/editorial-live-policy.js";
+import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configuration.js";
+import { authorizeConfiguredDraft } from "../publishing/configured-draft-authorization.js";
+import { articleAttemptHash } from "./article-attempt.js";
+import { JudgmentRecordSchema } from "../drafting/editorial-judgment.js";
+import { PackageDraftMetadataSchema } from "../drafting/package-draft.js";
+import { WriterPackageSchema } from "../drafting/writer-package.js";
+import { artifactReference } from "../drafting/publication-payload.js";
 import {
   assembleStage,
   discoverStage,
@@ -207,6 +215,73 @@ export function articleStages(deps: {
   };
 
   return {
+    async validateLiveEditorialIntent(input, workflowKey) {
+      if (
+        !input.operatorRequestId ||
+        input.editorial ||
+        input.editorialExecution !== "live-policy-v1"
+      )
+        return false;
+      const recorded = deps.operations.articleAttempt(
+        input.publicationId,
+        input.postId,
+        input.operatorRequestId,
+      );
+      return (
+        !!recorded &&
+        recorded.workflowKey === workflowKey &&
+        recorded.sourceVersion === input.sourceVersion &&
+        recorded.inputHash === articleAttemptHash(input)
+      );
+    },
+    liveEditorial(input, workflowKey, pkg) {
+      const delivery = draftDeliveryConfiguration();
+      return {
+        read: editorialPolicyFromConfiguration(),
+        targets: delivery.current,
+        async authorize(details) {
+          const judgment = JudgmentRecordSchema.parse(
+            JSON.parse(await deps.content.read(details.judgment)),
+          );
+          const metadata = PackageDraftMetadataSchema.parse(
+            JSON.parse(await deps.content.read(details.version.metadata)),
+          );
+          const writerPackage = WriterPackageSchema.parse(JSON.parse(await deps.content.read(pkg)));
+          return authorizeConfiguredDraft({
+            content: deps.content,
+            operations: deps.operations,
+            deliveryControl: delivery.control,
+            destinations: details.destinations,
+            checkpoint: {
+              version: "normal-editorial-draft-checkpoint-v1",
+              workflowKey,
+              input,
+              inputHash: articleAttemptHash(input),
+              body: artifactReference(details.version.draft),
+              metadata: artifactReference(details.version.metadata),
+              publication: judgment.publication,
+              package: artifactReference(pkg),
+              assessment: artifactReference(details.assessment),
+              judgment: artifactReference(details.judgment),
+              mechanicalRun: metadata.mechanicalRun,
+              sourceContext: writerPackage.source.context,
+              initial: {
+                body: artifactReference(details.initial.draft),
+                metadata: artifactReference(details.initial.metadata),
+              },
+              assessments: details.assessments.map(artifactReference),
+              judgments: details.judgments.map(artifactReference),
+              revisions: details.revisions.map((version) => ({
+                body: artifactReference(version.draft),
+                metadata: artifactReference(version.metadata),
+              })),
+              mechanicalRuns: details.mechanicalRuns.map(artifactReference),
+              appliedPolicy: details.policy,
+            },
+          });
+        },
+      };
+    },
     editorial: editorialStages({
       ...deps,
       writer: deps.models.writer,

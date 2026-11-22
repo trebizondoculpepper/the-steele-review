@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { OperationStore } from "../../src/controllers/operation-store.js";
-import { recordArticleAttempt } from "../../src/workflow/article-attempt.js";
+import {
+  recordArticleAttempt,
+  recordNormalArticleAttempt,
+} from "../../src/workflow/article-attempt.js";
 import { ArticleRunInputSchema, articleRunKey } from "../../src/workflow/article-run.js";
 import {
   DEFAULT_EDITORIAL_POLICY,
@@ -119,4 +122,48 @@ describe("explicit durable article attempt identity", () => {
       }).success,
     ).toBe(false);
   });
+});
+
+it("normal retries select the recorded live or historical contract by its hash", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "normal-contract-"));
+  const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+  try {
+    const old = recordArticleAttempt(operations, input, "historical-request");
+    expect(
+      recordNormalArticleAttempt(operations, input, "historical-request", {
+        legacyOverrides: true,
+      }),
+    ).toEqual(old);
+    expect(
+      recordNormalArticleAttempt(operations, input, "historical-request").input.editorialExecution,
+    ).toBeUndefined();
+    const live = recordNormalArticleAttempt(operations, input, "new-request");
+    expect(live.input.editorialExecution).toBe("live-policy-v1");
+    expect(live.input.editorial).toBeUndefined();
+    expect(
+      recordNormalArticleAttempt(
+        operations,
+        { ...input, editorial: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions: 5 } },
+        "new-request",
+      ),
+    ).toEqual(live);
+    expect(() =>
+      recordNormalArticleAttempt(
+        operations,
+        { ...input, sourceUrl: "https://different.example/post" },
+        "historical-request",
+      ),
+    ).toThrow("input-mismatch");
+    expect(() =>
+      recordNormalArticleAttempt(operations, input, "unrecorded-overrides", {
+        legacyOverrides: true,
+      }),
+    ).toThrow("live-overrides");
+    expect(
+      operations.articleAttempt(input.publicationId, input.postId, "unrecorded-overrides"),
+    ).toBeUndefined();
+  } finally {
+    operations.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

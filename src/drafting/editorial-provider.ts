@@ -1,3 +1,4 @@
+import { ConfigurationError } from "../controllers/configuration.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
@@ -84,7 +85,8 @@ export function isEditorialStorageFailure(error: unknown): boolean {
     (error instanceof WriterAttemptError &&
       (error.code === "archive-failed" || error.code === "busy")) ||
     error instanceof ArtifactStoreError ||
-    error instanceof OperationStoreError
+    error instanceof OperationStoreError ||
+    error instanceof ConfigurationError
   );
 }
 /** Domain guards propagate too, but callers must not treat them as retryable provider failures. */

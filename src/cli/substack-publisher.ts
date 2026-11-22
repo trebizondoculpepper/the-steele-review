@@ -1,3 +1,4 @@
+import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configuration.js";
 /**
  * Live Substack publisher, draft-only (#385; design in doc/architecture/06).
  *
@@ -50,7 +51,10 @@ const EnvSchema = z.object({
   STEELE_SUBSTACK_ORIGIN: z.url({ protocol: /^https$/ }),
   STEELE_SUBSTACK_SESSION_FILE: z.string().min(1),
   STEELE_SUBSTACK_DELIVERY: z.string().optional(),
-  STEELE_SUBSTACK_BYLINE_ID: z.string().regex(/^[0-9]+$/).optional(),
+  STEELE_SUBSTACK_BYLINE_ID: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .optional(),
   STEELE_PUBLISHER_DESTINATION: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
@@ -121,11 +125,14 @@ async function main(): Promise<number> {
   const nats = new NatsController(natsConn.url, natsConn.token);
   try {
     await nats.connect(`steele-substack-publisher-${c.STEELE_PUBLISHER_DESTINATION}`);
+    const deliveryControl = draftDeliveryConfiguration().control;
     await runPublisherService({
       nats,
       stream: c.STEELE_PUBLICATION_STREAM,
       consumer: c.STEELE_PUBLISHER_CONSUMER,
+      deliveryControl,
       destination: new SubstackDraftDestination(client, {
+        deliveryControl,
         name: c.STEELE_PUBLISHER_DESTINATION,
         ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
       }),

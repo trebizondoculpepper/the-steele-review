@@ -70,7 +70,7 @@ describe("settings registry (#542)", () => {
     const shown = inspectSettings(set).find((s) => s.key === "STEELE_EDITORIAL_EXHAUSTION_ACTION")!;
     expect(shown).toMatchObject({
       sensitivity: "public",
-      activation: "restart",
+      activation: "live",
       state: "configured",
       value: "create-unpublished-draft",
     });

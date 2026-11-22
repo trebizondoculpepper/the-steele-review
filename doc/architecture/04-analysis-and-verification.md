@@ -27,6 +27,13 @@ Before publishing, check:
 
 Passing checks enables automatic publication. Failed or inconclusive checks may trigger bounded targeted revision attempts against the supplied evidence; the verifier does not browse or conduct new research. Missing evidence returns to the research stage or produces a skip; after the configured limit, mark the article skipped and record specific reasons. Attempt limits, costs, and acceptance rules remain to be defined. A model's self-reported confidence is not a sufficient acceptance rule.
 
+The owner's configured unpublished-draft exception is separate from factual
+verification. A new versioned normal attempt may retain unresolved findings and
+emit capability-limited draft authority after the configured editorial bound; it
+must preserve the actual assessment/judgment and mechanically valid exact payload.
+This permits only an unpublished editable Substack draft without email, not public
+publication. See [configured unpublished drafts](../editorial-draft-policy.md).
+
 ## Untrusted source material
 
 Fetched posts and research pages are data, not operational instructions. Their contents cannot change prompts, credentials, tool permissions, or publication rules. Keep the publisher separate from research tooling and validate the structured artifact it receives.

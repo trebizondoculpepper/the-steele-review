@@ -221,3 +221,260 @@ describe("versioned journaled editorial loop", () => {
     expect(f.counts()).toEqual({ assessed: 0, judged: 0, revised: 0, approved: 0 });
   });
 });
+
+describe("explicit live-policy editorial contract", () => {
+  const observation = (maxRevisions: number, onExhausted: "stop" | "create-unpublished-draft") => ({
+    version: "live-editorial-policy-v1" as const,
+    revision: "config-sha256:" + "a".repeat(32),
+    policy: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions, onExhausted },
+  });
+  it("applies a changed exhaustion action at the next decision without another revision", async () => {
+    const f = fixture(true);
+    let current = observation(1, "stop");
+    const judge = f.stages.judge;
+    f.stages.judge = async (...args) => {
+      const result = await judge(...args);
+      if (f.counts().judged === 2) current = observation(1, "create-unpublished-draft");
+      return result;
+    };
+    const authorize = vi.fn(async () => ({ eventId: "draft-only-event" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, authorize },
+    });
+    expect(f.counts()).toEqual({ assessed: 2, judged: 2, revised: 1, approved: 0 });
+    expect(result.history.terminal).toBe("unresolved");
+    expect(result.draftAuthorizationEvent).toBe("draft-only-event");
+    expect(authorize.mock.calls).toHaveLength(1);
+    expect(result.history.policyObservations).toHaveLength(6);
+    current = observation(0, "stop");
+    await runEditorialLoop({ ...f.args, livePolicy: { read: async () => current, authorize } });
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(f.counts().revised).toBe(1);
+  });
+  it("applies a reduced revision limit and stop at the next decision", async () => {
+    const f = fixture(true);
+    let current = observation(3, "create-unpublished-draft");
+    const judge = f.stages.judge;
+    f.stages.judge = async (...args) => {
+      const result = await judge(...args);
+      current = observation(0, "stop");
+      return result;
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, authorize },
+    });
+    expect(result.history.terminal).toBe("unresolved");
+    expect(f.counts()).toEqual({ assessed: 1, judged: 1, revised: 0, approved: 0 });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+  it("authorizes only a draft on initial approval when draft mode is active, preserving verdict", async () => {
+    const f = fixture();
+    f.stages.judge = async () => ({
+      ref: ref("judgments/approved.json"),
+      state: "decided",
+      decision: "approve",
+    });
+    const authorize = vi.fn(async () => ({ eventId: "draft-only-event" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => observation(1, "create-unpublished-draft"), authorize },
+    });
+    expect(result.history.terminal).toBe("approved");
+    expect(result.approvalEvent).toBeUndefined();
+    expect(result.draftAuthorizationEvent).toBe("draft-only-event");
+    expect(f.counts().revised).toBe(0);
+    expect(f.counts().approved).toBe(0);
+  });
+  it("never treats provider failure as exhaustion or drafts after invalid live configuration", async () => {
+    const f = fixture(true);
+    f.stages.judge = async () => ({
+      ref: ref("judgments/failed.json"),
+      state: "provider-failed",
+      decision: "none",
+    });
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => observation(0, "create-unpublished-draft"), authorize },
+    });
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(authorize).not.toHaveBeenCalled();
+    const fresh = fixture(true);
+    await expect(
+      runEditorialLoop({
+        ...fresh.args,
+        livePolicy: {
+          read: async () => {
+            throw new Error("configuration unavailable");
+          },
+          authorize,
+        },
+      }),
+    ).rejects.toThrow("configuration unavailable");
+    expect(fresh.counts().assessed).toBe(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+  it("refuses a delayed fresh revision after its live allowance was reduced without a model call", async () => {
+    const f = fixture(true);
+    let current = observation(1, "create-unpublished-draft");
+    let writerCalls = 0;
+    f.stages.revise = async (...args) => {
+      current = observation(0, "stop");
+      await args[7]!();
+      writerCalls++;
+      throw new Error("unreachable writer");
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: { read: async () => current, now: () => 0, authorize },
+    });
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(result.reason).toBe("live-policy-policy-changed");
+    expect(writerCalls).toBe(0);
+    expect(result.history.revisions).toHaveLength(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+  it("journals a fixed deadline refusal before delayed paid dispatch, without losing the control category", async () => {
+    const f = fixture(true);
+    let calls = 0;
+    f.stages.assess = async (...args) => {
+      await args[5]!();
+      calls++;
+      return { ref: ref("never.json"), state: "no-faults" };
+    };
+    const authorize = vi.fn(async () => ({ eventId: "never" }));
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: {
+        read: async () => ({
+          ...observation(1, "create-unpublished-draft"),
+          policy: { ...observation(1, "create-unpublished-draft").policy, deadlineMs: 1000 },
+        }),
+        now: () => 2000,
+        authorize,
+      },
+    });
+    expect(result.reason).toBe("live-policy-deadline");
+    expect(result.history.terminal).toBe("operational-stop");
+    expect(result.history.assessments).toHaveLength(0);
+    expect(calls).toBe(0);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+});
+
+describe("legacy clock journal and fresh live deadline boundaries", () => {
+  it.each([undefined, 1000])(
+    "preserves the historical step/clock sequence with deadlineAt=%s",
+    async (deadlineAt) => {
+      const f = fixture();
+      const trace: string[] = [];
+      await runEditorialLoop({
+        ...f.args,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+        now: async () => {
+          trace.push("clock");
+          return 0;
+        },
+        step: async (name, work) => {
+          trace.push(name);
+          return work();
+        },
+      });
+      expect(trace).toEqual([
+        ...(deadlineAt === undefined ? ["clock"] : []),
+        "editorial-prepare",
+        "clock",
+        "editorial-assess-0",
+        "clock",
+        "editorial-judge-0",
+        "clock",
+        "editorial-revise-1",
+        "clock",
+        "editorial-assess-1",
+        "clock",
+        "editorial-judge-1",
+        "clock",
+        "editorial-record-approval",
+        "editorial-save-summary",
+      ]);
+    },
+  );
+  it.each(["assessment", "judgment"])(
+    "uses a deadline extension made during %s before deciding that time expired",
+    async (phase) => {
+      const f = fixture(true);
+      let deadlineMs = 1000;
+      const read = async () => ({
+        version: "live-editorial-policy-v1" as const,
+        revision: "config-sha256:" + "a".repeat(32),
+        policy: {
+          ...DEFAULT_EDITORIAL_POLICY,
+          maxRevisions: 0,
+          deadlineMs,
+          onExhausted: "stop" as const,
+        },
+      });
+      const advance = () => {
+        f.advance(1500);
+        deadlineMs = 5000;
+      };
+      if (phase === "assessment") {
+        const original = f.stages.assess;
+        f.stages.assess = async (...args) => {
+          const result = await original(...args);
+          advance();
+          return result;
+        };
+      } else {
+        const original = f.stages.judge;
+        f.stages.judge = async (...args) => {
+          const result = await original(...args);
+          advance();
+          return result;
+        };
+      }
+      const result = await runEditorialLoop({
+        ...f.args,
+        livePolicy: {
+          read,
+          authorize: async () => {
+            throw new Error("stop mode");
+          },
+        },
+      });
+      expect(result.history.terminal).toBe("unresolved");
+      expect(f.counts().judged).toBe(1);
+      expect(result.history.policyObservations?.at(-1)?.policy.deadlineMs).toBe(5000);
+    },
+  );
+  it("applies a shortened current deadline before starting the next judge", async () => {
+    const f = fixture(true);
+    let deadlineMs = 5000;
+    const original = f.stages.assess;
+    f.stages.assess = async (...args) => {
+      const result = await original(...args);
+      f.advance(1500);
+      deadlineMs = 1000;
+      return result;
+    };
+    const result = await runEditorialLoop({
+      ...f.args,
+      livePolicy: {
+        read: async () => ({
+          version: "live-editorial-policy-v1",
+          revision: "config-sha256:" + "a".repeat(32),
+          policy: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions: 0, deadlineMs, onExhausted: "stop" },
+        }),
+        authorize: async () => {
+          throw new Error("deadline stop");
+        },
+      },
+    });
+    expect(result.history.terminal).toBe("deadline");
+    expect(f.counts().judged).toBe(0);
+  });
+});

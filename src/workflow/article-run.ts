@@ -1,6 +1,6 @@
 import type { StageRef } from "../research/staged-research.js";
 import { editorialAttemptIdentity } from "./editorial-attempt-identity.js";
-import { runEditorialLoop } from "./editorial-loop.js";
+import { runEditorialLoop, type LiveEditorialPolicyPort } from "./editorial-loop.js";
 import type { EditorialStages, EditorialHistory, EditorialPolicy } from "./editorial-contract.js";
 import { EditorialPolicySchema } from "./editorial-contract.js";
 import {
@@ -95,6 +95,8 @@ export interface ArticleRunInput {
   packageReadiness?: "non-blocking-v1";
   /** Serialized version selects a new journal sequence; absent means legacy. */
   editorial?: EditorialPolicy;
+  /** Explicit new journal contract; absent preserves all historical step sequences. */
+  editorialExecution?: "live-policy-v1";
   operatorRequestId?: string;
 }
 
@@ -127,6 +129,8 @@ export interface ArticleRunResult {
   }[];
   /** The approved-article event recorded for a verified draft (#262). */
   approvalEvent?: string;
+  draftAuthorizationEvent?: string;
+  authorizationOutcome?: "owner-authorized-draft";
   /** When this run reached a terminal outcome, for operators (#479). */
   completedAt?: string;
   editorial?: EditorialHistory;
@@ -140,6 +144,8 @@ export interface ArticleRunResult {
  */
 export interface ArticleStages {
   editorial?: EditorialStages;
+  validateLiveEditorialIntent?(input: ArticleRunInput, workflowKey: string): Promise<boolean>;
+  liveEditorial?(input: ArticleRunInput, workflowKey: string, pkg: Ref): LiveEditorialPolicyPort;
   saveEditorialSummary?(
     history: Omit<EditorialHistory, "summary">,
     input: ArticleRunInput,
@@ -382,6 +388,7 @@ export const ArticleRunInputSchema = z
     researchFollowUp: z.literal("one-round-v1").optional(),
     packageReadiness: z.literal("non-blocking-v1").optional(),
     editorial: EditorialPolicySchema.optional(),
+    editorialExecution: z.literal("live-policy-v1").optional(),
     operatorRequestId: z
       .string()
       .regex(/^[A-Za-z0-9._-]{1,100}$/)
@@ -469,8 +476,19 @@ export function articleRunWorkflow(stages: ArticleStages) {
     ctx: restate.WorkflowContext,
     input: ArticleRunInput,
   ): Promise<ArticleRunResult> {
-    if (input.editorial && (!stages.editorial || !stages.saveEditorialSummary))
+    if (
+      (input.editorial || input.editorialExecution) &&
+      (!stages.editorial || !stages.saveEditorialSummary)
+    )
       throw new restate.TerminalError("editorial-contract-unavailable");
+    if (
+      input.editorialExecution &&
+      (!stages.liveEditorial ||
+        !stages.validateLiveEditorialIntent ||
+        !input.operatorRequestId ||
+        input.editorial)
+    )
+      throw new restate.TerminalError("live-editorial-contract-unavailable");
     // Durable progress for operators (#439): the current stage and when it last
     // changed, in the workflow's own state. The stage index only moves forward,
     // so a duplicate or out-of-order update never regresses it.
@@ -531,6 +549,13 @@ export function articleRunWorkflow(stages: ArticleStages) {
       input.packageReadiness === "non-blocking-v1"
         ? ({ packageReadiness: input.packageReadiness } as const)
         : {};
+    if (
+      input.editorialExecution &&
+      !(await runStep("editorial-validate-intent", () =>
+        stages.validateLiveEditorialIntent!(input, ctx.key),
+      ))
+    )
+      throw new restate.TerminalError("live-editorial-intent-mismatch");
     const themes = await step("themes", () => stages.themes(input));
     const claims = await step("claims", () => stages.claims(input, themes));
     const requests = await step("plan-research", () => stages.planResearch(themes, claims));
@@ -702,11 +727,18 @@ export function articleRunWorkflow(stages: ArticleStages) {
         ...contract,
       };
     }
-    if (input.editorial) {
+    if (input.editorial || input.editorialExecution) {
       await mark("editorial", "running");
+      const livePolicy = input.editorialExecution
+        ? stages.liveEditorial!(input, ctx.key, pkg.ref)
+        : undefined;
+      const initialPolicy = livePolicy
+        ? (await runStep("editorial-initial-policy", livePolicy.read)).policy
+        : input.editorial!;
       const editorial = await runEditorialLoop({
         stages: stages.editorial!,
-        policy: input.editorial,
+        policy: initialPolicy,
+        ...(livePolicy ? { livePolicy } : {}),
         draft: drafted.ref,
         package: pkg.ref,
         sourceUrl: input.sourceUrl,
@@ -727,8 +759,9 @@ export function articleRunWorkflow(stages: ArticleStages) {
       });
       await mark("editorial", "completed");
       return {
-        outcome:
-          editorial.history.terminal === "approved"
+        outcome: editorial.draftAuthorizationEvent
+          ? "drafted-unverified"
+          : editorial.history.terminal === "approved"
             ? "verified"
             : editorial.history.terminal === "unresolved"
               ? "rejected"
@@ -744,6 +777,12 @@ export function articleRunWorkflow(stages: ArticleStages) {
         editorial: editorial.history,
         ...(editorial.approvalEvent ? { approvalEvent: editorial.approvalEvent } : {}),
         ...contract,
+        ...(editorial.draftAuthorizationEvent
+          ? {
+              draftAuthorizationEvent: editorial.draftAuthorizationEvent,
+              authorizationOutcome: "owner-authorized-draft" as const,
+            }
+          : {}),
       };
     }
     // Verification may redraft (bounded); the final draft is the one it judged.

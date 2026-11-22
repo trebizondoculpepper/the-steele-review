@@ -41,3 +41,21 @@ Explicit owner-authorized draft rehearsals are a separate, limited exception: on
 Any concrete configuration leak or violation of these principles is a blocking review finding, even when tests pass. Findings identify the location and exposure category without quoting sensitive values. Reviewers must inspect relevant generated outputs and packaging behaviour, not only source text.
 
 If private information is discovered, stop propagating it and remove it from working files. If it reached Git history or an external service, tell the owner without repeating it and coordinate removal and credential rotation where applicable. Do not assume deleting the current file removes historical exposure. Do not open a public issue containing private details.
+
+## Live configured normal-flow draft authority
+
+The owner also authorizes NEW versioned normal article attempts to apply the current
+configured revision allowance and exhaustion action. When that action is
+`create-unpublished-draft`, an initial approving judgment or editorial exhaustion
+may produce the same capability-limited unpublished draft authority. Keep the
+actual judgment and all unresolved findings; do not call that authority factual
+verification. Technical/provider failures, invalid mechanical output, broken
+citation references and mismatched provenance cannot use this exception.
+
+This normal-flow proof binds the recorded attempt, exact source context, package,
+body and generated metadata, complete assessment/judgment chain, mechanical
+provenance, and the non-secret policy observation actually applied. It does not
+forge a completed retained-recovery parent. Only the two designated dummies and
+one immutable Substack draft target are allowed. Re-read current stop/target
+permissions before future delivery effects, including cached receipt and intent
+reuse. No publishing credentials are granted to the article worker.

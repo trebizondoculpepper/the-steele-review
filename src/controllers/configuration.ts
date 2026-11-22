@@ -128,19 +128,34 @@ export class ConfigurationController {
     };
   }
 
-  /** Fresh selected read for a new decision; never populates or reads active. */
-  async currentSetting(role: string, key: string): Promise<ResolvedSetting & { revision: string }> {
+  /** One coherent selected observation for a new decision; never reads or populates active. */
+  async currentSettings(
+    role: string,
+    keys: readonly string[],
+  ): Promise<{ settings: ResolvedSetting[]; revision: string }> {
     const granted = this.config.roles[role];
     if (!granted) throw new ConfigurationError("unknown-role");
-    if (!granted.includes(key)) throw new ConfigurationError("not-granted");
-    const spec = this.registry.find((s) => s.key === key);
-    if (!spec) throw new ConfigurationError("invalid-setting");
+    if (!keys.length || new Set(keys).size !== keys.length)
+      throw new ConfigurationError("invalid-setting");
+    if (keys.some((key) => !granted.includes(key))) throw new ConfigurationError("not-granted");
+    const specs = keys.map((key) => this.registry.find((spec) => spec.key === key));
+    if (specs.some((spec) => !spec)) throw new ConfigurationError("invalid-setting");
     const { file, resolved } = await this.resolve();
     if (this.config.settingsFile && file !== "ok") throw new ConfigurationError(`file-${file}`);
-    const selected = resolved.find((r) => r.key === key);
-    if (!selected || selected.error || selected.value === undefined)
+    const settings = keys.map((key) => resolved.find((setting) => setting.key === key));
+    if (settings.some((setting) => !setting || setting.error || setting.value === undefined))
       throw new ConfigurationError("invalid-setting");
-    return { ...selected, revision: configurationVersion([selected], this.config.salt, [spec]) };
+    const selected = settings as ResolvedSetting[];
+    return {
+      settings: selected,
+      revision: configurationVersion(selected, this.config.salt, specs as SettingSpec[]),
+    };
+  }
+
+  /** Fresh selected read for a new decision; never populates or reads active. */
+  async currentSetting(role: string, key: string): Promise<ResolvedSetting & { revision: string }> {
+    const observed = await this.currentSettings(role, [key]);
+    return { ...observed.settings[0]!, revision: observed.revision };
   }
 
   /** Explicitly (re)load the active snapshot from the current saved state. */
