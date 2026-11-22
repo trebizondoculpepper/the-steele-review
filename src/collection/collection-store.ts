@@ -68,6 +68,15 @@ export const CollectionRecordSchema = z
       .strict(),
     /** The post's own preview image (#277); absent when it is not post-specific. */
     previewImage: PreviewImageSchema.optional(),
+    /**
+     * Set when this version was produced by a deliberate reingestion (#558):
+     * its stable request ID, so an interrupted request can recognise and
+     * complete its own committed version. Absent for ordinary collection.
+     */
+    reingestion: z
+      .object({ requestId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/) })
+      .strict()
+      .optional(),
     provenance: z.looseObject({
       sourceUrl: z.url(),
       acquiredAt: z.iso.datetime({ offset: true }),

@@ -880,7 +880,7 @@ describe("single-item reingestion (#558)", () => {
         ({
           kind: "transcription-required",
           item,
-          articleText: "",
+          articleText: "Edited article body.",
           media: { kind: "audio", url: "https://cdn.example/a.mp3", durationSeconds: 60 },
           provenance,
         }) as never,
@@ -897,7 +897,34 @@ describe("single-item reingestion (#558)", () => {
     const record = JSON.parse(
       await artifacts.read((await artifacts.lookup(collectionArtifactPath(item)))!),
     );
-    expect(record.text).toBe("Spoken words.");
+    // The fresh article body is combined with the reused transcript.
+    expect(record.text).toBe("Edited article body.\n\nSpoken words.");
+    expect(record.reingestion).toEqual({ requestId: "refresh-3" });
+  });
+
+  it("completes an exhausted reingestion from its own committed version", async () => {
+    const first = setup({});
+    await first.worker.handle(message());
+    const second = setup({});
+    requestReingest({ operations: second.operations, item, requestId: "refresh-5" });
+    const m = delivered(second.operations);
+    // The request's version was committed, then the operation ran out of attempts.
+    const existing = (await second.store.existing(item))!;
+    await artifacts.revise(
+      collectionArtifactPath(item),
+      `${JSON.stringify({ ...existing.record, reingestion: { requestId: "refresh-5" } }, null, 2)}\n`,
+      existing.artifact.sha256,
+    );
+    const key = reingestKey(item, "refresh-5");
+    const claim = second.operations.claim(key, "crashed", 60_000);
+    if (claim.kind !== "claimed") throw new Error(claim.kind);
+    second.operations.fail(claim.claim, "crashed", false);
+    expect(await second.worker.handle(m)).toBe("already-collected");
+    expect(second.operations.operationStatus(key)?.status).toBe("completed");
+    const current = (await artifacts.lookup(collectionArtifactPath(item)))!;
+    expect(
+      second.captured.some((c) => JSON.parse(c.body).data?.artifact?.commit === current.commit),
+    ).toBe(true);
   });
 
   it("refuses to reingest a post that was never collected", async () => {

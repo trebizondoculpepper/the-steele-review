@@ -215,6 +215,21 @@ export class CollectionWorker {
       return { result: "busy", item };
     }
     if (claimResult.kind === "exhausted") {
+      // A reingestion whose own version was committed before a crash on its
+      // last attempt is completed from that version, never left disconnected.
+      if (reingestRequestId) {
+        const current = await this.config.store.existing(item).catch(() => undefined);
+        if (current?.record.reingestion?.requestId === reingestRequestId) {
+          this.config.operations.reconcileCompleted(
+            reingestKey(item, reingestRequestId),
+            current.artifact,
+            this.eventsFor(causationId)(current.artifact, current.record),
+          );
+          await message.ack();
+          await this.dispatchPending(signal);
+          return { result: "already-collected", item };
+        }
+      }
       await message.ack();
       return { result: "exhausted", item };
     }
@@ -295,10 +310,12 @@ export class CollectionWorker {
         // recorded provenance.
         const t = previous.record;
         method = t.provenance.method;
+        // Fresh article body from this fetch; only the transcript is reused.
+        const transcriptText = t.supplied.transcript!.map((s) => s.text).join(" ");
         record = {
           item: { ...item, author: acquired.item.author },
           ingestionReason: reason,
-          text: t.text,
+          text: [acquired.articleText, transcriptText].filter(Boolean).join("\n\n"),
           complete: t.complete,
           supplied: { transcript: t.supplied.transcript! },
           ...(acquired.previewImage ? { previewImage: acquired.previewImage } : {}),
@@ -385,8 +402,10 @@ export class CollectionWorker {
 
       try {
         if (previous) {
-          await this.config.store.reingest(claim, record, previous.artifact.sha256, (artifact) =>
-            this.eventsFor(causationId)(artifact, record),
+          record = { ...record, reingestion: { requestId: reingestRequestId! } };
+          const final = record;
+          await this.config.store.reingest(claim, final, previous.artifact.sha256, (artifact) =>
+            this.eventsFor(causationId)(artifact, final),
           );
         } else {
           await this.config.store.commit(claim, record, (artifact) =>
