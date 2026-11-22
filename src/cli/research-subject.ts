@@ -232,7 +232,14 @@ async function submitted(
     ...(typeof reprocess === "object" ? { reprocess: reprocess.data } : {}),
     ...(wait?.success ? { waitMs: wait.data } : {}),
   });
-  const result = out.job?.result;
+  // A cached "busy" answer (the job was running elsewhere, e.g. --local) is
+  // never final: the saved result is read directly, by the same job identity.
+  let result = out.job?.result;
+  if (!result && out.job?.status === "busy") {
+    const saved = await artifacts.lookup(researchJobPath(out.jobId, "result"));
+    if (saved) result = ResearchResultSchema.parse(JSON.parse(await artifacts.read(saved)));
+    else if (!values.json) console.log("The job is running elsewhere; check later with --status.");
+  }
   const attachment =
     values.dossier && result
       ? await attachToDossier(artifacts, String(values.dossier), request, result)
