@@ -84,6 +84,15 @@ const Author = z
         status: z.literal("resolved"),
         author: z.string().min(1).max(200),
         authorId: z.string().min(1).max(200).optional(),
+        /** Owner-configured disambiguation (#753): context, never biographical evidence. */
+        profile: z
+          .object({
+            label: z.string().min(1).max(80).optional(),
+            description: z.string().min(1).max(500).optional(),
+            excludes: z.array(z.string().min(1).max(200)).max(10).optional(),
+          })
+          .strict()
+          .optional(),
         /** Captured account/byline observation remains distinct from configured person identity. */
         observedByline: z.string().max(200).optional(),
         basis: z.enum(["post-byline", "source-configured"]),

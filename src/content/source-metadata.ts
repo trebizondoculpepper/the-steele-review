@@ -36,6 +36,17 @@ export const SourceMetadataSchema = z
       .string()
       .regex(/^[a-z0-9][a-z0-9-]{0,99}$/)
       .optional(),
+    /** Owner-configured disambiguation for the default author (#753); not evidence. */
+    defaultAuthorProfile: z
+      .object({
+        /** Short disambiguating label, e.g. a role or affiliation. */
+        label: z.string().trim().min(1).max(80).optional(),
+        description: z.string().trim().min(1).max(500).optional(),
+        /** Namesakes this author must not be confused with. */
+        excludes: z.array(z.string().trim().min(1).max(200)).max(10).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type SourceMetadata = z.infer<typeof SourceMetadataSchema>;
@@ -88,6 +99,9 @@ const SourceDocumentSchema = z
               .object({
                 id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
                 name: z.string().trim().min(1).max(200),
+                label: z.string().trim().min(1).max(80).optional(),
+                description: z.string().trim().min(1).max(500).optional(),
+                excludes: z.array(z.string().trim().min(1).max(200)).max(10).optional(),
               })
               .strict()
               .optional(),
@@ -111,7 +125,21 @@ function normalise(input: unknown): SourceMetadata[] {
       displayName: s.name,
       ...(s.sourceAccountBylines ? { sourceAccountBylines: s.sourceAccountBylines } : {}),
       ...(s.defaultAuthor
-        ? { defaultAuthor: s.defaultAuthor.name, defaultAuthorId: s.defaultAuthor.id }
+        ? {
+            defaultAuthor: s.defaultAuthor.name,
+            defaultAuthorId: s.defaultAuthor.id,
+            ...(s.defaultAuthor.label || s.defaultAuthor.description || s.defaultAuthor.excludes
+              ? {
+                  defaultAuthorProfile: {
+                    ...(s.defaultAuthor.label ? { label: s.defaultAuthor.label } : {}),
+                    ...(s.defaultAuthor.description
+                      ? { description: s.defaultAuthor.description }
+                      : {}),
+                    ...(s.defaultAuthor.excludes ? { excludes: s.defaultAuthor.excludes } : {}),
+                  },
+                }
+              : {}),
+          }
         : {}),
     })),
   );
@@ -129,12 +157,16 @@ export function parseSourceMetadata(input: unknown): ParsedSourceMetadata {
 /** Why an author was attributed, or why none could be. */
 export type AttributionBasis = "post-byline" | "source-configured";
 
+export type AuthorProfile = NonNullable<SourceMetadata["defaultAuthorProfile"]>;
+
 export type PostAuthorResolution =
   | {
       status: "resolved";
       author: string;
       /** Stable configured identity, when the source records one. */
       authorId?: string;
+      /** Owner-configured disambiguation for this exact author (#753). */
+      profile?: AuthorProfile;
       basis: AttributionBasis;
       /** Configuration version the resolution relied on. */
       sourceMetadataVersion: string;
@@ -174,9 +206,16 @@ export function resolvePostAuthor(input: {
     return { status: "unknown", reason: "ambiguous-byline", sourceMetadataVersion: version };
   const single = input.byline?.[0]?.trim();
   if (single && !isSourceAccountByline(source, single)) {
+    // A byline naming the configured author carries that author's profile;
+    // any other byline is a different, unprofiled person.
+    const same =
+      source?.defaultAuthor &&
+      source.defaultAuthorProfile &&
+      normalizedByline(source.defaultAuthor) === normalizedByline(single);
     return {
       status: "resolved",
       author: single,
+      ...(same ? { profile: source!.defaultAuthorProfile! } : {}),
       basis: "post-byline",
       sourceMetadataVersion: version,
     };
@@ -187,6 +226,7 @@ export function resolvePostAuthor(input: {
       status: "resolved",
       author: configured,
       ...(source?.defaultAuthorId ? { authorId: source.defaultAuthorId } : {}),
+      ...(source?.defaultAuthorProfile ? { profile: source.defaultAuthorProfile } : {}),
       basis: "source-configured",
       sourceMetadataVersion: version,
     };

@@ -716,6 +716,15 @@ export async function readCoverageAnalysis(
   return { themes, claimRecord, post };
 }
 
+/**
+ * How a theme is named in a research question. A source-author theme (#753)
+ * carries its configured disambiguation, so research concerns the intended
+ * person and not a namesake; other themes are named by title as before.
+ */
+function researchSubject(p: { title: string; description?: string; origin?: string }): string {
+  return p.origin === "source-author" && p.description ? `${p.title} (${p.description})` : p.title;
+}
+
 export async function assessPostCoverage(input: {
   artifacts: GitArtifactStore;
   themeResult: ArtifactRef;
@@ -804,7 +813,7 @@ export async function assessPostCoverage(input: {
     if (kept) {
       dossierFor.set(p.id, kept.dossierId);
       titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
-      if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, p.title);
+      if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, researchSubject(p));
       mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
       // Coverage from before canonical themes existed still establishes one.
       await themeStore.ensure({
@@ -823,7 +832,7 @@ export async function assessPostCoverage(input: {
     const catalogued = pinned?.mapping;
     if (pinned && catalogued && established.has(catalogued.canonicalThemeId)) {
       const dossierId = catalogued.canonicalThemeId;
-      if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
+      if (!subjects.has(dossierId)) subjects.set(dossierId, researchSubject(p));
       dossierFor.set(p.id, dossierId);
       titles.set(dossierId, existing.get(dossierId)?.metadata.title ?? p.title);
       mappings.push({
@@ -850,7 +859,7 @@ export async function assessPostCoverage(input: {
     for (let n = 2; decision.themeId === null && established.has(dossierId); n++) {
       dossierId = newDossierId(`${p.title}#${n}`);
     }
-    if (!subjects.has(dossierId)) subjects.set(dossierId, p.title);
+    if (!subjects.has(dossierId)) subjects.set(dossierId, researchSubject(p));
     dossierFor.set(p.id, dossierId);
     titles.set(dossierId, existing.get(dossierId)?.metadata.title ?? p.title);
     mappings.push({
@@ -904,7 +913,8 @@ export async function assessPostCoverage(input: {
         saved.rationale = "reconciled to the saved catalogue winner";
         dossierFor.set(p.id, winner.canonicalThemeId);
         // The research subject follows the dossier this mapping now points at.
-        if (!subjects.has(winner.canonicalThemeId)) subjects.set(winner.canonicalThemeId, p.title);
+        if (!subjects.has(winner.canonicalThemeId))
+          subjects.set(winner.canonicalThemeId, researchSubject(p));
       }
     }
   }
