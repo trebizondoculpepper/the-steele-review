@@ -759,6 +759,111 @@ export class OperationStore {
     );
   }
 
+  /** Fence a returned editorial response against both stale ownership and an expired paid-call lease. */
+  renewEditorialCapture(claim: OperationClaim, leaseMs: number): number {
+    if (
+      !claim.key.startsWith("editorial-capture:") ||
+      !Number.isInteger(leaseMs) ||
+      leaseMs < 1000 ||
+      leaseMs > 20 * 60_000
+    )
+      throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      const expires = now + leaseMs;
+      this.db
+        .prepare("UPDATE operations SET lease_expires_at = ?, updated_at = ? WHERE key = ?")
+        .run(expires, now, claim.key);
+      return expires;
+    });
+  }
+
+  /** Complete only this editorial capture's durable result while its exact claim still has an active lease. */
+  completeEditorialCapture(claim: OperationClaim, result: ArtifactReference): unknown {
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (
+      !claim.key.startsWith("editorial-capture:") ||
+      !valid.success ||
+      !valid.data.path.endsWith(`/${claim.key.slice("editorial-capture:".length)}/manifest.json`)
+    )
+      throw new OperationStoreError("invalid-input");
+    const artifact = { capture: valid.data };
+    const outcome = this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return { accepted: true, artifact: existing };
+      }
+      if (!this.holds(row, claim)) return { accepted: false };
+      if ((row?.lease_expires_at ?? 0) <= now) {
+        // Commit rejection before returning an error: a crash cannot erase this quarantine.
+        this.db
+          .prepare(
+            "UPDATE operations SET status = 'failed', owner = NULL, lease_expires_at = NULL, error_code = 'editorial-quarantined', updated_at = ? WHERE key = ?",
+          )
+          .run(now, claim.key);
+        return { accepted: false };
+      }
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, claim.key);
+      return { accepted: true, artifact };
+    });
+    if (!outcome.accepted) throw new OperationStoreError("not-owner");
+    return outcome.artifact;
+  }
+
+  /** Reconcile only a fenced editorial call whose prior owner vanished, never a rejected capture. */
+  reconcileEditorialCapture(captureId: string, result: ArtifactReference): unknown {
+    if (!/^editorial-attempt-[0-9a-f]{32}$/.test(captureId))
+      throw new OperationStoreError("invalid-input");
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (!valid.success || !valid.data.path.endsWith(`/${captureId}/manifest.json`))
+      throw new OperationStoreError("invalid-input");
+    const key = `editorial-capture:${captureId}`,
+      artifact = { capture: valid.data };
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return existing;
+      }
+      if (row?.status === "claimed" && (row.lease_expires_at ?? 0) > now)
+        throw new OperationStoreError("busy");
+      if (!row || row.status !== "claimed") throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, key);
+      return artifact;
+    });
+  }
+
+  /** Narrow read port: a Git candidate alone is not authoritative editorial acceptance. */
+  editorialCaptureAccepted(captureId: string, result: ArtifactReference): boolean {
+    if (!/^editorial-attempt-[0-9a-f]{32}$/.test(captureId)) return false;
+    const parsed = ArtifactReferenceSchema.safeParse(result);
+    if (!parsed.success) return false;
+    const row = this.row(`editorial-capture:${captureId}`);
+    return (
+      row?.status === "completed" &&
+      JSON.stringify(JSON.parse(row.artifact ?? "null")) ===
+        JSON.stringify({ capture: parsed.data })
+    );
+  }
+
   /**
    * Record completion and pending downstream events in one transaction.
    * Call only after the artifact is durably committed. A repeated completion

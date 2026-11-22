@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
-import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
+import { type ArtifactReference, ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
@@ -39,6 +39,8 @@ const Ref = ArtifactReferenceSchema;
 export const JudgmentRecordSchema = z
   .object({
     schemaVersion: z.literal(JUDGMENT_SCHEMA_VERSION),
+    attemptId: z.string().min(1).max(500).optional(),
+    retainedAttempts: z.array(Ref).max(10).optional(),
     /** The disposition; `none` whenever approval or revision could not be decided. */
     decision: z.enum(["approve", "revise", "none"]),
     state: z.enum(["decided", "gated", "malformed", "provider-failed"]),
@@ -114,6 +116,8 @@ export async function judgeAssessment(input: {
   /** The saved assessment record (#598) to judge. */
   assessment: ArtifactRef;
   judge: ExtractionModelProvider;
+  attemptId?: string;
+  retainedAttempts?: () => ArtifactReference[];
   prompt?: ExtractionPrompt;
   now?: () => Date;
 }): Promise<JudgmentOutcome> {
@@ -133,6 +137,7 @@ export async function judgeAssessment(input: {
   const key = sha(
     JSON.stringify([
       "judgment-v1",
+      ...(input.attemptId ? [input.attemptId] : []),
       toRef(input.assessment),
       assessment.body,
       assessment.publication,
@@ -148,7 +153,15 @@ export async function judgeAssessment(input: {
   }
 
   const persist = async (record: JudgmentRecord) => {
-    const ref = await writeOnce(input.content, recordPath, JudgmentRecordSchema.parse(record));
+    const ref = await writeOnce(
+      input.content,
+      recordPath,
+      JudgmentRecordSchema.parse({
+        ...record,
+        ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+        ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
+      }),
+    );
     const persisted = JudgmentRecordSchema.parse(JSON.parse(await input.content.read(ref)));
     return { status: "judged" as const, record: persisted, ref, reused: false };
   };

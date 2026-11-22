@@ -26,6 +26,10 @@ export const ArticleApprovedDataSchema = z
     draft: ArtifactReferenceSchema,
     /** The verification report that approved exactly that draft. */
     approval: ArtifactReferenceSchema,
+    /** Absent only on legacy combined-verifier events. */
+    approvalKind: z.enum(["combined-verification", "editorial-judgment"]).optional(),
+    /** Actual assessor record, never a fabricated combined verification report. */
+    assessment: ArtifactReferenceSchema.optional(),
     /** Present for payload-aware verification; absent only for legacy body-only approvals. */
     publication: ArtifactReferenceSchema.optional(),
     /** The evidence package the draft was written from. */

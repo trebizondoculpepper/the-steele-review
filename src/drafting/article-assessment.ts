@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
-import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
+import { type ArtifactReference, ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 import { loadPromptFile } from "../prompt-files.js";
@@ -44,6 +44,8 @@ const Ref = ArtifactReferenceSchema;
 export const AssessmentRecordSchema = z
   .object({
     schemaVersion: z.literal(ASSESSMENT_SCHEMA_VERSION),
+    attemptId: z.string().min(1).max(500).optional(),
+    retainedAttempts: z.array(Ref).max(10).optional(),
     state: z.enum(["findings", "no-faults", "incomplete", "malformed", "provider-failed"]),
     /** Number of `## Finding` sections in a complete document. */
     findings: z.number().int().min(0).optional(),
@@ -111,6 +113,8 @@ export async function assessArticle(input: {
   /** The draft's metadata, which pins body, package and context. */
   metadata: ArtifactRef;
   assessor: ExtractionModelProvider;
+  attemptId?: string;
+  retainedAttempts?: () => ArtifactReference[];
   prompt?: ExtractionPrompt;
   now?: () => Date;
 }): Promise<AssessmentOutcome> {
@@ -122,6 +126,7 @@ export async function assessArticle(input: {
   const key = sha(
     JSON.stringify([
       "assessment-v1",
+      ...(input.attemptId ? [input.attemptId] : []),
       toRef(draftRef),
       artifactReference(publication.ref),
       meta.package,
@@ -191,6 +196,8 @@ export async function assessArticle(input: {
   const verdict = raw === undefined ? { state: "provider-failed" as const } : classifyFindings(raw);
   const record: AssessmentRecord = AssessmentRecordSchema.parse({
     schemaVersion: ASSESSMENT_SCHEMA_VERSION,
+    ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+    ...(input.retainedAttempts ? { retainedAttempts: input.retainedAttempts() } : {}),
     state: verdict.state,
     ...("findings" in verdict && verdict.findings !== undefined
       ? { findings: verdict.findings }

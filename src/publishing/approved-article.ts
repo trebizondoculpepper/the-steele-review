@@ -16,7 +16,7 @@ import {
   publicationManifestHash,
   type PublicationPayload,
 } from "../drafting/publication-payload.js";
-import { PackageVerificationReportSchema, approvalValidFor } from "../drafting/package-verify.js";
+import { readApprovalEvidence, type ApprovalKind } from "./approval-evidence.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
   ArticleApprovedDataSchema,
@@ -84,35 +84,26 @@ export async function recordApproval(input: {
   operations: OperationStore;
   /** The saved package verification report (#150). */
   report: ArtifactRef;
+  kind?: ApprovalKind;
   now?: () => Date;
 }): Promise<{ eventId: string; data: ArticleApprovedData }> {
-  const report = PackageVerificationReportSchema.parse(
-    JSON.parse(await input.content.read(input.report)),
-  );
-  if (report.outcome !== "approved") throw new ApprovalError("report does not approve the draft");
-  const draft = fromRef(report.draft);
-  const markdown = await input.content.read(draft); // hash-verified read
-  const publication =
-    report.schemaVersion === 2
-      ? {
-          ref: report.publication,
-          ...(await readPublicationPayload(input.content, report.publication)),
-        }
-      : undefined;
-  if (!approvalValidFor(report, markdown, publication))
-    throw new ApprovalError("approval does not match the draft");
-  const pkg = JSON.parse(await input.content.read(fromRef(report.package))) as {
+  const evidence = await readApprovalEvidence(input.content, input.report, input.kind);
+  const draft = fromRef(evidence.body);
+  const pkg = JSON.parse(await input.content.read(fromRef(evidence.package))) as {
     post: { publicationId: string; postId: string };
   };
   const eventId = approvedArticleEventId(draft, input.report);
   const data: ArticleApprovedData = {
     publicationId: pkg.post.publicationId,
     postId: pkg.post.postId,
-    draft: report.draft,
+    draft: evidence.body,
     approval: toRef(input.report),
-    ...(report.schemaVersion === 2 ? { publication: report.publication } : {}),
-    package: report.package,
-    approvedAt: report.verifiedAt,
+    ...(evidence.publication ? { publication: evidence.publication } : {}),
+    ...(evidence.kind === "editorial-judgment"
+      ? { approvalKind: evidence.kind, assessment: evidence.assessment }
+      : {}),
+    package: evidence.package,
+    approvedAt: evidence.approvedAt,
   };
   const event = createArticleApprovedEvent(data, eventId);
   input.operations.reconcileCompleted(`approved:${eventId}`, { eventId }, [
@@ -253,20 +244,23 @@ async function readApprovedContent(
   content: Pick<GitArtifactStore, "read">,
   article: ArticleApprovedData,
 ) {
-  const markdown = await content.read(fromRef(article.draft));
-  const report = PackageVerificationReportSchema.parse(
-    JSON.parse(await content.read(fromRef(article.approval))),
+  const evidence = await readApprovalEvidence(
+    content,
+    fromRef(article.approval),
+    article.approvalKind,
   );
-  const loaded = article.publication
-    ? { ref: article.publication, ...(await readPublicationPayload(content, article.publication)) }
-    : undefined;
   if (
-    !approvalValidFor(report, markdown, loaded) ||
-    !sameArtifact(report.draft, article.draft) ||
-    !sameArtifact(report.package, article.package)
+    !sameArtifact(evidence.body, article.draft) ||
+    !sameArtifact(evidence.package, article.package) ||
+    (evidence.publication
+      ? !article.publication || !sameArtifact(evidence.publication, article.publication)
+      : article.publication !== undefined) ||
+    (evidence.assessment
+      ? !article.assessment || !sameArtifact(evidence.assessment, article.assessment)
+      : article.assessment !== undefined)
   )
     throw new ApprovalError("approval does not match the draft");
-  return { markdown, publication: loaded?.payload };
+  return { markdown: evidence.markdown, publication: evidence.payload };
 }
 
 function deliveryDirectory(
