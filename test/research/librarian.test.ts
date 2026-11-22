@@ -843,4 +843,31 @@ describe("theme research reuse across posts (#658)", { timeout: 60_000 }, () => 
     expect(jobs).toHaveLength(2);
     expect(jobs[0]).toBe(jobs[1]);
   });
+
+  it("replays the same targeted job when the same analysis is reassessed", async () => {
+    const dossierId = await firstPost();
+    const accept = { decide: async () => ({ themeId: dossierId, rationale: "same theme" }) };
+    // The targeted job supports the new claim but not the old gap.
+    const supportNew = (req: ResearchRequest) => ({
+      passages: req.claims
+        .filter((c) => c.claimRecordId === "claim-new")
+        .map((c) => ({ claimRecordId: c.claimRecordId, url: "https://source.example/new" })),
+    });
+    const second = await analysis("p2", [extra, claims[1]!, claims[0]!], "Weather warfare");
+    const jobs: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = researcher(supportNew);
+      await assessPostCoverage({
+        artifacts,
+        ...second,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+      });
+      jobs.push(...r.requests.map((q) => researchJobId(q)));
+    }
+    // The dossier now covers claim-new, yet the reassessment sends the identical request.
+    expect(jobs).toHaveLength(2);
+    expect(jobs[1]).toBe(jobs[0]);
+  });
 });

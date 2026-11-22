@@ -1,3 +1,4 @@
+import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
@@ -282,6 +283,12 @@ export const CoverageRecordSchema = z
           outcome: z.string(),
           result: Ref.optional(),
           manifest: Ref.optional(),
+          /**
+           * The exact claim batch of a targeted theme request (#658), so a
+           * reassessment replays the same request instead of rebuilding it
+           * from dossier coverage that this run may itself have changed.
+           */
+          targetedClaims: z.array(z.string()).max(100).optional(),
         })
         .strict(),
     ),
@@ -304,6 +311,8 @@ export interface CommissionedJob {
 /** Runs (or reuses) a research job for a request; the researcher owns provider calls. */
 export type Commission = (request: ResearchRequest) => Promise<CommissionedJob>;
 
+/** Question template for targeted enhancement of a researched theme (#658). */
+const THEME_ENHANCEMENT = loadPromptFile("research", "theme-enhancement-v1");
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
   commit: r.commit,
@@ -523,6 +532,7 @@ async function priorMappings(
   themeResult: ArtifactRef,
   claimResult: ArtifactRef,
   jobIds?: Set<string>,
+  targetedBatches?: Map<string, string[][]>,
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -539,7 +549,15 @@ async function priorMappings(
       a.commit === b.commit && a.path === b.path;
     if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
     for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
-    for (const j of r.jobs) jobIds?.add(j.jobId);
+    for (const j of r.jobs) {
+      jobIds?.add(j.jobId);
+      if (j.targetedClaims && targetedBatches) {
+        const batches = targetedBatches.get(j.dossierId) ?? [];
+        const key = JSON.stringify(j.targetedClaims);
+        if (!batches.some((b) => JSON.stringify(b) === key)) batches.push(j.targetedClaims);
+        targetedBatches.set(j.dossierId, batches);
+      }
+    }
   }
   return out;
 }
@@ -660,12 +678,14 @@ export async function assessPostCoverage(input: {
   // Jobs an earlier assessment of this exact analysis commissioned (#658):
   // reassessment repeats the same request rather than switching mode.
   const priorJobIds = new Set<string>();
+  const priorTargeted = new Map<string, string[][]>();
   const savedMapping = await priorMappings(
     input.artifacts,
     post,
     input.themeResult,
     input.claimResult,
     priorJobIds,
+    priorTargeted,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -870,7 +890,13 @@ export async function assessPostCoverage(input: {
     targeted = false,
   ) => {
     const request = buildRequest(dossierId, group, pass, previousJobId, targeted);
-    return commissionAndAssess(dossierId, group, pass, request);
+    return commissionAndAssess(
+      dossierId,
+      group,
+      pass,
+      request,
+      targeted ? group.map((c) => c.key) : undefined,
+    );
   };
   function buildRequest(
     dossierId: string,
@@ -893,7 +919,7 @@ export async function assessPostCoverage(input: {
           themeIds: [dossierId],
         })),
       question: targeted
-        ? `Targeted enhancement of existing research on ${dossierId}: find independent, authoritative sources that directly address these specific claims, which the theme's saved research does not yet support.`
+        ? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId)
         : pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
@@ -908,6 +934,7 @@ export async function assessPostCoverage(input: {
     group: AcceptedClaim[],
     pass: number,
     request: ResearchRequest,
+    targetedClaims?: string[],
   ) {
     const commissioned = await input.commission(request);
     // Assess the saved result and manifest through their exact pinned
@@ -944,6 +971,7 @@ export async function assessPostCoverage(input: {
             : job.status,
       ...(job.resultRef ? { result: toRef(job.resultRef) } : {}),
       ...(manifestRef ? { manifest: toRef(manifestRef) } : {}),
+      ...(targetedClaims ? { targetedClaims } : {}),
     });
     return { job, assessed: assess(group, job, manifest) };
   }
@@ -961,6 +989,16 @@ export async function assessPostCoverage(input: {
       priorJobIds.has(researchJobId(buildRequest(dossierId, g, 1, undefined, false))),
     );
     if (saved && saved.metadata.claims.length > 0 && !fullRequestedBefore) {
+      // A reassessment replays exactly the batches this analysis requested.
+      const replay = priorTargeted.get(dossierId);
+      if (replay) {
+        const byKey = new Map(all.map((c) => [c.key, c]));
+        for (const batch of replay) {
+          const group = batch.map((k) => byKey.get(k)).filter((c): c is AcceptedClaim => !!c);
+          if (group.length > 0) await enhanceGroup(dossierId, group);
+        }
+        continue;
+      }
       const needs = [...all]
         .filter((c) => !outcomes.get(c.key)?.reused)
         .sort((a, b) => a.claimRecordId.localeCompare(b.claimRecordId));
