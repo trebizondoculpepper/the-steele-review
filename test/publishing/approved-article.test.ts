@@ -174,7 +174,14 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     const v2 = await content.revise(paths.body, newer, v1.sha256);
     expect(v2.sha256).not.toBe(data.draft.hash.replace(/^sha256:/, ""));
 
-    const site = new SimulatedDestination("site", "draft");
+    // Record what the destination is actually given, not just its idempotency key.
+    const sent: string[] = [];
+    const site = new (class extends SimulatedDestination {
+      override async deliver(preview: Parameters<SimulatedDestination["deliver"]>[0], key: string) {
+        sent.push(JSON.stringify(preview));
+        return super.deliver(preview, key);
+      }
+    })("site", "draft");
     const out = await handleApprovedArticle({
       payload,
       destination: site,
@@ -186,8 +193,11 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
     });
     expect(out).toMatchObject({ action: "ack", outcome: "delivered" });
     // Exactly the approved bytes were sent, never the newer canonical text.
-    expect(site.deliveries).toHaveLength(1);
-    expect(site.deliveries[0]).not.toContain("A later, unapproved paragraph.");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain("A later, unapproved paragraph.");
+    // The approved body's own text is what was sent.
+    const firstLine = approvedBody.split("\n").find((l) => l.trim().length > 20)!;
+    expect(sent[0]).toContain(JSON.stringify(firstLine).slice(1, -1));
     // A retry reuses the recorded result and still never adopts the newer text.
     const again = await handleApprovedArticle({
       payload,
@@ -199,7 +209,8 @@ describe("multi-destination publishing contract (#262)", { timeout: 60_000 }, ()
       now: at(1),
     });
     expect(again).toMatchObject({ action: "ack", outcome: "reused" });
-    expect(site.deliveries).toHaveLength(1);
+    // Nothing more was sent on retry.
+    expect(sent).toHaveLength(1);
     // The newer revision inherits no approval: no event names its hash.
     const events = operations
       .duePendingEvents(50, ARTICLE_APPROVED_SUBJECT)
