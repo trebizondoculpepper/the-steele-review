@@ -91,9 +91,20 @@ export const REVISABLE_PREFIXES: readonly string[] = ["dossier/", "catalogue/"];
 
 /** Normalised claim records (claims/claim-<hex>.json) evolve as occurrences accumulate. */
 const REVISABLE_CLAIM_RECORD = /^claims\/claim-[0-9a-f]{32}\.json$/;
+/**
+ * Canonical logical-article documents (#578/#579), edited in place. Only the
+ * article body and metadata qualify; hash-named generation drafts and commit
+ * records beside them stay write-once.
+ */
+const REVISABLE_ARTICLE =
+  /^articles\/[a-z0-9][a-z0-9-]{0,254}\/[a-z0-9][a-z0-9-]{0,254}\/article-[0-9a-f]{24}\/article\.(md|json)$/;
 
 export function isRevisablePath(path: string): boolean {
-  return REVISABLE_PREFIXES.some((p) => path.startsWith(p)) || REVISABLE_CLAIM_RECORD.test(path);
+  return (
+    REVISABLE_PREFIXES.some((p) => path.startsWith(p)) ||
+    REVISABLE_CLAIM_RECORD.test(path) ||
+    REVISABLE_ARTICLE.test(path)
+  );
 }
 
 export function sha256(content: string): string {

@@ -6,6 +6,7 @@ import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-stor
 import type { MechanicalPolicy } from "./mechanical-policy.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { writeOnce } from "../research/job.js";
+import { commitArticleRevision } from "./article-revisions.js";
 import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
@@ -332,6 +333,8 @@ export type RevisionLoopOutcome =
       metadata: ArtifactRef;
       report: ArtifactRef;
       revisions: number;
+      /** The logical article's canonical documents at this version (#579). */
+      article?: ArticleVersion;
     }
   | {
       outcome: "unresolved";
@@ -339,6 +342,7 @@ export type RevisionLoopOutcome =
       report: ArtifactRef;
       revisions: number;
       issues: VerificationIssue[];
+      article?: ArticleVersion;
     }
   | {
       outcome: "failed";
@@ -347,7 +351,14 @@ export type RevisionLoopOutcome =
       draft?: ArtifactRef;
       report?: ArtifactRef;
       mechanicalRun?: ArtifactRef;
+      article?: ArticleVersion;
     };
+
+/** Canonical body and metadata of one logical-article version. */
+export interface ArticleVersion {
+  body: ArtifactRef;
+  metadata: ArtifactRef;
+}
 
 /**
  * Verify, then redraft with the verifier's substantive feedback, up to the
@@ -368,6 +379,27 @@ export async function verifyWithRevisions(input: {
 }): Promise<RevisionLoopOutcome> {
   const max = input.maxRevisions ?? DEFAULT_MAX_REVISIONS;
   let metadata = input.metadata;
+  // Each generation is also committed in place to one logical article (#579).
+  const pkgPost = WriterPackageSchema.parse(
+    JSON.parse(await input.content.read(input.package)),
+  ).post;
+  const articleKey = { publicationId: pkgPost.publicationId, postId: pkgPost.postId };
+  let article: ArticleVersion | undefined;
+  const commit = async (generation: {
+    draft: ArtifactRef;
+    metadata: ArtifactRef;
+  }): Promise<ArticleVersion | undefined> => {
+    const out = await commitArticleRevision({
+      content: input.content,
+      article: articleKey,
+      generation,
+      // The first version replaces whatever is current; each revision must
+      // replace exactly the version it was derived from.
+      base: article ? { body: article.body.sha256, metadata: article.metadata.sha256 } : "current",
+    });
+    return out.status === "conflict" ? undefined : { body: out.body, metadata: out.metadata };
+  };
+  const withArticle = <T extends object>(o: T) => (article ? { ...o, article } : o);
   for (let revisions = 0; ; revisions++) {
     const verified = await verifyPackageDraft({
       content: input.content,
@@ -383,8 +415,18 @@ export async function verifyWithRevisions(input: {
         revisions,
       };
     const draftRef = toArtifactRef(verified.report.draft);
+    if (!article) {
+      article = await commit({ draft: draftRef, metadata });
+      if (!article) return { outcome: "failed", reason: "article-conflict", revisions };
+    }
     if (verified.report.outcome === "approved") {
-      return { outcome: "approved", draft: draftRef, metadata, report: verified.ref, revisions };
+      return withArticle({
+        outcome: "approved" as const,
+        draft: draftRef,
+        metadata,
+        report: verified.ref,
+        revisions,
+      });
     }
     const substantive = verified.report.issues.filter((i) => i.severity === "substantive");
     const MAX_OBSERVATIONS = 20;
@@ -394,13 +436,13 @@ export async function verifyWithRevisions(input: {
         verified.ref.path.replace(/\.json$/, ".unresolved.json"),
         { outcome: "unresolved", revisions, report: toRef(verified.ref), issues: substantive },
       );
-      return {
-        outcome: "unresolved",
+      return withArticle({
+        outcome: "unresolved" as const,
         draft: draftRef,
         report: unresolved,
         revisions,
         issues: substantive,
-      };
+      });
     }
     // The exact draft the verifier just checked is the article to revise,
     // with the generated fields saved beside it (#489). An unreadable or
@@ -459,5 +501,15 @@ export async function verifyWithRevisions(input: {
       };
     }
     metadata = redraft.metadata;
+    const next = await commit({ draft: redraft.draft, metadata: redraft.metadata });
+    if (!next) {
+      return withArticle({
+        outcome: "failed" as const,
+        reason: "article-conflict",
+        revisions: revisions + 1,
+        draft: redraft.draft,
+      });
+    }
+    article = next;
   }
 }

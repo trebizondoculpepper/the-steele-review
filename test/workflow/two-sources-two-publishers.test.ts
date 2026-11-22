@@ -1,3 +1,4 @@
+import { classifyArticlePath } from "../../src/drafting/article-identity.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -247,8 +248,16 @@ describe("many sources, one writing engine, many publishers (#271)", { timeout: 
     for (const r of results)
       expect(r).toMatchObject({ outcome: "verified", approvalEvent: expect.any(String) });
     const drafts = await content.list("articles", 1_000);
-    const draftCount = drafts.filter((p) => p.endsWith(".md")).length;
+    // One write-once generation draft per source, and one in-place logical
+    // article per source (#579), never a second article for a retry.
+    const draftCount = drafts.filter(
+      (p) => classifyArticlePath(p)?.kind === "legacy-generation" && p.endsWith(".md"),
+    ).length;
     expect(draftCount).toBe(2);
+    const articleCount = drafts.filter(
+      (p) => classifyArticlePath(p)?.kind === "canonical" && p.endsWith("/article.md"),
+    ).length;
+    expect(articleCount).toBe(2);
 
     // The outbox dispatcher is the only path to the publisher stream.
     expect(await dispatchApprovedArticles({ operations, publisher: nats })).toEqual({
@@ -325,8 +334,17 @@ describe("many sources, one writing engine, many publishers (#271)", { timeout: 
     // Nothing was drafted or delivered twice.
     expect(a.deliveries).toHaveLength(2);
     expect(b.deliveries).toHaveLength(2);
-    expect((await content.list("articles", 1_000)).filter((p) => p.endsWith(".md"))).toHaveLength(
-      draftCount,
-    );
+    // A replay adds no generation draft and no second logical article.
+    const after = await content.list("articles", 1_000);
+    expect(
+      after.filter(
+        (p) => classifyArticlePath(p)?.kind === "legacy-generation" && p.endsWith(".md"),
+      ),
+    ).toHaveLength(draftCount);
+    expect(
+      after.filter(
+        (p) => classifyArticlePath(p)?.kind === "canonical" && p.endsWith("/article.md"),
+      ),
+    ).toHaveLength(articleCount);
   });
 });

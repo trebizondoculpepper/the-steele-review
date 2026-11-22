@@ -867,6 +867,10 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     });
     if (out.outcome !== "approved") throw new Error(out.outcome);
     expect(out.revisions).toBe(2);
+    // The initial draft and both revisions are versions of one logical article (#579).
+    expect(out.article?.body.path).toMatch(/\/article-[0-9a-f]{24}\/article\.md$/);
+    expect(await content.read(out.article!.body)).toContain("(revision 2)");
+    expect(await content.read(out.article!.body)).toBe(await content.read(out.draft));
     const first = loadRevision(users[0]!).revision as {
       number: number;
       previousDraft: string;
