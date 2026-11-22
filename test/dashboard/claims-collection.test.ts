@@ -4,6 +4,7 @@ import {
   claimRowArtifact,
   claimRowId,
   claimsCollectionAdapter,
+  encodeCursor,
 } from "../../src/dashboard/claims-collection.js";
 import { queryCollection } from "../../src/dashboard/collection-query.js";
 
@@ -81,12 +82,44 @@ describe("claims in the shared browser (#619)", () => {
     const page = await queryCollection(claimsCollectionAdapter(p), {
       text: "fees",
       filters: { post: "pub/p1", category: "accepted" },
-      cursor: "c1",
+      cursor: encodeCursor({ page: "c1", offset: 0 }),
     });
-    expect(calls[0]).toMatchObject({ query: "fees", post: "pub/p1", category: "accepted", after: "c1" });
-    expect(page.next).toBe("c2");
+    // The port filters by post id; the publication half is applied by the adapter.
+    expect(calls[0]).toMatchObject({ query: "fees", post: "p1", category: "accepted", after: "c1" });
+    // The next cursor is the adapter's own encoding, carrying the port cursor.
+    expect(page.next).toBe(encodeCursor({ page: "c2", offset: 0 }));
     expect(page.limitations.join(" ")).toMatch(/reached its bound/);
     expect(page.limitations.join(" ")).toMatch(/2 saved extraction/);
+  });
+
+  it("filters by publication and post id together", async () => {
+    const other = row({ index: 1, publicationId: "other" });
+    const page = await queryCollection(
+      claimsCollectionAdapter(port({ state: "ok", rows: [row(), other] })),
+      { filters: { post: "pub/p1" } },
+    );
+    expect(page.rows).toHaveLength(1);
+    expect(page.limitations.join(" ")).toMatch(/another publication/);
+  });
+
+  it("honours the page bound and resumes the rest with a row cursor", async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => row({ index: i }));
+    const first = await queryCollection(
+      claimsCollectionAdapter(port({ state: "ok", rows, next: "port-2" })),
+      { limit: 2 },
+    );
+    expect(first.rows).toHaveLength(2);
+    expect(first.next).toBeDefined();
+    const second = await queryCollection(
+      claimsCollectionAdapter(port({ state: "ok", rows, next: "port-2" })),
+      { limit: 2, cursor: first.next },
+    );
+    expect(second.rows).toHaveLength(2);
+    expect(second.rows[0]!.id).not.toBe(first.rows[0]!.id);
+  });
+
+  it("advertises only sorting it implements", () => {
+    expect(claimsCollectionAdapter(port({ state: "ok", rows: [] })).sorts).toEqual(["recent"]);
   });
 
   it("refuses an invalid post filter rather than silently ignoring it", async () => {
