@@ -11,6 +11,7 @@ import {
   captureResearchDiscovery,
   discoveryIdentity,
   readResearchDiscovery,
+  ResearchDiscoveryError,
   type DiscoveryData,
   type DiscoveryCapture,
 } from "../../src/research/discovery.js";
@@ -168,23 +169,29 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     });
     expect(calls).toBe(1);
   });
-  it("recovers a fenced durable response after state completion interruption without a provider call", async () => {
+  it("recovers a fenced durable response after interruption before result commit without a provider call", async () => {
     let calls = 0;
     const invoke = async (capture: DiscoveryCapture) => {
       calls++;
       await capture(body());
       return data;
     };
-    vi.spyOn(operations, "complete").mockImplementationOnce(() => {
-      throw new Error("synthetic interruption");
+    const original = artifacts.write.bind(artifacts);
+    let interrupted = true;
+    vi.spyOn(artifacts, "write").mockImplementation(async (...args) => {
+      if (interrupted && args[0].endsWith("/result.json"))
+        throw new Error("synthetic interruption");
+      return original(...args);
     });
     await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
-      code: "quarantined",
+      code: "archive-failed",
     });
+    interrupted = false;
     clock += 2000;
     expect((await captureResearchDiscovery({ ...options(), invoke })).reused).toBe(true);
     expect(calls).toBe(1);
   });
+
   it("quarantines a body-only crash window rather than buying another response", async () => {
     const write = artifacts.write.bind(artifacts);
     vi.spyOn(artifacts, "write").mockImplementation(async (...args) => {
@@ -270,7 +277,9 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     for (const result of [ra, rb]) {
       const envelope = JSON.parse(await artifacts.read(result.returned));
       const raw = await artifacts.read({ ...envelope.body, sha256: envelope.body.hash.slice(7) });
-      expect(raw).not.toContain("SYNTHETIC-REQUEST-KEY");
+      expect(
+        envelope.encoding === "base64" ? Buffer.from(raw, "base64").toString("utf8") : raw,
+      ).not.toContain("SYNTHETIC-REQUEST-KEY");
     }
   });
   it.each(["incomplete", "resource-limit"] as const)(
@@ -323,5 +332,160 @@ describe("durable research discovery", { timeout: 60000 }, () => {
     expect(() =>
       discoveryIdentity(request, { ...processor, headers: { authorization: "SENTINEL-HEADER" } }),
     ).toThrow();
+  });
+  it("retains a real adapter partial stream as invalid transport, not no-response", async () => {
+    let calls = 0;
+    const client = new OpenRouterSonarClient({
+      apiKey: "SYNTHETIC-KEY",
+      model: "fixture/research",
+      timeoutMs: 10000,
+      maxOutputTokens: 4000,
+      fetch: async () => {
+        calls++;
+        let first = true;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (first) {
+                first = false;
+                controller.enqueue(new TextEncoder().encode('{"choices":['));
+              } else controller.error(new Error("synthetic stream interruption"));
+            },
+          }),
+        );
+      },
+    });
+    const invoke = async (capture: DiscoveryCapture) => {
+      await client.research(
+        { system: "Research public facts", user: "fixture" },
+        new AbortController().signal,
+        capture,
+      );
+      return data;
+    };
+    try {
+      await captureResearchDiscovery({ ...options(), invoke });
+      throw new Error("expected invalid response");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResearchDiscoveryError);
+      const failed = error as ResearchDiscoveryError;
+      expect(failed.code).toBe("invalid-report");
+      const result = JSON.parse(await artifacts.read(failed.artifacts!.result));
+      expect(result.validation).toBe("transport-truncated");
+      const envelope = JSON.parse(await artifacts.read(failed.artifacts!.returned));
+      const stored = await artifacts.read({
+        ...envelope.body,
+        sha256: envelope.body.hash.slice(7),
+      });
+      expect(
+        envelope.encoding === "base64" ? Buffer.from(stored, "base64").toString("utf8") : stored,
+      ).toBe('{"choices":[');
+    }
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    expect(calls).toBe(1);
+  });
+  it("records adapter rejection after a valid raw body instead of silently accepting it", async () => {
+    let calls = 0;
+    const invoke = async (capture: DiscoveryCapture) => {
+      calls++;
+      await capture(body());
+      throw new ModelProviderError("bad-response");
+    };
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    const saved = await artifacts.lookup(`${path()}/result.json`);
+    expect(JSON.parse(await artifacts.read(saved!)).validation).toBe("adapter-rejected");
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    expect(calls).toBe(1);
+  });
+  it("retains an exact multibyte prefix at the four-MiB byte limit without UTF-8 expansion", async () => {
+    const limit = 4 * 1024 * 1024,
+      wire = Buffer.concat([Buffer.alloc(limit - 1, 0x61), Buffer.from("€")]);
+    let calls = 0;
+    const client = new OpenRouterSonarClient({
+      apiKey: "SYNTHETIC-KEY",
+      model: "fixture/research",
+      timeoutMs: 10000,
+      maxOutputTokens: 4000,
+      fetch: async () => {
+        calls++;
+        return new Response(wire);
+      },
+    });
+    const invoke = async (capture: DiscoveryCapture) => {
+      await client.research(
+        { system: "public facts", user: "fixture" },
+        new AbortController().signal,
+        capture,
+      );
+      return data;
+    };
+    let resultRef;
+    try {
+      await captureResearchDiscovery({ ...options(), invoke });
+      throw new Error("expected bounded invalid response");
+    } catch (error) {
+      const failed = error as ResearchDiscoveryError;
+      expect(failed.code).toBe("invalid-report");
+      resultRef = failed.artifacts!.result;
+      const envelope = JSON.parse(await artifacts.read(failed.artifacts!.returned));
+      expect(envelope).toMatchObject({
+        encoding: "base64",
+        byteLength: limit,
+        transport: "resource-limit",
+      });
+      const encoded = await artifacts.read({
+        ...envelope.body,
+        sha256: envelope.body.hash.slice(7),
+      });
+      expect(Buffer.from(encoded, "base64").equals(wire.subarray(0, limit))).toBe(true);
+    }
+    expect(JSON.parse(await artifacts.read(resultRef!)).validation).toBe("resource-limit");
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "invalid-report",
+    });
+    expect(calls).toBe(1);
+  });
+  it("does not accept or revive a response after completion loses its active lease", async () => {
+    let calls = 0;
+    const invoke = async (capture: DiscoveryCapture) => {
+      calls++;
+      await capture(body());
+      clock += 2000;
+      return data;
+    };
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "quarantined",
+    });
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "quarantined",
+    });
+    expect(calls).toBe(1);
+    const result = await artifacts.lookup(`${path()}/result.json`);
+    await expect(readResearchDiscovery(artifacts, result!)).rejects.toMatchObject({
+      code: "quarantined",
+    });
+  });
+  it("recovers a committed result after a transient state-completion interruption", async () => {
+    let calls = 0;
+    const invoke = async (capture: DiscoveryCapture) => {
+      calls++;
+      await capture(body());
+      return data;
+    };
+    vi.spyOn(operations, "completeResearchDiscovery").mockImplementationOnce(() => {
+      throw new Error("synthetic unavailable state");
+    });
+    await expect(captureResearchDiscovery({ ...options(), invoke })).rejects.toMatchObject({
+      code: "archive-failed",
+    });
+    clock += 2000;
+    expect((await captureResearchDiscovery({ ...options(), invoke })).reused).toBe(true);
+    expect(calls).toBe(1);
   });
 });

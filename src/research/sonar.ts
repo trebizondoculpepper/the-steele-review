@@ -187,10 +187,10 @@ export class OpenRouterSonarClient implements SonarClient {
       await response.body?.cancel().catch(() => undefined);
       throw new ModelProviderError(codeForStatus(response.status), response.status);
     }
-    let text: string;
+    let bytes: Buffer;
     let partial: PartialDiscoveryBody | undefined;
     try {
-      text = await readBounded(
+      bytes = await readBounded(
         response,
         this.config.maxResponseBytes ?? 4 * 1024 * 1024,
         (value) => {
@@ -202,7 +202,13 @@ export class OpenRouterSonarClient implements SonarClient {
       if (error instanceof ModelProviderError) throw error;
       throw failed();
     }
-    await capture?.(text);
+    await capture?.({
+      representation: "provider-json",
+      body: bytes.toString("base64"),
+      encoding: "base64",
+      transport: "complete",
+    });
+    const text = bytes.toString("utf8");
     let payload: unknown;
     try {
       payload = JSON.parse(text);
@@ -237,9 +243,9 @@ async function readBounded(
   response: Response,
   maxBytes: number,
   onPartial: (value: PartialDiscoveryBody) => void,
-): Promise<string> {
+): Promise<Buffer> {
   const reader = response.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return Buffer.alloc(0);
   const chunks: Uint8Array[] = [];
   let total = 0,
     limited = false;
@@ -259,14 +265,15 @@ async function readBounded(
     if (total)
       onPartial({
         representation: "provider-json",
-        body: Buffer.concat(chunks).subarray(0, maxBytes).toString("utf8"),
+        body: Buffer.concat(chunks).subarray(0, maxBytes).toString("base64"),
+        encoding: "base64",
         transport: limited ? "resource-limit" : "incomplete",
       });
     throw error;
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 /**

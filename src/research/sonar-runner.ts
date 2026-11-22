@@ -97,7 +97,12 @@ export async function runSonarResearch(input: {
                   ? "timeout"
                   : error.code === "invalid-report"
                     ? "bad-response"
-                    : "unavailable",
+                    : error.code === "rate-limited" ||
+                        error.code === "unauthorised" ||
+                        error.code === "bad-request"
+                      ? error.code
+                      : "unavailable",
+              error.status,
             );
           throw error;
         }

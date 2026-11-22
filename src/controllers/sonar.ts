@@ -33,7 +33,17 @@ const Reply = z.object({
 });
 
 export class SonarError extends Error {
-  constructor(readonly code: "timeout" | "provider-error" | "invalid-report" | "budget-exceeded") {
+  constructor(
+    readonly code:
+      | "timeout"
+      | "provider-error"
+      | "invalid-report"
+      | "budget-exceeded"
+      | "rate-limited"
+      | "unauthorised"
+      | "bad-request",
+    readonly status?: number,
+  ) {
     super(code);
   }
 }
@@ -61,7 +71,7 @@ export function sonarFromEnv(config: {
   const key = readCredential("OPENROUTER_API_KEY", { required: true });
   const run: SubjectResearchProvider = async (request, capture) => {
     const signal = AbortSignal.timeout(config.timeoutMs);
-    let raw: string;
+    let bytes: Buffer;
     let partial: PartialDiscoveryBody | undefined;
     try {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -91,9 +101,20 @@ export function sonarFromEnv(config: {
       });
       if (!response.ok) {
         await response.body?.cancel();
-        throw new SonarError(response.status === 402 ? "budget-exceeded" : "provider-error");
+        throw new SonarError(
+          response.status === 402
+            ? "budget-exceeded"
+            : response.status === 429
+              ? "rate-limited"
+              : response.status === 401 || response.status === 403
+                ? "unauthorised"
+                : response.status === 400
+                  ? "bad-request"
+                  : "provider-error",
+          response.status,
+        );
       }
-      raw = await readBoundedResponse(response, 4 * 1024 * 1024, (value) => {
+      bytes = await readBoundedResponse(response, 4 * 1024 * 1024, (value) => {
         partial = value;
       });
     } catch (error) {
@@ -102,7 +123,13 @@ export function sonarFromEnv(config: {
       throw new SonarError(signal.aborted ? "timeout" : "provider-error");
     }
 
-    await capture?.(raw);
+    await capture?.({
+      representation: "provider-json",
+      body: bytes.toString("base64"),
+      encoding: "base64",
+      transport: "complete",
+    });
+    const raw = bytes.toString("utf8");
     let payload: unknown;
     try {
       payload = JSON.parse(raw);
@@ -149,7 +176,7 @@ async function readBoundedResponse(
   response: Response,
   max: number,
   onPartial: (value: PartialDiscoveryBody) => void,
-): Promise<string> {
+): Promise<Buffer> {
   const reader = response.body?.getReader();
   if (!reader) throw new SonarError("invalid-report");
   const chunks: Uint8Array[] = [];
@@ -171,12 +198,13 @@ async function readBoundedResponse(
     if (size)
       onPartial({
         representation: "provider-json",
-        body: Buffer.concat(chunks).subarray(0, max).toString("utf8"),
+        body: Buffer.concat(chunks).subarray(0, max).toString("base64"),
+        encoding: "base64",
         transport: limited ? "resource-limit" : "incomplete",
       });
     throw error;
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }

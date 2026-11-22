@@ -676,6 +676,36 @@ export class OperationStore {
     });
   }
 
+  /** Complete only this discovery's durable result while its exact claim still has an active lease. */
+  completeResearchDiscovery(claim: OperationClaim, result: ArtifactReference): unknown {
+    const valid = ArtifactReferenceSchema.safeParse(result);
+    if (
+      !claim.key.startsWith("research-discovery:") ||
+      !valid.success ||
+      !valid.data.path.endsWith(`/${claim.key.slice("research-discovery:".length)}/result.json`)
+    )
+      throw new OperationStoreError("invalid-input");
+    const artifact = { discovery: valid.data };
+    return this.transaction(() => {
+      const now = this.now(),
+        row = this.row(claim.key);
+      if (row?.status === "completed") {
+        const existing = JSON.parse(row.artifact ?? "null");
+        if (JSON.stringify(existing) !== JSON.stringify(artifact))
+          throw new OperationStoreError("invalid-input");
+        return existing;
+      }
+      if (!this.holds(row, claim) || (row?.lease_expires_at ?? 0) <= now)
+        throw new OperationStoreError("not-owner");
+      this.db
+        .prepare(
+          "UPDATE operations SET status = 'completed', owner = NULL, lease_expires_at = NULL, artifact = ?, error_code = NULL, updated_at = ? WHERE key = ?",
+        )
+        .run(JSON.stringify(artifact), now, claim.key);
+      return artifact;
+    });
+  }
+
   /**
    * Record completion and pending downstream events in one transaction.
    * Call only after the artifact is durably committed. A repeated completion

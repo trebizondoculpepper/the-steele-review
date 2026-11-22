@@ -80,3 +80,58 @@ it(
     }
   },
 );
+
+it(
+  "keeps definite manual-adapter rejection metadata distinct from uncertain transport failures",
+  { timeout: 60_000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-subject-rejection-")),
+      artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" }),
+      operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      await artifacts.initialise();
+      for (const [code, status, expected] of [
+        ["rate-limited", 429, "rate-limited"],
+        ["unauthorised", 401, "unauthorised"],
+        ["bad-request", 400, "bad-request"],
+      ] as const) {
+        const request = ResearchRequestSchema.parse({
+          schemaVersion: 1,
+          origin: "manual",
+          pass: 1,
+          subject: `Synthetic rejection ${status}`,
+          claims: [],
+          corpusRefs: [],
+        });
+        const result = await runSonarResearch({
+          artifacts,
+          operations,
+          owner: "fixture",
+          request,
+          discover: async () => {
+            throw new SonarError(code, status);
+          },
+          fetcher: {
+            fetch: async () => {
+              throw new Error("must not fetch");
+            },
+          },
+        });
+        if (result.status !== "finished") throw new Error("not finished");
+        const names = await artifacts.list(`research-discovery/${result.result.jobId}`, 50),
+          failure = names.find((p) => p.endsWith("/failure.json"));
+        expect(failure).toBeDefined();
+        const saved = await artifacts.lookup(failure!);
+        expect(JSON.parse(await artifacts.read(saved!))).toMatchObject({
+          code: expected,
+          status,
+          definiteRejection: true,
+        });
+        expect(names.some((p) => p.endsWith("/uncertain.json"))).toBe(false);
+      }
+    } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

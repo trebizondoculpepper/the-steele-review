@@ -23,7 +23,8 @@ export type DiscoveryData = z.infer<typeof DiscoveryDataSchema>;
 export interface PartialDiscoveryBody {
   representation: "provider-json";
   body: string;
-  transport: "incomplete" | "resource-limit";
+  transport: "complete" | "incomplete" | "resource-limit";
+  encoding: "base64";
 }
 export type DiscoveryCapture = (data: unknown) => Promise<void>;
 
