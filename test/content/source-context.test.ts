@@ -122,6 +122,25 @@ describe("pinned source provenance", () => {
       reason: "invalid-observation",
     });
   });
+  it.each([
+    ["supplied-transcript", undefined, "source-supplied"],
+    ["machine-transcript", true, "application-generated"],
+    ["legacy-transcript", undefined, "unknown"],
+  ] as const)("preserves transcript origin for %s", (method, machineGenerated, origin) => {
+    const record = capture({
+      supplied: { transcript: [{ text: "Spoken source", start: 1, end: 2 }] },
+      provenance: {
+        sourceUrl: "https://synthetic.example/p/post",
+        acquiredAt: "2026-02-03T10:00:00Z",
+        method,
+        ...(machineGenerated === undefined ? {} : { machineGenerated }),
+      },
+    });
+    expect(sourceContextFor(record, archive).transcript).toMatchObject({
+      origin,
+      segments: [{ index: 0, start: 1, end: 2 }],
+    });
+  });
   it("preserves a known observed byline without pretending a registry was loaded", () => {
     const record = capture();
     record.item.author = "Observed Author";

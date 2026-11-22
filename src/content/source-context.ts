@@ -164,6 +164,7 @@ export const SourceContextSchema = z
     transcript: z
       .object({
         archive: ArtifactReferenceSchema,
+        origin: z.enum(["source-supplied", "application-generated", "unknown"]),
         location: z.enum(["supplied.transcript", "supplied.transcriptDocument", "text"]),
         machineGenerated: z.boolean().optional(),
         inputMedium: z.enum(["audio", "video"]).optional(),
@@ -308,6 +309,12 @@ export function sourceContextFor(
       ? {
           transcript: {
             archive: archiveRef,
+            origin:
+              p.machineGenerated === true || p.method === "machine-transcript"
+                ? "application-generated"
+                : p.method.startsWith("supplied-transcript")
+                  ? "source-supplied"
+                  : "unknown",
             location: record.supplied.transcript
               ? "supplied.transcript"
               : record.supplied.transcriptDocument
