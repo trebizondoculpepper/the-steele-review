@@ -309,12 +309,11 @@ export function sourceContextFor(
       ? {
           transcript: {
             archive: archiveRef,
-            origin:
-              p.machineGenerated === true || p.method === "machine-transcript"
+            origin: p.method.startsWith("supplied-transcript")
+              ? "source-supplied"
+              : p.method === "machine-transcript"
                 ? "application-generated"
-                : p.method.startsWith("supplied-transcript")
-                  ? "source-supplied"
-                  : "unknown",
+                : "unknown",
             location: record.supplied.transcript
               ? "supplied.transcript"
               : record.supplied.transcriptDocument

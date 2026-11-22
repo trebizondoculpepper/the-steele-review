@@ -124,8 +124,11 @@ describe("pinned source provenance", () => {
   });
   it.each([
     ["supplied-transcript", undefined, "source-supplied"],
+    ["supplied-transcript", true, "source-supplied"],
+    ["supplied-transcript+article-html", true, "source-supplied"],
     ["machine-transcript", true, "application-generated"],
     ["legacy-transcript", undefined, "unknown"],
+    ["legacy-transcript", true, "unknown"],
   ] as const)("preserves transcript origin for %s", (method, machineGenerated, origin) => {
     const record = capture({
       supplied: { transcript: [{ text: "Spoken source", start: 1, end: 2 }] },
