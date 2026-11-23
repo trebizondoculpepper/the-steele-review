@@ -61,10 +61,9 @@ const DraftShape = z.looseObject({
    * Where the draft endpoint actually reports saved bylines (#814): an array
    * of user ids (or objects with an id). Folded into `draft_bylines` below.
    */
-  postBylines: z
-    .array(z.union([Id, z.looseObject({ id: Id })]))
-    .nullable()
-    .optional(),
+  // Entries are objects like { user_id, is_draft, is_guest, user } (seen
+  // live); parsed leniently so an unexpected entry never fails a read-back.
+  postBylines: z.array(z.unknown()).nullable().optional(),
 });
 /**
  * A draft as read back. Substack reports saved bylines as `postBylines`, not
@@ -73,7 +72,16 @@ const DraftShape = z.looseObject({
  */
 export const DraftSchema = DraftShape.transform((d) => {
   if (!d.postBylines) return d;
-  const ids = d.postBylines.map((b) => (typeof b === "string" ? b : b.id));
+  const ids = d.postBylines.flatMap((b) => {
+    const raw =
+      typeof b === "number" || typeof b === "string"
+        ? b
+        : b && typeof b === "object"
+          ? ((b as { user_id?: unknown; id?: unknown }).user_id ?? (b as { id?: unknown }).id)
+          : undefined;
+    const id = Id.safeParse(raw);
+    return id.success ? [id.data] : [];
+  });
   return { ...d, draft_bylines: ids.map((id) => ({ id })) } as typeof d;
 });
 export type SubstackDraft = z.infer<typeof DraftSchema>;
