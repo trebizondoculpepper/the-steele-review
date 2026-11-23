@@ -1,4 +1,5 @@
 import { ConfigurationError } from "../controllers/configuration.js";
+import { providerErrorWith } from "./provider-failure.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import {
@@ -69,8 +70,10 @@ export function durableEditorialProvider(input: {
         hash: `sha256:${captured.ref.sha256}`,
       });
       if (captured.manifest.failure)
-        throw new ModelProviderError(
+        // Keep the provider's safe diagnostics through the durable wrapper (#800).
+        throw providerErrorWith(
           captured.manifest.failure === "interrupted" ? "unavailable" : captured.manifest.failure,
+          captured.manifest.providerDiagnostics,
         );
       if (captured.text === undefined || captured.manifest.completion.stopReason === "length-limit")
         throw new ModelProviderError("bad-response");

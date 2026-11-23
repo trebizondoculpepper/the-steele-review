@@ -40,3 +40,27 @@ export function providerFailureOf(
     ...(f.model ? { model: f.model.slice(0, 200) } : {}),
   });
 }
+
+/** The provider facts retained on a durable attempt manifest (no role or code). */
+export const ProviderDiagnosticsSchema = ProviderFailureSchema.omit({ role: true, code: true });
+export type ProviderDiagnostics = z.infer<typeof ProviderDiagnosticsSchema>;
+
+/** The allowlisted diagnostics of a provider error, for durable retention. */
+export function providerDiagnosticsOf(error: unknown): ProviderDiagnostics | undefined {
+  if (!(error instanceof ModelProviderError)) return undefined;
+  const { role: _role, code: _code, ...rest } = providerFailureOf(error, "assessment")!;
+  return Object.keys(rest).length ? rest : undefined;
+}
+
+/** Rebuilds a provider error from a retained manifest, keeping its diagnostics. */
+export function providerErrorWith(
+  code: ConstructorParameters<typeof ModelProviderError>[0],
+  diagnostics?: ProviderDiagnostics,
+): ModelProviderError {
+  const error = new ModelProviderError(code, diagnostics?.status);
+  if (diagnostics) {
+    const { status: _status, ...failure } = diagnostics;
+    error.failure = failure;
+  }
+  return error;
+}

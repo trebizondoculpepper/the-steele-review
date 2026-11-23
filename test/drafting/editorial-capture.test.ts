@@ -55,6 +55,38 @@ const wrapped = (complete: (r: any, signal: AbortSignal) => Promise<string>, rec
     recoveryId,
   });
 describe("durable editorial calls", { timeout: 60000 }, () => {
+  it("keeps safe provider diagnostics through the durable wrapper (#800)", async () => {
+    const provider = wrapped(async () => {
+      const error = new ModelProviderError("credit-exhausted", 402);
+      error.failure = {
+        limitCategory: "max-tokens-unaffordable",
+        affordableTokens: 3120,
+        requestedMaxTokens: 8192,
+        inputChars: 90000,
+        model: "vendor/assessor",
+      };
+      throw error;
+    });
+    const thrown = await provider.complete(request, signal()).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(ModelProviderError);
+    expect(thrown).toMatchObject({
+      code: "credit-exhausted",
+      status: 402,
+      failure: {
+        limitCategory: "max-tokens-unaffordable",
+        affordableTokens: 3120,
+        requestedMaxTokens: 8192,
+      },
+    });
+    const manifest = JSON.parse(
+      await content.read({
+        ...provider.retainedAttempts()[0],
+        sha256: provider.retainedAttempts()[0].hash.slice(7),
+      }),
+    );
+    expect(manifest.providerDiagnostics).toMatchObject({ status: 402, affordableTokens: 3120 });
+  });
+
   it("retains even malformed output before handing it to classification and reuses it", async () => {
     const call = vi.fn(async () => "Incomplete findings: {");
     const provider = wrapped(call);
