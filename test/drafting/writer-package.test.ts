@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import { PackageInputError, saveWriterPackage } from "../../src/drafting/writer-package.js";
+import { CollectionRecordSchema } from "../../src/collection/collection-store.js";
+import {
+  PackageInputError,
+  resolvedSourceContext,
+  saveWriterPackage,
+} from "../../src/drafting/writer-package.js";
 import { saveSourceContext, sourceContextFor } from "../../src/content/source-context.js";
 import { DossierStore } from "../../src/research/dossier.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
@@ -277,6 +282,87 @@ describe("writer evidence package (#148)", { timeout: 60_000 }, () => {
       "p2",
     );
     await expect(saveWriterPackage({ content, coverage: pending.ref })).rejects.toThrow("pending");
+  });
+
+  it("replaces an unattributed upstream context with resolved configured authorship (#492)", async () => {
+    const sourceRef = {
+      repository: "content",
+      commit: "a".repeat(40),
+      path: "substack/pub/p1/collected.json",
+      sha256: "b".repeat(64),
+    };
+    const capture = CollectionRecordSchema.parse({
+      item: {
+        publicationId: "pub",
+        postId: "p1",
+        url: "https://pub.example/p/p1",
+        title: "Captured title",
+      },
+      ingestionReason: "backfill",
+      text: TEXT,
+      complete: true,
+      supplied: { transcriptDocument: "spoken" },
+      provenance: {
+        sourceUrl: "https://pub.example/p/p1",
+        acquiredAt: "2026-01-01T00:00:00Z",
+        method: "supplied-transcript",
+        originalMedium: "video",
+      },
+    });
+    // A legacy context derived before configured attribution existed.
+    const legacy = await saveSourceContext(content, sourceContextFor(capture, sourceRef));
+    expect(JSON.parse(await content.read(legacy)).author).toMatchObject({ status: "unknown" });
+    const attribution = {
+      status: "resolved" as const,
+      author: "Mark Steele",
+      basis: "source-configured" as const,
+      sourceMetadataVersion: "registry-v1",
+    };
+
+    const resolved = await resolvedSourceContext({
+      content,
+      capture,
+      sourceRef,
+      attribution,
+      upstream: legacy,
+    });
+    // A new derived context carries the configured author, and it is the exact
+    // context the package stores for the writer and verifier to read.
+    expect(resolved.path).not.toBe(legacy.path);
+    expect(JSON.parse(await content.read(resolved)).author).toMatchObject({
+      status: "resolved",
+      author: "Mark Steele",
+      basis: "source-configured",
+      sourceMetadataVersion: "registry-v1",
+    });
+    // The legacy context stays readable and unchanged.
+    expect(JSON.parse(await content.read(legacy)).author).toMatchObject({ status: "unknown" });
+
+    // The same attribution reuses the resolved context rather than churning.
+    expect(
+      await resolvedSourceContext({
+        content,
+        capture,
+        sourceRef,
+        attribution,
+        upstream: resolved,
+      }),
+    ).toMatchObject({ path: resolved.path });
+
+    // Unknown attribution never downgrades an existing context.
+    expect(
+      await resolvedSourceContext({
+        content,
+        capture,
+        sourceRef,
+        attribution: {
+          status: "unknown",
+          reason: "no-byline-no-default",
+          sourceMetadataVersion: "registry-v1",
+        },
+        upstream: legacy,
+      }),
+    ).toMatchObject({ path: legacy.path });
   });
 
   describe("narrative and movement context (#176)", () => {
