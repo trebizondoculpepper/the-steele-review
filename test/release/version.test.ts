@@ -4,17 +4,21 @@ import { bump, classify, versionFor } from "../../scripts/release/version.mjs";
 
 describe("release version policy (#570)", () => {
   it("defaults every merge, including docs and chores, to a patch bump", () => {
-    expect(classify({ title: "Document the runbook" })).toBe("patch");
-    expect(classify({ title: "chore: tidy" })).toBe("patch");
+    expect(classify(["Merge pull request #1 from x/y\n\nDocument the runbook"])).toBe("patch");
+    expect(classify(["chore: tidy"])).toBe("patch");
     expect(versionFor([])).toBe("0.1.0");
     expect(versionFor(["patch", "patch"])).toBe("0.1.2");
   });
 
-  it("uses explicit labels or conventional titles for larger bumps", () => {
-    expect(classify({ labels: ["semver:minor"], title: "Anything" })).toBe("minor");
-    expect(classify({ title: "feat(research): one request per theme" })).toBe("minor");
-    expect(classify({ labels: ["semver:major"] })).toBe("major");
-    expect(classify({ title: "refactor!: new contract" })).toBe("major");
+  it("uses commit trailers or conventional subjects for larger bumps", () => {
+    expect(classify(["Merge pull request #2\n\nAnything", "Add a thing\n\nSemver: minor"])).toBe(
+      "minor",
+    );
+    expect(classify(["Merge pull request #3\n\nfeat(research): one request per theme"])).toBe(
+      "minor",
+    );
+    expect(classify(["Change the contract\n\nSemver: major"])).toBe("major");
+    expect(classify(["refactor!: new contract"])).toBe("major");
     expect(versionFor(["patch", "minor", "patch"])).toBe("0.2.1");
   });
 
@@ -64,7 +68,7 @@ describe("release version from first-parent history (#570)", () => {
       execFileSync("node", [script, sha], {
         cwd: dir,
         encoding: "utf8",
-        env: { ...process.env, GH_TOKEN: "" },
+        env: process.env,
       }).trim();
     try {
       git("init", "-q", "-b", "main");
@@ -87,6 +91,16 @@ describe("release version from first-parent history (#570)", () => {
       expect(version(feat)).toBe("0.2.0");
       // Rerunning an older commit after newer ones exist keeps its version.
       expect(version(docs)).toBe("0.1.1");
+      // A PR merge is classified by the commits it brings in (immutable trailers).
+      git("switch", "-q", "-c", "topic");
+      await writeFile(join(dir, "b"), "1");
+      git("add", "b");
+      git("commit", "-qm", "Add b\n\nSemver: minor");
+      git("switch", "-q", "main");
+      git("merge", "-q", "--no-ff", "-m", "Merge pull request #9 from x/topic\n\nAdd b", "topic");
+      expect(version(git("rev-parse", "HEAD"))).toBe("0.3.0");
+      // Branch commits never count on their own: only first-parent commits bump.
+      expect(version(feat)).toBe("0.2.0");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

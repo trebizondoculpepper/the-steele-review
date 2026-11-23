@@ -17,10 +17,14 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
+    # Runs of the SAME commit are serialised, so two reruns can never both push
+    # its version tag; different commits are never grouped or cancelled.
+    concurrency:
+      group: publish-${{ github.sha }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
-      pull-requests: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -35,8 +39,6 @@ jobs:
       # and two commits never share one.
       - name: Assign the release version
         id: version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="$(node scripts/release/version.mjs "$GITHUB_SHA")"
           echo "VERSION=$version" >> "$GITHUB_ENV"
@@ -99,8 +101,17 @@ jobs:
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           versioned="ghcr.io/${GITHUB_REPOSITORY,,}:${VERSION}"
-          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'; }
-          existing="$(digest "$versioned" || true)"
+          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | tr -d '"'; }
+          # Only an explicit "not found" means the tag is absent; any other
+          # inspection failure stops the job rather than risk moving a tag.
+          if existing="$(digest "$versioned" 2> inspect.err)"; then
+            :
+          elif grep -qiE 'not found|manifest unknown' inspect.err; then
+            existing=""
+          else
+            echo "::error::could not inspect ${versioned}"
+            exit 1
+          fi
           if [ -n "$existing" ]; then
             test "$(digest "$IMAGE")" = "$existing" || { echo "::error::v${VERSION} already names a different image"; exit 1; }
             echo "v${VERSION} already published as ${existing}; nothing pushed." >> "$GITHUB_STEP_SUMMARY"
@@ -127,9 +138,14 @@ jobs:
           VERSION: ${{ needs.publish.outputs.version }}
         run: |
           tag="v${VERSION}"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            target="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq .object.sha)"
+          # An existing tag must already name this commit, release or not.
+          if target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq .sha 2> tag.err)"; then
             test "$target" = "$GITHUB_SHA" || { echo "::error::${tag} already points at ${target}"; exit 1; }
+          elif ! grep -qiE 'not found|no commit found|422' tag.err; then
+            echo "::error::could not resolve ${tag}"
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "${tag} already released for this commit." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
