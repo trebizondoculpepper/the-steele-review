@@ -4,7 +4,7 @@ import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
+import { articleRunKey, type ArticleRunApi, type ArticleRunFinal } from "../workflow/article-run.js";
 import { isCreditBlocked } from "./article-views.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
@@ -360,9 +360,25 @@ export function restateRuns(
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
     try {
-      const out = await workflow.workflowOutput(
-        clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
-      );
+      let out;
+      try {
+        out = await workflow.workflowOutput(
+          clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
+        );
+      } catch (error) {
+        // A failed run ends as a terminal failure in Restate (#825): its saved
+        // result keeps the stage and reason visible. Otherwise the error stands.
+        let saved: ArticleRunFinal | null = null;
+        try {
+          saved = await workflow.final(
+            clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
+          );
+        } catch {
+          saved = null;
+        }
+        if (saved) return { state: "finished", result: saved };
+        throw error;
+      }
       if (out.ready) return { state: "finished", result: out.result };
       // Running: read the run's own progress (#439). A failed read is shown as
       // unavailable progress, never as success.

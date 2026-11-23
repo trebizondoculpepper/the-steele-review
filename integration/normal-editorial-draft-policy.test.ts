@@ -16,6 +16,7 @@ import {
 } from "../src/controllers/nats-provision.js";
 import { articleStages } from "../src/workflow/stages.js";
 import {
+  articleRunResult,
   articleRunWorkflow,
   researchService,
   type ArticleRunResult,
@@ -175,10 +176,18 @@ it(
       expect(legacy.editorial?.policyObservations).toBeUndefined();
       expect(legacy.draftAuthorizationEvent).toBeUndefined();
       const beforeForged = { ...calls };
-      const forgedResult = await ingress.workflowClient(workflow, "unrecorded-live-attempt").run({
-        ...liveEditorialInput(parent.summary.input),
-        operatorRequestId: "not-recorded",
-      });
+      // A failed run is a terminal failure in Restate (#825); its saved result is read back.
+      const forged = ingress.workflowClient(workflow, "unrecorded-live-attempt");
+      const forgedResult = await articleRunResult(
+        () =>
+          Promise.resolve(
+            forged.run({
+              ...liveEditorialInput(parent.summary.input),
+              operatorRequestId: "not-recorded",
+            }),
+          ),
+        () => Promise.resolve(forged.final()),
+      );
       expect(forgedResult.outcome).toBe("failed");
       expect(forgedResult.reason).toBe("live-editorial-intent-mismatch");
       expect(calls).toEqual(beforeForged);
@@ -360,9 +369,11 @@ it(
         liveEditorialInput(parent.summary.input),
         "live-policy-expired",
       );
-      const expiredResult = await ingress
-        .workflowClient(workflow, expired.identity.workflowKey)
-        .run(expired.input);
+      const expiredClient = ingress.workflowClient(workflow, expired.identity.workflowKey);
+      const expiredResult = await articleRunResult(
+        () => Promise.resolve(expiredClient.run(expired.input)),
+        () => Promise.resolve(expiredClient.final()),
+      );
       expect(expiredResult.outcome).toBe("failed");
       expect(expiredResult.reason).toBe("live-policy-deadline");
       expect(expiredResult.editorial?.assessments).toHaveLength(0);
