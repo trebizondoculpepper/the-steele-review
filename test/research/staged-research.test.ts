@@ -15,6 +15,7 @@ import {
   retrieveStage,
   retrievalIds,
   retrieveOneStage,
+  supportBundleStage,
   supportStage,
   type StagedResearchDeps,
 } from "../../src/research/staged-research.js";
@@ -506,5 +507,145 @@ describe("staged support handoff (#593)", { timeout: 60_000 }, () => {
     );
     expect(job.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
     expect(run.names).not.toContain("research-assemble");
+  });
+});
+
+describe("one support assessment per research bundle (#795)", { timeout: 60_000 }, () => {
+  const fetchOk = {
+    fetch: async (url: string) => ({ url, title: url, text: `Text of ${url} with a key fact.` }),
+  };
+  type BundleInput = {
+    findings: { id: string }[];
+    report: string;
+    sources: { index: number; url: string; excerpt: string }[];
+  };
+  const bundleJudge = (answer: (input: BundleInput) => unknown) => ({
+    identity: "support-bundle-v1+sha256:test",
+    calls: [] as BundleInput[],
+    perSource: 0,
+    async judge() {
+      this.perSource++;
+      return { passages: [] };
+    },
+    async judgeBundle(input: BundleInput) {
+      this.calls.push(input);
+      return answer(input) as never;
+    },
+  });
+  const withBundle = (d: StagedResearchDeps): ResearchStages => ({
+    ...stagesFor(d),
+    supportBundle: (disc, inv, ids) => supportBundleStage(d, disc, inv, ids),
+  });
+  const run = async (d: StagedResearchDeps, ctx = journalCtx()) => ({
+    ctx,
+    job: await runResearch(
+      ctx.ctx,
+      { research: async () => ({}) as never, researchStages: withBundle(d) },
+      request,
+      "staged",
+    ),
+  });
+  const manifestOf = async (job: { result?: { manifest?: { path: string } } }) =>
+    JSON.parse(await artifacts.read((await artifacts.lookup(job.result!.manifest!.path))!));
+  const archived = (m: { citations: { retrieval: string; support: string }[] }) =>
+    m.citations.filter((c) => c.retrieval === "archived");
+
+  it("judges every archived source in one call and hands the writer ranked hints", async () => {
+    const judge = bundleJudge((input) => {
+      const ok = input.sources.find((s) => s.url.includes("ok.example"))!;
+      const flaky = input.sources.find((s) => s.url.includes("flaky.example"))!;
+      const id = input.findings[0]!.id;
+      return {
+        sources: [
+          {
+            index: ok.index,
+            relevance: 1,
+            note: "Primary statement of the fact.",
+            sourceType: "government record",
+            passages: [{ findingId: id, passage: "a key fact" }],
+          },
+          // Not verbatim in the source: never counts as support.
+          { index: flaky.index, relevance: 2, passages: [{ findingId: id, passage: "invented" }] },
+        ],
+        brief: "Start with the ok.example record.",
+      };
+    });
+    const d = { ...deps(sonar(), fetchOk), judge: judge as never, monitoredHosts: [] };
+    const { ctx, job } = await run(d);
+    expect(judge.calls).toHaveLength(1);
+    expect(judge.perSource).toBe(0);
+    expect(judge.calls[0]!.sources).toHaveLength(2);
+    expect(ctx.names.filter((n) => n.startsWith("research-support"))).toEqual([
+      "research-support-bundle",
+    ]);
+    const manifest = await manifestOf(job);
+    const byUrl = new Map(manifest.citations.map((c: { url: string }) => [c.url, c]));
+    expect(byUrl.get("https://ok.example/a")).toMatchObject({
+      support: "supported",
+      relevanceRank: 1,
+      writerNote: "Primary statement of the fact.",
+      sourceType: "government record",
+      passages: [{ passage: "a key fact" }],
+    });
+    expect(byUrl.get("https://flaky.example/b")).toMatchObject({
+      support: "unverified",
+      relevanceRank: 2,
+      passages: [],
+    });
+    expect(manifest.writerBrief).toBe("Start with the ok.example record.");
+    // A replay in a new invocation reuses the saved verdicts: no second call.
+    await run(d);
+    expect(judge.calls).toHaveLength(1);
+  });
+
+  it("bounds the bundle: report and every source excerpt are capped", async () => {
+    const big = "filler words here. ".repeat(20_000) + "a key fact" + " more".repeat(5_000);
+    const judge = bundleJudge(() => ({ sources: [] }));
+    const d = {
+      ...deps(sonar(), { fetch: async (url: string) => ({ url, title: url, text: big }) }),
+      judge: judge as never,
+      limits: {
+        maxSources: 10,
+        maxAttempts: 1,
+        timeoutMs: 1_000,
+        maxSourceChars: 500_000,
+        backoffMs: 1,
+      },
+    };
+    const { job } = await run(d);
+    const sent = judge.calls[0]!;
+    expect(sent.report.length).toBeLessThanOrEqual(12_000);
+    for (const s of sent.sources) expect(s.excerpt.length).toBeLessThanOrEqual(4_100);
+    // Sources the assessment leaves out are judged irrelevant, not unchecked.
+    expect(archived(await manifestOf(job)).every((c) => c.support === "unverified")).toBe(true);
+  });
+
+  it("keeps the claimant's own pages unverified even when quoted", async () => {
+    const judge = bundleJudge((input) => ({
+      sources: input.sources.map((s) => ({
+        index: s.index,
+        passages: [{ findingId: input.findings[0]!.id, passage: "a key fact" }],
+      })),
+    }));
+    const d = { ...deps(sonar(), fetchOk), judge: judge as never, monitoredHosts: ["ok.example"] };
+    const manifest = await manifestOf((await run(d)).job);
+    const own = manifest.citations.find((c: { url: string }) => c.url === "https://ok.example/a");
+    expect(own).toMatchObject({ support: "unverified", sourceType: "monitored-source" });
+  });
+
+  it("leaves sources not-checked when the bundle call fails", async () => {
+    const failing = bundleJudge(() => {
+      throw new Error("malformed");
+    });
+    const { job } = await run({ ...deps(sonar(), fetchOk), judge: failing as never });
+    expect(archived(await manifestOf(job)).every((c) => c.support === "not-checked")).toBe(true);
+  });
+
+  it("stops recoverably when the bundle call runs out of credit", async () => {
+    const broke = bundleJudge(() => {
+      throw new ModelProviderError("credit-exhausted", 402);
+    });
+    const out = await run({ ...deps(sonar(), fetchOk), judge: broke as never });
+    expect(out.job.result).toMatchObject({ outcome: "failed", failure: "budget-exceeded" });
   });
 });

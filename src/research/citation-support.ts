@@ -8,7 +8,7 @@ import {
   RetrievalOutcomeSchema,
 } from "./citation-inventory.js";
 import { writeOnce, type ResearchRequest } from "./job.js";
-import { findingsFor, type SupportJudge } from "./runner.js";
+import { BUNDLE_REPORT_CHARS, bundleExcerpt, findingsFor, type SupportJudge } from "./runner.js";
 
 /**
  * Support assessment for staged research (#593): the handoff from retrieved
@@ -41,6 +41,9 @@ export const CitationSupportSchema = z
     monitored: z.boolean(),
     sourceType: z.string().max(100).optional(),
     rationale: z.string().max(2000).optional(),
+    /** Writer hints from a bundle assessment (#795). */
+    relevanceRank: z.number().int().min(1).max(500).optional(),
+    writerNote: z.string().min(1).max(500).optional(),
     passages: z
       .array(z.object({ claimRecordId: z.string(), passage: z.string().max(4000) }).strict())
       .max(50),
@@ -149,4 +152,137 @@ export async function judgeCitationSupport(input: {
     }
     return { kind: "not-checked" };
   }
+}
+
+/** Where a bundle assessment keeps its writer brief, per judge identity (#795). */
+export const bundleBriefPath = (inventory: ArtifactRef, identity: string) =>
+  `${inventory.path.replace(/\/inventory\.json$/, "")}/support/bundle/${createHash("sha256").update(identity).digest("hex").slice(0, 32)}.json`;
+
+export const BundleBriefSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    judge: z.string().max(200),
+    brief: z.string().min(1).max(2000),
+  })
+  .strict();
+
+/**
+ * Support for a whole research bundle in ONE model call (#795): every archived
+ * source not yet judged is sent as a bounded excerpt with the findings and a
+ * report excerpt. Each source's verdict is then saved exactly as the
+ * per-source step saves it (same path, schema and verbatim guard), so
+ * assembly and coverage are unchanged. Sources the call does not mention are
+ * judged irrelevant (`unverified`). A failed or malformed call leaves the
+ * unjudged sources `not-checked`, unsaved; credit exhaustion is reported.
+ */
+export async function judgeBundleSupport(input: {
+  artifacts: GitArtifactStore;
+  inventory: ArtifactRef;
+  retrievalIds: string[];
+  request: ResearchRequest;
+  report: string;
+  judge: SupportJudge & Required<Pick<SupportJudge, "judgeBundle">>;
+  monitoredHosts?: string[];
+  signal?: AbortSignal;
+}): Promise<{ kind: "judged" | "not-checked" | "credit-exhausted"; judged: number }> {
+  const identity = judgeIdentity(input.judge);
+  const dir = input.inventory.path.replace(/\/inventory\.json$/, "");
+  const inventory = CitationInventorySchema.parse(
+    JSON.parse(await input.artifacts.read(input.inventory)),
+  );
+  const pending: {
+    retrievalId: string;
+    retrievalKey: string;
+    snapshotRef: CitationSupport["snapshot"];
+    text: string;
+    monitored: boolean;
+  }[] = [];
+  for (const retrievalId of input.retrievalIds) {
+    if (await input.artifacts.lookup(supportPath(input.inventory, retrievalId, identity))) continue;
+    const outcomeRef = await input.artifacts.lookup(`${dir}/retrievals/${retrievalId}.json`);
+    if (!outcomeRef) continue;
+    const outcome = RetrievalOutcomeSchema.parse(
+      JSON.parse(await input.artifacts.read(outcomeRef)),
+    );
+    if (outcome.status !== "archived" || !outcome.snapshot) continue;
+    const entry = inventory.entries.find((e) => e.retrievalId === retrievalId);
+    if (!entry?.retrievalKey || entry.retrievalKey !== outcome.retrievalKey) continue;
+    const snapshot = await readCitationSnapshot(input.artifacts, outcome.snapshot);
+    if (snapshot.retrievalKey !== entry.retrievalKey) continue;
+    const host = new URL(entry.retrievalKey).hostname.toLowerCase();
+    pending.push({
+      retrievalId,
+      retrievalKey: entry.retrievalKey,
+      snapshotRef: outcome.snapshot,
+      text: snapshot.text,
+      monitored: (input.monitoredHosts ?? []).some(
+        (h) => host === h.toLowerCase() || host.endsWith(`.${h.toLowerCase()}`),
+      ),
+    });
+  }
+  if (pending.length === 0) return { kind: "judged", judged: 0 };
+
+  const findings = findingsFor(input.request);
+  const findingIds = new Set(findings.map((f) => f.id));
+  let bundle;
+  try {
+    bundle = await input.judge.judgeBundle(
+      {
+        findings,
+        report: input.report.slice(0, BUNDLE_REPORT_CHARS),
+        sources: pending.map((p, index) => ({
+          index,
+          url: p.retrievalKey,
+          excerpt: bundleExcerpt(p.text, findings, pending.length),
+        })),
+      },
+      input.signal ?? AbortSignal.timeout(180_000),
+    );
+  } catch (error) {
+    if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+      return { kind: "credit-exhausted", judged: 0 };
+    }
+    return { kind: "not-checked", judged: 0 };
+  }
+  // The brief first: once any verdict is saved, a retry skips the call.
+  const brief = bundle.brief?.trim().slice(0, 2000);
+  if (brief && !(await input.artifacts.lookup(bundleBriefPath(input.inventory, identity)))) {
+    await writeOnce(
+      input.artifacts,
+      bundleBriefPath(input.inventory, identity),
+      BundleBriefSchema.parse({ schemaVersion: 1, judge: identity, brief }),
+    );
+  }
+  const byIndex = new Map(bundle.sources.map((s) => [s.index, s]));
+  for (const [index, p] of pending.entries()) {
+    const j = byIndex.get(index);
+    const source = normalise(p.text);
+    const passages = (j?.passages ?? [])
+      .filter((x) => findingIds.has(x.findingId) && x.passage.trim().length > 0)
+      .filter((x) => source.includes(normalise(x.passage)))
+      .slice(0, 50)
+      .map((x) => ({ claimRecordId: x.findingId, passage: x.passage.trim().slice(0, 4000) }));
+    const proposed = j?.sourceType?.slice(0, 100);
+    const note = j?.note?.trim().slice(0, 500);
+    await writeOnce(
+      input.artifacts,
+      supportPath(input.inventory, p.retrievalId, identity),
+      CitationSupportSchema.parse({
+        schemaVersion: 1,
+        retrievalId: p.retrievalId,
+        retrievalKey: p.retrievalKey,
+        snapshot: p.snapshotRef,
+        monitored: p.monitored,
+        judge: identity,
+        support: !p.monitored && passages.length > 0 ? "supported" : "unverified",
+        passages,
+        ...(proposed && proposed !== "monitored-source" ? { sourceType: proposed } : {}),
+        ...(note ? { rationale: note, writerNote: note } : {}),
+        ...(j?.relevance !== undefined && Number.isInteger(j.relevance)
+          ? { relevanceRank: Math.max(1, Math.min(500, j.relevance)) }
+          : {}),
+      }),
+    );
+  }
+  return { kind: "judged", judged: pending.length };
 }

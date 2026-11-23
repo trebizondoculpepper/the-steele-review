@@ -146,6 +146,71 @@ export interface SupportJudge {
     },
     signal: AbortSignal,
   ): Promise<SupportJudgement>;
+  /**
+   * One relevance assessment for the whole bundle (#795): every archived
+   * source, as bounded excerpts, in a single call. When present the runner
+   * uses it instead of one `judge` call per source.
+   */
+  judgeBundle?(
+    input: {
+      findings: Finding[];
+      report: string;
+      sources: { index: number; url: string; excerpt: string }[];
+    },
+    signal: AbortSignal,
+  ): Promise<BundleJudgement>;
+}
+
+/** Report text sent with a bundle assessment (#795). */
+export const BUNDLE_REPORT_CHARS = 12_000;
+/** Total source excerpt budget for one bundle, shared across its sources. */
+export const BUNDLE_SOURCE_CHARS = 48_000;
+const BUNDLE_WINDOW = 400;
+
+/**
+ * A bounded excerpt of one source for the bundle call: the opening, then
+ * windows around words that appear in the findings, within this source's share
+ * of the bundle budget. Purely local; no model is involved.
+ */
+export function bundleExcerpt(text: string, findings: Finding[], sourceCount: number): string {
+  const budget = Math.max(
+    1_500,
+    Math.min(4_000, Math.floor(BUNDLE_SOURCE_CHARS / Math.max(1, sourceCount))),
+  );
+  if (text.length <= budget) return text;
+  const words = new Set(
+    findings.flatMap((f) => f.statement.toLowerCase().match(/[a-z0-9]{5,}/g) ?? []).slice(0, 60),
+  );
+  const lower = text.toLowerCase();
+  const hits: number[] = [];
+  for (const w of words) {
+    let i = lower.indexOf(w);
+    while (i >= 0 && hits.length < 200) {
+      hits.push(i);
+      i = lower.indexOf(w, i + w.length);
+    }
+  }
+  hits.sort((a, b) => a - b);
+  const head = Math.min(600, Math.floor(budget / 4));
+  const parts = [text.slice(0, head)];
+  let used = head;
+  let end = head;
+  for (const h of hits) {
+    if (used >= budget) break;
+    const start = Math.max(end, h - BUNDLE_WINDOW / 2);
+    const stop = Math.min(text.length, start + BUNDLE_WINDOW, start + (budget - used));
+    if (stop <= start) continue;
+    parts.push(text.slice(start, stop));
+    used += stop - start;
+    end = stop;
+  }
+  return parts.join("\n…\n");
+}
+
+export interface BundleJudgement {
+  sources: (SupportJudgement & { index: number; relevance?: number; note?: string })[];
+  /** A short orientation for the writer. */
+  brief?: string;
 }
 
 export interface RunnerLimits {
@@ -510,6 +575,13 @@ export async function runResearchJob(input: {
       (h) => host === h.toLowerCase() || host.endsWith(`.${h.toLowerCase()}`),
     );
   };
+  const archivedSources: {
+    slot: number;
+    url: string;
+    text: string;
+    archived: Awaited<ReturnType<typeof writeOnce>>;
+    own: boolean;
+  }[] = [];
   for (const [index, url] of report.citations.entries()) {
     keepLease();
     if (index >= limits.maxSources) {
@@ -556,43 +628,100 @@ export async function runResearchJob(input: {
         text,
       });
     }
-    let passages: ResearchManifest["citations"][number]["passages"] = [];
-    let support: "supported" | "unverified" | "not-checked" = "not-checked";
-    let sourceType: string | undefined;
-    let rationale: string | undefined;
-    const own = monitored(url);
-    // The claimant's own pages are checked too, so each claim gets explicit,
-    // verbatim attribution passages; they stay "unverified" and are labelled
-    // monitored, so they never count as independent support.
-    if (input.judge) {
+    // Judged after every source is archived, in one bundle call when the
+    // judge offers one (#795); the slot keeps the citation order unchanged.
+    archivedSources.push({ slot: citations.length, url, text, archived, own: monitored(url) });
+    citations.push(undefined as never);
+  }
+
+  // 2b. Support: one bundle assessment, or (legacy judges) one call per source.
+  const judgements = new Map<number, SupportJudgement & { relevance?: number; note?: string }>();
+  const failedJudgement = new Set<number>();
+  let writerBrief: string | undefined;
+  if (input.judge?.judgeBundle && archivedSources.length > 0) {
+    try {
+      const bundle = await input.judge.judgeBundle(
+        {
+          findings,
+          report: report.report.slice(0, BUNDLE_REPORT_CHARS),
+          sources: archivedSources.map((a, index) => ({
+            index,
+            url: a.url,
+            excerpt: bundleExcerpt(a.text, findings, archivedSources.length),
+          })),
+        },
+        signal,
+      );
+      writerBrief = bundle.brief?.trim().slice(0, 2000) || undefined;
+      for (const j of bundle.sources)
+        if (Number.isInteger(j.index) && j.index >= 0 && j.index < archivedSources.length)
+          judgements.set(j.index, j);
+      // A source the assessment did not mention was judged irrelevant.
+      for (let i = 0; i < archivedSources.length; i++)
+        if (!judgements.has(i)) judgements.set(i, { passages: [] });
+    } catch (error) {
+      if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+        return creditBlocked();
+      }
+      for (let i = 0; i < archivedSources.length; i++) failedJudgement.add(i);
+    }
+  } else if (input.judge) {
+    for (const [i, a] of archivedSources.entries()) {
+      keepLease();
       try {
-        const source = normalise(text);
-        const judgement = await input.judge.judge(
-          { findings, report: report.report, url, source: text },
-          signal,
+        judgements.set(
+          i,
+          await input.judge.judge(
+            { findings, report: report.report, url: a.url, source: a.text },
+            signal,
+          ),
         );
-        // "monitored-source" is reserved for the configured host decision.
-        const proposedType = judgement.sourceType?.slice(0, 100);
-        sourceType = proposedType === "monitored-source" ? undefined : proposedType;
-        rationale = judgement.rationale?.slice(0, 2000);
-        passages = judgement.passages
-          .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
-          .filter((p) => source.includes(normalise(p.passage)))
-          .slice(0, 50)
-          .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
-        support = own ? "unverified" : passages.length > 0 ? "supported" : "unverified";
       } catch (error) {
         // A judge that ran out of credit must not leave the citation "not
         // checked" in a terminal result: stop the job, recoverably (#407).
         if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
           return creditBlocked();
         }
-        support = own ? "unverified" : "not-checked";
+        failedJudgement.add(i);
       }
+    }
+  }
+  for (const [i, a] of archivedSources.entries()) {
+    const { url, text, archived, own } = a;
+    let passages: ResearchManifest["citations"][number]["passages"] = [];
+    let support: "supported" | "unverified" | "not-checked" = "not-checked";
+    let sourceType: string | undefined;
+    let rationale: string | undefined;
+    const judgement = judgements.get(i);
+    // The claimant's own pages are checked too, so each claim gets explicit,
+    // verbatim attribution passages; they stay "unverified" and are labelled
+    // monitored, so they never count as independent support.
+    if (judgement) {
+      const source = normalise(text);
+      // "monitored-source" is reserved for the configured host decision.
+      const proposedType = judgement.sourceType?.slice(0, 100);
+      sourceType = proposedType === "monitored-source" ? undefined : proposedType;
+      rationale = (judgement.rationale ?? judgement.note)?.slice(0, 2000);
+      passages = judgement.passages
+        .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
+        .filter((p) => source.includes(normalise(p.passage)))
+        .slice(0, 50)
+        .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
+      support = own ? "unverified" : passages.length > 0 ? "supported" : "unverified";
     } else if (own) {
       support = "unverified";
+    } else if (failedJudgement.has(i)) {
+      support = "not-checked";
     }
-    citations.push({
+    const relevance =
+      judgement && "relevance" in judgement && Number.isInteger(judgement.relevance)
+        ? Math.max(1, Math.min(500, judgement.relevance!))
+        : undefined;
+    const note =
+      judgement && "note" in judgement
+        ? judgement.note?.trim().slice(0, 500) || undefined
+        : undefined;
+    citations[a.slot] = {
       url,
       retrieval: "archived",
       ...(own
@@ -617,8 +746,10 @@ export async function runResearchJob(input: {
         hash: `sha256:${archived.sha256}`,
       },
       support,
+      ...(relevance !== undefined ? { relevanceRank: relevance } : {}),
+      ...(note ? { writerNote: note } : {}),
       passages,
-    });
+    };
   }
 
   // 3. Gaps and outcome.
@@ -681,6 +812,7 @@ export async function runResearchJob(input: {
     ...(warnings.length ? { warnings } : {}),
     citations,
     gaps: gaps.slice(0, 100),
+    ...(writerBrief ? { writerBrief } : {}),
     provider: {
       model: report.model,
       ...(report.costUsd !== undefined ? { costUsd: report.costUsd } : {}),

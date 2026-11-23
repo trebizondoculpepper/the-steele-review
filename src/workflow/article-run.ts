@@ -263,6 +263,15 @@ export interface ResearchStages {
     inventory: StageRef,
     retrievalId: string,
   ): Promise<{ kind: "judged" | "not-archived" | "not-checked" | "credit-exhausted" }>;
+  /**
+   * Judge every archived source in one bundle call (#795); undefined when the
+   * judge has no bundle call, so the per-source step is used instead.
+   */
+  supportBundle?(
+    discovery: StageRef,
+    inventory: StageRef,
+    retrievalIds: string[],
+  ): Promise<{ kind: "judged" | "not-checked" | "credit-exhausted" } | undefined>;
   /** Retrieve one fetch key as its own named durable step. */
   retrieveOne(
     inventory: StageRef,
@@ -322,9 +331,22 @@ export async function runResearch(
       await ctx.sleep(s.roundDelayMs * 2 ** round);
     }
   }
-  // Support handoff: each archived source judged as its own step, so
-  // coverage receives supported passages exactly as from the legacy runner.
-  for (const id of allIds) {
+  // Support handoff (#795): one bundle assessment for every archived source.
+  // A judge without a bundle call falls back to one step per source; either
+  // way coverage receives supported passages exactly as before.
+  const bundled = s.supportBundle
+    ? await ctx.run(
+        "research-support-bundle",
+        async () =>
+          (await s.supportBundle!(found.discovery, inventory, allIds)) ?? {
+            kind: "unsupported" as const,
+          },
+      )
+    : { kind: "unsupported" as const };
+  if (bundled.kind === "credit-exhausted") {
+    return ctx.run("research-failed", () => s.failed(request, "budget-exceeded"));
+  }
+  for (const id of bundled.kind === "unsupported" ? allIds : []) {
     const judged = await ctx.run(`research-support-${id}`, () =>
       s.support(found.discovery, inventory, id),
     );
