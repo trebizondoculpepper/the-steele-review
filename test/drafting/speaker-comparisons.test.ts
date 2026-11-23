@@ -293,6 +293,51 @@ describe("same-speaker comparisons in the unattended essay (#370)", { timeout: 6
     expect(md).not.toMatch(/earlier post|history/i);
   });
 
+  it("identifies an author-voice speaker from the configured source author (#387)", async () => {
+    const fx = librarianFixtures(content);
+    const { claimResult } = await fx.analysis("p2", [{ id: "claim-treaty", statement: STATEMENT }]);
+    const raw = JSON.parse(await content.read(claimResult));
+    // The stored occurrence names no author: the capture had no byline.
+    raw.claims[0].occurrence = occurrence({ postId: "p2", speaker: { kind: "author-voice" } });
+    raw.extraction.attribution = {
+      author: "Configured Author",
+      basis: "source-configured",
+      sourceMetadataVersion: `source-metadata-sha256:${"a".repeat(64)}`,
+    };
+    const attributed = await content.write(
+      "claim-extractions/pub/p2/attributed.json",
+      JSON.stringify(raw),
+    );
+    const earlier = occurrence({
+      ...prior,
+      postId: "earlier",
+      speaker: { kind: "author-voice" },
+      publisher: {
+        publicationId: "pub",
+        attributedAuthor: "Configured Author",
+        attributionBasis: "source-configured",
+      },
+    });
+    const queries: string[] = [];
+    const refs = await saveSpeakerComparisons({
+      content,
+      claimResult: attributed,
+      deps: {
+        search: {
+          async search(index, query, options) {
+            queries.push(JSON.stringify(query));
+            return search([earlier]).search(index, query, options);
+          },
+        },
+        provider: models(ESSAY),
+      },
+    });
+    const record = JSON.parse(await content.read(refs[0]!));
+    expect(record.search.outcome).not.toBe("speaker-unverified");
+    expect(record.speaker).toMatchObject({ name: "Configured Author", basis: "post-author" });
+    expect(queries.some((q) => q.includes("publisher.attributedAuthor"))).toBe(true);
+  });
+
   it("records a failed search without failing the run", async () => {
     const { claimResult } = await coverage();
     const broken: OccurrenceSearchPort = { search: async () => Promise.reject(new Error("down")) };
