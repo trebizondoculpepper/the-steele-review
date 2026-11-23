@@ -1,3 +1,4 @@
+import { ResearchNeedEvidenceSchema } from "./need-evidence.js";
 import { z } from "zod";
 import {
   ArtifactStoreError,
@@ -57,6 +58,7 @@ export const DossierMetadataSchema = z
     title: z.string().min(1).max(200),
     scope: z.string().min(1).max(2000),
     claims: z.array(ClaimCoverageSchema).max(1000),
+    researchNeeds: z.array(ResearchNeedEvidenceSchema).max(1000).optional(),
     citations: z.array(DossierCitationSchema).max(1000),
     gaps: z.array(z.string().min(1).max(1000)).max(200),
     updatedAt: IsoDate,
