@@ -100,7 +100,7 @@ export class ModelSupportJudge implements SupportJudge {
       ...input.sources.flatMap((s) => [`Source ${s.index} (${s.url}):`, s.excerpt, ""]),
     ].join("\n");
     const raw = await this.provider.complete(
-      { system: BUNDLE_PROMPT.instructions, user, maxOutputChars: 12_000 },
+      { system: BUNDLE_PROMPT.instructions, user, maxOutputChars: 24_000 },
       signal,
     );
     const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);

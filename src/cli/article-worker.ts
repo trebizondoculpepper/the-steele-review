@@ -77,7 +77,11 @@ function main(): number {
       },
       override === "STEELE_MODEL_CLAIMS"
         ? { maxOutputTokens: CLAIM_EXTRACTION_MAX_OUTPUT_TOKENS }
-        : {},
+        : // The bundle support call is a quick relevance pass: a reasoning
+          // model must answer, not think through its whole budget (#797).
+          override === "STEELE_MODEL_SUPPORT"
+          ? { reasoning: { enabled: false } as const }
+          : {},
     );
   // Same-speaker history needs the occurrence index; without it the essay
   // simply has no historical section.
