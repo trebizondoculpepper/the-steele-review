@@ -120,8 +120,11 @@ export function verifiedSpeaker(o: ClaimOccurrence): VerifiedSpeaker | undefined
   if ((kind === "quoted" || kind === "uncertain") && name && o.speaker.evidence) {
     return { name, basis: "named-speaker" };
   }
-  if (kind === "author-voice" && o.publisher.author) {
-    return { name: o.publisher.author, basis: "post-author" };
+  // The resolved post author (#461): explicit byline, else the configured
+  // source default; older index documents only carry the observed byline.
+  const author = o.publisher.attributedAuthor ?? o.publisher.author;
+  if (kind === "author-voice" && author) {
+    return { name: author, basis: "post-author" };
   }
   return undefined;
 }
@@ -146,7 +149,15 @@ export function speakerFilter(s: VerifiedSpeaker): unknown {
           bool: {
             filter: [
               { term: { "speaker.kind": "author-voice" } },
-              { term: { "publisher.author": s.name } },
+              {
+                bool: {
+                  should: [
+                    { term: { "publisher.attributedAuthor": s.name } },
+                    { term: { "publisher.author": s.name } },
+                  ],
+                  minimum_should_match: 1,
+                },
+              },
             ],
           },
         },

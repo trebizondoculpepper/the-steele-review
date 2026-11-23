@@ -4,6 +4,7 @@ import type { OccurrenceSearchPort } from "../../src/analysis/claim-timeline.js"
 import type { ExtractionModelProvider } from "../../src/analysis/extraction.js";
 import {
   findSameSpeakerHistory,
+  speakerFilter,
   verifiedSpeaker,
 } from "../../src/analysis/same-speaker-history.js";
 
@@ -198,6 +199,22 @@ describe("findSameSpeakerHistory (#368)", () => {
       name: "Jo Writer",
       basis: "post-author",
     });
+    // A configured source author projected into the index (#461) is used, and
+    // preferred over an account byline such as the publication's name.
+    expect(
+      verifiedSpeaker({
+        ...anonymous,
+        publisher: {
+          publicationId: "pub",
+          author: "Synthetic Account",
+          attributedAuthor: "Configured Author",
+          attributionBasis: "source-configured",
+        },
+      }),
+    ).toEqual({ name: "Configured Author", basis: "post-author" });
+    expect(
+      JSON.stringify(speakerFilter({ name: "Configured Author", basis: "post-author" })),
+    ).toContain("publisher.attributedAuthor");
     expect(
       verifiedSpeaker(
         occ({ post: "y", statement: CURRENT, speaker: { kind: "quoted", name: NAME } }),
