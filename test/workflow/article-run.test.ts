@@ -508,7 +508,12 @@ describe("unattended article run on Restate (#243)", () => {
       postId: expect.stringMatching(/^2026-11-20-a-post-[0-9a-f]{12}$/),
       // Every submission path records the non-blocking contract (#769).
       packageReadiness: "non-blocking-v1",
+      // Two research themes per article unless configured otherwise (#533).
+      researchRequestLimit: 2,
+      researchSelection: "allowance-v1",
     });
+    expect(articleRunInputFor(parsed, 6_000, 5)).toMatchObject({ researchRequestLimit: 5 });
+    expect(articleRunInputFor(parsed, 6_000, 0)).toMatchObject({ researchRequestLimit: 0 });
     // An encoded ID must never equal an item ID that needed no encoding.
     const encoded = articleRunTarget("blog/example-site", "2026-11-20_a.post");
     const literal = articleRunTarget("blog/example-site", encoded.postId);

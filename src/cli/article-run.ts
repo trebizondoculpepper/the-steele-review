@@ -5,6 +5,7 @@ import { sourceMetadataFromEnv, postAttribution } from "../content/source-metada
 import {
   researchExecutionFromEnv,
   researchSelectionFor,
+  researchThemeLimit,
   NON_BLOCKING_PACKAGE,
 } from "../workflow/research-execution.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
@@ -175,9 +176,16 @@ async function main(): Promise<number> {
     ...(retainedResearchJobIds ? { retainedResearchJobIds } : {}),
     ...researchExecutionFromEnv(),
     ...NON_BLOCKING_PACKAGE,
-    ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
-    // A retained recovery keeps its exact prefix; others use the allowance.
-    ...(retainedResearchJobIds ? {} : researchSelectionFor(requestLimit.data)),
+    // A retained recovery keeps its exact prefix; others use the allowance,
+    // two themes by default (#533).
+    ...(retainedResearchJobIds
+      ? requestLimit.data === undefined
+        ? {}
+        : { researchRequestLimit: requestLimit.data }
+      : {
+          researchRequestLimit: researchThemeLimit(requestLimit.data),
+          ...researchSelectionFor(researchThemeLimit(requestLimit.data)),
+        }),
   };
   if (!ArticleRunInputSchema.safeParse(input).success) {
     console.error(USAGE);
@@ -210,6 +218,7 @@ async function main(): Promise<number> {
         });
       }
       const recorded = recordNormalArticleAttempt(operations, input, values["request-id"], {
+        defaultedResearchLimit: requestLimit.data === undefined && !retainedResearchJobIds,
         legacyOverrides:
           values["editorial-revisions"] !== undefined ||
           values["editorial-deadline-ms"] !== undefined,

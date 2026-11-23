@@ -138,12 +138,9 @@ response was lost.
 
 ### Limit research requests for a run
 
-Set `STEELE_RESEARCH_REQUEST_LIMIT=2` on the capture bridge, or pass
-`article-run --research-request-limit 2` for a manual submission. The workflow
-takes the first two requests in the librarian's order and records the rest as
-uncommissioned gaps. An omitted limit preserves the full plan, and zero disables
-research commissioning for the run. The limit is part of the original workflow
-input and changing it on duplicate submission does not rerun that revision.
+New runs research **at most two themes per article by default** (#533): one new research job per selected theme, in the librarian's priority order (themes whose claims most need evidence come first). Saved research for a theme is reused and doesn't count against the limit. Themes beyond the limit are recorded as deferred in the article's selection ledger and reported as gaps.
+
+To change the limit, set `STEELE_RESEARCH_REQUEST_LIMIT` on the capture bridge, or pass `article-run --research-request-limit <n>` for a manual submission. Zero disables new research for the run. The limit is part of the original workflow input, so changing it on a duplicate submission doesn't rerun that revision. A retained recovery keeps its exact recorded prefix.
 The shared concurrency cap and the batch deadline still apply independently.
 
 ## Approval dispatch and dummy publishers (#314, #315)
