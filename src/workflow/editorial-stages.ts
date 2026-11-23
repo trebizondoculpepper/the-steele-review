@@ -300,5 +300,12 @@ export function editorialStages(deps: {
         report,
         kind: "editorial-judgment",
       }),
+    approveCompletedCycle: (report) =>
+      recordApproval({
+        content: deps.content,
+        operations: deps.operations,
+        report,
+        kind: "editorial-cycle-complete",
+      }),
   };
 }

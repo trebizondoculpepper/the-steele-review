@@ -82,6 +82,47 @@ async function seeded(
   return { stages, version, pkg: artifactRef(report.package) };
 }
 describe("typed editorial stages and judgment-backed delivery", { timeout: 60000 }, () => {
+  it("releases a completed cycle with the judge's real decision, never as an approval (#820)", async () => {
+    const REVISE =
+      "## Reasons\nOne claim is overstated.\n## Required corrections\n- Qualify the claim.\n## Accepted minor observations\nNone.\nDECISION: REVISE";
+    const { stages, version, pkg } = await seeded({ judge: async () => REVISE });
+    const assessed = await stages.assess(version, pkg, "cycle:assessment:1");
+    const judged = await stages.judge(assessed.ref, "cycle:judgment:1");
+    expect(judged.decision).toBe("revise");
+    // A "revise" judgment is never an editorial approval...
+    await expect(stages.approve(judged.ref)).rejects.toThrow();
+    // ...but a completed cycle may be released, recording the actual decision.
+    const released = await stages.approveCompletedCycle!(judged.ref);
+    const pending = operations
+      .duePendingEvents(10, ARTICLE_APPROVED_SUBJECT)
+      .find((x) => x.eventId === released.eventId)!;
+    const event = JSON.parse(pending.payload);
+    expect(event.data).toMatchObject({
+      approvalKind: "editorial-cycle-complete",
+      judgmentDecision: "revise",
+      approval: artifactReference(judged.ref),
+      assessment: artifactReference(assessed.ref),
+      draft: artifactReference(version.draft),
+    });
+    // Recording it twice is one event (stable operation identity).
+    expect((await stages.approveCompletedCycle!(judged.ref)).eventId).toBe(released.eventId);
+    // Delivered once to a destination, with the decision kept on the receipt.
+    const dest = new SimulatedDestination("dummy-cycle", "draft");
+    const handle = () =>
+      handleApprovedArticle({
+        payload: pending.payload,
+        destination: dest,
+        schedule: { delayMs: 0 },
+        content,
+        operations,
+        owner: "fixture",
+        now: () => new Date(Date.parse(event.time) + 1000),
+        retryDelayMs: 1,
+      });
+    expect(await handle()).toMatchObject({ action: "ack", outcome: "delivered" });
+    expect(await handle()).toMatchObject({ action: "ack", outcome: "reused" });
+  });
+
   it("hands the judge feasible citation-correction capabilities without relaxing approval", async () => {
     const f = await seeded({
       judge: async (request) => {

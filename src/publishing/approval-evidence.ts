@@ -30,7 +30,11 @@ import {
   type PublicationPayload,
 } from "../drafting/publication-payload.js";
 
-export type ApprovalKind = "combined-verification" | "editorial-judgment" | "owner-draft-rehearsal";
+export type ApprovalKind =
+  | "combined-verification"
+  | "editorial-judgment"
+  | "owner-draft-rehearsal"
+  | "editorial-cycle-complete";
 export interface ApprovalEvidence {
   kind: ApprovalKind;
   post: { publicationId: string; postId: string };
@@ -43,6 +47,8 @@ export interface ApprovalEvidence {
   payload?: PublicationPayload;
   draftTargets?: DraftTarget[];
   authorizationOutcome?: "owner-authorized-draft";
+  /** For a completed-cycle release (#820): the judge's actual final decision. */
+  judgmentDecision?: "approve" | "revise";
 }
 export class ApprovalEvidenceError extends Error {
   constructor(reason = "approval does not match the draft") {
@@ -195,17 +201,23 @@ export async function readApprovalEvidence(
     };
   }
   const judgment = JudgmentRecordSchema.parse(raw);
+  // A completed-cycle release (#820) may carry a "revise" decision; every
+  // other integrity check (decided state, no gates or mechanical faults,
+  // retained documents) is the same as for an editorial approval.
+  const cycle = kind === "editorial-cycle-complete";
   if (
     judgment.operationalFailure !== undefined ||
     judgment.state !== "decided" ||
-    judgment.decision !== "approve" ||
+    (cycle
+      ? judgment.decision !== "approve" && judgment.decision !== "revise"
+      : judgment.decision !== "approve") ||
     judgment.gates.length ||
     !judgment.document ||
     !judgment.judge?.model.trim() ||
     !judgment.judge.promptVersion.trim()
   )
     throw new ApprovalEvidenceError();
-  if (readDecision(await content.read(artifactRef(judgment.document))) !== "approve")
+  if (readDecision(await content.read(artifactRef(judgment.document))) !== judgment.decision)
     throw new ApprovalEvidenceError();
   const assessment = AssessmentRecordSchema.parse(
     JSON.parse(await content.read(artifactRef(judgment.assessment))),
@@ -239,5 +251,6 @@ export async function readApprovalEvidence(
     approvedAt: judgment.decidedAt,
     markdown: loaded.markdown,
     payload: loaded.payload,
+    ...(cycle ? { judgmentDecision: judgment.decision as "approve" | "revise" } : {}),
   };
 }

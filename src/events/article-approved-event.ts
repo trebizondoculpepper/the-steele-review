@@ -35,8 +35,18 @@ const CommonDataSchema = z
     approval: ArtifactReferenceSchema,
     /** Absent only on legacy combined-verifier events. */
     approvalKind: z
-      .enum(["combined-verification", "editorial-judgment", "owner-draft-rehearsal"])
+      .enum([
+        "combined-verification",
+        "editorial-judgment",
+        "owner-draft-rehearsal",
+        "editorial-cycle-complete",
+      ])
       .optional(),
+    /**
+     * Completed-cycle releases only (#820): the judge's actual final decision,
+     * so a release after a "revise" is never presented as an approval.
+     */
+    judgmentDecision: z.enum(["approve", "revise"]).optional(),
     authorizationOutcome: z.literal("owner-authorized-draft").optional(),
     draftTargets: z.array(DraftTargetSchema).length(3).optional(),
     /** Actual assessor record, never a fabricated combined verification report. */
@@ -52,8 +62,14 @@ const CommonDataSchema = z
 export const ArticleApprovedDataV1Schema = CommonDataSchema.omit({
   authorizationOutcome: true,
   draftTargets: true,
-}).extend({ approvalKind: z.enum(["combined-verification", "editorial-judgment"]).optional() });
-export const ArticleOwnerDraftDataV2Schema = CommonDataSchema.extend({
+}).extend({
+  approvalKind: z
+    .enum(["combined-verification", "editorial-judgment", "editorial-cycle-complete"])
+    .optional(),
+});
+export const ArticleOwnerDraftDataV2Schema = CommonDataSchema.omit({
+  judgmentDecision: true,
+}).extend({
   approvalKind: z.literal("owner-draft-rehearsal"),
   authorizationOutcome: z.literal("owner-authorized-draft"),
   draftTargets: OwnerDraftTargetsSchema,
@@ -71,6 +87,12 @@ export const ArticleApprovedDataSchema = CommonDataSchema.superRefine((value, ct
       : value.authorizationOutcome !== undefined || value.draftTargets !== undefined
   )
     ctx.addIssue({ code: "custom", message: "authorization discriminator mismatch" });
+  // A completed-cycle release always states the judge's decision; nothing else carries one.
+  if (
+    (value.approvalKind === "editorial-cycle-complete") !==
+    (value.judgmentDecision !== undefined)
+  )
+    ctx.addIssue({ code: "custom", message: "judgment decision mismatch" });
 });
 export type ArticleApprovedData = z.infer<typeof ArticleApprovedDataSchema>;
 

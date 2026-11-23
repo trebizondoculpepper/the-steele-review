@@ -89,3 +89,26 @@ Refreshing the cookie is an owner task: sign in to Substack in a browser, copy t
 ## Open integration risks
 
 Session lifetime, endpoint changes, account challenges (captcha or new-device checks), formatting fidelity and draft reconciliation remain unproven until #384. If reconciliation cannot be made reliable, uncertain creates stay `unknown` for an operator rather than being retried, while ingestion, analysis and the dummy publishers continue.
+
+## Publishing after one correction cycle (#820)
+
+Owner decision, 2026-11-23: finished articles are published without a manual approval step once they have been through one completed editorial correction cycle.
+
+**How a run reaches publication.** There are two paths, and both produce an approval event that the publish-with-email destination (#789) accepts:
+- **Ordinary approval:** the judge approves a version, and the run records an `editorial-judgment` approval, as before.
+- **Completed cycle:** the run's policy is `onExhausted: publish-after-cycle`, and the revision limit is reached after at least one full cycle (assess, judge, revise, assess, judge) while the judge still asks for changes. The run records an **`editorial-cycle-complete`** release of that last version.
+
+**What the release records.** It carries the judge's actual `judgmentDecision`, so a version the judge asked to revise is never presented as approved or factually verified. The run's own outcome stays `unresolved`.
+
+**What never releases:**
+- incomplete or failed runs: an operational stop, the deadline, an undecided or failed judgment, or a failed revision;
+- runs with no completed cycle (`maxRevisions: 0`);
+- runs under any other exhaustion policy.
+
+**Checks the release still needs.** It requires the same retained evidence as an approval: a decided judgment and an assessment, with no gates, no deterministic faults and no operational failure, bound to the exact revision.
+
+**Delivery.** It uses the same operation identity, receipts, read-back, duplicate protection and uncertain-response handling as any approved article. The receipt keeps `judgmentDecision`. Only future runs submitted under this policy are affected.
+
+**Activation, a deployment step.**
+- **Release:** set the editorial policy to one revision with `publish-after-cycle`.
+- **Publication:** run the Substack publisher in `publish-with-email` mode with an activation cutoff (#789).

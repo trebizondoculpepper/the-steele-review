@@ -256,7 +256,26 @@ export async function runEditorialLoop(input: {
         reason = "";
         break;
       }
-      if (exhausted) break;
+      if (exhausted) {
+        // Owner direction (#820): a run that completed at least one full
+        // correction cycle is released for publication even when the judge
+        // still asks for changes. The outcome stays "unresolved" and the
+        // approval records the judge's actual decision; an incomplete or
+        // failed run never reaches here.
+        if (
+          policy.onExhausted === "publish-after-cycle" &&
+          revisions.length >= 1 &&
+          input.stages.approveCompletedCycle
+        ) {
+          await input.progress("approve", round);
+          const released = await input.step("editorial-release-completed-cycle", () =>
+            input.stages.approveCompletedCycle!(judgment.ref),
+          );
+          approvalEvent = released.eventId;
+          reason = "editorial revision limit reached; completed cycle released for publication";
+        }
+        break;
+      }
       await input.progress("revise", round + 1);
       revisionAttempts++;
       const revised = await roleStep(`editorial-revise-${round + 1}`, () =>
