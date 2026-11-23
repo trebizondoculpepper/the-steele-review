@@ -99,6 +99,8 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # A failed inspection must fail its pipeline, not read as "absent".
+          set -o pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           versioned="ghcr.io/${GITHUB_REPOSITORY,,}:${VERSION}"
           digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | tr -d '"'; }
@@ -137,6 +139,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.publish.outputs.version }}
         run: |
+          set -o pipefail
           tag="v${VERSION}"
           # An existing tag must already name this commit, release or not.
           if target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq .sha 2> tag.err)"; then
