@@ -1,4 +1,9 @@
 import { rethrowEditorialStorageError } from "./editorial-provider.js";
+import {
+  ProviderFailureSchema,
+  providerFailureOf,
+  type ProviderFailure,
+} from "./provider-failure.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
@@ -47,6 +52,8 @@ export const AssessmentRecordSchema = z
     schemaVersion: z.literal(ASSESSMENT_SCHEMA_VERSION),
     attemptId: z.string().min(1).max(500).optional(),
     operationalFailure: z.literal("credit-exhausted").optional(),
+    /** Safe facts about a provider failure (#800); never provider text. */
+    providerFailure: ProviderFailureSchema.optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
     retainedAttemptReuses: z.array(z.boolean().nullable()).max(10).optional(),
     state: z.enum(["findings", "no-faults", "incomplete", "malformed", "provider-failed"]),
@@ -179,6 +186,7 @@ export async function assessArticle(input: {
   const retained = await input.content.lookup(documentPath);
   let raw: string | undefined = retained ? await input.content.read(retained) : undefined;
   let operationalFailure: "credit-exhausted" | undefined;
+  let providerFailure: ProviderFailure | undefined;
   if (raw === undefined) {
     try {
       raw = await input.assessor.complete(
@@ -187,6 +195,7 @@ export async function assessArticle(input: {
       );
     } catch (error) {
       rethrowEditorialStorageError(error);
+      providerFailure = providerFailureOf(error, "assessment");
       if (input.retainOperationalFailure && isCreditExhausted(error))
         operationalFailure = "credit-exhausted";
       else rethrowCreditExhausted(error); // waits for credit; never flattened (#407)
@@ -212,6 +221,7 @@ export async function assessArticle(input: {
       : {}),
     state: verdict.state,
     ...(operationalFailure ? { operationalFailure } : {}),
+    ...(providerFailure ? { providerFailure } : {}),
     ...("findings" in verdict && verdict.findings !== undefined
       ? { findings: verdict.findings }
       : {}),

@@ -1,4 +1,9 @@
 import { JudgmentHistorySchema, type JudgmentHistory } from "../content/judgment-history.js";
+import {
+  ProviderFailureSchema,
+  providerFailureOf,
+  type ProviderFailure,
+} from "./provider-failure.js";
 import { parseJudgmentDocument } from "./judgment-document.js";
 import { rethrowEditorialStorageError } from "./editorial-provider.js";
 import { createHash } from "node:crypto";
@@ -48,6 +53,8 @@ export const JudgmentRecordSchema = z
     schemaVersion: z.literal(JUDGMENT_SCHEMA_VERSION),
     attemptId: z.string().min(1).max(500).optional(),
     operationalFailure: z.literal("credit-exhausted").optional(),
+    /** Safe facts about a provider failure (#800); never provider text. */
+    providerFailure: ProviderFailureSchema.optional(),
     retainedAttempts: z.array(Ref).max(10).optional(),
     retainedAttemptReuses: z.array(z.boolean().nullable()).max(10).optional(),
     /** The disposition; `none` whenever approval or revision could not be decided. */
@@ -288,11 +295,13 @@ export async function judgeAssessment(input: {
   const retained = await input.content.lookup(documentPath);
   let raw: string | undefined = retained ? await input.content.read(retained) : undefined;
   let operationalFailure: "credit-exhausted" | undefined;
+  let providerFailure: ProviderFailure | undefined;
   if (raw === undefined) {
     try {
       raw = await input.judge.complete(request, AbortSignal.timeout(180_000));
     } catch (error) {
       rethrowEditorialStorageError(error);
+      providerFailure = providerFailureOf(error, "judgment");
       if (input.retainOperationalFailure && isCreditExhausted(error))
         operationalFailure = "credit-exhausted";
       else rethrowCreditExhausted(error);
@@ -313,6 +322,8 @@ export async function judgeAssessment(input: {
         ? { retainedAttemptReuses: input.retainedAttemptReuses() }
         : {}),
       ...(operationalFailure ? { operationalFailure } : {}),
+      ...(providerFailure ? { providerFailure } : {}),
+      ...(providerFailure ? { providerFailure } : {}),
       judge,
       decidedAt: now(),
     });
