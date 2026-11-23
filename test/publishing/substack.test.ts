@@ -47,6 +47,40 @@ Original post: [The \\[weather\\] post](<https://pub.example.com/p/p1>)
 `;
 
 describe("Markdown to Substack ProseMirror (#385)", () => {
+  it("keeps a short quotation inline and a long one as one native quote block (#812)", () => {
+    const md = [
+      'The author writes that the masts are "deliberately harmful".',
+      "",
+      "In a longer passage, published by [the campaign](https://example.org/post), the author argues:",
+      "",
+      "> First sentence of the passage. Second sentence, with *emphasis*.",
+      ">",
+      "> A second paragraph that ends the quotation.",
+      "",
+      "That claim is not supported by the cited report.",
+    ].join("\n");
+    const doc = markdownToProseMirror(md);
+    expect(doc.content.map((n) => n.type)).toEqual([
+      "paragraph",
+      "paragraph",
+      "blockquote",
+      "paragraph",
+    ]);
+    // The short quotation stays inline, exactly as written.
+    expect(JSON.stringify(doc.content[0])).toContain('"deliberately harmful"'.replace(/"/g, '\\"'));
+    // The attribution and source link sit outside the quote block.
+    expect(JSON.stringify(doc.content[1])).toContain("https://example.org/post");
+    const quote = doc.content[2] as { content: { type: string; content: { text: string }[] }[] };
+    // One quote block holding both paragraphs, text preserved exactly.
+    expect(quote.content.map((p) => p.type)).toEqual(["paragraph", "paragraph"]);
+    expect(quote.content[0]!.content.map((t) => t.text).join("")).toBe(
+      "First sentence of the passage. Second sentence, with emphasis.",
+    );
+    expect(quote.content[1]!.content.map((t) => t.text).join("")).toBe(
+      "A second paragraph that ends the quotation.",
+    );
+  });
+
   it("converts the writer's format, dropping machine markers", () => {
     const doc = markdownToProseMirror(WRITER_MARKDOWN);
     expect(doc.content.map((n) => n.type)).toEqual([
