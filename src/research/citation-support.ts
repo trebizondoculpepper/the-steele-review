@@ -244,6 +244,15 @@ export async function judgeBundleSupport(input: {
     }
     return { kind: "not-checked", judged: 0 };
   }
+  // The brief first: once any verdict is saved, a retry skips the call.
+  const brief = bundle.brief?.trim().slice(0, 2000);
+  if (brief && !(await input.artifacts.lookup(bundleBriefPath(input.inventory, identity)))) {
+    await writeOnce(
+      input.artifacts,
+      bundleBriefPath(input.inventory, identity),
+      BundleBriefSchema.parse({ schemaVersion: 1, judge: identity, brief }),
+    );
+  }
   const byIndex = new Map(bundle.sources.map((s) => [s.index, s]));
   for (const [index, p] of pending.entries()) {
     const j = byIndex.get(index);
@@ -273,14 +282,6 @@ export async function judgeBundleSupport(input: {
           ? { relevanceRank: Math.max(1, Math.min(500, j.relevance)) }
           : {}),
       }),
-    );
-  }
-  const brief = bundle.brief?.trim().slice(0, 2000);
-  if (brief && !(await input.artifacts.lookup(bundleBriefPath(input.inventory, identity)))) {
-    await writeOnce(
-      input.artifacts,
-      bundleBriefPath(input.inventory, identity),
-      BundleBriefSchema.parse({ schemaVersion: 1, judge: identity, brief }),
     );
   }
   return { kind: "judged", judged: pending.length };

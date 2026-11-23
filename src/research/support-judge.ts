@@ -45,7 +45,11 @@ const SYSTEM = SUPPORT_PROMPT.instructions;
 export const SUPPORT_JUDGE_PROMPT_VERSION = SUPPORT_PROMPT.version;
 
 export class ModelSupportJudge implements SupportJudge {
-  readonly identity = promptIdentity(BUNDLE_PROMPT.version, BUNDLE_PROMPT.instructions);
+  // Covers both operations' prompts, so a change to either is never reused (#795).
+  readonly identity = promptIdentity(
+    BUNDLE_PROMPT.version,
+    `${BUNDLE_PROMPT.instructions}\n---\n${SYSTEM}`,
+  );
   constructor(
     private readonly provider: ExtractionModelProvider,
     private readonly maxSourceChars = 60_000,
