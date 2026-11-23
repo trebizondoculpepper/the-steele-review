@@ -8,9 +8,17 @@ import type { Ref } from "./article-run.js";
 /**
  * What happens when the revision limit is reached without approval (#734):
  * `stop` records the unresolved outcome; `create-unpublished-draft` keeps the
- * last version as an unpublished draft (applied by the workflow, #731).
+ * last version as an unpublished draft (applied by the workflow, #731);
+ * `publish-after-cycle` (#820, owner direction) releases the last version for
+ * publication once at least one full correction cycle has completed, recorded
+ * as an `editorial-cycle-complete` approval carrying the judge's actual
+ * decision, so it is never presented as an editorial approval.
  */
-export const EXHAUSTION_ACTIONS = ["stop", "create-unpublished-draft"] as const;
+export const EXHAUSTION_ACTIONS = [
+  "stop",
+  "create-unpublished-draft",
+  "publish-after-cycle",
+] as const;
 export type ExhaustionAction = (typeof EXHAUSTION_ACTIONS)[number];
 export const DEFAULT_EXHAUSTION_ACTION: ExhaustionAction = "stop";
 
@@ -109,6 +117,8 @@ export interface EditorialStages {
     retainedAttempts?: Ref[];
   }>;
   approve(judgment: Ref): Promise<{ eventId: string }>;
+  /** Release a completed correction cycle for publication (#820); absent means unsupported. */
+  approveCompletedCycle?(judgment: Ref): Promise<{ eventId: string }>;
 }
 export interface EditorialHistory {
   version: "assess-judge-v1";

@@ -143,7 +143,7 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "STEELE_EDITORIAL_EXHAUSTION_ACTION",
     domain: "models",
     description:
-      "When the revision limit is reached without approval: stop, or create-unpublished-draft. New live-policy runs read this before future decisions; historical decisions remain pinned.",
+      "When the revision limit is reached without approval: stop, create-unpublished-draft, or publish-after-cycle (release the last version for publication once a full correction cycle has completed, recording the judge's actual decision). New live-policy runs read this before future decisions; historical decisions remain pinned.",
     schema: z.enum(EXHAUSTION_ACTIONS),
     default: DEFAULT_EXHAUSTION_ACTION,
     sensitivity: "public",

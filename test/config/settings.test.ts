@@ -74,7 +74,7 @@ describe("settings registry (#542)", () => {
       state: "configured",
       value: "create-unpublished-draft",
     });
-    expect(shown.description).toMatch(/stop, or create-unpublished-draft/);
+    expect(shown.description).toMatch(/stop, create-unpublished-draft, or publish-after-cycle/);
   });
 
   it("reports invalid values by category, never echoing them", () => {

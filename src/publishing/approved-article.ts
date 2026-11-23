@@ -121,6 +121,7 @@ export function approvalEventFor(evidence: ApprovalEvidence, report: ArtifactRef
     ...(evidence.authorizationOutcome
       ? { authorizationOutcome: evidence.authorizationOutcome, draftTargets: evidence.draftTargets }
       : {}),
+    ...(evidence.judgmentDecision ? { judgmentDecision: evidence.judgmentDecision } : {}),
     package: evidence.package,
     approvedAt: evidence.approvedAt,
   };
@@ -154,8 +155,15 @@ export const DeliveryReceiptSchema = z
     /** Manifest actually used for this delivery; retained unchanged on identical-content reuse. */
     publication: ArtifactReferenceSchema.optional(),
     approvalKind: z
-      .enum(["combined-verification", "editorial-judgment", "owner-draft-rehearsal"])
+      .enum([
+        "combined-verification",
+        "editorial-judgment",
+        "owner-draft-rehearsal",
+        "editorial-cycle-complete",
+      ])
       .optional(),
+    /** For a completed-cycle release (#820): the judge's actual final decision. */
+    judgmentDecision: z.enum(["approve", "revise"]).optional(),
     authorizationOutcome: z.literal("owner-authorized-draft").optional(),
     draftTarget: DraftTargetSchema.optional(),
     draftSafety: z
@@ -307,6 +315,7 @@ export async function readApprovedContent(
   );
   if (
     evidence.authorizationOutcome !== article.authorizationOutcome ||
+    evidence.judgmentDecision !== article.judgmentDecision ||
     JSON.stringify(evidence.draftTargets) !== JSON.stringify(article.draftTargets) ||
     evidence.post.publicationId !== article.publicationId ||
     evidence.post.postId !== article.postId ||
@@ -609,6 +618,7 @@ async function deliverApprovedArticle(
       draft: event.draft,
       approval: event.approval,
       ...(event.approvalKind ? { approvalKind: event.approvalKind } : {}),
+      ...(event.judgmentDecision ? { judgmentDecision: event.judgmentDecision } : {}),
       ...(event.authorizationOutcome
         ? { authorizationOutcome: event.authorizationOutcome, draftTargets: event.draftTargets }
         : {}),
@@ -718,6 +728,9 @@ async function deliverApprovedArticle(
             approvalKind: deliveryArticle.approvalKind,
             approval: deliveryArticle.approval,
             assessment: deliveryArticle.assessment,
+            ...(deliveryArticle.judgmentDecision
+              ? { judgmentDecision: deliveryArticle.judgmentDecision }
+              : {}),
           }
         : {}),
       ...(deliveryArticle.authorizationOutcome

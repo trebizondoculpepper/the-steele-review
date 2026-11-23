@@ -569,6 +569,14 @@ describe("Substack live publication with subscriber email (#789)", () => {
     expect(d.eligible(backlog)).toBe(false);
     expect(d.eligible(rehearsal)).toBe(false);
     expect(d.eligible(fresh)).toBe(true);
+    // A completed-cycle release (#820) after the cutoff is eligible like an approval.
+    expect(
+      d.eligible({
+        ...(fresh as object),
+        approvalKind: "editorial-cycle-complete",
+        judgmentDecision: "revise",
+      } as never),
+    ).toBe(true);
     expect(() => d.render({ markdown: WRITER_MARKDOWN, data: backlog })).toThrow();
     expect(s.drafts).toHaveLength(0);
     expect(s.published).toHaveLength(0);

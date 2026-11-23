@@ -478,3 +478,61 @@ describe("legacy clock journal and fresh live deadline boundaries", () => {
     expect(f.counts().judged).toBe(0);
   });
 });
+
+describe("publish after one completed correction cycle (#820)", () => {
+  const cycleFixture = (alwaysRevise: boolean) => {
+    const f = fixture(alwaysRevise);
+    let released = 0;
+    f.stages.approveCompletedCycle = async () => {
+      released++;
+      return { eventId: "one-release" };
+    };
+    return { ...f, released: () => released };
+  };
+  const onePass = {
+    ...DEFAULT_EDITORIAL_POLICY,
+    maxRevisions: 1,
+    onExhausted: "publish-after-cycle" as const,
+  };
+
+  it("releases a run whose single correction cycle completed with the judge still revising", async () => {
+    const f = cycleFixture(true);
+    const out = await runEditorialLoop({ ...f.args, policy: onePass });
+    expect(f.counts()).toMatchObject({ judged: 2, revised: 1, approved: 0 });
+    expect(f.released()).toBe(1);
+    expect(f.saved()).toMatchObject({ terminal: "unresolved" });
+    expect(out.approvalEvent).toBe("one-release");
+    expect(out.reason).toMatch(/completed cycle released for publication/);
+    expect(f.journal.has("editorial-release-completed-cycle")).toBe(true);
+    // A replay reuses the journaled release: never a second one.
+    await runEditorialLoop({ ...f.args, policy: onePass });
+    expect(f.released()).toBe(1);
+  });
+
+  it("uses the ordinary approval when the judge approves, never a cycle release", async () => {
+    const f = cycleFixture(false);
+    await runEditorialLoop({ ...f.args, policy: onePass });
+    expect(f.counts().approved).toBe(1);
+    expect(f.released()).toBe(0);
+  });
+
+  it("never releases a run without a completed cycle, or under another policy", async () => {
+    // No revision allowed: no correction cycle ever completed.
+    const none = cycleFixture(true);
+    await runEditorialLoop({ ...none.args, policy: { ...onePass, maxRevisions: 0 } });
+    expect(none.released()).toBe(0);
+    // The default stop policy never releases.
+    const stop = cycleFixture(true);
+    await runEditorialLoop({
+      ...stop.args,
+      policy: { ...DEFAULT_EDITORIAL_POLICY, maxRevisions: 1 },
+    });
+    expect(stop.released()).toBe(0);
+    // A failed revision is an operational stop, never a release.
+    const failed = cycleFixture(true);
+    failed.stages.revise = async () => ({ failure: "writer-failed" });
+    await runEditorialLoop({ ...failed.args, policy: onePass });
+    expect(failed.released()).toBe(0);
+    expect(failed.saved()).toMatchObject({ terminal: "operational-stop" });
+  });
+});
