@@ -4,9 +4,11 @@ import {
   saveSourceContext,
   recordedSourceAttribution,
   readSourceContext,
+  type SourceContext,
 } from "../content/source-context.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
+import { sourceVersionFor } from "../content/fulltext-document.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseThemeProposalResult } from "../analysis/theme-proposals.js";
@@ -288,6 +290,56 @@ const ComparisonResultSchema = z.looseObject({
   ),
 });
 
+/**
+ * The source context a writer/verifier package should carry (#492).
+ *
+ * A resolved attribution — an explicit post byline or a configured source
+ * default — is authoritative. Reuse the upstream context only when it already
+ * records that same author, basis and configuration version; otherwise derive
+ * a new context so the package, writer and verifier see the configured
+ * identity. A changed attribution is a new derived identity, and the previous
+ * context and any draft bound to it stay readable.
+ */
+export async function resolvedSourceContext(input: {
+  content: GitArtifactStore;
+  capture: z.infer<typeof CollectionRecordSchema>;
+  sourceRef: ArtifactRef;
+  attribution?: PostAuthorResolution;
+  upstream?: ArtifactRef;
+}): Promise<ArtifactRef> {
+  if (input.attribution?.status === "resolved") {
+    if (input.upstream) {
+      const upstream = await readSourceContext(
+        input.content,
+        input.upstream,
+        input.sourceRef,
+        sourceVersionFor(input.capture.text),
+        {
+          publicationId: input.capture.item.publicationId,
+          postId: input.capture.item.postId,
+        },
+      );
+      const author = upstream.author;
+      const matches =
+        author.status === "resolved" &&
+        author.author === input.attribution.author &&
+        author.basis === input.attribution.basis &&
+        author.sourceMetadataVersion === input.attribution.sourceMetadataVersion;
+      if (matches) return input.upstream;
+    }
+    return saveSourceContext(
+      input.content,
+      sourceContextFor(input.capture, input.sourceRef, input.attribution),
+    );
+  }
+  // Unknown attribution never downgrades an existing context.
+  if (input.upstream) return input.upstream;
+  return saveSourceContext(
+    input.content,
+    sourceContextFor(input.capture, input.sourceRef, input.attribution),
+  );
+}
+
 export async function buildWriterPackage(input: {
   content: GitArtifactStore;
   /** Archive holding the source post; when given, the pinned source is verified too. */
@@ -337,9 +389,14 @@ export async function buildWriterPackage(input: {
   } = {};
   const sourceRef: ArtifactRef = { ...record.source, sha256: record.source.hash.slice(7) };
   const upstream = record.sourceContext ?? claims.sourceContext ?? themes.sourceContext;
+  // The upstream context can predate configured attribution (#492): it was
+  // written from a capture whose byline was ambiguous or absent. Keep it only
+  // when it already carries the resolved author; otherwise derive a new
+  // context so the package, writer and verifier see the configured identity.
+  let upstreamContext: SourceContext | undefined;
   if (upstream) {
     const context = toArtifactRef(upstream);
-    const pinned = await readSourceContext(
+    upstreamContext = await readSourceContext(
       input.content,
       context,
       sourceRef,
@@ -348,8 +405,8 @@ export async function buildWriterPackage(input: {
     );
     original = {
       context: toRefRecord(context),
-      originalUrl: pinned.source.url,
-      title: pinned.source.title,
+      originalUrl: upstreamContext.source.url,
+      title: upstreamContext.source.title,
     };
   }
   if (input.archive) {
@@ -361,22 +418,13 @@ export async function buildWriterPackage(input: {
       const attribution =
         input.resolveAuthor?.(captured.data.item) ??
         recordedSourceAttribution(claims.extraction.attribution);
-      let context: ArtifactRef;
-      if (upstream) {
-        context = toArtifactRef(upstream);
-        await readSourceContext(
-          input.content,
-          context,
-          sourceRef,
-          themes.sourceVersion,
-          captured.data.item,
-        );
-      } else {
-        context = await saveSourceContext(
-          input.content,
-          sourceContextFor(captured.data, sourceRef, attribution),
-        );
-      }
+      const context = await resolvedSourceContext({
+        content: input.content,
+        capture: captured.data,
+        sourceRef,
+        ...(attribution ? { attribution } : {}),
+        ...(upstream ? { upstream: toArtifactRef(upstream) } : {}),
+      });
       original = {
         context: toRefRecord(context),
         originalUrl: captured.data.item.url,
