@@ -375,6 +375,15 @@ export function claimOccurrenceJsonSchema(): Record<string, unknown> {
 /** Fields added after the first occurrence index version; applied additively to existing indices. */
 export const CLAIM_OCCURRENCE_MAPPING_ADDITIONS = {
   assertionKind: { type: "keyword" },
+  // Resolved post author projected into the index (#461).
+  publisher: {
+    type: "object",
+    properties: {
+      attributedAuthor: { type: "keyword" },
+      attributionBasis: { type: "keyword" },
+      sourceMetadataVersion: { type: "keyword" },
+    },
+  },
 } as const;
 
 export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
