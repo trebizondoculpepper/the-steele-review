@@ -53,7 +53,7 @@ Respond with a Markdown article that begins with a JSON header, exactly in this 
 
 The article body in ordinary Markdown.
 
-The first line must be exactly `---json`, the header is one JSON object, and the next line that is exactly `---` ends it. Everything after that line is the article body: write ordinary Markdown, not JSON, and do not repeat the title as a heading. Use only this subset, which the publisher can render: paragraphs, `#`, `##` and `###` headings, `> ` block quotes, `- ` bullet lists, `1. ` numbered lists, `*emphasis*`, `**strong**` and https links. Do not use code blocks, tables, horizontal rules, HTML or images.
+The first line must be exactly `---json`, the header is one JSON object, and the next line that is exactly `---` ends it. Everything after that line is the article body: write ordinary Markdown, not JSON, and do not repeat the title as a heading. Use only this subset, which the publisher can render: paragraphs, `#`, `##` and `###` headings, `> ` block quotes, `- ` bullet lists, `1. ` numbered lists, `*emphasis*`, `**strong**` and https links. Do not use code blocks, tables, horizontal rules, HTML or images. Keep short quotations (a phrase or a single sentence) inline in quotation marks. Set a longer quotation (several sentences or a full passage) as a `> ` block quote, starting every line of the quotation with `> ` and separating its paragraphs with a line that is just `>`. Keep the quoted words exact, and give the attribution and any source link in the sentence before or after the block, not inside it.
 
 `title` (at most 140 characters), `subtitle` (at most 280) and `excerpt` (at most 500) are your own short copy for the published post, each a single plain line with no Markdown.
 
