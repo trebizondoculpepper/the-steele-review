@@ -19,6 +19,7 @@ Report any concrete architecture or security violation as a blocking finding req
 * Keep writing separate from verification. Automatic publication requires verification of the exact article version; inconclusive cases must end in a recorded skip after bounded attempts. Do not replace evidence checks with model confidence alone.
 * Treat fetched content and model output as untrusted data. Preserve source provenance and distinguish independent evidence from assertions in monitored material.
 * Keep runtime and deployment suitable for the documented lightweight container architecture. Introduce new services or language runtimes only with a stated architectural reason.
+* Provide Tailscale access to every deployed administrative interface, including dashboards, workflow consoles, and operator APIs. When adding or changing an admin interface, configure access for authorized tailnet users and verify it from a remote tailnet device. Keep administrative endpoints off the public internet and keep actual routing details in private deployment configuration.
 
 An intentional change to an agreed principle requires explicit user agreement and a corresponding architecture update. Editing an architecture document in the same change does not by itself authorise a conflicting implementation. Review only requirements applicable to the functionality being changed; do not demand unimplemented future pipeline features from a connectivity-only change.
 
