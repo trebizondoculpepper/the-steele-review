@@ -1407,7 +1407,14 @@ export async function assessPostCoverage(input: {
         )
       : undefined;
     return {
-      ...(needs ? { canonicalNeeds: { version: "canonical-theme-needs-v1" as const, needs } } : {}),
+      ...(needs
+        ? {
+            canonicalNeeds: {
+              version: "canonical-theme-needs-v1" as const,
+              needs: needs.slice(0, MAX_CLAIMS_PER_REQUEST),
+            },
+          }
+        : {}),
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
       origin: canonical || targeted ? "theme" : "extraction",
       pass,
@@ -1415,18 +1422,18 @@ export async function assessPostCoverage(input: {
       ...(canonical || targeted ? {} : { post: postRefs }),
       ...boundedClaims(
         needs
-        ? needs.map((n) => ({
-            claimRecordId: canonicalNeedId(n),
-            statement: n.proposition.statement,
-            themeIds: [dossierId],
-          }))
-        : group
-            .flatMap((c) => c.extracted)
-            .map((e) => ({
-              claimRecordId: e.claimRecordId,
-              statement: e.statement,
+          ? needs.map((n) => ({
+              claimRecordId: canonicalNeedId(n),
+              statement: n.proposition.statement,
               themeIds: [dossierId],
-            })),
+            }))
+          : group
+              .flatMap((c) => c.extracted)
+              .map((e) => ({
+                claimRecordId: e.claimRecordId,
+                statement: e.statement,
+                themeIds: [dossierId],
+              })),
       ),
       question: canonical
         ? (question ?? CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId))
@@ -1713,7 +1720,7 @@ export async function assessPostCoverage(input: {
     }
     // 4. One targeted second pass for consequential, unsupported claims.
     await secondPass(dossierId, group, first, (followUp) =>
-      run(dossierId, followUp, 2, first.job.jobId),
+      run(dossierId, followUp, 2, first.job.jobId, false, canonicalMode ? question : undefined),
     );
   }
 
