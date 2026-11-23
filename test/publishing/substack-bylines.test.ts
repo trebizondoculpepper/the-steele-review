@@ -3,6 +3,16 @@ import { DraftSchema } from "../../src/publishing/substack/client.js";
 
 // Shapes as Substack's draft endpoint returned them live (#814), synthetic ids.
 describe("saved Substack bylines (#814)", () => {
+  it("reads the live entry shape: objects keyed by user_id", () => {
+    const live = DraftSchema.parse({
+      id: 6,
+      postBylines: [{ user_id: 42, is_draft: false, is_guest: false, user: { id: 42 } }],
+    });
+    expect(live.draft_bylines).toEqual([{ id: "42" }]);
+    // An entry of an unexpected shape is skipped, never a read-back failure.
+    expect(DraftSchema.parse({ id: 8, postBylines: [{ x: 1 }, null] }).draft_bylines).toEqual([]);
+  });
+
   it("reads bylines from postBylines, where Substack reports them", () => {
     const explicit = DraftSchema.parse({ id: 1, postBylines: [42] });
     expect(explicit.draft_bylines).toEqual([{ id: "42" }]);
