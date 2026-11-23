@@ -223,3 +223,14 @@ docker compose -p steele-fixture -f deploy/restate/fixture.compose.yaml run --rm
 The stack provisions its own broker and archives and registers the fixture
 worker. Keep the fixture data and the run's output for inspection. The
 Compose network is internal and exposes no host ports.
+
+## Restate execution UI access (#771, #792)
+
+Restate's bundled UI is served by the admin API, which stays bound to loopback on the host. Operators reach it through small forwarders that bind specific interfaces and forward to the loopback admin port. The deployment doesn't expose the admin port directly.
+
+- **LAN:** a forwarder bound to the host's LAN address only.
+- **Remote, for authorised users:** a forwarder bound to the host's Tailscale address only, so the tailnet's access controls decide who can reach it. Tailscale Serve (HTTPS on the tailnet) is the preferred alternative once it's enabled for the tailnet; enabling it is an owner action in the Tailscale admin console.
+- **Not public:** neither forwarder binds a wildcard or public address.
+- **No restart needed:** adding or removing a forwarder doesn't restart Restate.
+
+The UI and its API can cancel and restart invocations, and they have no login of their own. Anyone the network allows to reach a forwarder can use them, so never bind one beyond the LAN or the tailnet. Actual addresses and ports are kept in private infrastructure notes, not in this repository.
