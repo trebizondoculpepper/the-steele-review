@@ -383,7 +383,7 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
     );
   });
 
-  it("splits a dossier's claims into requests of at most 100", async () => {
+  it("sends one bounded request per theme and records the omitted claims (#533)", async () => {
     const many = Array.from({ length: 150 }, (_, i) => ({
       id: `claim-${String(i).padStart(3, "0")}`,
       statement: `Claim number ${i}`,
@@ -396,7 +396,10 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
-    expect(r.requests.map((q) => q.claims.length)).toEqual([100, 50]);
+    // One request for the theme, never a fan-out over the claim set.
+    expect(r.requests.map((q) => q.claims.length)).toEqual([12]);
+    expect(r.requests[0]!.claims[0]!.claimRecordId).toMatch(/claim-000$/);
+    expect(r.requests[0]!.omittedClaimRecordIds).toHaveLength(138);
   }, 60_000);
 
   it("refuses a claim result extracted against a different theme result", async () => {
