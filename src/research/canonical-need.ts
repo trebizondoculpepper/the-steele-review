@@ -128,8 +128,14 @@ export function canonicalNeed(input: {
     equal(fullOccurrence.data.qualifiers, fullClaim.data.qualifiers) &&
     equal(fullOccurrence.data.assertionDates, fullClaim.data.dates) &&
     equal(fullOccurrence.data.extraction, fullClaim.data.extraction);
+  const semanticScope =
+    fullClaim.success &&
+    (fullClaim.data.entities.length > 0 ||
+      fullClaim.data.dates.some((date) => !!date.value) ||
+      !!attributed);
   const contextual =
     !accepted ||
+    !semanticScope ||
     speaker?.kind === "unknown" ||
     speaker?.kind === "uncertain" ||
     candidateReasons(input.kind, [input.themeId], statement).length > 0 ||

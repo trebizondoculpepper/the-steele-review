@@ -439,6 +439,7 @@ export type Commission = (request: ResearchRequest) => Promise<CommissionedJob>;
 
 /** Question template for targeted enhancement of a researched theme (#658). */
 const THEME_ENHANCEMENT = loadPromptFile("research", "theme-enhancement-v1");
+const CANONICAL_RESEARCH = loadPromptFile("research", "canonical-need-v1");
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
   commit: r.commit,
@@ -654,12 +655,18 @@ export function mergeCoverage(
 
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
 type RequestPlanEntry =
-  | { mode: "full" }
+  | { mode: "full"; question?: string; promptVersion?: string }
   | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
 const RequestPlanEntries = z.record(
   z.string(),
   z.union([
-    z.object({ mode: z.literal("full") }).strict(),
+    z
+      .object({
+        mode: z.literal("full"),
+        question: z.string().min(1).max(4000).optional(),
+        promptVersion: z.string().min(1).max(200).optional(),
+      })
+      .strict(),
     z
       .object({
         mode: z.literal("targeted"),
@@ -1400,35 +1407,44 @@ export async function assessPostCoverage(input: {
         )
       : undefined;
     return {
-      ...(needs ? { canonicalNeeds: { version: "canonical-theme-needs-v1" as const, needs: needs.slice(0, MAX_CLAIMS_PER_REQUEST) } } : {}),
+      ...(needs
+        ? {
+            canonicalNeeds: {
+              version: "canonical-theme-needs-v1" as const,
+              needs: needs.slice(0, MAX_CLAIMS_PER_REQUEST),
+            },
+          }
+        : {}),
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
-      origin: targeted ? "theme" : "extraction",
+      origin: canonical || targeted ? "theme" : "extraction",
       pass,
       ...(previousJobId ? { previousJobId } : {}),
-      ...(targeted ? {} : { post: postRefs }),
+      ...(canonical || targeted ? {} : { post: postRefs }),
       ...boundedClaims(
         needs
-        ? needs.map((n) => ({
-            claimRecordId: canonicalNeedId(n),
-            statement: n.proposition.statement,
-            themeIds: [dossierId],
-          }))
-        : group
-            .flatMap((c) => c.extracted)
-            .map((e) => ({
-              claimRecordId: e.claimRecordId,
-              statement: e.statement,
+          ? needs.map((n) => ({
+              claimRecordId: canonicalNeedId(n),
+              statement: n.proposition.statement,
               themeIds: [dossierId],
-            })),
+            }))
+          : group
+              .flatMap((c) => c.extracted)
+              .map((e) => ({
+                claimRecordId: e.claimRecordId,
+                statement: e.statement,
+                themeIds: [dossierId],
+              })),
       ),
-      question: targeted
-        ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
-        : pass === 1
-          ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
-          : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
-      // Request identity depends only on the saved analysis and claims, never on
-      // the dossier version this run may itself revise, so reassessing the same
-      // analysis reuses the same job instead of commissioning new research.
+      question: canonical
+        ? (question ?? CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId))
+        : targeted
+          ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
+          : pass === 1
+            ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
+            : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
+      // Canonical execution contains only semantic needs and a pinned topic
+      // question; the separate binding owns per-analysis provenance. Legacy
+      // requests retain their original post/analysis payload and identity.
       corpusRefs: [],
     };
   }
@@ -1519,7 +1535,11 @@ export async function assessPostCoverage(input: {
     // IDs differ: its covered claims are reused above, and only the claims
     // that still need evidence get bounded, targeted requests.
     const saved = existing.get(dossierId);
-    const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
+    const sortedAll = [...all].sort((a, b) =>
+      canonicalMode && a.need && b.need
+        ? canonicalNeedId(a.need).localeCompare(canonicalNeedId(b.need))
+        : a.key.localeCompare(b.key),
+    );
     const fullRequestedBefore = chunks(sortedAll).some((g) =>
       priorJobIds.has(researchJobId(buildRequest(dossierId, g, 1, undefined, false))),
     );
@@ -1535,11 +1555,22 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
-        question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
-        promptVersion: THEME_ENHANCEMENT.version,
+        question: (canonicalMode ? CANONICAL_RESEARCH : THEME_ENHANCEMENT).instructions.replaceAll(
+          "{{theme}}",
+          dossierId,
+        ),
+        promptVersion: (canonicalMode ? CANONICAL_RESEARCH : THEME_ENHANCEMENT).version,
       });
     } else {
-      planned.set(dossierId, { mode: "full" });
+      planned.set(dossierId, {
+        mode: "full",
+        ...(canonicalMode
+          ? {
+              question: CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId),
+              promptVersion: CANONICAL_RESEARCH.version,
+            }
+          : {}),
+      });
     }
   }
   const plan = await retainedPlan(
@@ -1575,8 +1606,12 @@ export async function assessPostCoverage(input: {
         if (group.length > 0) await enhanceGroup(dossierId, group, entry.question);
       }
     } else {
-      const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
-      for (const g of chunks(sortedAll)) await assessGroup(dossierId, g);
+      const sortedAll = [...all].sort((a, b) =>
+        canonicalMode && a.need && b.need
+          ? canonicalNeedId(a.need).localeCompare(canonicalNeedId(b.need))
+          : a.key.localeCompare(b.key),
+      );
+      for (const g of chunks(sortedAll)) await assessGroup(dossierId, g, entry.question);
     }
   }
 
@@ -1668,8 +1703,8 @@ export async function assessPostCoverage(input: {
     }
   }
 
-  async function assessGroup(dossierId: string, group: AcceptedClaim[]) {
-    const first = await run(dossierId, group, 1);
+  async function assessGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+    const first = await run(dossierId, group, 1, undefined, false, question);
     for (const claim of group) {
       if (outcomes.get(claim.key)?.reused) continue;
       const a = first.assessed.get(claim.key)!;
@@ -1685,7 +1720,7 @@ export async function assessPostCoverage(input: {
     }
     // 4. One targeted second pass for consequential, unsupported claims.
     await secondPass(dossierId, group, first, (followUp) =>
-      run(dossierId, followUp, 2, first.job.jobId),
+      run(dossierId, followUp, 2, first.job.jobId, false, canonicalMode ? question : undefined),
     );
   }
 
