@@ -710,12 +710,30 @@ export async function extractGroundedClaims(input: {
 
   let indexed = 0;
   if (input.index) {
+    // The resolved post author, from the saved extraction's own attribution
+    // (#461): byline first, else the configured source default. Projected
+    // into the index only; the stored occurrence keeps the observed byline.
+    const recorded = recordedSourceAttribution(record.extraction.attribution);
+    const resolved = recorded?.status === "resolved" ? recorded : undefined;
     for (const c of record.claims) {
       const occ = c.occurrence as ClaimOccurrence;
+      const doc: ClaimOccurrence = resolved
+        ? {
+            ...occ,
+            publisher: {
+              ...occ.publisher,
+              attributedAuthor: resolved.author,
+              attributionBasis: resolved.basis,
+              ...(resolved.sourceMetadataVersion
+                ? { sourceMetadataVersion: resolved.sourceMetadataVersion }
+                : {}),
+            },
+          }
+        : occ;
       await input.index.indexDocument(
         input.indexName ?? CLAIM_OCCURRENCE_INDEX_V1,
         occ.occurrenceId,
-        occ,
+        doc,
       );
       indexed++;
     }
