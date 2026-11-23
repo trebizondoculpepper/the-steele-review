@@ -167,3 +167,38 @@ it("normal retries select the recorded live or historical contract by its hash",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it("retries a request recorded before the default research limit (#533)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "default-limit-"));
+  const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+  try {
+    // Recorded before #533: no limit, so the whole plan.
+    const { researchRequestLimit: _l, ...unlimited } = input;
+    const old = recordNormalArticleAttempt(operations, unlimited, "pre-default");
+    const defaulted = {
+      ...input,
+      researchRequestLimit: 2,
+      researchSelection: "allowance-v1" as const,
+      researchFollowUp: "one-round-v1" as const,
+    };
+    // A retry that only defaulted the limit attaches to the recorded attempt.
+    expect(
+      recordNormalArticleAttempt(operations, defaulted, "pre-default", {
+        defaultedResearchLimit: true,
+      }),
+    ).toEqual(old);
+    // An explicitly given limit is never silently dropped.
+    expect(() => recordNormalArticleAttempt(operations, defaulted, "pre-default")).toThrow(
+      "input-mismatch",
+    );
+    // A new request records the defaulted limit.
+    expect(
+      recordNormalArticleAttempt(operations, defaulted, "post-default", {
+        defaultedResearchLimit: true,
+      }).input.researchRequestLimit,
+    ).toBe(2);
+  } finally {
+    operations.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

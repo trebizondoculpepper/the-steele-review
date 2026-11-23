@@ -218,6 +218,7 @@ async function main(): Promise<number> {
         });
       }
       const recorded = recordNormalArticleAttempt(operations, input, values["request-id"], {
+        defaultedResearchLimit: requestLimit.data === undefined && !retainedResearchJobIds,
         legacyOverrides:
           values["editorial-revisions"] !== undefined ||
           values["editorial-deadline-ms"] !== undefined,
