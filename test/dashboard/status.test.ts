@@ -2,6 +2,7 @@ import type { AddressInfo } from "node:net";
 import { createDashboardServer } from "../../src/dashboard/server.js";
 import { describe, expect, it } from "vite-plus/test";
 import { statusView, type StatusSnapshot, type StatusSource } from "../../src/dashboard/status.js";
+import { restateUiLinks } from "../../src/dashboard/restate-links.js";
 
 const snapshot = (over: Partial<StatusSnapshot> = {}): StatusSnapshot => ({
   observedAt: "2026-01-01T10:00:00.000Z",
@@ -31,6 +32,27 @@ const render = async (value: StatusSnapshot | Error) => {
 };
 
 describe("statusView", () => {
+  it("shows one Open Restate Console link only from a valid private base (#816)", async () => {
+    const url = new URL("http://dashboard.test/overview");
+    // Synthetic address only.
+    const home = restateUiLinks("http://console.example.test:9071/ui")!.home;
+    const html = await statusView(source(snapshot()), { consoleUrl: home }).render(url);
+    expect(html).toContain(
+      '<a href="http://console.example.test:9071/ui/" target="_blank" rel="noopener noreferrer">Open Restate Console</a>',
+    );
+    expect(html.match(/Open Restate Console/g)).toHaveLength(1);
+    // Absent configuration: no link.
+    expect(await statusView(source(snapshot())).render(url)).not.toContain("Restate Console");
+    // Invalid bases never become a link.
+    for (const bad of [
+      "javascript:alert(1)",
+      "http://u:p@x.test/",
+      "http://x.test/?q=1",
+      "not a url",
+    ])
+      expect(restateUiLinks(bad)).toBeUndefined();
+  });
+
   it("shows every check with its state and the observation time", async () => {
     const html = await render(snapshot());
     expect(html).toContain("Observed at");

@@ -60,7 +60,17 @@ const badge = (state: string) =>
 const time = (iso?: string) =>
   iso ? `<code>${escapeHtml(iso)}</code>` : '<span class="empty">never</span>';
 
-export function statusView(source: StatusSource): DashboardView {
+export function statusView(
+  source: StatusSource,
+  /**
+   * The validated Restate Console home (#816), from private configuration.
+   * Omitted when absent or invalid; the link only opens the existing UI.
+   */
+  options: { consoleUrl?: string } = {},
+): DashboardView {
+  const consoleLink = options.consoleUrl
+    ? `<p><a href="${escapeHtml(options.consoleUrl)}" target="_blank" rel="noopener noreferrer">Open Restate Console</a></p>\n`
+    : "";
   return {
     path: "/overview",
     title: "Overview",
@@ -96,7 +106,7 @@ export function statusView(source: StatusSource): DashboardView {
         snapshot.feedPoll.at === undefined
           ? badge(snapshot.feedPoll.state)
           : `${badge(snapshot.feedPoll.state)} last poll ${time(snapshot.feedPoll.at)}`;
-      return `<p>Observed at ${time(snapshot.observedAt)}. Each source is independent: a failure in one does not hide another.</p>
+      return `${consoleLink}<p>Observed at ${time(snapshot.observedAt)}. Each source is independent: a failure in one does not hide another.</p>
 <h2>Services</h2>
 <div class="wrap"><table><thead><tr><th>Component</th><th>Check</th></tr></thead><tbody>${services}</tbody></table></div>
 <h2>Pipeline</h2>
