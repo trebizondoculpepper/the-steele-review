@@ -45,7 +45,7 @@ export interface SubstackClientConfig {
 
 const Id = z.union([z.number().int(), z.string().regex(/^[0-9]+$/)]).transform(String);
 
-export const DraftSchema = z.looseObject({
+const DraftShape = z.looseObject({
   id: Id,
   draft_title: z.string().nullable().optional(),
   draft_body: z.string().nullable().optional(),
@@ -57,6 +57,24 @@ export const DraftSchema = z.looseObject({
     .array(z.looseObject({ id: Id.optional(), name: z.string().optional() }))
     .nullable()
     .optional(),
+  /**
+   * Where the draft endpoint actually reports saved bylines (#814): an array
+   * of user ids (or objects with an id). Folded into `draft_bylines` below.
+   */
+  postBylines: z
+    .array(z.union([Id, z.looseObject({ id: Id })]))
+    .nullable()
+    .optional(),
+});
+/**
+ * A draft as read back. Substack reports saved bylines as `postBylines`, not
+ * `draft_bylines` (verified live, #814), so read-back byline checks use
+ * `postBylines` when present and fall back to `draft_bylines` otherwise.
+ */
+export const DraftSchema = DraftShape.transform((d) => {
+  if (!d.postBylines) return d;
+  const ids = d.postBylines.map((b) => (typeof b === "string" ? b : b.id));
+  return { ...d, draft_bylines: ids.map((id) => ({ id })) } as typeof d;
 });
 export type SubstackDraft = z.infer<typeof DraftSchema>;
 

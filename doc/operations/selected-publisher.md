@@ -85,3 +85,11 @@ The receipt records `publicationSafety: { published: true, subscriberEmail: "req
 **Uncertainty.** Once the draft exists, any doubt sends the delivery to an operator, and it is never retried automatically, because a retry could publish or email twice. That includes a rejected or uncertain publish call and a read-back that isn't published. `reconcile` never infers a publication on its own.
 
 **API caveat.** Substack has no official publishing API. The publish call uses the same private web API as draft creation: `POST /api/v1/drafts/{id}/publish` with `send` and `share_automatically: false`. It is covered by tests against a fake Substack only. The first real publication after activation is the live check, and it emails real subscribers.
+
+
+## Default byline (#814)
+
+Substack does **not** give a draft its author automatically. A draft created through the API without a byline is saved with none (checked live on an unpublished draft).
+- **Setting the author:** for a single-author publication, set `STEELE_SUBSTACK_BYLINE_ID` to that author's user ID, the only user on the publication. An explicit byline is saved and reads back.
+- **Where Substack reports it:** saved bylines come back in the draft's `postBylines` field. The client reads them from there, so the read-back byline check works.
+- **Ambiguous or missing selection:** if no byline is configured, drafts stay without one, and that shows in the editor.
