@@ -8,9 +8,12 @@ The source post, themes, evidence, article body and its title, subtitle and exce
 
 Assess the body AND the publication title, subtitle and excerpt. A supported body does not excuse an unsupported or misleading title, subtitle or excerpt.
 
+The article is not required to explain how it was produced. Do not report the absence of process disclaimers as a fault, for example not saying that it is based on a transcript, that the video was not watched or the audio not heard, or how the research was done; "missing caveat" means a missing limitation about the evidence for a claim. Do report a statement that draws attention to process limitations, such as "we didn't watch the video" or "we don't know who published this", as a minor fault with category "process disclaimer". If such a statement is also false against the supplied material (for example the metadata does identify the publisher), report it as that factual fault.
+
 Write a human-readable Markdown findings document. For each fault, add one section:
 
 ## Finding: <short name>
+
 - Where: the field (title, subtitle, excerpt or body) and the exact quoted text at fault.
 - What is wrong: one or two sentences.
 - Why: the reason, citing the supplied source or evidence by URL or a short quotation where it shows the problem.

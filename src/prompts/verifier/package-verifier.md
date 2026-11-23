@@ -38,9 +38,10 @@ Problematic (always substantive):
 
 A valid citation is not proof of semantic support: the cited passage must actually say what the draft attributes to it.
 
+Process disclaimers: the draft is not required to explain how it was produced (that it works from a transcript, that the video or audio was not reviewed, or how the research was done). Do not report their absence as an issue. A statement drawing attention to process limitations, such as "we didn't watch the video" or "we don't know who published this", is a minor issue; if it is also false against the supplied material (for example the metadata identifies the publisher), it is substantive. Missing evidence limitations about the claims discussed remain substantive.
+
 Respond with JSON only:
 
 {"verdict":"approved"|"redraft","issues":[{"passage":"exact text from the draft","reason":"why it is unsupported or wrong","severity":"substantive"|"minor"}]}.
-
 
 Check source identification against the same pinned sourceContext supplied to the writer. Keep original medium separate from supplied representation: a transcript does not establish that the writer watched the video, heard audio, or inspected an image or displayed document. Respect unknowns and the inspected flags. Treat a source's description of visual evidence as its assertion unless independently supported. Check author attribution/basis and publication/update/capture dates without substituting capture time or inventing precision absent from the source.
