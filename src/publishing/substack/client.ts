@@ -190,4 +190,20 @@ export class SubstackClient {
     if (!parsed.success) throw new SubstackError("invalid-response");
     return parsed.data;
   }
+
+  /**
+   * Publish an existing draft (#789), sending it to subscribers by email when
+   * `send` is true. Private web API, like the rest of this client. A
+   * non-definitive response is `uncertain`: the post may be live.
+   */
+  async publishDraft(id: string, options: { send: boolean }, signal?: AbortSignal): Promise<void> {
+    if (!/^[0-9]+$/.test(id)) throw new Error("invalid draft id");
+    await this.request(
+      "POST",
+      `/api/v1/drafts/${id}/publish`,
+      { send: options.send, share_automatically: false },
+      signal,
+      true,
+    );
+  }
 }

@@ -162,6 +162,11 @@ export const DeliveryReceiptSchema = z
       .object({ unpublished: z.literal(true), emailTimestampAbsent: z.literal(true) })
       .strict()
       .optional(),
+    /** Live publication evidence (#789): read back as published, email requested. */
+    publicationSafety: z
+      .object({ published: z.literal(true), subscriberEmail: z.literal("requested") })
+      .strict()
+      .optional(),
     approval: ArtifactReferenceSchema.optional(),
     assessment: ArtifactReferenceSchema.optional(),
     draftHash: z
@@ -213,6 +218,12 @@ export interface ReconcileContext {
 export interface DestinationAdapter {
   readonly name: string;
   readonly action: string;
+  /**
+   * Optional eligibility (#789): an approval this adapter must never act on,
+   * for example one approved before a live-publication cutoff, is ended as
+   * `not-eligible` before anything is read, rendered or sent.
+   */
+  eligible?(data: ArticleApprovedData): boolean;
   /** Absent by default. Only a narrowly implemented draft-only adapter opts in. */
   readonly draftTarget?: DraftTarget;
   /** Opt in only when render consumes the exact structured fields without substitutions. */
@@ -265,7 +276,10 @@ export type DeliveryDecision =
         | "rate-limited"
         | "unavailable";
     }
-  | { action: "term"; reason: "invalid-event" | "approval-mismatch" | "exhausted" };
+  | {
+      action: "term";
+      reason: "invalid-event" | "approval-mismatch" | "exhausted" | "not-eligible";
+    };
 
 const DeliveryIntentSchema = z.looseObject({
   key: z.string().min(1),
@@ -487,6 +501,8 @@ async function deliverApprovedArticle(
   event: ReturnType<typeof parseArticleApprovedEvent>,
   now: Date,
 ): Promise<DeliveryDecision> {
+  if (input.destination.eligible && !input.destination.eligible(event))
+    return { action: "term", reason: "not-eligible" };
   // Independent schedule per destination.
   const due = Date.parse(event.approvedAt) + input.schedule.delayMs;
   if (now.getTime() < due)

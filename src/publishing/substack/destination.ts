@@ -374,3 +374,84 @@ export class SubstackDraftDestination implements DestinationAdapter {
 /** Stable digest of a preview, for logs and tests (never the body itself). */
 export const previewDigest = (preview: DestinationPreview) =>
   `sha256:${createHash("sha256").update(preview.body).digest("hex")}`;
+
+/**
+ * Live Substack publication with subscriber email (#789).
+ *
+ * Owner decision: future approved posts are published automatically and sent
+ * to subscribers. Approvals before the configured activation time (the
+ * existing backlog) and owner draft rehearsals are not eligible and are never
+ * touched. For an eligible approval, `deliver` first creates and verifies the
+ * draft exactly as the draft destination does, then publishes it with email
+ * and reads it back as published. Once the draft exists, any doubt (an
+ * uncertain publish, a read-back that is not published) is an uncertain
+ * delivery for an operator, never a retry: a retry could publish or email
+ * twice. `reconcile` therefore never claims a publication on its own.
+ */
+export class SubstackPublishDestination implements DestinationAdapter {
+  readonly name: string;
+  readonly action = "publish";
+  readonly supportsPublicationPayload = true;
+  private readonly draft: SubstackDraftDestination;
+  private readonly publishFrom: number;
+
+  constructor(
+    private readonly client: Pick<
+      SubstackClient,
+      "createDraft" | "getDraft" | "listDrafts" | "publishDraft"
+    >,
+    options: Omit<SubstackDestinationOptions, "deliveryControl"> & {
+      /** Only approvals at or after this instant are published (ISO 8601). */
+      publishFrom: string;
+    },
+  ) {
+    const from = Date.parse(options.publishFrom);
+    if (!Number.isFinite(from)) throw new Error("substack: invalid publish activation time");
+    this.publishFrom = from;
+    this.name = options.name ?? "substack";
+    this.draft = new SubstackDraftDestination(client, options);
+  }
+
+  eligible(data: ArticleApprovedData): boolean {
+    return (
+      data.approvalKind !== "owner-draft-rehearsal" &&
+      Date.parse(data.approvedAt) >= this.publishFrom
+    );
+  }
+
+  render(article: Parameters<DestinationAdapter["render"]>[0]): DestinationPreview {
+    if (!this.eligible(article.data)) throw new Error("substack: approval not eligible to publish");
+    return this.draft.render(article);
+  }
+
+  async deliver(preview: DestinationPreview, key: string) {
+    if (preview.draftAuthorization) throw new Error("substack: drafts are never published");
+    const created = await this.draft.deliver(preview, key);
+    const id = created.externalId!;
+    try {
+      await this.client.publishDraft(id, { send: true });
+    } catch {
+      // The draft exists. Whether the publish was rejected or its outcome is
+      // unknown, nothing is retried automatically: an operator decides.
+      throw new UncertainDeliveryError();
+    }
+    let stored: SubstackDraft;
+    try {
+      stored = await this.client.getDraft(id);
+    } catch {
+      throw new UncertainDeliveryError();
+    }
+    if (stored.is_published !== true) throw new UncertainDeliveryError();
+    return {
+      simulated: false,
+      externalId: id,
+      deliveredAt: new Date().toISOString(),
+      publicationSafety: { published: true as const, subscriberEmail: "requested" as const },
+    };
+  }
+
+  async reconcile(): Promise<"unknown"> {
+    // Never infer a publication or an email from a listing: an operator decides.
+    return "unknown";
+  }
+}

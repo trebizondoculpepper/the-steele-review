@@ -17,7 +17,10 @@ import {
   SubstackError,
   type SubstackDraft,
 } from "../../src/publishing/substack/client.js";
-import { SubstackDraftDestination } from "../../src/publishing/substack/destination.js";
+import {
+  SubstackDraftDestination,
+  SubstackPublishDestination,
+} from "../../src/publishing/substack/destination.js";
 import { ArtifactStoreError } from "../../src/controllers/artifact-store.js";
 import {
   UnsupportedMarkdownError,
@@ -218,6 +221,7 @@ function fakeSubstack() {
     list?: SubstackError[];
     create?: Array<SubstackError | "lost">;
     get?: SubstackError[];
+    publish?: Array<SubstackError | "lost">;
   } = {};
   const api = {
     drafts,
@@ -246,6 +250,16 @@ function fakeSubstack() {
       const f = faults.get?.shift();
       if (f) throw f;
       return drafts.find((d) => d.id === id)!;
+    },
+    published: [] as Array<{ id: string; send: boolean }>,
+    async publishDraft(id: string, options: { send: boolean }) {
+      const f = faults.publish?.shift();
+      if (f instanceof SubstackError) throw f;
+      api.published.push({ id, send: options.send });
+      const d = drafts.find((x) => x.id === id)!;
+      d.is_published = true;
+      if (options.send) d.email_sent_at = new Date().toISOString();
+      if (f === "lost") throw new SubstackError("uncertain");
     },
   };
   return api;
@@ -283,7 +297,10 @@ describe("Substack draft destination (#385)", () => {
       metadata: ref,
       body: ref,
       fields,
-      contentHash: publicationContentHash({ ...bodyOnly, ...{ mode: "structured" as const, fields } }),
+      contentHash: publicationContentHash({
+        ...bodyOnly,
+        ...{ mode: "structured" as const, fields },
+      }),
     };
     const preview = JSON.parse(
       d.render({ markdown: WRITER_MARKDOWN, data, publication: payload }).body,
@@ -313,9 +330,7 @@ describe("Substack draft destination (#385)", () => {
       },
       contentHash: `sha256:${"c".repeat(64)}`,
     };
-    const preview = JSON.parse(
-      d.render({ markdown: WRITER_MARKDOWN, data, publication }).body,
-    );
+    const preview = JSON.parse(d.render({ markdown: WRITER_MARKDOWN, data, publication }).body);
     expect(preview.subtitle).toBe("");
     expect(preview.title.length).toBeGreaterThan(0);
   });
@@ -482,6 +497,77 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+describe("Substack live publication with subscriber email (#789)", () => {
+  const FROM = "2026-11-23T12:00:00.000Z";
+  const fresh = {
+    publicationId: "pub",
+    postId: "a-post",
+    approvedAt: "2026-11-23T12:05:00.000Z",
+  } as never;
+  const backlog = {
+    publicationId: "pub",
+    postId: "old",
+    approvedAt: "2026-11-22T09:00:00.000Z",
+  } as never;
+  const rehearsal = {
+    publicationId: "pub",
+    postId: "facial",
+    approvedAt: "2026-11-23T13:00:00.000Z",
+    approvalKind: "owner-draft-rehearsal",
+  } as never;
+
+  it("publishes an eligible new approval with subscriber email and reads it back", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackPublishDestination(s, { publishFrom: FROM });
+    expect(d.action).toBe("publish");
+    const receipt = await d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k");
+    expect(s.published).toEqual([{ id: "100", send: true }]);
+    expect(receipt).toMatchObject({
+      simulated: false,
+      externalId: "100",
+      publicationSafety: { published: true, subscriberEmail: "requested" },
+    });
+  });
+
+  it("never touches the backlog or owner draft rehearsals", () => {
+    const s = fakeSubstack();
+    const d = new SubstackPublishDestination(s, { publishFrom: FROM });
+    expect(d.eligible(backlog)).toBe(false);
+    expect(d.eligible(rehearsal)).toBe(false);
+    expect(d.eligible(fresh)).toBe(true);
+    expect(() => d.render({ markdown: WRITER_MARKDOWN, data: backlog })).toThrow();
+    expect(s.drafts).toHaveLength(0);
+    expect(s.published).toHaveLength(0);
+    expect(() => new SubstackPublishDestination(s, { publishFrom: "not a time" })).toThrow();
+  });
+
+  it("sends any doubt after the draft exists to an operator, never retrying", async () => {
+    for (const fault of [
+      new SubstackError("uncertain"),
+      new SubstackError("rate-limited", 429),
+      "lost",
+    ] as const) {
+      const s = fakeSubstack();
+      s.faults.publish = [fault];
+      const d = new SubstackPublishDestination(s, { publishFrom: FROM });
+      await expect(
+        d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),
+      ).rejects.toBeInstanceOf(UncertainDeliveryError);
+      expect(s.drafts).toHaveLength(1);
+    }
+    // A read-back that is not published is uncertain too.
+    const s = fakeSubstack();
+    const d = new SubstackPublishDestination(
+      { ...s, publishDraft: async () => undefined },
+      { publishFrom: FROM },
+    );
+    await expect(
+      d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),
+    ).rejects.toBeInstanceOf(UncertainDeliveryError);
+    expect(await d.reconcile()).toBe("unknown");
+  });
+});
+
 describe("Substack through the approved-article handler (#385)", { timeout: 60_000 }, () => {
   async function approvedPayload() {
     await recordApproval({
@@ -501,6 +587,26 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
       owner: "t",
       retryDelayMs: 1,
     });
+
+  it("ends a backlog approval as not eligible before anything is sent (#789)", async () => {
+    const payload = await approvedPayload();
+    const s = fakeSubstack();
+    // The cutoff is after this approval: it is backlog.
+    const d = new SubstackPublishDestination(s, { publishFrom: "2999-01-01T00:00:00.000Z" });
+    expect(
+      await handleApprovedArticle({
+        payload,
+        destination: d,
+        schedule: { delayMs: 0 },
+        content,
+        operations,
+        owner: "t",
+        retryDelayMs: 1,
+      }),
+    ).toEqual({ action: "term", reason: "not-eligible" });
+    expect(s.drafts).toHaveLength(0);
+    expect(s.published).toHaveLength(0);
+  });
 
   it("waits on an expired session without exhausting the approval, then delivers once", async () => {
     const payload = await approvedPayload();
@@ -566,7 +672,9 @@ describe("Substack through the approved-article handler (#385)", { timeout: 60_0
     expect(out).toMatchObject({ action: "nak", reason: "retry" });
     expect(s.drafts).toHaveLength(0);
     // The approval is still deliverable once storage recovers.
-    expect(await handle(payload, new SubstackDraftDestination(s, { bylineId: "42" }))).toMatchObject({
+    expect(
+      await handle(payload, new SubstackDraftDestination(s, { bylineId: "42" })),
+    ).toMatchObject({
       action: "ack",
       outcome: "delivered",
     });

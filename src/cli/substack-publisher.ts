@@ -20,7 +20,10 @@ import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configu
  *   STEELE_STATE_PATH                                SQLite state (delivery claims)
  *   STEELE_SUBSTACK_ORIGIN                           https://<publication>.substack.com (private)
  *   STEELE_SUBSTACK_SESSION_FILE                     file holding the substack.sid value (private)
- *   STEELE_SUBSTACK_DELIVERY?                        "live" to deliver; anything else stays off
+ *   STEELE_SUBSTACK_DELIVERY?                        "live" for drafts; "publish-with-email" to publish
+ *                                                    and email subscribers (#789); anything else stays off
+ *   STEELE_SUBSTACK_PUBLISH_FROM?                    required with publish-with-email: only approvals at
+ *                                                    or after this ISO time are published (no backlog)
  *   STEELE_SUBSTACK_BYLINE_ID?                       explicit destination byline id (digits)
  *   STEELE_PUBLISHER_DESTINATION?                    default substack
  *   STEELE_PUBLISHER_CONSUMER?                       default steele-publisher-substack
@@ -40,7 +43,10 @@ import { OperationStore } from "../controllers/operation-store.js";
 import { PUBLICATION_STREAM } from "../events/article-approved-event.js";
 import { runPublisherService } from "../publishing/publisher-service.js";
 import { SubstackClient } from "../publishing/substack/client.js";
-import { SubstackDraftDestination } from "../publishing/substack/destination.js";
+import {
+  SubstackDraftDestination,
+  SubstackPublishDestination,
+} from "../publishing/substack/destination.js";
 
 export const SUBSTACK_CONSUMER = "steele-publisher-substack";
 
@@ -51,6 +57,7 @@ const EnvSchema = z.object({
   STEELE_SUBSTACK_ORIGIN: z.url({ protocol: /^https$/ }),
   STEELE_SUBSTACK_SESSION_FILE: z.string().min(1),
   STEELE_SUBSTACK_DELIVERY: z.string().optional(),
+  STEELE_SUBSTACK_PUBLISH_FROM: z.iso.datetime({ offset: true }).optional(),
   STEELE_SUBSTACK_BYLINE_ID: z
     .string()
     .regex(/^[0-9]+$/)
@@ -102,7 +109,13 @@ async function main(): Promise<number> {
   process.once("SIGTERM", () => abort.abort());
   process.once("SIGINT", () => abort.abort());
 
-  if (c.STEELE_SUBSTACK_DELIVERY !== "live") {
+  const publishing = c.STEELE_SUBSTACK_DELIVERY === "publish-with-email";
+  if (publishing && !c.STEELE_SUBSTACK_PUBLISH_FROM) {
+    // Never publish without an explicit cutoff: the backlog must stay out.
+    console.error("substack-publisher: publish-with-email needs STEELE_SUBSTACK_PUBLISH_FROM");
+    return 2;
+  }
+  if (c.STEELE_SUBSTACK_DELIVERY !== "live" && !publishing) {
     // Ready but not delivering: approvals stay queued for this consumer.
     log({ state: "ready", delivery: "off" });
     await sleep(2 ** 31 - 1, undefined, { signal: abort.signal }).catch(() => undefined);
@@ -131,11 +144,17 @@ async function main(): Promise<number> {
       stream: c.STEELE_PUBLICATION_STREAM,
       consumer: c.STEELE_PUBLISHER_CONSUMER,
       deliveryControl,
-      destination: new SubstackDraftDestination(client, {
-        deliveryControl,
-        name: c.STEELE_PUBLISHER_DESTINATION,
-        ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
-      }),
+      destination: publishing
+        ? new SubstackPublishDestination(client, {
+            name: c.STEELE_PUBLISHER_DESTINATION,
+            publishFrom: c.STEELE_SUBSTACK_PUBLISH_FROM!,
+            ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
+          })
+        : new SubstackDraftDestination(client, {
+            deliveryControl,
+            name: c.STEELE_PUBLISHER_DESTINATION,
+            ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
+          }),
       content,
       operations,
       owner: `substack-publisher:${hostname()}:${process.pid}`,
