@@ -1,3 +1,4 @@
+import { OpenRouterProvider } from "../../src/controllers/openrouter.js";
 import { parseSourceMetadata, postAttribution } from "../../src/content/source-metadata.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
@@ -1452,5 +1453,93 @@ describe("separately recorded editorial judgment (#599)", { timeout: 60_000 }, (
       status: "judged",
       record: { decision: "none", state: "malformed" },
     });
+  });
+});
+
+describe("bounded editorial queries and safe 402 diagnostics (#800)", { timeout: 60_000 }, () => {
+  const counting = (version: string, respond: () => string | Promise<string>) => {
+    const calls: { system: string; user: string; maxOutputChars: number }[] = [];
+    return {
+      calls,
+      modelVersion: version,
+      async complete(request: { system: string; user: string; maxOutputChars: number }) {
+        calls.push(request);
+        return respond();
+      },
+    };
+  };
+  const FOUND =
+    "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
+
+  it("assesses and judges each exact revision with one query each, with no retry on malformed output", async () => {
+    const { metadata, pkg } = await drafted();
+    const evidence = JSON.parse(await content.read(pkg.ref)).claims.flatMap(
+      (c: { evidence: unknown[] }) => c.evidence,
+    );
+    expect(evidence.length).toBeGreaterThan(0);
+    const assessor = counting("fake/assessor", () => "garbled text\nEND OF ASSESSMENT");
+    const a = await assessArticle({ content, archive, metadata, assessor: assessor as never });
+    expect(a).toMatchObject({ status: "assessed", record: { state: "malformed" } });
+    expect(assessor.calls).toHaveLength(1);
+    // Every attached evidence passage travels in that one bounded request.
+    for (const e of evidence as { passage: string }[])
+      expect(assessor.calls[0]!.user).toContain(JSON.stringify(e.passage).slice(1, -1));
+    // The same revision is never re-queried.
+    await assessArticle({ content, archive, metadata, assessor: assessor as never });
+    expect(assessor.calls).toHaveLength(1);
+
+    const good = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: counting("fake/assessor-2", () => FOUND) as never,
+    });
+    if (good.status !== "assessed") throw new Error(good.status);
+    const judge = counting("fake/judge", () => "no decision line at all");
+    const j = await judgeAssessment({ content, assessment: good.ref, judge: judge as never });
+    expect(j).toMatchObject({ status: "judged", record: { state: "malformed" } });
+    expect(judge.calls).toHaveLength(1);
+    await judgeAssessment({ content, assessment: good.ref, judge: judge as never });
+    expect(judge.calls).toHaveLength(1);
+  });
+
+  it("records a synthetic 402 as safe, allowlisted facts without provider text", async () => {
+    const { metadata } = await drafted();
+    const SECRET_TEXT =
+      "This request requires more credits, or fewer max_tokens. You requested up to 20000 tokens, but can only afford 3120. PRIVATE-DETAIL";
+    const provider = new OpenRouterProvider({
+      apiKey: "sk-or-SYNTHETIC",
+      model: "vendor/assessor",
+      fetch: (async () =>
+        new Response(JSON.stringify({ error: { code: 402, message: SECRET_TEXT } }), {
+          status: 402,
+        })) as typeof fetch,
+    });
+    const out = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: provider,
+      retainOperationalFailure: true,
+    } as never);
+    if (out.status !== "assessed") throw new Error(out.status);
+    const saved = await content.read(out.ref);
+    expect(JSON.parse(saved)).toMatchObject({
+      state: "provider-failed",
+      operationalFailure: "credit-exhausted",
+      providerFailure: {
+        role: "assessment",
+        code: "credit-exhausted",
+        status: 402,
+        limitCategory: "max-tokens-unaffordable",
+        affordableTokens: 3120,
+        model: "vendor/assessor",
+      },
+    });
+    const failure = JSON.parse(saved).providerFailure;
+    expect(failure.requestedMaxTokens).toBeGreaterThan(0);
+    expect(failure.inputChars).toBeGreaterThan(0);
+    for (const leak of ["PRIVATE-DETAIL", "requires more credits", "sk-or-SYNTHETIC"])
+      expect(saved).not.toContain(leak);
   });
 });

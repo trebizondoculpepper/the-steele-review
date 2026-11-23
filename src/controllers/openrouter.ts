@@ -49,8 +49,48 @@ const RETRYABLE: ReadonlySet<ModelProviderErrorCode> = new Set([
   "timeout",
 ]);
 
+/**
+ * Safe, allowlisted facts about a provider failure (#800). Never provider
+ * response text, credentials or request content: only a recognised limit
+ * category, numbers and the model name.
+ */
+export interface ProviderFailureDiagnostics {
+  /** For a 402, which limit the provider named, when it is recognisable. */
+  limitCategory?: "max-tokens-unaffordable" | "insufficient-credits" | "key-limit" | "unspecified";
+  /** For a 402, the output tokens the provider said it could afford. */
+  affordableTokens?: number;
+  requestedMaxTokens?: number;
+  /** Approximate input size in characters (system plus user). */
+  inputChars?: number;
+  model?: string;
+}
+
+/** Classifies a 402 body into an allowlisted category; the text itself is never kept. */
+export function classifyCreditFailure(
+  body: string,
+): Pick<ProviderFailureDiagnostics, "limitCategory" | "affordableTokens"> {
+  let message = "";
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message === "string") message = parsed.error.message;
+  } catch {
+    message = "";
+  }
+  const afford = /can only afford (\d{1,9})/i.exec(message);
+  const affordableTokens = afford ? Number(afford[1]) : undefined;
+  const limitCategory = /max_tokens|can only afford/i.test(message)
+    ? ("max-tokens-unaffordable" as const)
+    : /key limit|limit exceeded|weekly limit|daily limit|monthly limit/i.test(message)
+      ? ("key-limit" as const)
+      : /credits?/i.test(message)
+        ? ("insufficient-credits" as const)
+        : ("unspecified" as const);
+  return { limitCategory, ...(affordableTokens !== undefined ? { affordableTokens } : {}) };
+}
+
 export class ModelProviderError extends Error {
   readonly retryable: boolean;
+  failure?: ProviderFailureDiagnostics;
   constructor(
     readonly code: ModelProviderErrorCode,
     readonly status?: number,
@@ -195,8 +235,20 @@ export class OpenRouterProvider implements ExtractionModelProvider {
       throw this.abortError(signal, timeout) ?? new ModelProviderError("unavailable");
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new ModelProviderError(codeForStatus(response.status), response.status);
+      const error = new ModelProviderError(codeForStatus(response.status), response.status);
+      error.failure = {
+        requestedMaxTokens: body.max_tokens,
+        inputChars: request.system.length + request.user.length,
+        model: this.config.model,
+      };
+      if (response.status === 402) {
+        // Read a bounded body only to classify it; the text is discarded.
+        const text = await readBounded(response, 16_384).catch(() => "");
+        error.failure = { ...error.failure, ...classifyCreditFailure(text) };
+      } else {
+        await response.body?.cancel().catch(() => undefined);
+      }
+      throw error;
     }
     let text: string;
     try {
