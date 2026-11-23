@@ -1,3 +1,5 @@
+import type { DraftTarget } from "../content/owner-draft-authorization.js";
+import type { EditorialPolicyObservation } from "../config/editorial-live-policy.js";
 import { isEditorialStorageFailure } from "../drafting/editorial-provider.js";
 import {
   WriterRecoveryGuardError,
@@ -28,6 +30,24 @@ export class EditorialLoopPersistenceError extends Error {
 export async function runEditorialLoop(input: {
   stages: EditorialStages;
   policy: EditorialPolicy;
+  /** Only a serialized new workflow contract supplies these ports. */
+  livePolicy?: {
+    read(): Promise<EditorialPolicyObservation>;
+    targets?(): Promise<DraftTarget[] | undefined>;
+    now?(): number;
+    authorize(input: {
+      version: { draft: Ref; metadata: Ref };
+      initial: { draft: Ref; metadata: Ref };
+      assessment: Ref;
+      judgment: Ref;
+      assessments: Ref[];
+      judgments: Ref[];
+      revisions: { draft: Ref; metadata: Ref }[];
+      mechanicalRuns: Ref[];
+      policy: EditorialPolicyObservation;
+      destinations?: DraftTarget[];
+    }): Promise<{ eventId: string }>;
+  };
   draft: Ref;
   package: Ref;
   sourceUrl: string;
@@ -52,10 +72,50 @@ export async function runEditorialLoop(input: {
   ): Promise<void>;
   save(history: Omit<EditorialHistory, "summary">): Promise<Ref>;
 }) {
-  const deadline = input.deadlineAt ?? (await input.now()) + input.policy.deadlineMs;
+  const startedAt = input.deadlineAt !== undefined && !input.livePolicy ? 0 : await input.now();
+  let deadline = input.deadlineAt ?? startedAt + input.policy.deadlineMs;
+  const policyObservations: EditorialPolicyObservation[] = [];
+  let policy = input.policy;
+  let appliedPolicy: EditorialPolicyObservation | undefined;
+  let draftAuthorizationEvent: string | undefined;
+  const observe = async (phase: string, round: number) => {
+    if (!input.livePolicy) return;
+    appliedPolicy = await input.step(`editorial-policy-${phase}-${round}`, input.livePolicy.read);
+    policyObservations.push(appliedPolicy);
+    policy = appliedPolicy.policy;
+    deadline = startedAt + policy.deadlineMs;
+  };
   let version =
     input.initialVersion ??
     (await input.step("editorial-prepare", () => input.stages.prepare(input.draft, input.package)));
+  const beforeDispatch = (phase: "assess" | "judge" | "revise", round: number) =>
+    input.livePolicy || input.beforeNewEditorialCall
+      ? async () => {
+          await input.beforeNewEditorialCall?.();
+          if (!input.livePolicy) return;
+          const current = await input.livePolicy.read();
+          if ((input.livePolicy.now?.() ?? Date.now()) >= startedAt + current.policy.deadlineMs)
+            throw new WriterRecoveryGuardError("deadline");
+          if (phase === "revise" && round > current.policy.maxRevisions)
+            throw new WriterRecoveryGuardError("policy-changed");
+        }
+      : undefined;
+  // Domain controls are serialized inside NEW callbacks: SDK retry boundaries do
+  // not preserve custom Error prototypes. Storage/configuration exceptions still throw.
+  const roleStep = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    if (!input.livePolicy) return input.step(name, work);
+    const outcome = await input.step(name, async () => {
+      try {
+        return { kind: "completed" as const, value: await work() };
+      } catch (error) {
+        if (error instanceof WriterRecoveryGuardError)
+          return { kind: "stopped" as const, code: error.code };
+        throw error;
+      }
+    });
+    if (outcome.kind === "stopped") throw new WriterRecoveryGuardError(outcome.code);
+    return outcome.value;
+  };
   const initial = version;
   const judgmentHistory: JudgmentHistory = [...(input.priorHistory ?? [])];
   const reference = (r: Ref) => ({
@@ -78,7 +138,8 @@ export async function runEditorialLoop(input: {
   const retainedControlArtifacts: Ref[] = [];
   const reusedAssessments: Ref[] = [];
   try {
-    for (let round = 0; round <= input.policy.maxRevisions; round++) {
+    for (let round = 0; round <= (input.livePolicy ? 5 : input.policy.maxRevisions); round++) {
+      await observe("assess", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -90,14 +151,14 @@ export async function runEditorialLoop(input: {
         reusedAssessments.push(input.initialAssessment);
       } else {
         await input.progress("assess", round);
-        assessment = await input.step(`editorial-assess-${round}`, () =>
+        assessment = await roleStep(`editorial-assess-${round}`, () =>
           input.stages.assess(
             version,
             input.package,
             `${input.attemptId}:assessment:${round}`,
             input.recoveryId,
             input.lineage,
-            ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
+            ...(beforeDispatch("assess", round) ? [beforeDispatch("assess", round)!] : []),
           ),
         );
       }
@@ -107,6 +168,7 @@ export async function runEditorialLoop(input: {
         reason = `assessment: ${assessment.operationalFailure}`;
         break;
       }
+      await observe("judge", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -120,12 +182,14 @@ export async function runEditorialLoop(input: {
         judgmentHistory.slice(-5),
         round === 0 ? (input.initialJudgeLineage ?? input.lineage) : input.lineage,
       ] as const;
-      const judgment = await input.step(`editorial-judge-${round}`, () =>
-        (round === 0 && input.initialJudgeRecovery) || input.beforeNewEditorialCall
+      const judgment = await roleStep(`editorial-judge-${round}`, () =>
+        (round === 0 && input.initialJudgeRecovery) ||
+        input.beforeNewEditorialCall ||
+        input.livePolicy
           ? input.stages.judge(
               ...judgeArgs,
               round === 0 ? input.initialJudgeRecovery : undefined,
-              input.beforeNewEditorialCall,
+              beforeDispatch("judge", round),
             )
           : input.stages.judge(...judgeArgs),
       );
@@ -141,6 +205,7 @@ export async function runEditorialLoop(input: {
         reason = `judgment: ${judgment.operationalFailure}`;
         break;
       }
+      await observe("decision", round);
       if (await expired()) {
         terminal = "deadline";
         reason = "editorial deadline reached";
@@ -149,6 +214,36 @@ export async function runEditorialLoop(input: {
       if (judgment.state !== "decided" || judgment.decision === "none") {
         terminal = "operational-stop";
         reason = `editorial judgment ${judgment.state}`;
+        break;
+      }
+      const exhausted = round >= policy.maxRevisions;
+      if (
+        input.livePolicy &&
+        policy.onExhausted === "create-unpublished-draft" &&
+        (judgment.decision === "approve" || exhausted)
+      ) {
+        const destinations = input.livePolicy.targets
+          ? await input.step("editorial-draft-targets", input.livePolicy.targets)
+          : undefined;
+        if (input.livePolicy.targets && !destinations)
+          throw new WriterRecoveryGuardError("policy-changed");
+        const authorized = await roleStep("editorial-authorize-draft", () =>
+          input.livePolicy!.authorize({
+            version,
+            initial,
+            assessment: assessment.ref,
+            judgment: judgment.ref,
+            assessments,
+            judgments,
+            revisions,
+            mechanicalRuns,
+            policy: appliedPolicy!,
+            ...(destinations ? { destinations } : {}),
+          }),
+        );
+        draftAuthorizationEvent = authorized.eventId;
+        terminal = judgment.decision === "approve" ? "approved" : "unresolved";
+        reason = judgment.decision === "approve" ? "" : "editorial revision limit reached";
         break;
       }
       if (judgment.decision === "approve") {
@@ -161,10 +256,10 @@ export async function runEditorialLoop(input: {
         reason = "";
         break;
       }
-      if (round === input.policy.maxRevisions) break;
+      if (exhausted) break;
       await input.progress("revise", round + 1);
       revisionAttempts++;
-      const revised = await input.step(`editorial-revise-${round + 1}`, () =>
+      const revised = await roleStep(`editorial-revise-${round + 1}`, () =>
         input.stages.revise(
           version,
           input.package,
@@ -173,11 +268,12 @@ export async function runEditorialLoop(input: {
           input.sourceUrl,
           input.recoveryId,
           input.lineage,
-          ...(input.beforeNewEditorialCall ? [input.beforeNewEditorialCall] : []),
+          ...(beforeDispatch("revise", round + 1) ? [beforeDispatch("revise", round + 1)!] : []),
         ),
       );
       if (revised.mechanicalRun) mechanicalRuns.push(revised.mechanicalRun);
-      if (input.lineage) retainedWriterAttempts.push(...(revised.retainedAttempts ?? []));
+      if (input.lineage || input.livePolicy)
+        retainedWriterAttempts.push(...(revised.retainedAttempts ?? []));
       diagnostics.push(...(revised.diagnostics ?? []));
       if (!revised.version) {
         terminal = "operational-stop";
@@ -188,12 +284,18 @@ export async function runEditorialLoop(input: {
       revisions.push(version);
     }
   } catch (error) {
-    if (!input.lineage || (input.initialAssessment && isEditorialStorageFailure(error)))
+    if (
+      (input.livePolicy && !(error instanceof WriterRecoveryGuardError)) ||
+      (!input.livePolicy && !input.lineage) ||
+      (input.initialAssessment && isEditorialStorageFailure(error))
+    )
       throw error;
     terminal = "operational-stop";
     reason =
-      input.initialAssessment && error instanceof WriterRecoveryGuardError
-        ? `recovery-${error.code}`
+      (input.initialAssessment || input.livePolicy) && error instanceof WriterRecoveryGuardError
+        ? input.livePolicy
+          ? `live-policy-${error.code}`
+          : `recovery-${error.code}`
         : "editorial-stage-unavailable";
     if (input.initialAssessment && error instanceof WriterAttemptError && error.artifact)
       retainedControlArtifacts.push(error.artifact);
@@ -206,8 +308,11 @@ export async function runEditorialLoop(input: {
     revisions,
     mechanicalRuns,
     diagnostics,
-    ...(input.lineage ? { retainedWriterAttempts, revisionAttempts } : {}),
+    ...(input.lineage || input.livePolicy ? { retainedWriterAttempts, revisionAttempts } : {}),
     ...(input.initialAssessment ? { reusedAssessments, retainedControlArtifacts } : {}),
+    ...(input.livePolicy
+      ? { policyObservations, ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}) }
+      : {}),
     terminal,
   };
   let summary: Ref;
@@ -229,5 +334,10 @@ export async function runEditorialLoop(input: {
     history: { ...history, summary },
     reason,
     approvalEvent,
+    ...(draftAuthorizationEvent ? { draftAuthorizationEvent } : {}),
   };
 }
+
+export type LiveEditorialPolicyPort = NonNullable<
+  Parameters<typeof runEditorialLoop>[0]["livePolicy"]
+>;

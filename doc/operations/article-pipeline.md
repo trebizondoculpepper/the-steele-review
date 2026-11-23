@@ -138,12 +138,9 @@ response was lost.
 
 ### Limit research requests for a run
 
-Set `STEELE_RESEARCH_REQUEST_LIMIT=2` on the capture bridge, or pass
-`article-run --research-request-limit 2` for a manual submission. The workflow
-takes the first two requests in the librarian's order and records the rest as
-uncommissioned gaps. An omitted limit preserves the full plan, and zero disables
-research commissioning for the run. The limit is part of the original workflow
-input and changing it on duplicate submission does not rerun that revision.
+New runs research **at most two themes per article by default** (#533): one new research job per selected theme, in the librarian's priority order (themes whose claims most need evidence come first). Saved research for a theme is reused and doesn't count against the limit. Themes beyond the limit are recorded as deferred in the article's selection ledger and reported as gaps.
+
+To change the limit, set `STEELE_RESEARCH_REQUEST_LIMIT` on the capture bridge, or pass `article-run --research-request-limit <n>` for a manual submission. Zero disables new research for the run. The limit is part of the original workflow input, so changing it on a duplicate submission doesn't rerun that revision. A retained recovery keeps its exact recorded prefix.
 The shared concurrency cap and the batch deadline still apply independently.
 
 ## Approval dispatch and dummy publishers (#314, #315)
@@ -223,3 +220,41 @@ docker compose -p steele-fixture -f deploy/restate/fixture.compose.yaml run --rm
 The stack provisions its own broker and archives and registers the fixture
 worker. Keep the fixture data and the run's output for inspection. The
 Compose network is internal and exposes no host ports.
+
+## Restate execution UI access (#771, #792)
+
+Restate's bundled UI is served by the admin API, which stays bound to loopback on the host. Operators reach it through small forwarders that bind specific interfaces and forward to the loopback admin port. The deployment doesn't expose the admin port directly.
+
+- **LAN:** a forwarder bound to the host's LAN address only.
+- **Remote, for authorised users:** a forwarder bound to the host's Tailscale address only, so the tailnet's access controls decide who can reach it. Tailscale Serve (HTTPS on the tailnet) is the preferred alternative once it's enabled for the tailnet; enabling it is an owner action in the Tailscale admin console.
+- **Not public:** neither forwarder binds a wildcard or public address.
+- **No restart needed:** adding or removing a forwarder doesn't restart Restate.
+
+The UI and its API can cancel and restart invocations, and they have no login of their own. Anyone the network allows to reach a forwarder can use them, so never bind one beyond the LAN or the tailnet. Actual addresses and ports are kept in private infrastructure notes, not in this repository.
+
+## Release versions (#570)
+
+Every successful build of `main` gets a semantic version, `v0.MINOR.PATCH`.
+
+**How the version is chosen** (`scripts/release/version.mjs`):
+- **Baseline:** the commit that added `scripts/release/BASELINE` is `v0.1.0`.
+- **Patch, the default:** every later first-parent commit on `main`, including docs and chore merges, bumps the patch number.
+- **Minor:** a `Semver: minor` trailer, or a conventional `feat:` subject, bumps the minor number. It's read from the merge commit (which includes the PR title) or from any commit the merge brings in.
+- **Breaking (pre-1.0 policy):** a `Semver: major` trailer, or a `type!:` subject, also bumps the minor number while the version is below 1.0.
+
+Only Git history is read. PR labels can be edited after a merge, so they're ignored; otherwise a later edit could change versions that have already been published.
+
+The version is computed from the history itself, not from a counter, so:
+- reruns and concurrent runs of the same commit always agree;
+- two commits never share a version;
+- an older commit can't be released as newer.
+
+A commit whose build fails leaves its version unused.
+
+**What the publish workflow does:**
+- **Same image, two tags:** it pushes the image tagged with both the commit SHA and the version. The tags refer to the same image digest, which also carries the `org.opencontainers.image.version` and `revision` labels.
+- **Gates first:** nothing is pushed until the existing build, smoke and secret gates pass.
+- **No moved tags:** an existing version tag is never moved. A rerun reuses it after checking that the commit tag matches. Runs of the same commit are serialised, and a registry error other than "not found" stops the job.
+- **Release job:** a separate job, the only one with `contents: write`, creates the Git tag `vX.Y.Z` on the commit and a GitHub release with generated notes. It first checks that any existing tag already names this commit, and it's skipped when that release already exists.
+
+Deployments keep pinning images by digest, so version tags are for people, not for deployment.

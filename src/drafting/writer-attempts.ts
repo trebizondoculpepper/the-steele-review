@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  ProviderDiagnosticsSchema,
+  providerDiagnosticsOf,
+  type ProviderDiagnostics,
+} from "./provider-failure.js";
 import { z } from "zod";
 import type { ExtractionModelProvider, ModelCompletionMetadata } from "../analysis/extraction.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
@@ -68,6 +73,8 @@ export const WriterAttemptManifestSchema = z
     outcome: z.enum(["returned", "no-response", "interrupted", "accepted", "rejected"]),
     raw: ArtifactReferenceSchema.optional(),
     failure: Failure.optional(),
+    /** Allowlisted provider facts for a failed call (#800); never provider text. */
+    providerDiagnostics: ProviderDiagnosticsSchema.optional(),
     diagnostic: ArtifactReferenceSchema.optional(),
     lateResponse: z.literal(true).optional(),
   })
@@ -87,7 +94,9 @@ export type WriterAttemptManifest = z.infer<typeof WriterAttemptManifestSchema>;
 
 /** Fixed domain refusal before any provider invocation; never a provider failure. */
 export class WriterRecoveryGuardError extends Error {
-  constructor(readonly code: "task-mismatch" | "not-denied" | "stale-base" | "deadline") {
+  constructor(
+    readonly code: "task-mismatch" | "not-denied" | "stale-base" | "deadline" | "policy-changed",
+  ) {
     super(`editorial recovery guard: ${code}`);
     this.name = "WriterRecoveryGuardError";
   }
@@ -415,6 +424,7 @@ export async function captureWriterAttempt(input: {
         claim,
       });
     let failure: z.infer<typeof Failure> | undefined;
+    let providerDiagnostics: ProviderDiagnostics | undefined;
     try {
       dispatched = true;
       const returned = await input.provider.complete(
@@ -436,6 +446,7 @@ export async function captureWriterAttempt(input: {
         error instanceof ModelProviderError && Failure.safeParse(error.code).success
           ? error.code
           : "unavailable";
+      providerDiagnostics = providerDiagnosticsOf(error);
     }
     if (input.purpose && captured) {
       try {
@@ -460,6 +471,7 @@ export async function captureWriterAttempt(input: {
       ...(captured
         ? { outcome: "returned", raw: ref(captured), ...(failure ? { failure } : {}) }
         : { outcome: "no-response", failure: failure ?? "unavailable" }),
+      ...(providerDiagnostics ? { providerDiagnostics } : {}),
     });
     const manifestRef = await safeWrite(`${dir}/manifest.json`, manifest);
     retainedArtifact = manifestRef;

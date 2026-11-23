@@ -1,3 +1,5 @@
+import { ConfigurationError } from "../controllers/configuration.js";
+import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { WebAdapterError } from "../controllers/research-web.js";
@@ -25,7 +27,12 @@ import {
 import type { CommissionedJob } from "./librarian.js";
 import { RESEARCH_PROMPT_VERSION, researchPrompt } from "./runner.js";
 import type { SonarClient } from "./sonar.js";
-import { judgeCitationSupport, judgeIdentity, type SupportStep } from "./citation-support.js";
+import {
+  judgeBundleSupport,
+  judgeCitationSupport,
+  judgeIdentity,
+  type SupportStep,
+} from "./citation-support.js";
 import type { SupportJudge } from "./runner.js";
 
 /**
@@ -88,6 +95,7 @@ export async function discoverStage(
       operations: deps.operations,
       request,
       owner: deps.owner,
+      reuseSavedAttempt: deps.sonar.liveTokens,
       processor: {
         version: "research-discovery-v1",
         model: deps.sonar.model,
@@ -109,6 +117,11 @@ export async function discoverStage(
     });
     return { kind: "discovered", discovery: plain(captured.ref) };
   } catch (error) {
+    if (
+      error instanceof ConfigurationError ||
+      (deps.sonar.liveTokens && error instanceof ArtifactStoreError)
+    )
+      throw error;
     // Credit exhaustion is not a verdict on the evidence (#407).
     if (isCreditExhausted(error)) return { kind: "failed", failure: "budget-exceeded" };
     if (error instanceof WebAdapterError && error.code === "credit-exhausted")
@@ -205,6 +218,35 @@ export async function retrieveOneStage(
       return { retryable: false, creditExhausted: true };
     throw error;
   }
+}
+
+/**
+ * Stage 3b, whole bundle (#795): judge every archived source in one model
+ * call when the judge supports it. Returns undefined when it does not, so the
+ * caller falls back to the per-URL step.
+ */
+export async function supportBundleStage(
+  deps: StagedResearchDeps,
+  discovery: StageRef,
+  inventory: StageRef,
+  retrievalIds: string[],
+): Promise<{ kind: "judged" | "not-checked" | "credit-exhausted" } | undefined> {
+  const judge = deps.judge;
+  if (!judge?.judgeBundle) return undefined;
+  const { request, data } = await acceptedAssemblyReader(
+    deps.artifacts,
+    deps.operations,
+  )(discovery);
+  const out = await judgeBundleSupport({
+    artifacts: deps.artifacts,
+    inventory,
+    retrievalIds,
+    request,
+    report: data.report,
+    judge: judge as Parameters<typeof judgeBundleSupport>[0]["judge"],
+    ...(deps.monitoredHosts ? { monitoredHosts: deps.monitoredHosts } : {}),
+  });
+  return { kind: out.kind };
 }
 
 /** Stage 3b, per URL: judge one archived source's support as its own step. */

@@ -135,3 +135,75 @@ it(
     }
   },
 );
+
+it(
+  "local subject research retains a readable output-limited report, annotations and warning without rediscovery",
+  { timeout: 60000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-sonar-partial-"));
+    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      await artifacts.initialise();
+      const request = ResearchRequestSchema.parse({
+        schemaVersion: 1,
+        origin: "manual",
+        pass: 1,
+        subject: "Synthetic history",
+        claims: [],
+        corpusRefs: [],
+      });
+      const raw = JSON.stringify({
+        model: "fixture/model",
+        choices: [
+          {
+            message: {
+              content: "A useful partial public history.",
+              annotations: [{ url_citation: { url: "https://source.example/history" } }],
+            },
+            finish_reason: "length",
+          },
+        ],
+      });
+      const discover = vi.fn(async (_request, capture) => {
+        await capture!({
+          representation: "provider-json",
+          body: Buffer.from(raw).toString("base64"),
+          encoding: "base64",
+          transport: "complete",
+        });
+        throw new SonarError("invalid-report");
+      });
+      const fetcher = {
+        fetch: vi.fn(async (url: string) => ({
+          url,
+          title: "History",
+          text: "Independent source text.",
+        })),
+      };
+      const config = { artifacts, operations, owner: "fixture", request, discover, fetcher };
+      const out = await runSonarResearch(config);
+      expect(out).toMatchObject({
+        status: "finished",
+        result: { outcome: "complete-with-gaps", warnings: [{ code: "report-output-limit" }] },
+      });
+      if (out.status !== "finished") throw new Error("unexpected busy");
+      const manifest = JSON.parse(
+        await artifacts.read({
+          ...out.result.manifest!,
+          sha256: out.result.manifest!.hash.slice(7),
+        }),
+      );
+      expect(manifest.citations[0].url).toBe("https://source.example/history");
+      expect(
+        await artifacts.read({ ...manifest.report, sha256: manifest.report.hash.slice(7) }),
+      ).toContain("A useful partial public history.");
+      await runSonarResearch(config);
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(fetcher.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

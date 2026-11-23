@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 /**
  * Minimal Substack editor client (#385; design in doc/architecture/06).
@@ -49,6 +50,7 @@ export const DraftSchema = z.looseObject({
   draft_title: z.string().nullable().optional(),
   draft_body: z.string().nullable().optional(),
   is_published: z.boolean().optional(),
+  email_sent_at: z.string().nullable().optional(),
   draft_created_at: z.string().nullable().optional(),
   /** Bylines the editor reports for the draft, when it reports any. */
   draft_bylines: z
@@ -67,7 +69,19 @@ export interface NewDraft {
   bylines?: string[];
 }
 
+/** Pure adapter-owned target binding; requires no session or transport. */
+export function substackDraftOriginIdentity(origin: string): string {
+  const url = new URL(origin);
+  if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.username)
+    throw new Error("substack: invalid draft origin");
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(["substack-draft-origin-v1", url.origin]))
+    .digest("hex")}`;
+}
+
 export class SubstackClient {
+  /** Opaque publication binding for draft-only authorizations; never exposes the origin. */
+  readonly draftTargetIdentity: string;
   private readonly origin: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -78,6 +92,7 @@ export class SubstackClient {
       throw new Error("substack origin must be a bare https origin");
     }
     this.origin = url.origin;
+    this.draftTargetIdentity = substackDraftOriginIdentity(this.origin);
     this.timeoutMs = config.timeoutMs ?? 20_000;
     this.fetchImpl = config.fetch ?? fetch;
   }
@@ -174,5 +189,21 @@ export class SubstackClient {
     );
     if (!parsed.success) throw new SubstackError("invalid-response");
     return parsed.data;
+  }
+
+  /**
+   * Publish an existing draft (#789), sending it to subscribers by email when
+   * `send` is true. Private web API, like the rest of this client. A
+   * non-definitive response is `uncertain`: the post may be live.
+   */
+  async publishDraft(id: string, options: { send: boolean }, signal?: AbortSignal): Promise<void> {
+    if (!/^[0-9]+$/.test(id)) throw new Error("invalid draft id");
+    await this.request(
+      "POST",
+      `/api/v1/drafts/${id}/publish`,
+      { send: options.send, share_automatically: false },
+      signal,
+      true,
+    );
   }
 }

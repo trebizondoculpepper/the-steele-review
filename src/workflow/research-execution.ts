@@ -19,6 +19,17 @@ export function researchExecutionFromEnv(env: Record<string, string | undefined>
  * article's rounds, and get one targeted follow-up round with reassessment
  * (#597). Serialised at submission like the execution contract.
  */
+/**
+ * Default research theme limit per article (#533): at most two new research
+ * jobs (one per selected theme) unless a submitter sets another limit.
+ * Distinct from provider spend and the research deadline.
+ */
+export const DEFAULT_RESEARCH_THEME_LIMIT = 2;
+
+/** The submitted limit, or the default when none is configured (#533). */
+export const researchThemeLimit = (limit: number | undefined): number =>
+  limit ?? DEFAULT_RESEARCH_THEME_LIMIT;
+
 export function researchSelectionFor(limit: number | undefined): {
   researchSelection?: "allowance-v1";
   researchFollowUp?: "one-round-v1";

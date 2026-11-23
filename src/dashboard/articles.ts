@@ -222,6 +222,8 @@ export interface ArticleTrace {
   summary: RunSummary;
   /** What the workflow concluded editorially; `none` for failures and pending work. */
   editorial: EditorialOutcome;
+  /** Package-readiness contract recorded on the run, when it had one (#769). */
+  packageReadiness?: "non-blocking-v1";
   /** True only when a dispatch approval handoff was actually recorded. */
   approvalRecorded?: boolean;
   /** When a running workflow last reported progress (#439). */
@@ -417,7 +419,14 @@ export function summariseRun(
       const r = run.result;
       const research = r.research.map((j) => ({ jobId: j.jobId, outcome: j.outcome }));
       const reason = r.reason ? sanitizeReason(r.reason) : undefined;
-      const base = { outcome: r.outcome, ...(reason ? { reason } : {}), research };
+      const base = {
+        outcome: r.outcome,
+        ...(reason ? { reason } : {}),
+        research,
+        ...("packageReadiness" in r && r.packageReadiness
+          ? { packageReadiness: r.packageReadiness }
+          : {}),
+      };
       if (r.outcome === "failed") {
         // A stage failure names its stage ("claims: provider-failed"); a
         // failure after packaging without a draft is a drafting failure.
@@ -439,7 +448,7 @@ export function summariseRun(
         stages[idx("drafting")] = {
           stage: "drafting",
           state: "not-reached",
-          detail: "evidence gap",
+          detail: "legacy evidence-gap stop",
         };
         return {
           summary: "completed",
@@ -545,7 +554,7 @@ export async function traceArticle(input: {
     try {
       themes = await input.themes.forPost(post, sourceVersion);
     } catch {
-      themes = { state: "unavailable", themes: [] };
+      themes = { state: "unavailable", results: [], themes: [] };
     }
   }
   // Claims are listed for the same exact revision, from the saved extraction.

@@ -124,7 +124,7 @@ export function writerFormatFromEnv(
   throw new Error("STEELE_WRITER_FORMAT must be json or markdown");
 }
 
-const ModelDraftSchema = z
+export const ModelDraftSchema = z
   .object({
     title: PublicationFieldsSchema.shape.title,
     subtitle: PublicationFieldsSchema.shape.subtitle,
@@ -794,6 +794,7 @@ export async function draftFromPackage(input: {
         ? { sourceContextRef: toRef(loaded.context.source.provenanceRef) }
         : {}),
     },
+    ...(pkg.researchWarnings?.length ? { researchWarnings: pkg.researchWarnings } : {}),
     themes: loaded.context.themes.proposals.map((t) => ({
       title: t.title,
       description: t.description,

@@ -17,13 +17,33 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
+    # Runs of the SAME commit are serialised, so two reruns can never both push
+    # its version tag; different commits are never grouped or cancelled.
+    concurrency:
+      group: publish-${{ github.sha }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The release version is derived from first-parent history (#570).
+          fetch-depth: 0
+
+      # A pure function of main's history (scripts/release/version.mjs), so a
+      # rerun or a concurrent run of the same commit always gets the same version
+      # and two commits never share one.
+      - name: Assign the release version
+        id: version
+        run: |
+          version="$(node scripts/release/version.mjs "$GITHUB_SHA")"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: v$version" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build and smoke-test the ARM64 image
         run: |
@@ -32,6 +52,7 @@ jobs:
           docker build --target app \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
             --tag "$image" .
           test "$(docker image inspect --format '{{.Architecture}}' "$image")" = arm64
           docker run --rm --network none --entrypoint node "$image" \
@@ -72,12 +93,68 @@ jobs:
       - name: Summarise known vulnerabilities
         run: scripts/trivy-summary.sh vulns trivy-vulns.json >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Push the commit-tagged image to GHCR
+      # An existing version tag is never moved: a rerun of a released commit
+      # reuses it and pushes nothing, after checking the commit tag matches it.
+      - name: Push the commit- and version-tagged image to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # A failed inspection must fail its pipeline, not read as "absent".
+          set -o pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          versioned="ghcr.io/${GITHUB_REPOSITORY,,}:${VERSION}"
+          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | tr -d '"'; }
+          # Only an explicit "not found" means the tag is absent; any other
+          # inspection failure stops the job rather than risk moving a tag.
+          if existing="$(digest "$versioned" 2> inspect.err)"; then
+            :
+          elif grep -qiE 'not found|manifest unknown' inspect.err; then
+            existing=""
+          else
+            echo "::error::could not inspect ${versioned}"
+            exit 1
+          fi
+          if [ -n "$existing" ]; then
+            test "$(digest "$IMAGE")" = "$existing" || { echo "::error::v${VERSION} already names a different image"; exit 1; }
+            echo "v${VERSION} already published as ${existing}; nothing pushed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           docker push "$IMAGE"
+          docker tag "$IMAGE" "$versioned"
+          docker push "$versioned"
+          test "$(digest "$versioned")" = "$(digest "$IMAGE")"
+          echo "Published ${IMAGE} and ${versioned} ($(digest "$versioned"))" >> "$GITHUB_STEP_SUMMARY"
+
+  # Git tag and GitHub release for the published image (#570). Runs only after
+  # a successful publish, with the only write access to repository contents.
+  release:
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - name: Tag and release the published version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -o pipefail
+          tag="v${VERSION}"
+          # An existing tag must already name this commit, release or not.
+          if target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq .sha 2> tag.err)"; then
+            test "$target" = "$GITHUB_SHA" || { echo "::error::${tag} already points at ${target}"; exit 1; }
+          elif ! grep -qiE 'not found|no commit found|422' tag.err; then
+            echo "::error::could not resolve ${tag}"
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "${tag} already released for this commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$tag" --generate-notes
+          echo "Released ${tag} (image ghcr.io/${GITHUB_REPOSITORY,,}:${VERSION})" >> "$GITHUB_STEP_SUMMARY"
 
   # Proves the secret gate blocks publishing, without registry permissions and
   # without any credential-shaped string in the repository: a test-only rule

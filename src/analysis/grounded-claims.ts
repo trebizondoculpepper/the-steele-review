@@ -710,12 +710,16 @@ export async function extractGroundedClaims(input: {
 
   let indexed = 0;
   if (input.index) {
+    // The resolved post author, from the saved extraction's own attribution
+    // (#461): byline first, else the configured source default. Projected
+    // into the index only; the stored occurrence keeps the observed byline.
     for (const c of record.claims) {
       const occ = c.occurrence as ClaimOccurrence;
+      const doc = withResolvedAuthor(occ, record.extraction.attribution);
       await input.index.indexDocument(
         input.indexName ?? CLAIM_OCCURRENCE_INDEX_V1,
         occ.occurrenceId,
-        occ,
+        doc,
       );
       indexed++;
     }
@@ -839,4 +843,26 @@ export async function upsertClaimRecord(
       throw error;
     }
   }
+}
+
+/**
+ * An occurrence with its post's resolved author (#461, #387): explicit
+ * byline, else the configured source default, taken from the extraction's
+ * own recorded attribution. Used for the index projection and for history
+ * lookups alike; the stored occurrence keeps only the observed byline.
+ */
+export function withResolvedAuthor(occ: ClaimOccurrence, attribution: unknown): ClaimOccurrence {
+  const recorded = recordedSourceAttribution(attribution);
+  if (recorded?.status !== "resolved") return occ;
+  return {
+    ...occ,
+    publisher: {
+      ...occ.publisher,
+      attributedAuthor: recorded.author,
+      attributionBasis: recorded.basis,
+      ...(recorded.sourceMetadataVersion
+        ? { sourceMetadataVersion: recorded.sourceMetadataVersion }
+        : {}),
+    },
+  };
 }

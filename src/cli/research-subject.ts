@@ -1,3 +1,5 @@
+import { researchTokensFromConfiguration } from "../config/research-tokens.js";
+import { DEFAULT_SONAR_MAX_OUTPUT_TOKENS } from "../research/sonar.js";
 import { ResearchModelSelectionSchema } from "../config/research-model.js";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -34,7 +36,6 @@ const Config = z.object({
   STEELE_STATE_PATH: z.string().min(1),
   STEELE_RESEARCH_MODEL: ResearchModelSelectionSchema,
   STEELE_RESEARCH_TIMEOUT_MS: z.coerce.number().int().min(1).max(900_000).default(180_000),
-  STEELE_RESEARCH_MAX_TOKENS: z.coerce.number().int().min(1).max(16_000).default(4000),
 });
 
 async function main(): Promise<number> {
@@ -91,7 +92,8 @@ async function main(): Promise<number> {
   const discover = sonarFromEnv({
     model: c.STEELE_RESEARCH_MODEL,
     timeoutMs: c.STEELE_RESEARCH_TIMEOUT_MS,
-    maxTokens: c.STEELE_RESEARCH_MAX_TOKENS,
+    maxTokens: DEFAULT_SONAR_MAX_OUTPUT_TOKENS,
+    tokens: researchTokensFromConfiguration(),
   });
   const artifacts = new GitArtifactStore({
     repoPath: c.STEELE_CONTENT_PATH,

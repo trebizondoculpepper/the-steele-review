@@ -49,8 +49,48 @@ const RETRYABLE: ReadonlySet<ModelProviderErrorCode> = new Set([
   "timeout",
 ]);
 
+/**
+ * Safe, allowlisted facts about a provider failure (#800). Never provider
+ * response text, credentials or request content: only a recognised limit
+ * category, numbers and the model name.
+ */
+export interface ProviderFailureDiagnostics {
+  /** For a 402, which limit the provider named, when it is recognisable. */
+  limitCategory?: "max-tokens-unaffordable" | "insufficient-credits" | "key-limit" | "unspecified";
+  /** For a 402, the output tokens the provider said it could afford. */
+  affordableTokens?: number;
+  requestedMaxTokens?: number;
+  /** Approximate input size in characters (system plus user). */
+  inputChars?: number;
+  model?: string;
+}
+
+/** Classifies a 402 body into an allowlisted category; the text itself is never kept. */
+export function classifyCreditFailure(
+  body: string,
+): Pick<ProviderFailureDiagnostics, "limitCategory" | "affordableTokens"> {
+  let message = "";
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message === "string") message = parsed.error.message;
+  } catch {
+    message = "";
+  }
+  const afford = /can only afford (\d{1,9})/i.exec(message);
+  const affordableTokens = afford ? Number(afford[1]) : undefined;
+  const limitCategory = /max_tokens|can only afford/i.test(message)
+    ? ("max-tokens-unaffordable" as const)
+    : /key limit|limit exceeded|weekly limit|daily limit|monthly limit/i.test(message)
+      ? ("key-limit" as const)
+      : /credits?/i.test(message)
+        ? ("insufficient-credits" as const)
+        : ("unspecified" as const);
+  return { limitCategory, ...(affordableTokens !== undefined ? { affordableTokens } : {}) };
+}
+
 export class ModelProviderError extends Error {
   readonly retryable: boolean;
+  failure?: ProviderFailureDiagnostics;
   constructor(
     readonly code: ModelProviderErrorCode,
     readonly status?: number,
@@ -81,6 +121,12 @@ export interface OpenRouterConfig {
   temperature?: number;
   /** Hard cap on requested output tokens, independent of the character limit (default 8192). */
   maxOutputTokens?: number;
+  /**
+   * OpenRouter reasoning control (#797). `{ enabled: false }` stops a
+   * reasoning model spending the whole output budget thinking, which returns
+   * empty content. Omitted: the provider's default.
+   */
+  reasoning?: { enabled: false };
   fetch?: typeof fetch;
   onUsage?: (usage: ModelUsage) => void;
 }
@@ -167,6 +213,7 @@ export class OpenRouterProvider implements ExtractionModelProvider {
         ),
       ),
       temperature: this.config.temperature ?? 0,
+      ...(this.config.reasoning ? { reasoning: this.config.reasoning } : {}),
       usage: { include: true },
     };
     // Read once for this request, outside the transport catch, so a
@@ -188,8 +235,20 @@ export class OpenRouterProvider implements ExtractionModelProvider {
       throw this.abortError(signal, timeout) ?? new ModelProviderError("unavailable");
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new ModelProviderError(codeForStatus(response.status), response.status);
+      const error = new ModelProviderError(codeForStatus(response.status), response.status);
+      error.failure = {
+        requestedMaxTokens: body.max_tokens,
+        inputChars: request.system.length + request.user.length,
+        model: this.config.model,
+      };
+      if (response.status === 402) {
+        // Read a bounded body only to classify it; the text is discarded.
+        const text = await readBounded(response, 16_384).catch(() => "");
+        error.failure = { ...error.failure, ...classifyCreditFailure(text) };
+      } else {
+        await response.body?.cancel().catch(() => undefined);
+      }
+      throw error;
     }
     let text: string;
     try {
@@ -274,7 +333,10 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
  */
 export function openRouterFromEnv(
   source: CredentialSource = {},
-  extra: Pick<OpenRouterConfig, "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens"> = {},
+  extra: Pick<
+    OpenRouterConfig,
+    "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens" | "reasoning"
+  > = {},
 ): OpenRouterProvider {
   const env = source.env ?? process.env;
   // Read live before each request (#738), never retained from start-up.

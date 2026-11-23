@@ -1,3 +1,5 @@
+import { GitArtifactStore } from "../controllers/artifact-store.js";
+import { prepareCapturedArticleSubmission } from "../workflow/captured-article-submission.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
 /**
  * Captured-content bridge (#270): consume `steele.v1.content.captured` from a
@@ -29,6 +31,14 @@ import { handleCapturedContent, settleCapturedDelivery } from "../workflow/captu
 
 const EnvSchema = z.object({
   STEELE_STATE_PATH: z.string().min(1),
+  STEELE_CONTENT_PATH: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  STEELE_CONTENT_REPOSITORY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   STEELE_CONTENT_STREAM: z.string().min(1),
   STEELE_CAPTURED_CONSUMER: z.string().min(1),
   RESTATE_INGRESS_URL: z.url(),
@@ -49,6 +59,17 @@ async function main(): Promise<number> {
     return 2;
   }
   const c = env.data;
+  if (!!c.STEELE_CONTENT_PATH !== !!c.STEELE_CONTENT_REPOSITORY) {
+    console.error("captured-bridge: incomplete article artifact configuration");
+    return 2;
+  }
+  const content =
+    c.STEELE_CONTENT_PATH && c.STEELE_CONTENT_REPOSITORY
+      ? new GitArtifactStore({
+          repoPath: c.STEELE_CONTENT_PATH,
+          repository: c.STEELE_CONTENT_REPOSITORY,
+        })
+      : undefined;
   let natsConn;
   try {
     natsConn = natsConnection();
@@ -90,6 +111,16 @@ async function main(): Promise<number> {
             ? { retryDelayMs: c.STEELE_BRIDGE_RETRY_DELAY_MS }
             : {}),
           submit: async (key, input) => {
+            if (content) {
+              const prepared = await prepareCapturedArticleSubmission({
+                article: input,
+                content,
+                operations: state,
+              });
+              if (prepared.workflowKey !== key)
+                throw new Error("captured article identity mismatch");
+              input = prepared.input;
+            }
             const wf = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
             // Restate reports an existing run for this key as PreviouslyAccepted.
             const submission = await wf.workflowSubmit(input);

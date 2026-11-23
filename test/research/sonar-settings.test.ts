@@ -32,7 +32,7 @@ describe("Sonar effective settings", () => {
         OPENROUTER_API_KEY: "test-key",
         STEELE_RESEARCH_MODEL: "perplexity/sonar-pro",
         STEELE_RESEARCH_TIMEOUT_MS: "900000",
-        STEELE_RESEARCH_MAX_OUTPUT_TOKENS: "",
+        STEELE_RESEARCH_MAX_TOKENS: "",
       },
     });
     expect(configured.settings).toEqual({
@@ -50,4 +50,15 @@ describe("Sonar effective settings", () => {
       maxOutputTokens: DEFAULT_SONAR_MAX_OUTPUT_TOKENS,
     });
   });
+});
+
+it("reads the canonical live token knob for current outbound settings, never the old duplicate name", async () => {
+  const env = { OPENROUTER_API_KEY: "synthetic-key", STEELE_RESEARCH_MAX_TOKENS: "12000" };
+  const client = sonarFromEnv({ env });
+  expect(await client.currentSettings()).toMatchObject({
+    maxOutputTokens: 12000,
+    source: "environment",
+  });
+  env.STEELE_RESEARCH_MAX_TOKENS = "16000";
+  expect(await client.currentSettings()).toMatchObject({ maxOutputTokens: 16000 });
 });

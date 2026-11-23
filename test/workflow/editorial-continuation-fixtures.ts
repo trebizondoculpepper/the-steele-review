@@ -28,8 +28,9 @@ export async function continuationParentFixture(
   content: GitArtifactStore,
   operations: OperationStore,
   revisionCount = 0,
+  options: { modern?: boolean } = {},
 ) {
-  const modern = false,
+  const modern = options.modern ?? false,
     historicalInputOrder = false,
     metadataOnlyBase = false;
   const report = PackageVerificationReportSchema.parse(

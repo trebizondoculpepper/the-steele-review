@@ -51,7 +51,16 @@ export interface RuntimeConfiguration {
 const FileSchema = z.record(z.string().regex(/^[A-Z][A-Z0-9_]{0,99}$/), z.string().max(10_000));
 
 export class ConfigurationError extends Error {
-  constructor(readonly category: "not-loaded" | "not-granted" | "unknown-role") {
+  constructor(
+    readonly category:
+      | "not-loaded"
+      | "not-granted"
+      | "unknown-role"
+      | "file-invalid"
+      | "file-unavailable"
+      | "file-missing"
+      | "invalid-setting",
+  ) {
     super(`configuration: ${category}`);
     this.name = "ConfigurationError";
   }
@@ -91,6 +100,7 @@ export class ConfigurationController {
       return { file: code === "ENOENT" ? "missing" : "unavailable", values: {} };
     }
     try {
+      if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error();
       const parsed = FileSchema.parse(JSON.parse(raw));
       // Only registered keys are ever considered; anything else is ignored.
       const known = new Set(this.registry.map((s) => s.key));
@@ -116,6 +126,36 @@ export class ConfigurationController {
       version: configurationVersion(resolved, this.config.salt, this.registry),
       settings: inspectSettings(resolved, this.registry),
     };
+  }
+
+  /** One coherent selected observation for a new decision; never reads or populates active. */
+  async currentSettings(
+    role: string,
+    keys: readonly string[],
+  ): Promise<{ settings: ResolvedSetting[]; revision: string }> {
+    const granted = this.config.roles[role];
+    if (!granted) throw new ConfigurationError("unknown-role");
+    if (!keys.length || new Set(keys).size !== keys.length)
+      throw new ConfigurationError("invalid-setting");
+    if (keys.some((key) => !granted.includes(key))) throw new ConfigurationError("not-granted");
+    const specs = keys.map((key) => this.registry.find((spec) => spec.key === key));
+    if (specs.some((spec) => !spec)) throw new ConfigurationError("invalid-setting");
+    const { file, resolved } = await this.resolve();
+    if (this.config.settingsFile && file !== "ok") throw new ConfigurationError(`file-${file}`);
+    const settings = keys.map((key) => resolved.find((setting) => setting.key === key));
+    if (settings.some((setting) => !setting || setting.error || setting.value === undefined))
+      throw new ConfigurationError("invalid-setting");
+    const selected = settings as ResolvedSetting[];
+    return {
+      settings: selected,
+      revision: configurationVersion(selected, this.config.salt, specs as SettingSpec[]),
+    };
+  }
+
+  /** Fresh selected read for a new decision; never populates or reads active. */
+  async currentSetting(role: string, key: string): Promise<ResolvedSetting & { revision: string }> {
+    const observed = await this.currentSettings(role, [key]);
+    return { ...observed.settings[0]!, revision: observed.revision };
   }
 
   /** Explicitly (re)load the active snapshot from the current saved state. */

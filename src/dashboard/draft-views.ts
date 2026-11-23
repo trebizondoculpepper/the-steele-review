@@ -1,5 +1,6 @@
 import type { DraftEntry, DraftInventoryPort } from "./drafts.js";
 import { escapeHtml, type DashboardView } from "./server.js";
+import { renderMarkdown } from "./draft-markdown.js";
 
 /** Draft inventory pages (#440): read-only, bounded, escaped. */
 
@@ -36,6 +37,24 @@ const fieldsSection = (e: DraftEntry) => {
 <dl><dt>Title</dt><dd>${value(e.title)}</dd><dt>Subtitle</dt><dd>${value(e.subtitle)}</dd><dt>Excerpt</dt><dd>${value(e.excerpt)}</dd></dl>`;
 };
 const viewLink = (path: string) => `/drafts/view?path=${encodeURIComponent(path)}`;
+const sourceLink = (path: string) => `/drafts/source?path=${encodeURIComponent(path)}`;
+
+/**
+ * Typographic reading of the saved draft (#772).
+ *
+ * The saved body is rendered through the narrow renderer; title, subtitle and
+ * excerpt are shown as saved. Missing fields are omitted, not invented, so an
+ * old draft without them still reads.
+ */
+const readingSection = (e: DraftEntry, markdown: string | undefined) => {
+  const title = e.title ?? "Untitled draft";
+  return `<article class="reading">
+<h1>${escapeHtml(title)}</h1>
+${e.subtitle ? `<p class="reading-subtitle">${escapeHtml(e.subtitle)}</p>` : ""}
+${e.excerpt ? `<p class="reading-excerpt">${escapeHtml(e.excerpt)}</p>` : ""}
+${markdown === undefined ? '<p class="empty">This draft has no saved body.</p>' : renderMarkdown(markdown)}
+</article>`;
+};
 const articleLink = (e: Pick<DraftEntry, "publicationId" | "postId">, id: string) =>
   `/drafts/article?${new URLSearchParams({ publication: e.publicationId, post: e.postId, id })}`;
 /** Which article version a draft is, and whether that is the current one (#581). */
@@ -118,8 +137,29 @@ export function draftViews(inventory?: DraftInventoryPort): DashboardView[] {
       return `<p><a href="/drafts?${escapeHtml(new URLSearchParams({ publication: e.publicationId, post: e.postId }).toString())}">All drafts for this post</a></p>
 <p><a href="/reviews?${escapeHtml(new URLSearchParams({ publication: e.publicationId, post: e.postId }).toString())}">Verifier history</a></p>
 <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-${fieldsSection(e)}
-${found.markdown !== undefined ? `<h2>Body</h2><pre class="draft-text">${escapeHtml(found.markdown)}</pre>` : ""}`;
+${readingSection(e, found.markdown)}
+<p><a href="${escapeHtml(sourceLink(e.path))}">View exact saved source</a> <span class="empty">(original bytes, unchanged)</span></p>
+${fieldsSection(e)}`;
+    },
+  };
+  const source: DashboardView = {
+    path: "/drafts/source",
+    title: "Draft source",
+    hidden: true,
+    async render(url) {
+      if (!inventory)
+        return '<p class="empty">The content repository is not configured for the dashboard.</p>';
+      const path = url.searchParams.get("path") ?? "";
+      const found = await inventory.text(path);
+      if (!found) return '<p class="empty">Choose a draft from the list.</p>';
+      return `<p><a href="${escapeHtml(viewLink(found.entry.path))}">Back to the reading view</a></p>
+<h2>Exact saved source</h2>
+<p class="empty">The saved artifact is not modified or reformatted; this is the source the reading view rendered.</p>
+${
+        found.markdown === undefined
+          ? '<p class="empty">This draft has no saved body.</p>'
+          : `<pre class="draft-text">${escapeHtml(found.markdown)}</pre>`
+      }`;
     },
   };
   const article: DashboardView = {
@@ -157,5 +197,5 @@ ${h.incomplete ? '<p class="empty">This post has too many stored files to list i
 <div class="wrap"><table><thead><tr><th>Version</th><th>Draft</th><th>Verification</th><th>Saved</th><th>Commit</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     },
   };
-  return [list, view, article];
+  return [list, view, source, article];
 }

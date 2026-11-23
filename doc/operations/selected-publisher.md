@@ -60,3 +60,28 @@ approved publication artifact and is not mapped to an invented platform field.
 There is no publish or subscriber-email operation. Receipt and draft references
 belong in private operational records; public diagnostics expose no endpoints,
 credentials or response bodies.
+
+## Live publication with subscriber email (#789)
+
+Owner decision: future approved posts are published automatically to Substack, and subscribers get them by email. The reviewed Facial Recognition draft and the existing backlog are left out: the owner handles those manually.
+
+**Activation.** On the `substack-publisher` service, set both:
+- `STEELE_SUBSTACK_DELIVERY=publish-with-email`
+- `STEELE_SUBSTACK_PUBLISH_FROM=<ISO time>`, the activation instant. Only approvals made at or after this time are published.
+
+The service refuses to start in publish mode without the cutoff. `STEELE_SUBSTACK_DELIVERY=live` keeps the draft-only behaviour, and any other value leaves delivery off.
+
+**Eligibility.** The publish destination (`SubstackPublishDestination`, action `publish`) ends these as `not-eligible` before reading, rendering or sending anything:
+- approvals made before the cutoff (the backlog);
+- owner draft rehearsals.
+
+**Delivery.** For an eligible approval, the destination does three things:
+1. It creates and verifies the draft exactly as draft delivery does: title, subtitle, body fingerprint and byline must match on read-back.
+2. It publishes the draft with `send: true`.
+3. It reads the draft back and requires it to be published.
+
+The receipt records `publicationSafety: { published: true, subscriberEmail: "requested" }`. Delivery uses the existing operation identity and receipts, keyed by action `publish`.
+
+**Uncertainty.** Once the draft exists, any doubt sends the delivery to an operator, and it is never retried automatically, because a retry could publish or email twice. That includes a rejected or uncertain publish call and a read-back that isn't published. `reconcile` never infers a publication on its own.
+
+**API caveat.** Substack has no official publishing API. The publish call uses the same private web API as draft creation: `POST /api/v1/drafts/{id}/publish` with `send` and `share_automatically: false`. It is covered by tests against a fake Substack only. The first real publication after activation is the live check, and it emails real subscribers.

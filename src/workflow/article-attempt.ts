@@ -46,3 +46,53 @@ export function recordArticleAttempt(
   });
   return { identity, input: valid };
 }
+
+/** New normal operator attempts opt into live decisions; historical recorded inputs remain unchanged. */
+export function liveEditorialInput(input: ArticleRunInput): ArticleRunInput {
+  const { editorial: _historicalPolicy, ...rest } = input;
+  return ArticleRunInputSchema.parse({ ...rest, editorialExecution: "live-policy-v1" });
+}
+
+export class NormalArticleAttemptError extends Error {
+  constructor(readonly code: "input-mismatch" | "live-overrides") {
+    super(`normal article attempt: ${code}`);
+  }
+}
+/** An existing request keeps whichever versioned contract its recorded hash actually names. */
+export function recordNormalArticleAttempt(
+  operations: Pick<OperationStore, "recordArticleAttempt" | "articleAttempt">,
+  input: ArticleRunInput,
+  requestId: string,
+  options: {
+    legacyOverrides?: boolean;
+    /**
+     * The research limit was defaulted, not given (#533): a request recorded
+     * before the default existed had no limit, so retrying it must still match.
+     */
+    defaultedResearchLimit?: boolean;
+  } = {},
+) {
+  const existing = operations.articleAttempt(input.publicationId, input.postId, requestId);
+  if (existing) {
+    const variants = [input, liveEditorialInput(input)];
+    if (options.defaultedResearchLimit) {
+      const {
+        researchRequestLimit: _limit,
+        researchSelection: _selection,
+        researchFollowUp: _followUp,
+        ...unlimited
+      } = input;
+      variants.push(unlimited, liveEditorialInput(unlimited));
+    }
+    const candidates = variants.map((candidate) =>
+      ArticleRunInputSchema.parse({ ...candidate, operatorRequestId: requestId }),
+    );
+    const selected = candidates.find(
+      (candidate) => articleAttemptHash(candidate) === existing.inputHash,
+    );
+    if (!selected) throw new NormalArticleAttemptError("input-mismatch");
+    return recordArticleAttempt(operations, selected, requestId);
+  }
+  if (options.legacyOverrides) throw new NormalArticleAttemptError("live-overrides");
+  return recordArticleAttempt(operations, liveEditorialInput(input), requestId);
+}

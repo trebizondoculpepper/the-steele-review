@@ -78,6 +78,12 @@ export const ResearchRequestSchema = z
           .strict(),
       )
       .max(100),
+    /**
+     * Claims of this theme left out of the request by the per-request claim
+     * cap (#533), in priority order. Recorded for audit; not part of the job
+     * identity. They stay explicit gaps in coverage.
+     */
+    omittedClaimRecordIds: z.array(z.string().min(1).max(200)).max(500).optional(),
     /** The question or gap the research must resolve (optional for a manual subject request). */
     question: z.string().trim().min(1).max(4000).optional(),
     /** Existing corpus material the researcher should start from. */
@@ -143,6 +149,10 @@ export const CitationRecordSchema = z
     support: z.enum(["supported", "unverified", "not-checked"]).optional(),
     sourceType: z.string().max(100).optional(),
     confidenceRationale: z.string().max(2000).optional(),
+    /** Writer hint from the bundle assessment (#795): 1 is the most responsive source. */
+    relevanceRank: z.number().int().min(1).max(500).optional(),
+    /** Writer hint: one line on what this source is useful for. */
+    writerNote: z.string().min(1).max(500).optional(),
     /** Claim-specific supporting passages in the archived source. */
     passages: z
       .array(
@@ -154,6 +164,25 @@ export const CitationRecordSchema = z
   })
   .strict();
 
+/** Technical incompleteness is explicit and never independent factual support. */
+export const ResearchWarningSchema = z
+  .object({
+    code: z.literal("report-output-limit"),
+    discovery: Ref,
+    message: z.literal(
+      "The provider report reached its output limit; retained text and source links are partial.",
+    ),
+  })
+  .strict();
+export const ResearchWarningsSchema = z.array(ResearchWarningSchema).max(1);
+export type ResearchWarning = z.infer<typeof ResearchWarningSchema>;
+export const outputLimitWarning = (discovery: z.infer<typeof Ref>): ResearchWarning => ({
+  code: "report-output-limit",
+  discovery,
+  message:
+    "The provider report reached its output limit; retained text and source links are partial.",
+});
+
 export const ResearchManifestSchema = z
   .object({
     schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
@@ -162,8 +191,11 @@ export const ResearchManifestSchema = z
     discovery: Ref.optional(),
     retainedRecovery: RetainedResearchRecoverySchema.optional(),
     coveringNote: Ref.optional(),
+    warnings: ResearchWarningsSchema.optional(),
     citations: z.array(CitationRecordSchema).max(500),
     gaps: z.array(z.string().min(1).max(2000)).max(100),
+    /** Writer orientation from the bundle assessment (#795). */
+    writerBrief: z.string().min(1).max(2000).optional(),
     provider: z.object({ model: z.string().min(1), costUsd: z.number().optional() }).strict(),
   })
   .strict();
@@ -180,10 +212,13 @@ export const ResearchResultSchema = z
     failure: z
       .enum(["provider-error", "timeout", "interrupted", "invalid-report", "budget-exceeded"])
       .optional(),
+    warnings: ResearchWarningsSchema.optional(),
     finishedAt: z.iso.datetime({ offset: true }),
   })
   .strict()
   .superRefine((r, ctx) => {
+    if (r.warnings?.length && r.outcome !== "complete-with-gaps")
+      ctx.addIssue({ code: "custom", message: "partial research must retain gaps" });
     if (r.outcome !== "failed" && !r.manifest) {
       ctx.addIssue({ code: "custom", message: "a completed job must reference its manifest" });
     }
@@ -380,6 +415,7 @@ export async function finishResearchJob(input: {
   outcome: ResearchOutcome;
   manifest?: ArtifactRef;
   failure?: ResearchResult["failure"];
+  warnings?: ResearchWarning[];
   now?: () => Date;
 }): Promise<{ result: ResearchResult; resultRef: ArtifactRef; reused: boolean }> {
   const path = researchJobPath(input.jobId, "result");
@@ -389,6 +425,7 @@ export async function finishResearchJob(input: {
     recordOutcome(input.operations, input.jobId, result);
     return { result, resultRef: saved, reused: true };
   }
+  let manifestWarnings: ResearchWarning[] | undefined;
   // A manifest must be valid and belong to this job before completion is committed.
   if (input.manifest) {
     let manifest;
@@ -399,6 +436,9 @@ export async function finishResearchJob(input: {
     } catch {
       throw new InvalidResearchManifestError("manifest is unreadable or invalid");
     }
+    manifestWarnings = manifest.warnings;
+    if (input.warnings && JSON.stringify(input.warnings) !== JSON.stringify(manifestWarnings))
+      throw new InvalidResearchManifestError("warnings disagree with manifest");
     if (manifest.jobId !== input.jobId) {
       throw new InvalidResearchManifestError("manifest belongs to another job");
     }
@@ -409,6 +449,7 @@ export async function finishResearchJob(input: {
     outcome: input.outcome,
     ...(input.manifest ? { manifest: asReference(input.manifest) } : {}),
     ...(input.failure ? { failure: input.failure } : {}),
+    ...(manifestWarnings?.length ? { warnings: manifestWarnings } : {}),
     finishedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
   const resultRef = await writeOnce(input.artifacts, path, result);

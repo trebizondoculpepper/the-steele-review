@@ -5,10 +5,14 @@ import { sourceMetadataFromEnv, postAttribution } from "../content/source-metada
 import {
   researchExecutionFromEnv,
   researchSelectionFor,
+  researchThemeLimit,
   NON_BLOCKING_PACKAGE,
 } from "../workflow/research-execution.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
-import { recordArticleAttempt } from "../workflow/article-attempt.js";
+import {
+  recordNormalArticleAttempt,
+  NormalArticleAttemptError,
+} from "../workflow/article-attempt.js";
 import { OperationStore } from "../controllers/operation-store.js";
 /**
  * Start one unattended article run for a captured post (#243).
@@ -145,15 +149,21 @@ async function main(): Promise<number> {
     return 1;
   }
   const record = CollectionRecordSchema.parse(JSON.parse(await archive.read(ref)));
-  const policy = {
-    ...editorialPolicyFromEnv(process.env),
-    ...(values["editorial-revisions"] !== undefined
-      ? { maxRevisions: Number(values["editorial-revisions"]) }
-      : {}),
-    ...(values["editorial-deadline-ms"] !== undefined
-      ? { deadlineMs: Number(values["editorial-deadline-ms"]) }
-      : {}),
-  };
+  let policy: ReturnType<typeof editorialPolicyFromEnv>;
+  try {
+    policy = {
+      ...editorialPolicyFromEnv(process.env),
+      ...(values["editorial-revisions"] !== undefined
+        ? { maxRevisions: Number(values["editorial-revisions"]) }
+        : {}),
+      ...(values["editorial-deadline-ms"] !== undefined
+        ? { deadlineMs: Number(values["editorial-deadline-ms"]) }
+        : {}),
+    };
+  } catch {
+    console.error("article-run: invalid editorial configuration");
+    return 2;
+  }
   let input = {
     ...post,
     editorial: policy,
@@ -166,9 +176,16 @@ async function main(): Promise<number> {
     ...(retainedResearchJobIds ? { retainedResearchJobIds } : {}),
     ...researchExecutionFromEnv(),
     ...NON_BLOCKING_PACKAGE,
-    ...(requestLimit.data === undefined ? {} : { researchRequestLimit: requestLimit.data }),
-    // A retained recovery keeps its exact prefix; others use the allowance.
-    ...(retainedResearchJobIds ? {} : researchSelectionFor(requestLimit.data)),
+    // A retained recovery keeps its exact prefix; others use the allowance,
+    // two themes by default (#533).
+    ...(retainedResearchJobIds
+      ? requestLimit.data === undefined
+        ? {}
+        : { researchRequestLimit: requestLimit.data }
+      : {
+          researchRequestLimit: researchThemeLimit(requestLimit.data),
+          ...researchSelectionFor(researchThemeLimit(requestLimit.data)),
+        }),
   };
   if (!ArticleRunInputSchema.safeParse(input).success) {
     console.error(USAGE);
@@ -200,11 +217,20 @@ async function main(): Promise<number> {
           }),
         });
       }
-      const recorded = recordArticleAttempt(operations, input, values["request-id"]);
+      const recorded = recordNormalArticleAttempt(operations, input, values["request-id"], {
+        defaultedResearchLimit: requestLimit.data === undefined && !retainedResearchJobIds,
+        legacyOverrides:
+          values["editorial-revisions"] !== undefined ||
+          values["editorial-deadline-ms"] !== undefined,
+      });
       key = recorded.identity.workflowKey;
       input = recorded.input as typeof input;
-    } catch {
-      console.error("article-run: request identity conflict or invalid input");
+    } catch (error) {
+      console.error(
+        error instanceof NormalArticleAttemptError && error.code === "live-overrides"
+          ? "article-run: normal operator attempts use live editorial configuration"
+          : "article-run: request identity conflict or invalid input",
+      );
       return 2;
     } finally {
       operations.close();

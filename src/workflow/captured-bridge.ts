@@ -3,7 +3,11 @@ import { DEFAULT_EDITORIAL_POLICY, type EditorialPolicy } from "./editorial-cont
 import { logPipeline } from "../observability/pipeline-log.js";
 import { parseCapturedContentEvent } from "../events/captured-content-event.js";
 import { articleRunKey, articleRunTarget, type ArticleRunInput } from "./article-run.js";
-import { researchSelectionFor, NON_BLOCKING_PACKAGE } from "./research-execution.js";
+import {
+  researchSelectionFor,
+  researchThemeLimit,
+  NON_BLOCKING_PACKAGE,
+} from "./research-execution.js";
 
 /**
  * Captured content to the writing engine (#270).
@@ -64,8 +68,9 @@ export function articleRunInputFor(
     sourceUrl: event.originalUrl,
     researchDeadlineMs,
     ...researchExecutionFromEnv(),
-    ...(researchRequestLimit === undefined ? {} : { researchRequestLimit }),
-    ...researchSelectionFor(researchRequestLimit),
+    // Two themes per article unless configured otherwise (#533).
+    researchRequestLimit: researchThemeLimit(researchRequestLimit),
+    ...researchSelectionFor(researchThemeLimit(researchRequestLimit)),
     ...NON_BLOCKING_PACKAGE,
     source: {
       namespace: event.source.namespace,

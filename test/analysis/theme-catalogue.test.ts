@@ -64,7 +64,9 @@ const seed = async () =>
     },
   ]);
 
-describe("theme catalogue", () => {
+// Concurrency cases drive real Git writes; the default timeout is too short
+// under parallel load (#720).
+describe("theme catalogue", { timeout: 60_000 }, () => {
   it("reuses identities by exact name or alias and never duplicates under concurrency", async () => {
     const { ids } = await seed();
     expect(ids).toEqual(["geoengineering"]);

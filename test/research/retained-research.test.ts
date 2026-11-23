@@ -22,8 +22,11 @@ import {
 } from "../../src/research/retained-research-source.js";
 import { recoverRetainedResearch } from "../../src/research/retained-research.js";
 import { RESEARCH_PROMPT_VERSION, runResearchJob } from "../../src/research/runner.js";
-import { researchJobId, finishResearchJob } from "../../src/research/job.js";
+import { researchJobId, finishResearchJob, openResearchJob } from "../../src/research/job.js";
 import { assessPostCoverage, LexicalShortlister } from "../../src/research/librarian.js";
+import { draftFromPackage } from "../../src/drafting/package-draft.js";
+import { savedResearch } from "../../src/dashboard/research.js";
+import { researchViews } from "../../src/dashboard/research-views.js";
 import { saveWriterPackage } from "../../src/drafting/writer-package.js";
 import { librarianFixtures, CLAIMS, TEXT, SHARED } from "./librarian-fixtures.js";
 const ref = (r: ArtifactRef) => ({
@@ -45,7 +48,7 @@ afterEach(async () => {
   operations.close();
   await rm(dir, { recursive: true, force: true });
 });
-async function seeded() {
+async function seeded(historicalFailure = true) {
   const fx = librarianFixtures(artifacts),
     a = await fx.analysis("post", CLAIMS);
   const theme = JSON.parse(await artifacts.read(a.themeResult));
@@ -138,19 +141,31 @@ async function seeded() {
       throw new ModelProviderError("bad-response");
     }),
   };
-  const failed = await runResearchJob({
-    artifacts,
-    operations,
-    request,
-    owner: "original",
-    sonar,
-    fetcher: {
-      fetch: async () => {
-        throw new Error("must not retrieve invalid discovery");
+  if (historicalFailure)
+    await openResearchJob({ artifacts, operations, request, owner: "original" });
+  // Historical failure is created through the legacy discovery contract;
+  // the new normal runner now curates this same readable response as partial.
+  await expect(
+    captureResearchDiscovery({
+      artifacts,
+      operations,
+      request,
+      processor,
+      owner: "original",
+      invoke: async (capture) => {
+        await sonar.research("", undefined, capture);
+        throw new Error("unreachable");
       },
-    },
-  });
-  expect(failed).toMatchObject({ result: { outcome: "failed", failure: "invalid-report" } });
+    }),
+  ).rejects.toMatchObject({ code: "invalid-report" });
+  if (historicalFailure)
+    await finishResearchJob({
+      artifacts,
+      operations,
+      jobId: researchJobId(request),
+      outcome: "failed",
+      failure: "invalid-report",
+    });
   const identity = discoveryIdentity(request, processor),
     discovery = (await artifacts.lookup(
       `research-discovery/${identity.requestId}/${identity.discoveryId}/result.json`,
@@ -182,6 +197,146 @@ function deps() {
   };
 }
 describe("retained incomplete research composition", { timeout: 60000 }, () => {
+  it("normal curation continues exact readable length-limited discovery to a warning package without another provider call", async () => {
+    const f = await seeded(false),
+      d = deps();
+    const discoveryBytes = await artifacts.read(f.discovery);
+    f.sonar.research.mockClear();
+    f.sonar.research.mockImplementation(async () => {
+      throw new Error("new discovery forbidden");
+    });
+    let commissions = 0;
+    const coverage = await assessPostCoverage({
+      artifacts,
+      themeResult: f.themes,
+      claimResult: f.claims,
+      shortlister: new LexicalShortlister(),
+      consequential: () => true,
+      commission: async (request) => {
+        commissions++;
+        const out = await runResearchJob({ ...d, request, sonar: f.sonar });
+        if (out.status !== "finished") throw new Error("unexpected busy");
+        return {
+          ...out,
+          resultRef: (await artifacts.lookup(`research-jobs/${out.jobId}/result.json`))!,
+        };
+      },
+    });
+    expect(commissions).toBe(1); // Partial text never buys an automatic follow-up.
+    const pkg = await saveWriterPackage({ content: artifacts, coverage: coverage.ref });
+    expect(coverage.record.jobs[0]).toMatchObject({
+      outcome: "complete-with-gaps",
+      warnings: [{ code: "report-output-limit", discovery: ref(f.discovery) }],
+    });
+    expect(pkg.package.researchWarnings).toEqual(coverage.record.jobs[0]!.warnings);
+    expect(pkg.package.claims.find((c) => c.claimRecordId === "claim-treaty")).toMatchObject({
+      status: "covered",
+    });
+    expect(pkg.package.claims.find((c) => c.claimRecordId === "claim-payment")?.status).toBe("gap");
+    expect(f.sonar.research).not.toHaveBeenCalled();
+    expect(await artifacts.read(f.discovery)).toBe(discoveryBytes);
+    const result = JSON.parse(
+      await artifacts.read(
+        (await artifacts.lookup(`research-jobs/${researchJobId(f.request)}/result.json`))!,
+      ),
+    );
+    expect(result.warnings).toEqual(pkg.package.researchWarnings);
+    let writerCalls = 0;
+    await expect(
+      draftFromPackage({
+        content: artifacts,
+        operations,
+        package: pkg.ref,
+        archive: {
+          read: async () =>
+            JSON.stringify({
+              item: {
+                publicationId: "pub",
+                postId: "post",
+                url: "https://pub.example/p/post",
+                title: "A post",
+              },
+              ingestionReason: "backfill",
+              text: TEXT,
+              complete: true,
+              supplied: { transcriptDocument: "spoken" },
+              provenance: {
+                sourceUrl: "https://pub.example/p/post",
+                acquiredAt: "2026-01-01T00:00:00Z",
+                method: "supplied-transcript",
+                originalMedium: "video",
+              },
+            }),
+        },
+        provider: {
+          modelVersion: "fixture/writer",
+          complete: async (request) => {
+            writerCalls++;
+            expect(JSON.parse(request.user).researchWarnings).toEqual(result.warnings);
+            throw new ModelProviderError("credit-exhausted");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "credit-exhausted" });
+    expect(writerCalls).toBe(1);
+
+    const reportRef = (await artifacts.lookup(
+      `research-jobs/${researchJobId(f.request)}/report.json`,
+    ))!;
+    const [, view] = researchViews(savedResearch(artifacts));
+    const html = await view!.render(
+      new URL(
+        `https://app.example/research/view?path=${encodeURIComponent(reportRef.path)}&at=${reportRef.commit}`,
+      ),
+    );
+    expect(html).toContain("Partial research warning");
+    expect(html).toContain("complete-with-gaps");
+
+    await runResearchJob({ ...d, request: f.request, sonar: f.sonar });
+    expect(f.sonar.research).not.toHaveBeenCalled();
+  });
+
+  it("does not automatically follow up a historical retained partial manifest without the new warning field", async () => {
+    const f = await seeded(),
+      d = deps();
+    const recovered = await recoverRetainedResearch({
+      ...d,
+      discovery: f.discovery,
+      failedResult: f.failedResult,
+    });
+    if (recovered.status !== "recovered") throw new Error("unexpected busy");
+    const original = recovered.result.manifest!;
+    const manifest = JSON.parse(
+      await artifacts.read({ ...original, sha256: original.hash.slice(7) }),
+    );
+    delete manifest.warnings;
+    const legacyManifest = await artifacts.write(
+      "fixtures/historical-retained-manifest.json",
+      JSON.stringify(manifest),
+    );
+    const { warnings: _omitted, ...historical } = recovered.result;
+    const legacyResult = await artifacts.write(
+      "fixtures/historical-retained-result.json",
+      JSON.stringify({ ...historical, manifest: ref(legacyManifest) }),
+    );
+    let commissions = 0;
+    const coverage = await assessPostCoverage({
+      artifacts,
+      themeResult: f.themes,
+      claimResult: f.claims,
+      shortlister: new LexicalShortlister(),
+      consequential: () => true,
+      commission: async () => {
+        commissions++;
+        return { status: "finished", jobId: recovered.binding.jobId, resultRef: legacyResult };
+      },
+    });
+    expect(commissions).toBe(1);
+    expect(coverage.record.claims.find((c) => c.claimRecordId === "claim-payment")?.status).toBe(
+      "no-independent-evidence",
+    );
+    expect(JSON.parse(await artifacts.read(legacyResult))).not.toHaveProperty("warnings");
+  });
   it("retrieves and independently checks retained annotations, then normal research/curation builds supported-only package with zero discovery calls", async () => {
     const f = await seeded(),
       d = deps(),
@@ -199,6 +354,9 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     if (recovered.status !== "recovered") throw new Error();
     expect(recovered.binding.jobId).not.toBe(researchJobId(f.request));
     expect(recovered.result.outcome).toBe("complete-with-gaps");
+    expect(recovered.result.warnings).toEqual([
+      expect.objectContaining({ code: "report-output-limit", discovery: ref(f.discovery) }),
+    ]);
     expect(d.fetcher.fetch).toHaveBeenCalledTimes(2);
     expect(d.judge.judge).toHaveBeenCalledTimes(1);
     const coverage = await assessPostCoverage({
@@ -225,6 +383,8 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
     ).not.toBe("evidence-found");
     const pkg = await saveWriterPackage({ content: artifacts, coverage: coverage.ref });
     expect(pkg.package.status).toBe("ready");
+    expect(pkg.package.researchWarnings).toEqual(recovered.result.warnings);
+    expect(coverage.record.jobs[0]?.warnings).toEqual(recovered.result.warnings);
     expect(pkg.package.source.context).toEqual(ref(f.context));
     expect(f.sonar.research).not.toHaveBeenCalled();
     expect(await artifacts.read(f.failedResult)).toBe(old);
@@ -350,7 +510,12 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         await w.workflowSubmit({ ...base, ...extra });
         return w.workflowAttach();
       };
-      expect((await submit("fixture-original")).outcome).toBe("evidence-gap");
+      // The gate no longer stops before drafting (#769); this fixture's draft
+      // stage itself reports the synthetic stop.
+      expect(await submit("fixture-original")).toMatchObject({
+        outcome: "failed",
+        reason: "synthetic-stop-after-ready-package",
+      });
       expect(researchCalls).toBe(1);
       expect(
         (
@@ -362,7 +527,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         ).status,
       ).toBe("recovered");
       // Same service idempotency key still returns its journaled original failure.
-      expect((await submit("fixture-old-key")).outcome).toBe("evidence-gap");
+      expect((await submit("fixture-old-key")).outcome).toBe("failed");
       expect(researchCalls).toBe(1);
       const recovered = await submit("fixture-recovered", {
         operatorRequestId: "owner-recovery",
@@ -374,7 +539,9 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         reason: "synthetic-stop-after-ready-package",
       });
       expect(researchCalls).toBe(2);
-      expect(draftCalls).toBe(1);
+      // The original submission and the journaled replay both draft now; the
+      // recovery is the third draft call.
+      expect(draftCalls).toBe(3);
       const pkg = JSON.parse(await artifacts.read(recovered.package!));
       expect(pkg.status).toBe("ready");
       expect(pkg.source.context).toEqual(ref(f.context));
@@ -384,7 +551,7 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
         retainedResearchJobIds: [`research-${"f".repeat(32)}`],
       });
       expect(changed).toMatchObject({
-        outcome: "evidence-gap",
+        outcome: "failed",
         reason: "retained-research-plan-mismatch",
       });
       expect(researchCalls).toBe(2);

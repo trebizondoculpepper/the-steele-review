@@ -96,7 +96,16 @@ export const ClaimOccurrenceSchema = z
     publisher: z
       .object({
         publicationId: z.string().min(1),
+        /** The byline observed on the captured post, when it names one. */
         author: z.string().trim().min(1).max(200).optional(),
+        /**
+         * The resolved post author (#461): explicit byline, else the
+         * owner-configured source default. Projected into the index from the
+         * extraction's attribution, with its basis and configuration version.
+         */
+        attributedAuthor: z.string().trim().min(1).max(200).optional(),
+        attributionBasis: z.enum(["post-byline", "source-configured"]).optional(),
+        sourceMetadataVersion: z.string().min(1).max(300).optional(),
       })
       .strict(),
     speaker: SpeakerSchema,
@@ -366,6 +375,15 @@ export function claimOccurrenceJsonSchema(): Record<string, unknown> {
 /** Fields added after the first occurrence index version; applied additively to existing indices. */
 export const CLAIM_OCCURRENCE_MAPPING_ADDITIONS = {
   assertionKind: { type: "keyword" },
+  // Resolved post author projected into the index (#461).
+  publisher: {
+    type: "object",
+    properties: {
+      attributedAuthor: { type: "keyword" },
+      attributionBasis: { type: "keyword" },
+      sourceMetadataVersion: { type: "keyword" },
+    },
+  },
 } as const;
 
 export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
@@ -413,7 +431,13 @@ export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
     assertionKind: { type: "keyword" },
     publisher: {
       type: "object",
-      properties: { publicationId: { type: "keyword" }, author: { type: "keyword" } },
+      properties: {
+        publicationId: { type: "keyword" },
+        author: { type: "keyword" },
+        attributedAuthor: { type: "keyword" },
+        attributionBasis: { type: "keyword" },
+        sourceMetadataVersion: { type: "keyword" },
+      },
     },
     speaker: {
       type: "object",

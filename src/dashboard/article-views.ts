@@ -19,6 +19,7 @@ import {
   type ArchivedArticle,
 } from "./articles.js";
 import { escapeHtml, type DashboardView } from "./server.js";
+import { refetchLink } from "./refetch.js";
 import { explainTrace, renderExplanation } from "./trace-explain.js";
 import type { ThemesPort } from "./themes.js";
 import type { AssessmentsPort } from "./assessments.js";
@@ -49,6 +50,8 @@ export interface ArticleViewDeps {
   canTrigger?: boolean;
   /** Recovery of a stopped run is configured (#480). */
   canRecover?: boolean;
+  /** Deliberate single-source re-fetch is configured (#770). */
+  canRefetch?: boolean;
   /** Validated canonical origin from entry-point configuration, never request headers. */
   actionOrigin?: string;
   /** Links to Restate's own execution UI (#561), from private configuration. */
@@ -236,20 +239,25 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         }</p>`;
       const rowsHtml = await Promise.all(
         visible.map(async ({ article: a, summary }) => {
-          const action = deps.canTrigger
-            ? `<td>${
-                /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
-                  ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
-                  : "Revision unavailable"
-              }</td>`
-            : "";
+          const actions: string[] = [];
+          if (deps.canTrigger)
+            actions.push(
+              /^sha256:[0-9a-f]{64}$/.test(a.sourceVersion)
+                ? `<a href="${runLink(a.publicationId, a.postId, a.sourceVersion)}">Run this revision</a>`
+                : "Revision unavailable",
+            );
+          if (deps.canRefetch && deps.actionOrigin)
+            actions.push(
+              `<a href="${escapeHtml(refetchLink(deps.actionOrigin, a))}">Re-fetch source</a>`,
+            );
+          const action = actions.length ? `<td>${actions.join(" · ")}</td>` : "";
           return `<tr><td>${date(a.publishedAt)}</td><td><a href="${escapeHtml(link(a))}">${escapeHtml(a.title ?? a.postId)}</a></td><td>${escapeHtml(a.publicationId)}</td><td>${badge(summary)}</td>${action}</tr>`;
         }),
       );
       return `<p>Showing ${visible.length} archived article${visible.length === 1 ? "" : "s"}${
         filter === "all" ? "" : ` with status “${escapeHtml(filter)}”`
       }, ${sort === "newest" ? "newest" : "oldest"} first. Run status is for the archived revision.</p>
-<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger ? "<th>Action</th>" : ""}</tr></thead>
+<div class="wrap"><table><thead><tr><th>Published</th><th>Article</th><th>Publication</th><th>Run</th>${deps.canTrigger || deps.canRefetch ? "<th>Action</th>" : ""}</tr></thead>
 <tbody>${rowsHtml.join("")}</tbody></table></div>${pagingControls}${
         deps.restate
           ? `<p><a href="${escapeHtml(deps.restate.links.home)}" rel="noopener noreferrer">Open the Restate workflow UI</a> <span class="empty">(external, administrative)</span></p>`
@@ -291,6 +299,13 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         deps.canTrigger && t.sourceVersion
           ? `<p><a href="${runLink(publicationId, postId, t.sourceVersion)}">Run this revision</a></p>`
           : "";
+      // Deliberate re-fetch of this one captured source (#770).
+      const refetch =
+        deps.canRefetch && deps.actionOrigin
+          ? `<p><a href="${escapeHtml(
+              refetchLink(deps.actionOrigin, post),
+            )}">Re-fetch source</a> <span class="empty">(asks the collector for fresh text)</span></p>`
+          : "";
       // A run stopped on provider credit can be recovered explicitly (#480).
       const recovery =
         deps.canRecover && t.sourceVersion && isCreditBlocked(t.reason)
@@ -308,7 +323,12 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
         inspection = await restateRunLinksHtml({ ...deps.restate, runs });
       }
       return (
-        trigger + recovery + renderTrace(t) + renderEditorialTimeline(timeline, post) + inspection
+        trigger +
+        refetch +
+        recovery +
+        renderTrace(t) +
+        renderEditorialTimeline(timeline, post) +
+        inspection
       );
     },
   };
@@ -494,20 +514,38 @@ export function renderTrace(t: ArticleTrace): string {
               : t.themes.state === "partial"
                 ? "the theme scan was incomplete"
                 : "";
-        const list =
-          t.themes.themes.length === 0
-            ? ""
-            : `<ul>${t.themes.themes
-                .map(
-                  (theme: { result: string; id: string; title: string; description?: string }) => {
-                    const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
-                    return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
-                      theme.description ? ` — ${escapeHtml(theme.description)}` : ""
-                    } <span class="empty">(extractor proposal, not canonical)</span></li>`;
-                  },
-                )
-                .join("")}</ul>`;
-        return `<h2>Themes</h2>${list}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
+        // Two saved extractions for one revision stay two labelled groups: a
+        // merged proposal list shows the same topic twice and hides which
+        // result is current (#765).
+        const groups = t.themes.results
+          .map((result: {
+            result: string;
+            current: boolean;
+            modelVersion: string;
+            promptVersion: string;
+            proposedAt: string;
+            themes: readonly { result: string; id: string; title: string; description?: string }[];
+          }) => {
+            const list =
+              result.themes.length === 0
+                ? '<p class="empty">This extraction saved no proposals.</p>'
+                : `<ul>${result.themes
+                    .map((theme) => {
+                      const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                      return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                        theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                      } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                    })
+                    .join("")}</ul>`;
+            return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
+<p class="empty"><code>${escapeHtml(result.result)}</code> · ${escapeHtml(result.modelVersion)} · ${escapeHtml(result.promptVersion)} · saved ${escapeHtml(result.proposedAt)}</p>${list}`;
+          })
+          .join("");
+        const many =
+          t.themes.results.length > 1
+            ? `<p class="empty">${t.themes.results.length} saved theme extractions exist for this revision. Each is shown under its own identity; the newest is the current reading and the others are kept for reference, not merged into it.</p>`
+            : "";
+        return `<h2>Themes</h2>${many}${groups}${label ? `<p class="empty">${escapeHtml(label)}</p>` : ""}`;
       })()
     : "";
   const claims = renderClaims(t.claims);

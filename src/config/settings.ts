@@ -68,7 +68,22 @@ const modelId = z
  * The registry. Defaults mirror the values the current entry points apply,
  * so adopting the registry changes no deployed behaviour.
  */
+export const DEFAULT_RESEARCH_MAX_TOKENS = 4000;
+export const RESEARCH_MAX_TOKENS = "STEELE_RESEARCH_MAX_TOKENS";
+export const ResearchMaxTokensSchema = int(1, 32_000);
+export const RESEARCH_TOKEN_SETTING: SettingSpec<number> = {
+  key: RESEARCH_MAX_TOKENS,
+  domain: "research",
+  description:
+    "Maximum output tokens per new research request (1–32000). Read live before dispatch; existing reports remain reusable.",
+  schema: ResearchMaxTokensSchema,
+  default: String(DEFAULT_RESEARCH_MAX_TOKENS),
+  sensitivity: "public",
+  activation: "live",
+};
+
 export const SETTINGS: readonly SettingSpec[] = [
+  RESEARCH_TOKEN_SETTING,
   {
     key: "STEELE_WRITER_TURN_LIMIT",
     domain: "models",
@@ -88,6 +103,33 @@ export const SETTINGS: readonly SettingSpec[] = [
     activation: "restart",
   },
   {
+    key: "STEELE_SUBSTACK_ORIGIN",
+    domain: "providers",
+    description: "Private target publication origin for capability-limited draft delivery.",
+    schema: z.union([z.literal(""), z.url({ protocol: /^https$/ })]),
+    default: "",
+    sensitivity: "private",
+    activation: "live",
+  },
+  {
+    key: "STEELE_SUBSTACK_BYLINE_ID",
+    domain: "providers",
+    description: "Private draft byline identity; blank uses the destination default.",
+    schema: z.string().regex(/^[0-9]*$/),
+    default: "",
+    sensitivity: "private",
+    activation: "live",
+  },
+  {
+    key: "STEELE_DRAFT_SUBSTACK_DESTINATION",
+    domain: "providers",
+    description: "Logical destination for the one capability-limited Substack draft.",
+    schema: z.string().regex(/^(?!dummy-a$|dummy-b$)[a-z0-9][a-z0-9-]{0,62}$/),
+    default: "substack",
+    sensitivity: "public",
+    activation: "live",
+  },
+  {
     key: "STEELE_EDITORIAL_MAX_REVISIONS",
     domain: "models",
     description:
@@ -95,26 +137,27 @@ export const SETTINGS: readonly SettingSpec[] = [
     schema: z.coerce.number().pipe(EditorialPolicySchema.shape.maxRevisions),
     default: String(DEFAULT_EDITORIAL_POLICY.maxRevisions),
     sensitivity: "public",
-    activation: "restart",
+    activation: "live",
   },
   {
     key: "STEELE_EDITORIAL_EXHAUSTION_ACTION",
     domain: "models",
     description:
-      "When the revision limit is reached without approval: stop, or create-unpublished-draft. Snapshotted into each new run at submission; in-flight runs keep theirs.",
+      "When the revision limit is reached without approval: stop, or create-unpublished-draft. New live-policy runs read this before future decisions; historical decisions remain pinned.",
     schema: z.enum(EXHAUSTION_ACTIONS),
     default: DEFAULT_EXHAUSTION_ACTION,
     sensitivity: "public",
-    activation: "restart",
+    activation: "live",
   },
   {
     key: "STEELE_EDITORIAL_DEADLINE_MS",
     domain: "models",
-    description: "Shared assessment/judgment/revision deadline, serialized at submission.",
+    description:
+      "Shared assessment/judgment/revision deadline; live-policy runs apply future deadline decisions without rewriting completed work.",
     schema: z.coerce.number().pipe(EditorialPolicySchema.shape.deadlineMs),
     default: String(DEFAULT_EDITORIAL_POLICY.deadlineMs),
     sensitivity: "public",
-    activation: "restart",
+    activation: "live",
   },
   {
     key: "STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT",

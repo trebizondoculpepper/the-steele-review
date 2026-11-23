@@ -1,4 +1,9 @@
 import {
+  CapturedArticleIntentInputSchema,
+  CapturedArticleIntentSchema,
+  type CapturedArticleIntent,
+} from "../content/captured-article-intent.js";
+import {
   EditorialRecoveryBindingInputSchema,
   EditorialRecoveryBindingSchema,
   type EditorialRecoveryBindingInput,
@@ -15,6 +20,10 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  OwnerDraftBindingSchema,
+  type OwnerDraftBinding,
+} from "../content/owner-draft-authorization.js";
 
 /**
  * SQLite operation claims and pending event records for processing stages.
@@ -823,6 +832,68 @@ export class OperationStore {
       : undefined;
   }
 
+  /** First accepted capture submission wins; keep the legacy base workflow identity on redelivery. */
+  recordCapturedArticleIntent(
+    input: Omit<CapturedArticleIntent, "requestId" | "workflowKey" | "recordedAt">,
+  ): CapturedArticleIntent {
+    const parsed = CapturedArticleIntentInputSchema.parse(input);
+    const requestId = `capture-${parsed.sourceVersion.slice(7)}`;
+    const workflowKey = `${parsed.publicationId}/${parsed.postId}@${parsed.sourceVersion.slice(7, 39)}`;
+    const slot = `captured-article-intent:${parsed.publicationId}/${parsed.postId}:${parsed.sourceVersion}`;
+    const attemptKey = `article-attempt:${parsed.publicationId}/${parsed.postId}:${requestId}`;
+    return this.transaction(() => {
+      const prior = this.row(slot),
+        oldAttempt = this.row(attemptKey);
+      if (
+        (prior && prior.status !== "completed") ||
+        (oldAttempt && oldAttempt.status !== "completed")
+      )
+        throw new OperationStoreError("busy");
+      const saved = prior
+        ? CapturedArticleIntentSchema.parse(JSON.parse(prior.artifact!))
+        : CapturedArticleIntentSchema.parse({
+            ...parsed,
+            requestId,
+            workflowKey,
+            recordedAt: new Date(this.now()).toISOString(),
+          });
+      if (
+        saved.publicationId !== parsed.publicationId ||
+        saved.postId !== parsed.postId ||
+        saved.sourceVersion !== parsed.sourceVersion ||
+        saved.requestId !== requestId ||
+        saved.workflowKey !== workflowKey
+      )
+        throw new OperationStoreError("invalid-input");
+      const attempt = {
+        publicationId: saved.publicationId,
+        postId: saved.postId,
+        sourceVersion: saved.sourceVersion,
+        requestId,
+        workflowKey,
+        inputHash: saved.inputHash,
+        recordedAt: saved.recordedAt,
+      };
+      if (
+        oldAttempt &&
+        JSON.stringify(JSON.parse(oldAttempt.artifact!)) !== JSON.stringify(attempt)
+      )
+        throw new OperationStoreError("invalid-input");
+      for (const [key, value, existing] of [
+        [slot, saved, prior],
+        [attemptKey, attempt, oldAttempt],
+      ] as const) {
+        if (!existing)
+          this.db
+            .prepare(
+              "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+            )
+            .run(key, JSON.stringify(value), this.now());
+      }
+      return saved;
+    });
+  }
+
   /** Record one intentional article rerun before its external submission. */
   recordArticleAttempt(input: {
     publicationId: string;
@@ -894,6 +965,106 @@ export class OperationStore {
       recordedAt: value.recordedAt,
       inputHash: value.inputHash,
     };
+  }
+
+  /** Explicit operator intent, not an editorial verdict or model-controlled flag. */
+  recordOwnerDraftIntent(input: Omit<OwnerDraftBinding, "recordedAt">): OwnerDraftBinding {
+    const binding = OwnerDraftBindingSchema.parse({
+      ...input,
+      recordedAt: new Date(this.now()).toISOString(),
+    });
+    const key = `owner-draft-intent:${binding.publicationId}/${binding.postId}:${binding.requestId}`;
+    const slotKey = `owner-draft-slot:${binding.versionIdentity}`;
+    return this.transaction(() => {
+      // Validate BOTH identities before changing either. A rejected changed-input
+      // retry must not reserve an unrelated version for its failed request.
+      const rows = [this.row(key), this.row(slotKey)];
+      const existing = rows.map((row) => {
+        if (!row) return undefined;
+        if (row.status !== "completed") throw new OperationStoreError("busy");
+        const saved = OwnerDraftBindingSchema.parse(JSON.parse(row.artifact!));
+        if (
+          saved.requestId !== binding.requestId ||
+          saved.publicationId !== binding.publicationId ||
+          saved.postId !== binding.postId ||
+          saved.requestHash !== binding.requestHash ||
+          saved.versionIdentity !== binding.versionIdentity
+        )
+          throw new OperationStoreError("invalid-input");
+        return saved;
+      });
+      if (existing[0] && existing[1] && JSON.stringify(existing[0]) !== JSON.stringify(existing[1]))
+        throw new OperationStoreError("invalid-input");
+      const saved = existing[0] ?? existing[1] ?? binding;
+      for (const [i, operationKey] of [key, slotKey].entries()) {
+        if (!rows[i])
+          this.db
+            .prepare(
+              "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+            )
+            .run(operationKey, JSON.stringify(saved), this.now());
+      }
+      return saved;
+    });
+  }
+
+  ownerDraftIntent(
+    publicationId: string,
+    postId: string,
+    requestId: string,
+  ): OwnerDraftBinding | undefined {
+    const probe = OwnerDraftBindingSchema.parse({
+      publicationId,
+      postId,
+      requestId,
+      requestHash: "0".repeat(64),
+      versionIdentity: "0".repeat(64),
+      recordedAt: "2000-01-01T00:00:00.000Z",
+    });
+    const row = this.row(
+      `owner-draft-intent:${probe.publicationId}/${probe.postId}:${probe.requestId}`,
+    );
+    return row?.status === "completed"
+      ? OwnerDraftBindingSchema.parse(JSON.parse(row.artifact!))
+      : undefined;
+  }
+
+  /** The durable authorization and its pending event commit in one transaction. */
+  completeOwnerDraftAuthorization(input: {
+    binding: OwnerDraftBinding;
+    authorization: ArtifactReference;
+    event: PendingEventInput;
+  }): void {
+    const binding = OwnerDraftBindingSchema.parse(input.binding),
+      authorization = ArtifactReferenceSchema.parse(input.authorization);
+    const known = this.ownerDraftIntent(binding.publicationId, binding.postId, binding.requestId);
+    if (
+      JSON.stringify(known) !== JSON.stringify(binding) ||
+      !/^approved-[a-f0-9]{32}$/.test(input.event.eventId)
+    )
+      throw new OperationStoreError("invalid-input");
+    const value = { eventId: input.event.eventId, ownerDraft: { binding, authorization } };
+    const saved = this.reconcileCompleted(`approved:${input.event.eventId}`, value, [input.event]);
+    if (JSON.stringify(saved) !== JSON.stringify(value))
+      throw new OperationStoreError("invalid-input");
+  }
+
+  /** Consumer-side authority proof: an artifact alone cannot enable draft rehearsal. */
+  ownerDraftAuthorization(
+    eventId: string,
+  ): { binding: OwnerDraftBinding; authorization: ArtifactReference } | undefined {
+    if (!/^approved-[a-f0-9]{32}$/.test(eventId)) throw new OperationStoreError("invalid-input");
+    const row = this.row(`approved:${eventId}`);
+    if (row?.status !== "completed") return undefined;
+    return z
+      .object({
+        eventId: z.literal(eventId),
+        ownerDraft: z
+          .object({ binding: OwnerDraftBindingSchema, authorization: ArtifactReferenceSchema })
+          .strict(),
+      })
+      .strict()
+      .parse(JSON.parse(row.artifact!)).ownerDraft;
   }
 
   /** Stable explicit continuation intent, not a claim that its workflow completed. */
@@ -1248,6 +1419,25 @@ export class OperationStore {
       }
       insert.run(event.eventId, key, event.subject, event.payload, now, now);
     }
+  }
+
+  /** At-most-once best-effort diagnostic per exact retained partial response. */
+  markResearchPartialWarning(input: { jobId: string; discoveryHash: string }): boolean {
+    if (
+      !/^research-[0-9a-f]{32}$/.test(input.jobId) ||
+      !/^sha256:[0-9a-f]{64}$/.test(input.discoveryHash)
+    )
+      throw new OperationStoreError("invalid-input");
+    return this.transaction(() => {
+      const key = `research-partial-warning:${input.discoveryHash}`;
+      if (this.row(key)) return false;
+      this.db
+        .prepare(
+          "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+        )
+        .run(key, JSON.stringify({ code: "report-output-limit", jobId: input.jobId }), this.now());
+      return true;
+    });
   }
 
   /**

@@ -3,7 +3,7 @@ import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-stor
 import { ClaimOccurrenceSchema, type ClaimOccurrence } from "../analysis/claim-occurrence.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
-import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
+import { ClaimExtractionRecordSchema, withResolvedAuthor } from "../analysis/grounded-claims.js";
 import {
   DEFAULT_SAME_SPEAKER_PROMPT,
   findSameSpeakerHistory,
@@ -48,7 +48,8 @@ function claimOccurrences(raw: string): ClaimOccurrence[] {
   for (const c of record.claims) {
     if (c.kind !== "assertion" || c.classification !== "themed") continue;
     const o = ClaimOccurrenceSchema.safeParse(c.occurrence);
-    if (o.success) out.push(o.data);
+    // The resolved post author identifies the speaker of author-voice claims (#387).
+    if (o.success) out.push(withResolvedAuthor(o.data, record.extraction.attribution));
   }
   return out;
 }

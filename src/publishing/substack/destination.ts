@@ -3,14 +3,22 @@ import { z } from "zod";
 import {
   DestinationUnavailableError,
   UncertainDeliveryError,
+  assertDraftAuthorizationTarget,
   type DeliveryReceipt,
   type DestinationAdapter,
   type DestinationPreview,
   type ReconcileContext,
+  type DraftDeliveryControl,
 } from "../approved-article.js";
 import type { ArticleApprovedData } from "../../events/article-approved-event.js";
 import type { PublicationPayload } from "../../drafting/publication-payload.js";
-import { SubstackError, type SubstackClient, type SubstackDraft } from "./client.js";
+import type { DraftTarget } from "../../content/owner-draft-authorization.js";
+import {
+  SubstackError,
+  substackDraftOriginIdentity,
+  type SubstackClient,
+  type SubstackDraft,
+} from "./client.js";
 import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
 
 /**
@@ -55,6 +63,8 @@ export interface SubstackDestinationOptions {
    * an already-rendered intent, because the preview pins the chosen ID.
    */
   bylineId?: string;
+  /** Reads the live configuration handler before any new owner-draft effect. */
+  deliveryControl?: DraftDeliveryControl;
 }
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
@@ -62,22 +72,58 @@ const titleOf = (markdown: string, data: ArticleApprovedData): string => {
   return (heading ?? `A response: ${data.postId.replace(/-/g, " ")}`).slice(0, 280);
 };
 
-function receiptFor(draft: SubstackDraft): Omit<DeliveryReceipt, "destination" | "action"> {
+function receiptFor(
+  draft: SubstackDraft,
+  ownerDraft = false,
+): Omit<DeliveryReceipt, "destination" | "action"> {
   return {
     simulated: false,
     externalId: draft.id,
     deliveredAt: new Date().toISOString(),
+    ...(ownerDraft
+      ? { draftSafety: { unpublished: true as const, emailTimestampAbsent: true as const } }
+      : {}),
+  };
+}
+
+/** Pure protocol-adapter target projection. No publishing credentials are read. */
+export function substackDraftTarget(input: {
+  origin: string;
+  name: string;
+  bylineId?: string;
+}): DraftTarget {
+  if (input.bylineId !== undefined && !BylineId.safeParse(input.bylineId).success)
+    throw new Error("substack: invalid draft target");
+  return {
+    name: input.name,
+    provider: "substack",
+    action: "draft",
+    capability: "unpublished-no-email-v1",
+    identity: `sha256:${createHash("sha256")
+      .update(
+        JSON.stringify([
+          "substack-owner-draft-v1",
+          substackDraftOriginIdentity(input.origin),
+          input.name,
+          input.bylineId ?? null,
+        ]),
+      )
+      .digest("hex")}`,
   };
 }
 
 export class SubstackDraftDestination implements DestinationAdapter {
   readonly name: string;
   readonly action = "draft";
-  private readonly options: Required<Omit<SubstackDestinationOptions, "name" | "bylineId">>;
+  private readonly options: Required<
+    Omit<SubstackDestinationOptions, "name" | "bylineId" | "deliveryControl">
+  >;
   private readonly bylineId: string | undefined;
+  private readonly deliveryControl: DraftDeliveryControl | undefined;
 
   constructor(
-    private readonly client: Pick<SubstackClient, "createDraft" | "getDraft" | "listDrafts">,
+    private readonly client: Pick<SubstackClient, "createDraft" | "getDraft" | "listDrafts"> &
+      Partial<Pick<SubstackClient, "draftTargetIdentity">>,
     options: SubstackDestinationOptions = {},
   ) {
     this.name = options.name ?? "substack";
@@ -85,6 +131,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       throw new Error("substack: invalid byline id");
     }
     this.bylineId = options.bylineId;
+    this.deliveryControl = options.deliveryControl;
     this.options = {
       authRetryMs: options.authRetryMs ?? 15 * 60_000,
       rateLimitRetryMs: options.rateLimitRetryMs ?? 5 * 60_000,
@@ -94,6 +141,51 @@ export class SubstackDraftDestination implements DestinationAdapter {
 
   /** The approved structured fields are used verbatim, never re-derived (#458). */
   readonly supportsPublicationPayload = true;
+  get draftTarget(): DraftTarget | undefined {
+    if (!this.client.draftTargetIdentity) return undefined;
+    return {
+      name: this.name,
+      provider: "substack",
+      action: "draft",
+      capability: "unpublished-no-email-v1",
+      identity: `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify([
+            "substack-owner-draft-v1",
+            this.client.draftTargetIdentity,
+            this.name,
+            this.bylineId ?? null,
+          ]),
+        )
+        .digest("hex")}`,
+    };
+  }
+
+  private validScope(preview: DestinationPreview) {
+    return (
+      preview.draftAuthorization === undefined ||
+      JSON.stringify(preview.draftAuthorization) === JSON.stringify(this.draftTarget)
+    );
+  }
+  private safeState(draft: SubstackDraft, preview: DestinationPreview) {
+    if (draft.is_published || draft.email_sent_at != null) return false;
+    return (
+      !preview.draftAuthorization ||
+      (draft.is_published === false &&
+        Object.hasOwn(draft, "email_sent_at") &&
+        draft.email_sent_at === null)
+    );
+  }
+  private async requireLive(preview: DestinationPreview) {
+    if (!preview.draftAuthorization) return;
+    let allowed: boolean | undefined;
+    try {
+      allowed = await this.deliveryControl?.allow(preview.draftAuthorization);
+    } catch {
+      throw new DestinationUnavailableError("unavailable", this.options.unavailableRetryMs);
+    }
+    if (!allowed) throw new DestinationUnavailableError("paused", this.options.unavailableRetryMs);
+  }
 
   render({
     markdown,
@@ -118,7 +210,13 @@ export class SubstackDraftDestination implements DestinationAdapter {
       fingerprint: bodyFingerprint(body),
       ...(this.bylineId === undefined ? {} : { bylineId: this.bylineId }),
     };
-    return { body: JSON.stringify(preview), contentType: SUBSTACK_CONTENT_TYPE };
+    return {
+      body: JSON.stringify(preview),
+      contentType: SUBSTACK_CONTENT_TYPE,
+      ...(data.approvalKind === "owner-draft-rehearsal"
+        ? { draftAuthorization: assertDraftAuthorizationTarget(data, this) }
+        : {}),
+    };
   }
 
   /**
@@ -139,6 +237,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
   }
 
   private matches(draft: SubstackDraft, preview: z.infer<typeof PreviewBodySchema>): boolean {
+    if (draft.is_published || draft.email_sent_at != null) return false;
     if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body) return false;
     // Title, subtitle and body must all match the approved payload: two
     // approvals can differ only in subtitle while sharing title and body.
@@ -157,6 +256,8 @@ export class SubstackDraftDestination implements DestinationAdapter {
   }
 
   async deliver(preview: DestinationPreview, _key: string) {
+    if (!this.validScope(preview)) throw new Error("substack: draft authorization target mismatch");
+    await this.requireLive(preview);
     const p = PreviewBodySchema.parse(JSON.parse(preview.body));
     // Preflight: a read with no side effects, so an expired session is found
     // before anything is created.
@@ -167,6 +268,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       throw error;
     }
     let id: string;
+    await this.requireLive(preview);
     try {
       ({ id } = await this.client.createDraft({
         title: p.title,
@@ -190,12 +292,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
       throw new UncertainDeliveryError();
     }
     // Unexpected state is never retried (a retry would create a second draft).
-    if (stored.is_published) throw new UncertainDeliveryError();
+    if (!this.safeState(stored, preview)) throw new UncertainDeliveryError();
     if (!this.matches(stored, p)) {
       // Created but not as sent: record it so it is reviewed, never re-created.
       throw new UncertainDeliveryError();
     }
-    return receiptFor(stored);
+    return receiptFor(stored, !!preview.draftAuthorization);
   }
 
   async reconcile(
@@ -207,6 +309,8 @@ export class SubstackDraftDestination implements DestinationAdapter {
     | "unknown"
   > {
     if (!context) return "unknown";
+    if (!this.validScope(context.preview)) return "unknown";
+    await this.requireLive(context.preview);
     const p = PreviewBodySchema.parse(JSON.parse(context.preview.body));
     const intentAt = context.intentAt ? Date.parse(context.intentAt) : NaN;
     const found: SubstackDraft[] = [];
@@ -249,7 +353,19 @@ export class SubstackDraftDestination implements DestinationAdapter {
     }
     // A same-title draft whose body differs (for example one that read back
     // differently) is ambiguous: an operator decides, nothing is re-created.
-    if (found.length === 1 && sameSubmission === 1) return { delivered: receiptFor(found[0]!) };
+    if (found.length === 1 && sameSubmission === 1) {
+      let selected = found[0]!;
+      if (context.preview.draftAuthorization) {
+        try {
+          selected = await this.client.getDraft(selected.id);
+        } catch {
+          return "unknown";
+        }
+      }
+      return this.safeState(selected, context.preview) && this.matches(selected, p)
+        ? { delivered: receiptFor(selected, !!context.preview.draftAuthorization) }
+        : "unknown";
+    }
     if (sameHeadline === 0 && covered) return { delivered: false };
     return "unknown";
   }
@@ -258,3 +374,84 @@ export class SubstackDraftDestination implements DestinationAdapter {
 /** Stable digest of a preview, for logs and tests (never the body itself). */
 export const previewDigest = (preview: DestinationPreview) =>
   `sha256:${createHash("sha256").update(preview.body).digest("hex")}`;
+
+/**
+ * Live Substack publication with subscriber email (#789).
+ *
+ * Owner decision: future approved posts are published automatically and sent
+ * to subscribers. Approvals before the configured activation time (the
+ * existing backlog) and owner draft rehearsals are not eligible and are never
+ * touched. For an eligible approval, `deliver` first creates and verifies the
+ * draft exactly as the draft destination does, then publishes it with email
+ * and reads it back as published. Once the draft exists, any doubt (an
+ * uncertain publish, a read-back that is not published) is an uncertain
+ * delivery for an operator, never a retry: a retry could publish or email
+ * twice. `reconcile` therefore never claims a publication on its own.
+ */
+export class SubstackPublishDestination implements DestinationAdapter {
+  readonly name: string;
+  readonly action = "publish";
+  readonly supportsPublicationPayload = true;
+  private readonly draft: SubstackDraftDestination;
+  private readonly publishFrom: number;
+
+  constructor(
+    private readonly client: Pick<
+      SubstackClient,
+      "createDraft" | "getDraft" | "listDrafts" | "publishDraft"
+    >,
+    options: Omit<SubstackDestinationOptions, "deliveryControl"> & {
+      /** Only approvals at or after this instant are published (ISO 8601). */
+      publishFrom: string;
+    },
+  ) {
+    const from = Date.parse(options.publishFrom);
+    if (!Number.isFinite(from)) throw new Error("substack: invalid publish activation time");
+    this.publishFrom = from;
+    this.name = options.name ?? "substack";
+    this.draft = new SubstackDraftDestination(client, options);
+  }
+
+  eligible(data: ArticleApprovedData): boolean {
+    return (
+      data.approvalKind !== "owner-draft-rehearsal" &&
+      Date.parse(data.approvedAt) >= this.publishFrom
+    );
+  }
+
+  render(article: Parameters<DestinationAdapter["render"]>[0]): DestinationPreview {
+    if (!this.eligible(article.data)) throw new Error("substack: approval not eligible to publish");
+    return this.draft.render(article);
+  }
+
+  async deliver(preview: DestinationPreview, key: string) {
+    if (preview.draftAuthorization) throw new Error("substack: drafts are never published");
+    const created = await this.draft.deliver(preview, key);
+    const id = created.externalId!;
+    try {
+      await this.client.publishDraft(id, { send: true });
+    } catch {
+      // The draft exists. Whether the publish was rejected or its outcome is
+      // unknown, nothing is retried automatically: an operator decides.
+      throw new UncertainDeliveryError();
+    }
+    let stored: SubstackDraft;
+    try {
+      stored = await this.client.getDraft(id);
+    } catch {
+      throw new UncertainDeliveryError();
+    }
+    if (stored.is_published !== true) throw new UncertainDeliveryError();
+    return {
+      simulated: false,
+      externalId: id,
+      deliveredAt: new Date().toISOString(),
+      publicationSafety: { published: true as const, subscriberEmail: "requested" as const },
+    };
+  }
+
+  async reconcile(): Promise<"unknown"> {
+    // Never infer a publication or an email from a listing: an operator decides.
+    return "unknown";
+  }
+}

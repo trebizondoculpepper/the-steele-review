@@ -1,3 +1,4 @@
+import { recordArticleAttempt } from "../../src/workflow/article-attempt.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import * as clients from "@restatedev/restate-sdk-clients";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import { restateRuns } from "../../src/dashboard/adapters.js";
-import { articleTrigger } from "../../src/dashboard/trigger.js";
+import { articleTrigger, prepareArticleInput } from "../../src/dashboard/trigger.js";
 import { recoveryWorkflowKey } from "../../src/dashboard/recovery.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { articleRunKey, type ArticleRunInput } from "../../src/workflow/article-run.js";
@@ -62,7 +63,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(failFirst = false) {
   const submitted: { key: string; input: ArticleRunInput }[] = [];
   const runs = restateRuns("http://ingress.invalid", 1_000, operations, fakeConnect);
   const trigger = articleTrigger({
@@ -71,6 +72,10 @@ function setup() {
       submit: async (input, key) => {
         const k = key ?? articleRunKey(input);
         submitted.push({ key: k, input });
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("synthetic submission unavailable");
+        }
         // Restate does not restart a finished workflow under the same key.
         if (!engine.has(k)) engine.set(k, { state: "running" });
       },
@@ -153,12 +158,13 @@ describe("rescheduling a failed article (#749)", () => {
     expect(submitted).toHaveLength(0);
   });
 
-  it("attaches to a running run and submits a never-run revision under its stable key", async () => {
+  it("attaches to a running run and records a never-run revision under its explicit normal attempt", async () => {
     const { trigger, submitted } = setup();
     const form = await confirmForm(trigger);
     expect(await trigger.submit(form)).toMatchObject({ status: 303 });
-    expect(submitted.map((s) => s.key)).toEqual([articleRunKey(post)]);
-    // Now running under the stable key: a second confirm only attaches.
+    expect(submitted[0]!.key).toMatch(new RegExp(`^${articleRunKey(post)}~run-`));
+    expect(submitted[0]!.input.editorialExecution).toBe("live-policy-v1");
+    // The recorded normal attempt is now running: a second confirm only attaches.
     expect(await trigger.submit(await confirmForm(trigger))).toMatchObject({ status: 303 });
     expect(submitted).toHaveLength(1);
   });
@@ -180,11 +186,12 @@ describe("rescheduling a failed article (#749)", () => {
   it("never lets one confirmation start a second run after its first one finished", async () => {
     const { trigger, submitted } = setup();
     const form = await confirmForm(trigger);
-    // A never-run revision starts under its stable key...
+    // A never-run revision starts under one explicit normal identity...
     expect(await trigger.submit(form)).toMatchObject({ status: 303 });
-    expect(submitted.map((s) => s.key)).toEqual([articleRunKey(post)]);
+    expect(submitted[0]!.key).toMatch(new RegExp(`^${articleRunKey(post)}~run-`));
+    expect(submitted[0]!.input.editorialExecution).toBe("live-policy-v1");
     // ...and finishes. Reposting the same form must not start an attempt.
-    engine.set(articleRunKey(post), {
+    engine.set(submitted[0]!.key, {
       state: "finished",
       result: { outcome: "failed", research: [] },
     });
@@ -224,4 +231,43 @@ describe("rescheduling a failed article (#749)", () => {
     // The stable run's old failure is not presented as current.
     expect(await runs.status(post)).toEqual({ state: "unavailable" });
   });
+});
+
+it("retries a recorded live attempt after submission failure using the same form and exact key", async () => {
+  const { trigger, submitted } = setup(true);
+  engine.set(articleRunKey(post), { state: "finished", result: { outcome: "rejected" } });
+  const form = await confirmForm(trigger);
+  await expect(trigger.submit(form)).rejects.toThrow("synthetic submission unavailable");
+  expect((await trigger.submit(form)).status).toBe(303);
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1]).toEqual(submitted[0]);
+  expect(submitted[1]!.input.editorialExecution).toBe("live-policy-v1");
+  expect(submitted[1]!.input.editorial).toBeUndefined();
+  expect(operations.articleAttempts("pub", "post", revision)).toHaveLength(1);
+});
+it("a new confirmation reconnects the pending live attempt rather than changing its contract", async () => {
+  const { trigger, submitted } = setup(true);
+  engine.set(articleRunKey(post), { state: "finished", result: { outcome: "rejected" } });
+  await expect(trigger.submit(await confirmForm(trigger))).rejects.toThrow(
+    "synthetic submission unavailable",
+  );
+  expect((await trigger.submit(await confirmForm(trigger))).status).toBe(303);
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1]).toEqual(submitted[0]);
+  expect(operations.articleAttempts("pub", "post", revision)).toHaveLength(1);
+});
+it("reconnects an unsubmitted historical contract without upgrading its journal selector", async () => {
+  const input = (await prepareArticleInput(
+    {
+      archive: { lookup: async () => artifact, read: async () => JSON.stringify(record) },
+      researchDeadlineMs: 60000,
+      researchRequestLimit: 2,
+    },
+    { publication: "pub", post: "post", revision },
+  ))!;
+  const historical = recordArticleAttempt(operations, input, "legacy-pending-request");
+  const { trigger, submitted } = setup();
+  expect((await trigger.submit(await confirmForm(trigger))).status).toBe(303);
+  expect(submitted).toEqual([{ key: historical.identity.workflowKey, input: historical.input }]);
+  expect(submitted[0]!.input.editorialExecution).toBeUndefined();
 });

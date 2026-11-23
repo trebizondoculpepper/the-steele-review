@@ -247,4 +247,26 @@ describe("private output capture boundary (#536)", () => {
       ),
     ).rejects.toBe(error);
   });
+
+  it("sends the reasoning control only when configured (#797)", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const make = (reasoning?: { enabled: false }) =>
+      new OpenRouterProvider({
+        apiKey: KEY,
+        model: "vendor/m",
+        ...(reasoning ? { reasoning } : {}),
+        fetch: (async (_u: URL, init: RequestInit) => {
+          bodies.push(JSON.parse(String(init.body)));
+          return ok("{}");
+        }) as typeof fetch,
+      });
+    const signal = new AbortController().signal;
+    await make({ enabled: false }).complete(
+      { system: "s", user: "u", maxOutputChars: 100 },
+      signal,
+    );
+    await make().complete({ system: "s", user: "u", maxOutputChars: 100 }, signal);
+    expect(bodies[0]!.reasoning).toEqual({ enabled: false });
+    expect(bodies[1]).not.toHaveProperty("reasoning");
+  });
 });

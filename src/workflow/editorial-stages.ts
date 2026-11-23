@@ -210,9 +210,9 @@ export function editorialStages(deps: {
             metadataRef: version.metadata,
             ...(loaded.meta.fields ? { fields: loaded.meta.fields } : {}),
           },
-          ...(lineage
+          ...(lineage || beforeNewCall
             ? {
-                lineage,
+                ...(lineage ? { lineage } : {}),
                 beforeNewGeneration: async () => {
                   await beforeNewCall?.();
                   await assertEditorialBaseCurrent(deps.content, {
@@ -245,12 +245,12 @@ export function editorialStages(deps: {
         });
       } catch (error) {
         const cause = error instanceof DraftGuardStop ? error.failure : error;
-        if (lineage && cause instanceof WriterRecoveryGuardError)
+        if ((lineage || beforeNewCall) && cause instanceof WriterRecoveryGuardError)
           return {
-            failure: `recovery-${cause.code}`,
+            failure: `${lineage ? "recovery" : "live-policy"}-${cause.code}`,
             ...(error instanceof DraftGuardStop ? error.retention : {}),
           };
-        if (lineage && cause instanceof EditorialContinuationError)
+        if ((lineage || beforeNewCall) && cause instanceof EditorialContinuationError)
           return {
             failure: cause.code,
             ...(error instanceof DraftGuardStop ? error.retention : {}),

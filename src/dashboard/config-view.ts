@@ -1,8 +1,6 @@
-import {
-  inspectSettings,
-  resolveSettings,
-  type InspectedSetting,
-} from "../config/settings.js";
+import { researchTokensFromConfiguration } from "../config/research-tokens.js";
+import { RESEARCH_MAX_TOKENS } from "../config/settings.js";
+import { inspectSettings, resolveSettings, type InspectedSetting } from "../config/settings.js";
 
 /**
  * Read-only configuration page for the console (#544).
@@ -15,8 +13,9 @@ import {
  */
 
 function esc(value: string): string {
-  return value.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  return value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
 }
 
@@ -26,6 +25,34 @@ function valueCell(setting: InspectedSetting): string {
   if (setting.sensitivity !== "public") return "(not shown)";
   if (setting.state !== "configured" && setting.state !== "default") return "—";
   return setting.value === undefined ? "(not shown)" : esc(String(setting.value));
+}
+
+/**
+ * Editable form over public settings only (#545).
+ *
+ * The saved version travels with the form, so a submission made against a
+ * stale page is refused rather than applied over someone else's change.
+ */
+export function renderConfigForm(
+  inspected: readonly InspectedSetting[],
+  version: string,
+  revisions: readonly string[] = [],
+): string {
+  const editable = inspected.filter((s) => s.sensitivity === "public");
+  const inputs = editable
+    .map(
+      (s) =>
+        `<tr><td><label for="k-${esc(s.key)}">${esc(s.key)}</label></td><td>${esc(s.description)}</td><td><input id="k-${esc(s.key)}" name="k.${esc(s.key)}" value="${esc(
+          s.value === undefined ? "" : String(s.value),
+        )}" maxlength="10000"></td></tr>`,
+    )
+    .join("");
+  const history = revisions.length
+    ? `<h2>Restore a saved revision</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="restore"><input type="hidden" name="version" value="${esc(version)}"><label>Revision <select name="restoreVersion">${revisions
+        .map((r) => `<option value="${esc(r)}">${esc(r)}</option>`)
+        .join("")}</select></label> <button>Restore</button></form>`
+    : "";
+  return `<h2>Edit public settings</h2><form method="post" action="/config/save"><input type="hidden" name="action" value="save"><input type="hidden" name="version" value="${esc(version)}"><div class="wrap"><table><thead><tr><th>Setting</th><th>Description</th><th>Value</th></tr></thead><tbody>${inputs}</tbody></table></div><p>Other settings are managed outside the console and cannot be edited here. Live settings apply at the next supported decision or request. Settings marked restart require their owning service to reload.</p><button>Save</button></form>${history}`;
 }
 
 export function renderConfig(inspected: readonly InspectedSetting[]): string {
@@ -54,4 +81,32 @@ export function renderConfig(inspected: readonly InspectedSetting[]): string {
 /** The page body from the runtime environment and saved configuration file. */
 export function configPage(env: NodeJS.ProcessEnv, file: Record<string, string> = {}): string {
   return renderConfig(inspectSettings(resolveSettings(env, file)));
+}
+
+/** Fresh generic-handler read of the live research knob; never a credential file. */
+export async function currentConfigPage(
+  env: NodeJS.ProcessEnv,
+  file: Record<string, string> = {},
+): Promise<string> {
+  const resolved = resolveSettings(env, file);
+  const index = resolved.findIndex((r) => r.key === RESEARCH_MAX_TOKENS);
+  try {
+    const applied = await researchTokensFromConfiguration({ env })();
+    resolved[index] = {
+      key: RESEARCH_MAX_TOKENS,
+      value: applied.maxOutputTokens,
+      source: applied.source,
+    };
+  } catch {
+    resolved[index] = {
+      key: RESEARCH_MAX_TOKENS,
+      source: env[RESEARCH_MAX_TOKENS]
+        ? "environment"
+        : env.STEELE_CONFIG_PATH
+          ? "file"
+          : "default",
+      error: "invalid",
+    };
+  }
+  return renderConfig(inspectSettings(resolved));
 }
