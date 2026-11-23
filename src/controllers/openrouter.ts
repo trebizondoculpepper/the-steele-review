@@ -81,6 +81,12 @@ export interface OpenRouterConfig {
   temperature?: number;
   /** Hard cap on requested output tokens, independent of the character limit (default 8192). */
   maxOutputTokens?: number;
+  /**
+   * OpenRouter reasoning control (#797). `{ enabled: false }` stops a
+   * reasoning model spending the whole output budget thinking, which returns
+   * empty content. Omitted: the provider's default.
+   */
+  reasoning?: { enabled: false };
   fetch?: typeof fetch;
   onUsage?: (usage: ModelUsage) => void;
 }
@@ -167,6 +173,7 @@ export class OpenRouterProvider implements ExtractionModelProvider {
         ),
       ),
       temperature: this.config.temperature ?? 0,
+      ...(this.config.reasoning ? { reasoning: this.config.reasoning } : {}),
       usage: { include: true },
     };
     // Read once for this request, outside the transport catch, so a
@@ -274,7 +281,10 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
  */
 export function openRouterFromEnv(
   source: CredentialSource = {},
-  extra: Pick<OpenRouterConfig, "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens"> = {},
+  extra: Pick<
+    OpenRouterConfig,
+    "onUsage" | "fetch" | "timeoutMs" | "maxOutputTokens" | "reasoning"
+  > = {},
 ): OpenRouterProvider {
   const env = source.env ?? process.env;
   // Read live before each request (#738), never retained from start-up.
