@@ -36,6 +36,7 @@ import { collectionArtifactPath, CollectionRecordSchema } from "../collection/co
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import {
+  articleRunResult,
   articleRunKey,
   ResearchRequestLimitSchema,
   ArticleRunInputSchema,
@@ -253,7 +254,11 @@ async function main(): Promise<number> {
     console.log(values.json ? JSON.stringify(out) : `Article run ${key}: ${submitted}.`);
     return 0;
   }
-  const result = await wf.workflowAttach();
+  // A failed run is a terminal failure in Restate (#825); its saved result is read back.
+  const result = await articleRunResult(
+    () => Promise.resolve(wf.workflowAttach()),
+    () => Promise.resolve(wf.final()),
+  );
   console.log(JSON.stringify({ event: "article-run", key, submitted, ...result }));
   return result.outcome === "verified" || result.outcome === "drafted-unverified" ? 0 : 1;
 }

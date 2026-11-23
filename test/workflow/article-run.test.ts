@@ -19,7 +19,19 @@ import {
   type ArticleStages,
   type PinnedResearch,
   type Ref,
+  articleRunResult,
 } from "../../src/workflow/article-run.js";
+
+/**
+ * A run's result as consumers read it (#825): failed runs end as terminal
+ * failures in Restate, with the saved result read through `final`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const outcomeOf = (client: any) =>
+  articleRunResult(
+    () => Promise.resolve(client.workflowAttach()),
+    () => Promise.resolve(client.final()),
+  );
 import {
   createCapturedContentEvent,
   type CapturedContentData,
@@ -245,7 +257,7 @@ describe("unattended article run on Restate (#243)", () => {
     const verificationBefore = calls.verify;
     const old = ingress.workflowClient(Workflow, articleRunKey(input("legacy-contract")));
     await old.workflowSubmit(input("legacy-contract"));
-    expect((await old.workflowAttach()).outcome).toBe("verified");
+    expect((await outcomeOf(old)).outcome).toBe("verified");
     expect(editorialCalls).toEqual(before);
     expect(calls.verify).toBe(verificationBefore + 1);
     const request = {
@@ -255,7 +267,7 @@ describe("unattended article run on Restate (#243)", () => {
     };
     const current = ingress.workflowClient(Workflow, articleRunKey(request));
     await current.workflowSubmit(request);
-    const result = await current.workflowAttach();
+    const result = await outcomeOf(current);
     expect(result).toMatchObject({
       outcome: "verified",
       approvalEvent: "editorial-approved-once",
@@ -267,7 +279,7 @@ describe("unattended article run on Restate (#243)", () => {
       },
     });
     await current.workflowSubmit(request).catch(() => undefined);
-    await current.workflowAttach();
+    await outcomeOf(current);
     expect(editorialCalls).toEqual({
       prepare: before.prepare + 1,
       assess: before.assess + 1,
@@ -287,7 +299,7 @@ describe("unattended article run on Restate (#243)", () => {
     await wf.workflowSubmit(input("one"));
     // A redelivered trigger for the same revision attaches to the same run.
     await wf.workflowSubmit(input("one")).catch(() => undefined);
-    const result = await wf.workflowAttach();
+    const result = await outcomeOf(wf);
     expect(result.outcome).toBe("verified");
     expect(result.research.map((r) => r.outcome).sort()).toEqual([
       "finished",
@@ -321,7 +333,7 @@ describe("unattended article run on Restate (#243)", () => {
     const two = ingress.workflowClient(Workflow, articleRunKey(input("two")));
     const three = ingress.workflowClient(Workflow, articleRunKey(input("three")));
     await Promise.all([two.workflowSubmit(input("two")), three.workflowSubmit(input("three"))]);
-    const [a, b] = await Promise.all([two.workflowAttach(), three.workflowAttach()]);
+    const [a, b] = await Promise.all([outcomeOf(two), outcomeOf(three)]);
     expect(maxActive).toBeLessThanOrEqual(2);
     expect(a.outcome).toBe("verified");
     expect(b.outcome).toBe("verified");
@@ -333,14 +345,18 @@ describe("unattended article run on Restate (#243)", () => {
     const before = calls.themes;
     const bad = ingress.workflowClient(Workflow, articleRunKey(input("incomplete")));
     await bad.workflowSubmit(input("incomplete"));
-    expect(await bad.workflowAttach()).toMatchObject({
+    expect(await outcomeOf(bad)).toMatchObject({
       outcome: "failed",
       reason: expect.stringContaining("incomplete-capture"),
     });
     expect(calls.themes).toBe(before + 1);
+    // Restate counts it as failed (#825): attaching reports a terminal
+    // failure, while the saved result keeps the stage reason readable.
+    await expect(bad.workflowAttach()).rejects.toThrow(/article-run failed: .*incomplete-capture/);
+    expect(await bad.final()).toMatchObject({ outcome: "failed" });
     const invalid = ingress.workflowClient(Workflow, "pub/invalid@x");
     await invalid.workflowSubmit({ ...input("invalid"), researchDeadlineMs: -1 });
-    expect(await invalid.workflowAttach()).toMatchObject({
+    expect(await outcomeOf(invalid)).toMatchObject({
       outcome: "failed",
       reason: "invalid-input",
     });
@@ -360,7 +376,7 @@ describe("unattended article run on Restate (#243)", () => {
       if ((await run.workflowOutput()).ready) break;
       await sleep(150);
     }
-    await run.workflowAttach();
+    await outcomeOf(run);
     // While claims was slow, it was visible as the running stage after themes completed.
     expect(seen).toContain("claims:running");
     expect(seen.indexOf("claims:running")).toBeGreaterThan(-1);
@@ -375,7 +391,7 @@ describe("unattended article run on Restate (#243)", () => {
     const before = calls.claims;
     const run = ingress.workflowClient(Workflow, articleRunKey(input("no-credit")));
     await run.workflowSubmit(input("no-credit"));
-    expect(await run.workflowAttach()).toMatchObject({
+    expect(await outcomeOf(run)).toMatchObject({
       outcome: "failed",
       reason: "claims: credit-exhausted",
     });
@@ -387,14 +403,14 @@ describe("unattended article run on Restate (#243)", () => {
     const before = calls.approve;
     const ok = ingress.workflowClient(Workflow, articleRunKey(input("approved-one")));
     await ok.workflowSubmit(input("approved-one"));
-    expect(await ok.workflowAttach()).toMatchObject({
+    expect(await outcomeOf(ok)).toMatchObject({
       outcome: "verified",
       approvalEvent: expect.stringContaining("approved-one"),
     });
     expect(calls.approve).toBe(before + 1);
     const no = ingress.workflowClient(Workflow, articleRunKey(input("rejected-one")));
     await no.workflowSubmit(input("rejected-one"));
-    const rejected = await no.workflowAttach();
+    const rejected = await outcomeOf(no);
     expect(rejected).toMatchObject({ outcome: "rejected" });
     expect(rejected).not.toHaveProperty("approvalEvent");
     expect(calls.approve).toBe(before + 1);
@@ -525,11 +541,11 @@ describe("unattended article run on Restate (#243)", () => {
     expect(long.postId.length).toBeLessThanOrEqual(200);
     const wf = ingress.workflowClient(Workflow, articleRunKey(runInput));
     await wf.workflowSubmit(runInput);
-    expect(await wf.workflowAttach()).toMatchObject({ outcome: "verified" });
+    expect(await outcomeOf(wf)).toMatchObject({ outcome: "verified" });
     // Identity that does not match the captured source is refused.
     const bad = ingress.workflowClient(Workflow, "blog-example-site/mismatch@x");
     await bad.workflowSubmit({ ...runInput, postId: "other" });
-    expect(await bad.workflowAttach()).toMatchObject({
+    expect(await outcomeOf(bad)).toMatchObject({
       outcome: "failed",
       reason: "invalid-input",
     });
@@ -542,7 +558,7 @@ describe("unattended article run on Restate (#243)", () => {
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     await client.workflowSubmit(post);
     await client.workflowSubmit({ ...post, researchRequestLimit: 3 }).catch(() => undefined);
-    const result = await client.workflowAttach();
+    const result = await outcomeOf(client);
     expect(result.outcome).toBe("verified");
     expect(result.research.map((item) => item.outcome)).toEqual([
       "finished",
@@ -567,7 +583,7 @@ describe("new-job allowance in the workflow (#596)", () => {
     };
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     await client.workflowSubmit(post);
-    const result = await client.workflowAttach();
+    const result = await outcomeOf(client);
     expect(result.research.map((item) => item.outcome)).toEqual([
       "finished",
       "finished",
@@ -595,7 +611,7 @@ describe("one follow-up research round (#597)", () => {
     await client.workflowSubmit(post);
     // A duplicate delivery attaches to the same run; it commissions nothing more.
     await client.workflowSubmit(post).catch(() => undefined);
-    return client.workflowAttach();
+    return outcomeOf(client);
   };
 
   it("dispatches targeted follow-up research within the shared allowance and reassesses", async () => {
@@ -636,7 +652,7 @@ describe("follow-up after the deadline (#597)", () => {
     };
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     await client.workflowSubmit(post);
-    const result = await client.workflowAttach();
+    const result = await outcomeOf(client);
     expect(result.research).toEqual([
       expect.objectContaining({ outcome: "finished", round: 1 }),
       expect.objectContaining({ outcome: "not-commissioned", round: 2, mode: "targeted" }),
@@ -652,7 +668,7 @@ describe("non-blocking package readiness (#747)", () => {
     const post = { ...input(name), researchDeadlineMs: 60_000, ...extra } as ArticleRunInput;
     const client = ingress.workflowClient(Workflow, articleRunKey(post));
     await client.workflowSubmit(post);
-    return client.workflowAttach();
+    return outcomeOf(client);
   };
 
   it("drafts even for a run submitted without the contract (#769)", async () => {
@@ -701,7 +717,7 @@ it("retains safe writer failure diagnostics without verifying or approving a fai
   const beforeApprove = calls.approve;
   const wf = ingress.workflowClient(Workflow, articleRunKey(input("invalid-writer-json")));
   await wf.workflowSubmit(input("invalid-writer-json"));
-  expect(await wf.workflowAttach()).toMatchObject({
+  expect(await outcomeOf(wf)).toMatchObject({
     outcome: "failed",
     reason: "draft: json-syntax",
     draftDiagnostics: [ref("draft-diagnostics/fixture/syntax.json")],
@@ -714,7 +730,7 @@ it("retains mechanical failure and last valid verifier refs without approval", a
   const beforeApprove = calls.approve;
   const wf = ingress.workflowClient(Workflow, articleRunKey(input("mechanical-redraft-failed")));
   await wf.workflowSubmit(input("mechanical-redraft-failed"));
-  expect(await wf.workflowAttach()).toMatchObject({
+  expect(await outcomeOf(wf)).toMatchObject({
     outcome: "failed",
     reason: "verify: malformed-output",
     verification: ref("verifications/last-valid.json"),

@@ -15,7 +15,7 @@ import {
 } from "../events/captured-content-event.js";
 import { approvedArticleEventId, readDummyDeliveryProof } from "../publishing/approved-article.js";
 import { FIXTURE_HOST, FIXTURE_PUBLICATION, FIXTURE_TEXT } from "../workflow/article-fixture.js";
-import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
+import { articleRunKey, articleRunResult, type ArticleRunApi } from "../workflow/article-run.js";
 
 const Env = z.object({
   STEELE_FIXTURE_DEPLOYMENT: z.literal("1"),
@@ -125,7 +125,10 @@ async function main(): Promise<number> {
     const attach = async () => {
       for (;;) {
         try {
-          return await workflow.workflowAttach(rpc.opts({ signal }));
+          return await articleRunResult(
+            () => Promise.resolve(workflow.workflowAttach(rpc.opts({ signal }))),
+            () => Promise.resolve(workflow.final(rpc.opts({ signal }))),
+          );
         } catch (error) {
           if (!(error instanceof HttpCallError) || error.status !== 404) throw error;
           await delay(500, undefined, { signal });

@@ -489,6 +489,15 @@ export interface RunProgress {
   round?: number;
 }
 const PROGRESS_KEY = "progress";
+/**
+ * The structured final result of a run that ended in failure (#825). Saved
+ * before the run reports a terminal failure to Restate, so the dashboard
+ * trace and operator recovery still read the stage and reason through the
+ * shared `final` handler.
+ */
+const FINAL_KEY = "final";
+/** Prefix of the terminal error message a failed run reports to Restate. */
+export const ARTICLE_RUN_FAILED = "article-run failed";
 
 export function articleRunWorkflow(stages: ArticleStages) {
   // Only the shape is used for typed calls; handlers run in the Research service.
@@ -870,37 +879,73 @@ export function articleRunWorkflow(stages: ArticleStages) {
         async (ctx: restate.WorkflowSharedContext): Promise<RunProgress | null> =>
           (await ctx.get<RunProgress>(PROGRESS_KEY)) ?? null,
       ),
+      /** The saved final result of a failed run (#825); null otherwise. */
+      final: restate.handlers.workflow.shared(
+        async (ctx: restate.WorkflowSharedContext): Promise<ArticleRunFinal | null> =>
+          (await ctx.get<ArticleRunFinal>(FINAL_KEY)) ?? null,
+      ),
       run: async (ctx: restate.WorkflowContext, raw: ArticleRunInput): Promise<ArticleRunFinal> => {
         // Replay-safe: the workflow clock, never the process clock.
         const completedAt = async () => new Date(await ctx.date.now()).toISOString();
+        // A failed outcome is saved first, then reported to Restate as a
+        // terminal failure so it is counted as failed, never as succeeded
+        // (#825). Successful and degraded outcomes return normally.
+        const finish = (final: ArticleRunFinal): ArticleRunFinal => {
+          if (final.outcome !== "failed") return final;
+          ctx.set(FINAL_KEY, final);
+          throw new restate.TerminalError(`${ARTICLE_RUN_FAILED}: ${final.reason}`.slice(0, 400));
+        };
         const parsed = ArticleRunInputSchema.safeParse(raw);
         if (!parsed.success)
-          return {
+          return finish({
             outcome: "failed",
             reason: "invalid-input",
             research: [],
             completedAt: await completedAt(),
-          };
+          });
+        let final: ArticleRunFinal;
         try {
           const result = await runStages(ctx, parsed.data);
           logPipeline(parsed.data, "article-run", result.outcome, parsed.data.sourceVersion);
-          return { ...result, completedAt: await completedAt() };
+          final = { ...result, completedAt: await completedAt() };
         } catch (error) {
           // A permanent stage failure ends the run with its recorded reason.
-          if (error instanceof restate.TerminalError) {
-            logPipeline(parsed.data, "article-run", "failed", parsed.data.sourceVersion);
-            return {
-              outcome: "failed",
-              reason: error.message.slice(0, 300),
-              research: [],
-              completedAt: await completedAt(),
-            };
-          }
-          throw error;
+          if (!(error instanceof restate.TerminalError)) throw error;
+          logPipeline(parsed.data, "article-run", "failed", parsed.data.sourceVersion);
+          final = {
+            outcome: "failed",
+            reason: error.message.slice(0, 300),
+            research: [],
+            completedAt: await completedAt(),
+          };
         }
+        return finish(final);
       },
     },
   });
+}
+
+/**
+ * Reads a run's result (#825). A failed run reports a terminal failure to
+ * Restate instead of returning, so when the call fails, the saved final
+ * result is read through the shared `final` handler; any other error stands.
+ */
+export async function articleRunResult(
+  call: () => Promise<ArticleRunFinal>,
+  final: () => Promise<ArticleRunFinal | null>,
+): Promise<ArticleRunFinal> {
+  try {
+    return await call();
+  } catch (error) {
+    let saved: ArticleRunFinal | null;
+    try {
+      saved = await final();
+    } catch {
+      throw error;
+    }
+    if (saved) return saved;
+    throw error;
+  }
 }
 
 /** A run's final result: a full result, or a failure before stage outputs existed. */
