@@ -446,6 +446,54 @@ describe("configured source attribution (#462)", () => {
     });
   });
 
+  it("projects the resolved author into the index, with basis and version (#461)", async () => {
+    const docs: Array<{ publisher: Record<string, unknown> }> = [];
+    const index = {
+      indexDocument: async (_i: string, _id: string, doc: unknown) =>
+        void docs.push(doc as { publisher: Record<string, unknown> }),
+    };
+    const out = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      index,
+      source: source("p-attr-index"),
+      themes,
+      attribution,
+    });
+    if (out.status !== "extracted") throw new Error(out.status);
+    expect(docs.length).toBe(out.record.claims.length);
+    for (const d of docs)
+      expect(d.publisher).toMatchObject({
+        attributedAuthor: "Configured Author",
+        attributionBasis: "source-configured",
+        sourceMetadataVersion: attribution.sourceMetadataVersion,
+      });
+    // The stored occurrence keeps only what the capture observed.
+    expect(out.record.claims[0]!.occurrence.publisher).not.toHaveProperty("attributedAuthor");
+    // A reused extraction is indexed with the same projection.
+    docs.length = 0;
+    const again = await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      index,
+      source: source("p-attr-index"),
+      themes,
+      attribution,
+    });
+    expect(again).toMatchObject({ reused: true });
+    expect(docs[0]!.publisher.attributedAuthor).toBe("Configured Author");
+    // Without a resolved author nothing is attributed.
+    docs.length = 0;
+    await extractGroundedClaims({
+      provider: model(RESPONSE),
+      artifacts: content,
+      index,
+      source: source("p-attr-none"),
+      themes,
+    });
+    expect(docs[0]!.publisher).not.toHaveProperty("attributedAuthor");
+  });
+
   it("records an unknown or ambiguous attribution explicitly", async () => {
     const out = await extractGroundedClaims({
       provider: model(RESPONSE),
