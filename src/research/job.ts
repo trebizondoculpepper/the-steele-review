@@ -143,6 +143,10 @@ export const CitationRecordSchema = z
     support: z.enum(["supported", "unverified", "not-checked"]).optional(),
     sourceType: z.string().max(100).optional(),
     confidenceRationale: z.string().max(2000).optional(),
+    /** Writer hint from the bundle assessment (#795): 1 is the most responsive source. */
+    relevanceRank: z.number().int().min(1).max(500).optional(),
+    /** Writer hint: one line on what this source is useful for. */
+    writerNote: z.string().min(1).max(500).optional(),
     /** Claim-specific supporting passages in the archived source. */
     passages: z
       .array(
@@ -184,6 +188,8 @@ export const ResearchManifestSchema = z
     warnings: ResearchWarningsSchema.optional(),
     citations: z.array(CitationRecordSchema).max(500),
     gaps: z.array(z.string().min(1).max(2000)).max(100),
+    /** Writer orientation from the bundle assessment (#795). */
+    writerBrief: z.string().min(1).max(2000).optional(),
     provider: z.object({ model: z.string().min(1), costUsd: z.number().optional() }).strict(),
   })
   .strict();

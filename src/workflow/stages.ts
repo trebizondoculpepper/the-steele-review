@@ -17,6 +17,7 @@ import {
   retrieveStage,
   retrievalIds,
   retrieveOneStage,
+  supportBundleStage,
   supportStage,
   type StagedResearchDeps,
   type StageRef,
@@ -408,6 +409,8 @@ export function articleStages(deps: {
               retrieve: (i: StageRef) => retrieveStage(staged, i),
               ids: (i: StageRef) => retrievalIds(staged, i),
               support: (d: StageRef, i: StageRef, id: string) => supportStage(staged, d, i, id),
+              supportBundle: (d: StageRef, i: StageRef, ids: string[]) =>
+                supportBundleStage(staged, d, i, ids),
               retrieveOne: (i: StageRef, id: string) => retrieveOneStage(staged, i, id),
               assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
               failed: (request: ResearchRequest, failure: string) =>

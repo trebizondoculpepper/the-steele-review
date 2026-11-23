@@ -11,7 +11,13 @@ import {
   RetrievalOutcomeSchema,
   type RetrievalOutcome,
 } from "./citation-inventory.js";
-import { CitationSupportSchema, supportPath, type CitationSupport } from "./citation-support.js";
+import {
+  BundleBriefSchema,
+  bundleBriefPath,
+  CitationSupportSchema,
+  supportPath,
+  type CitationSupport,
+} from "./citation-support.js";
 import type { DiscoveryData } from "./discovery-data.js";
 import { readResearchDiscovery } from "./discovery.js";
 import {
@@ -179,6 +185,18 @@ export async function assembleResearch(input: {
 
   const gaps: string[] = [];
   const citations: ResearchManifest["citations"] = [];
+  // The bundle assessment's writer orientation, when one was saved (#795).
+  let writerBrief: string | undefined;
+  {
+    const ref = await input.artifacts.lookup(
+      bundleBriefPath(input.inventory, input.supportIdentity ?? "none"),
+    );
+    const parsed = ref
+      ? BundleBriefSchema.safeParse(JSON.parse(await input.artifacts.read(ref)))
+      : undefined;
+    if (parsed?.success && parsed.data.judge === (input.supportIdentity ?? "none"))
+      writerBrief = parsed.data.brief;
+  }
   let pending = 0;
   let invalid = 0;
   for (const entry of inventory.entries) {
@@ -209,6 +227,10 @@ export async function assembleResearch(input: {
           ? {
               support: judged.support,
               passages: judged.passages,
+              ...(judged.relevanceRank !== undefined
+                ? { relevanceRank: judged.relevanceRank }
+                : {}),
+              ...(judged.writerNote ? { writerNote: judged.writerNote } : {}),
               ...(judged.monitored
                 ? {
                     sourceType: "monitored-source",
@@ -284,6 +306,7 @@ export async function assembleResearch(input: {
       report: toRef(report),
       citations: citations.slice(0, 500),
       gaps: gaps.slice(0, 100),
+      ...(writerBrief ? { writerBrief } : {}),
       provider: {
         model: data.model,
         ...(data.usage?.costUsd !== undefined ? { costUsd: data.usage.costUsd } : {}),
