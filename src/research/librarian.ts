@@ -47,6 +47,9 @@ import {
  *    dossier references the writer handoff (#148) needs.
  */
 
+/** Claims sent in one theme research request (#533); the rest stay explicit gaps. */
+export const MAX_CLAIMS_PER_REQUEST = 12;
+
 export const COVERAGE_SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
@@ -290,7 +293,8 @@ export const CoverageRecordSchema = z
            * reassessment replays the same request instead of rebuilding it
            * from dossier coverage that this run may itself have changed.
            */
-          targetedClaims: z.array(z.string()).max(100).optional(),
+          // One batch per theme since #533, so a batch can hold every claim of the theme.
+          targetedClaims: z.array(z.string()).max(1000).optional(),
         })
         .strict(),
     ),
@@ -441,7 +445,6 @@ const MAX_DOSSIER_ENTRIES = 1000;
 /** Schema limit on citations per covered claim. */
 const MAX_CLAIM_CITATIONS = 50;
 /** The researcher's per-request claim limit. */
-const MAX_REQUEST_CLAIMS = 100;
 
 const citationId = (url: string, passage: string) =>
   `c-${createHash("sha256")
@@ -539,7 +542,7 @@ const RequestPlanEntries = z.record(
     z
       .object({
         mode: z.literal("targeted"),
-        batches: z.array(z.array(z.string()).max(100)).max(100),
+        batches: z.array(z.array(z.string()).max(1000)).max(100),
         question: z.string().min(1).max(4000).optional(),
         promptVersion: z.string().min(1).max(200).optional(),
       })
@@ -1025,6 +1028,15 @@ export async function assessPostCoverage(input: {
       targeted ? group.map((c) => c.key) : undefined,
     );
   };
+  /**
+   * At most MAX_CLAIMS_PER_REQUEST claims per theme request (#533), in the
+   * group's priority order; the rest are recorded as omitted and stay gaps.
+   */
+  function boundedClaims<T extends { claimRecordId: string }>(all: T[]) {
+    const claims = all.slice(0, MAX_CLAIMS_PER_REQUEST);
+    const omitted = all.slice(MAX_CLAIMS_PER_REQUEST).map((c) => c.claimRecordId);
+    return { claims, ...(omitted.length ? { omittedClaimRecordIds: omitted.slice(0, 500) } : {}) };
+  }
   function buildRequest(
     dossierId: string,
     group: AcceptedClaim[],
@@ -1039,13 +1051,15 @@ export async function assessPostCoverage(input: {
       pass,
       ...(previousJobId ? { previousJobId } : {}),
       ...(targeted ? {} : { post: postRefs }),
-      claims: group
-        .flatMap((c) => c.extracted)
-        .map((e) => ({
-          claimRecordId: e.claimRecordId,
-          statement: e.statement,
-          themeIds: [dossierId],
-        })),
+      ...boundedClaims(
+        group
+          .flatMap((c) => c.extracted)
+          .map((e) => ({
+            claimRecordId: e.claimRecordId,
+            statement: e.statement,
+            themeIds: [dossierId],
+          })),
+      ),
       question: targeted
         ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
         : pass === 1
@@ -1196,11 +1210,11 @@ export async function assessPostCoverage(input: {
     }
   }
 
+  // One initial request per theme (#533): the request itself is bounded to
+  // MAX_CLAIMS_PER_REQUEST claims, with the rest recorded as omitted, instead
+  // of fanning a large theme out into several paid requests.
   function chunks(list: AcceptedClaim[]): AcceptedClaim[][] {
-    const out: AcceptedClaim[][] = [];
-    for (let start = 0; start < list.length; start += MAX_REQUEST_CLAIMS)
-      out.push(list.slice(start, start + MAX_REQUEST_CLAIMS));
-    return out;
+    return list.length ? [list] : [];
   }
 
   async function enhanceGroup(dossierId: string, group: AcceptedClaim[], question?: string) {

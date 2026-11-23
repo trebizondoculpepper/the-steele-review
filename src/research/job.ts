@@ -78,6 +78,12 @@ export const ResearchRequestSchema = z
           .strict(),
       )
       .max(100),
+    /**
+     * Claims of this theme left out of the request by the per-request claim
+     * cap (#533), in priority order. Recorded for audit; not part of the job
+     * identity. They stay explicit gaps in coverage.
+     */
+    omittedClaimRecordIds: z.array(z.string().min(1).max(200)).max(500).optional(),
     /** The question or gap the research must resolve (optional for a manual subject request). */
     question: z.string().trim().min(1).max(4000).optional(),
     /** Existing corpus material the researcher should start from. */
