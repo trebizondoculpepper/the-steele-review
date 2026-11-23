@@ -232,6 +232,11 @@ const overview = statusView(
       ? { discoveryStatusPath: e.STEELE_DISCOVERY_STATUS_PATH }
       : {}),
   }),
+  // One console link on Overview (#816), only from a validated private base.
+  (() => {
+    const home = restateUiLinks(env.data.STEELE_RESTATE_UI_URL)?.home;
+    return home ? { consoleUrl: home } : {};
+  })(),
 );
 // Live article-stage activity for the console (#479).
 const activityArticles = es ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined) : undefined;
