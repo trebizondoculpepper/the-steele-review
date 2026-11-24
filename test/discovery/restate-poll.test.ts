@@ -126,6 +126,13 @@ describe("discovery polls as Restate jobs (#823)", { timeout: 120_000 }, () => {
     failFeed.delete("delta");
   });
 
+  it("rejects a malformed poll request without retrying it", async () => {
+    await expect(poll("alpha").poll(null as never)).rejects.toThrow(/invalid poll request/);
+    await expect(poll("alpha").poll({ reason: "sometimes" } as never)).rejects.toThrow(
+      /invalid poll request/,
+    );
+  });
+
   it("refuses a source this endpoint does not serve", async () => {
     await expect(poll("unknown").poll({ reason: "manual" })).rejects.toThrow(/unknown source/);
   });

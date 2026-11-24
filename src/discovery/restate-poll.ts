@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import * as restate from "@restatedev/restate-sdk";
+import { z } from "zod";
 import type { SubstackItem } from "../content/substack-item.js";
 import { createDiscoveryEvent } from "../events/discovery-event.js";
 import type { DiscoveryPublisher } from "./run.js";
@@ -36,11 +37,15 @@ export const SEEN_LIMIT = 2_000;
 /** Feed items considered per poll. */
 export const MAX_ITEMS = 500;
 
-export interface PollRequest {
-  reason: "scheduled" | "manual";
-  /** Scheduled calls only: the schedule chain this call belongs to. */
-  generation?: string;
-}
+/** A poll request; checked at the handler boundary. */
+export const PollRequestSchema = z
+  .object({
+    reason: z.enum(["scheduled", "manual"]),
+    /** Scheduled calls only: the schedule chain this call belongs to. */
+    generation: z.string().min(1).max(100).optional(),
+  })
+  .strict();
+export type PollRequest = z.infer<typeof PollRequestSchema>;
 
 export interface PollOutcome {
   status: "complete" | "failed" | "coalesced" | "superseded";
@@ -145,8 +150,12 @@ export function discoveryPollObject(deps: DiscoveryPollDeps) {
         return { generation };
       },
 
-      poll: async (ctx: restate.ObjectContext, request: PollRequest): Promise<PollOutcome> => {
+      poll: async (ctx: restate.ObjectContext, raw: PollRequest): Promise<PollOutcome> => {
         if (!served.has(ctx.key)) throw new restate.TerminalError("discovery: unknown source");
+        // Malformed input must not hold the source's exclusive slot in retries.
+        const parsed = PollRequestSchema.safeParse(raw);
+        if (!parsed.success) throw new restate.TerminalError("discovery: invalid poll request");
+        const request = parsed.data;
         const scheduled = request.reason === "scheduled";
         if (scheduled && request.generation !== (await ctx.get<string>("generation"))) {
           return { status: "superseded", discovered: 0, published: 0 };
