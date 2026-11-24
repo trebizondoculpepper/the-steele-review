@@ -264,6 +264,12 @@ export interface DestinationAdapter {
    * `not-eligible` before anything is read, rendered or sent.
    */
   eligible?(data: ArticleApprovedData): boolean;
+  /**
+   * Optional check before a new delivery intent is recorded (#388). A
+   * `DestinationUnavailableError` here leaves nothing retained, so the
+   * delivery is simply retried later.
+   */
+  prepare?(): Promise<void>;
   /** Absent by default. Only a narrowly implemented draft-only adapter opts in. */
   readonly draftTarget?: DraftTarget;
   /** Opt in only when render consumes the exact structured fields without substitutions. */
@@ -745,6 +751,7 @@ async function deliverApprovedArticle(
     const candidate = `${JSON.stringify({ key, at: now.toISOString(), article: currentArticle }, null, 2)}\n`;
     // Intent precedes preview and any external action. Re-read the retained
     // write-once result rather than assuming this caller won the write.
+    if (!priorIntent) await destination.prepare?.();
     const intentRef =
       priorIntent ??
       (await writeOnce(input.content, `${dir}/intent.json`, candidate));

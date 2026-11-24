@@ -840,6 +840,36 @@ describe(
       expect(s.published).toHaveLength(0);
     });
 
+    it("holds on an unreadable email policy without recording intent, then delivers (#388)", async () => {
+      const payload = await approvedPayload();
+      const s = fakeSubstack();
+      let readable = false;
+      const d = new SubstackPublishDestination(s, {
+        publishFrom: "2000-01-01T00:00:00.000Z",
+        withoutEmail: async () => {
+          if (!readable) throw new Error("config unreadable");
+          return new Set(["pub/a-post"]);
+        },
+      });
+      const run = () =>
+        handleApprovedArticle({
+          payload,
+          destination: d,
+          schedule: { delayMs: 0 },
+          content,
+          operations,
+          owner: "t",
+          retryDelayMs: 1,
+        });
+      expect((await run()).action).toBe("nak");
+      expect(s.drafts).toHaveLength(0);
+      readable = true;
+      const out = await run();
+      expect(out.action).toBe("ack");
+      expect(s.drafts).toHaveLength(1);
+      expect(s.published).toHaveLength(1);
+    });
+
     it("waits on an expired session without exhausting the approval, then delivers once", async () => {
       const payload = await approvedPayload();
       const s = fakeSubstack();

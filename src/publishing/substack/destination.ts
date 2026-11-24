@@ -456,6 +456,7 @@ export class SubstackPublishDestination implements DestinationAdapter {
   private readonly draft: SubstackDraftDestination;
   private readonly publishFrom: number;
   private readonly withoutEmail: () => Promise<ReadonlySet<string>>;
+  private prepared: ReadonlySet<string> | undefined;
 
   constructor(
     private readonly client: Pick<
@@ -501,17 +502,30 @@ export class SubstackPublishDestination implements DestinationAdapter {
     };
   }
 
+  /** Read the live email policy before any delivery intent is recorded (#388). */
+  async prepare(): Promise<void> {
+    try {
+      this.prepared = await this.withoutEmail();
+    } catch {
+      throw new DestinationUnavailableError("unavailable", 30_000);
+    }
+  }
+
   async deliver(preview: DestinationPreview, key: string) {
     if (preview.draftAuthorization)
       throw new Error("substack: drafts are never published");
     // The live email policy is read before anything is created; if it cannot
     // be read, nothing happens and the delivery is retried later.
-    let withoutEmail: ReadonlySet<string>;
+    // Prefer the current value; if it cannot be read now, use the value read
+    // by prepare() before the intent was recorded.
+    let withoutEmail: ReadonlySet<string> | undefined;
     try {
       withoutEmail = await this.withoutEmail();
     } catch {
-      throw new DestinationUnavailableError("unavailable", 30_000);
+      withoutEmail = this.prepared;
     }
+    if (!withoutEmail)
+      throw new DestinationUnavailableError("unavailable", 30_000);
     // A preview saved before #388 has no post and keeps its original behaviour.
     const send = !(preview.post && withoutEmail.has(preview.post));
     const created = await this.draft.deliver(preview, key);
