@@ -27,6 +27,7 @@ import type {
   SourcePort,
   RecentArticlesPort,
   RunState,
+  RunByKeyPort,
   RunStatusPort,
 } from "./articles.js";
 import type { Ref } from "../workflow/article-run.js";
@@ -362,7 +363,7 @@ export function restateRuns(
   timeoutMs = 5_000,
   attempts?: Pick<OperationStore, "articleAttempts">,
   connect: typeof clients.connect = clients.connect,
-): RunStatusPort {
+): RunStatusPort & RunByKeyPort {
   const ingress = connect({ url: ingressUrl });
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
@@ -405,6 +406,9 @@ export function restateRuns(
     }
   };
   return {
+    // One exact workflow key, as Restate reports it (#522): an attempt or a
+    // recovery is read as itself, never resolved to the article's current run.
+    byKey: read,
     async status(post): Promise<RunState> {
       const normal = await read(articleRunKey(post));
       let recorded: ReturnType<OperationStore["articleAttempts"]>;
