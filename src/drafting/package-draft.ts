@@ -813,7 +813,13 @@ export async function draftFromPackage(input: {
             kind: c.kind,
             ...(c.pattern ? { pattern: c.pattern } : {}),
             uncertainty: c.uncertainty,
-            earlier: c.earlier.map((e) => ({ publishedAt: e.publishedAt, quote: e.quote })),
+            // Cross-speaker parallels name who said each earlier passage (#388).
+            earlier: c.earlier.map((e) => ({
+              publishedAt: e.publishedAt,
+              quote: e.quote,
+              ...(e.speaker ? { speaker: e.speaker } : {}),
+            })),
+            ...(c.relation ? { relation: c.relation } : {}),
             comparison: c.comparison.text,
             ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
             ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
