@@ -51,7 +51,8 @@ export const CorpusRefinementInputSchema = z
     catalogue: z
       .object({
         repository: z.string().min(1).max(200),
-        commit: z.string().regex(/^[0-9a-f]{7,64}$/),
+        // The artifact store's own format: a full 40- or 64-character hash.
+        commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
         path: z.string().min(1).max(400),
         sha256: z.string().regex(/^[0-9a-f]{64}$/),
       })

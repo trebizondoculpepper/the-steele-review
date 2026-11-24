@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { CorpusRefinementInputSchema } from "../../src/corpus-refinement/contracts.js";
 import {
   SEED_CATALOGUE,
   UnderlyingCatalogueSchema,
@@ -152,5 +153,18 @@ describe("reusing reviewed underlying ideas (#852)", () => {
       entries: [...SEED_CATALOGUE.entries, SEED_CATALOGUE.entries[0]],
     };
     expect(UnderlyingCatalogueSchema.safeParse(twice).success).toBe(false);
+  });
+
+  it("accepts only full commit hashes for the pinned catalogue, as the store does", () => {
+    const input = (commit: string) =>
+      CorpusRefinementInputSchema.safeParse({
+        runId: "run-a",
+        mode: "archive",
+        claims: [{ id: "c1", statement: "s" }],
+        catalogue: { repository: "r", commit, path: "p", sha256: "a".repeat(64) },
+      }).success;
+    expect(input("a".repeat(40))).toBe(true);
+    expect(input("a".repeat(64))).toBe(true);
+    expect(input("abc1234")).toBe(false);
   });
 });
