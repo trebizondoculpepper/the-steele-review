@@ -23,8 +23,11 @@ export const CORPUS_REFINEMENT_REJECTED = [
   "map-ideas-to-underlying-rejected",
 ] as const;
 export type CorpusRefinementRejected = (typeof CORPUS_REFINEMENT_REJECTED)[number];
-/** Any saved, named output of a run. */
-export type CorpusRefinementOutput = CorpusRefinementStage | CorpusRefinementRejected;
+/** Any saved, named output of a run, including the reject handler's batch (#855). */
+export type CorpusRefinementOutput =
+  | CorpusRefinementStage
+  | CorpusRefinementRejected
+  | "rejected-claims";
 
 /** What a mapper did not carry forward (#857). */
 export interface RejectedOutput {
@@ -181,6 +184,8 @@ export interface CorpusRefinementResult {
   stages: { stage: CorpusRefinementStage; artifact: StageRef }[];
   /** Archive mode (#857): each mapper's rejected output, routed for review by exact reference. */
   rejected?: { stage: CorpusRefinementRejected; artifact: StageRef }[];
+  /** Archive mode (#855): the run's rejected-claims batch. */
+  rejectedClaims?: StageRef;
 }
 
 /** A bounded synthetic batch for the prototype CLI and tests. */

@@ -90,4 +90,32 @@ describe("saved Corpus Refinement artifacts are validated before use (#848)", ()
     expect(out.value.underlying[0]!.match).toEqual({ decision: "reuse", catalogueId: "g1" });
     expect(out.value.catalogue).toEqual(catalogue);
   });
+
+  it("requires a rejected-claims batch to keep its provenance (#855)", () => {
+    const r = { repository: "r", commit: "c", path: "p", sha256: "s" };
+    const batch = (over: Record<string, unknown>) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        stage: "rejected-claims",
+        runId: "run-a",
+        identity: ID,
+        value: {
+          schemaVersion: 1,
+          kind: "corpus-rejected-claims",
+          runId: "run-a",
+          sources: { batch: r, ideas: r, rejected: [r] },
+          entries: [],
+          candidates: [{ stage: "map-claims-to-ideas", index: 0, reason: "x", output: r }],
+          technical: [],
+          ...over,
+        },
+      });
+    const read = (text: string) =>
+      readStageArtifact(text, { runId: "run-a", stage: "rejected-claims" });
+    expect(() => read(batch({}))).not.toThrow();
+    expect(() => read(batch({ sources: {} }))).toThrow(/payload:sources/);
+    expect(() =>
+      read(batch({ candidates: [{ stage: "map-claims-to-ideas", index: 0, reason: "x" }] })),
+    ).toThrow(/payload:candidates/);
+  });
 });
