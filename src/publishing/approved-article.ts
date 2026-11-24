@@ -158,8 +158,11 @@ export interface DestinationPreview {
   /** Exact saved payload, retained by simulated previews; live adapters map approved fields explicitly. */
   publication?: PublicationPayload;
   draftAuthorization?: DraftTarget;
-  /** Set by a publishing destination for a post configured to publish without email (#388). */
-  subscriberEmail?: "suppressed";
+  /**
+   * `publicationId/postId`, recorded by the publishing destination so the
+   * live email policy can be applied at delivery (#388).
+   */
+  post?: string;
 }
 
 export const DeliveryReceiptSchema = z

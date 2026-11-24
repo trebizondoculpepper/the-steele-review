@@ -688,7 +688,7 @@ describe("Substack live publication with subscriber email (#789)", () => {
     const s = fakeSubstack();
     const d = new SubstackPublishDestination(s, {
       publishFrom: FROM,
-      withoutEmail: new Set([`${f.publicationId}/${f.postId}`]),
+      withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
     });
     const receipt = await d.deliver(
       d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
@@ -706,6 +706,27 @@ describe("Substack live publication with subscriber email (#789)", () => {
     expect(s.published[1]).toEqual({ id: "101", send: true });
   });
 
+  it("reads the email policy at delivery and creates nothing if it cannot (#388)", async () => {
+    const s = fakeSubstack();
+    let policy: () => Promise<ReadonlySet<string>> = async () => {
+      throw new Error("config unreadable");
+    };
+    const d = new SubstackPublishDestination(s, {
+      publishFrom: FROM,
+      withoutEmail: () => policy(),
+    });
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data: fresh });
+    await expect(d.deliver(preview, "k")).rejects.toBeInstanceOf(
+      DestinationUnavailableError,
+    );
+    expect(s.drafts).toHaveLength(0);
+    // An owner edit after rendering applies to this delivery.
+    const f = fresh as { publicationId: string; postId: string };
+    policy = async () => new Set([`${f.publicationId}/${f.postId}`]);
+    await d.deliver(preview, "k");
+    expect(s.published).toEqual([{ id: "100", send: false }]);
+  });
+
   it("treats an email timestamp on a suppressed publish as uncertain (#388)", async () => {
     const f = fresh as { publicationId: string; postId: string };
     const s = fakeSubstack();
@@ -715,7 +736,7 @@ describe("Substack live publication with subscriber email (#789)", () => {
     };
     const d = new SubstackPublishDestination(s, {
       publishFrom: FROM,
-      withoutEmail: new Set([`${f.publicationId}/${f.postId}`]),
+      withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
     });
     await expect(
       d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),

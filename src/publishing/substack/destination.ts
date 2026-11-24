@@ -455,7 +455,7 @@ export class SubstackPublishDestination implements DestinationAdapter {
   readonly supportsPublicationPayload = true;
   private readonly draft: SubstackDraftDestination;
   private readonly publishFrom: number;
-  private readonly withoutEmail: ReadonlySet<string>;
+  private readonly withoutEmail: () => Promise<ReadonlySet<string>>;
 
   constructor(
     private readonly client: Pick<
@@ -466,18 +466,19 @@ export class SubstackPublishDestination implements DestinationAdapter {
       /** Only approvals at or after this instant are published (ISO 8601). */
       publishFrom: string;
       /**
-       * Posts (`publicationId/postId`) published without subscriber email, for
-       * an owner-authorized validation run (#388). Every other post is
+       * Current posts (`publicationId/postId`) to publish without subscriber
+       * email, for an owner-authorized validation run (#388). Read from live
+       * configuration immediately before each delivery. Every other post is
        * published with email as before.
        */
-      withoutEmail?: ReadonlySet<string>;
+      withoutEmail?: () => Promise<ReadonlySet<string>>;
     },
   ) {
     const from = Date.parse(options.publishFrom);
     if (!Number.isFinite(from))
       throw new Error("substack: invalid publish activation time");
     this.publishFrom = from;
-    this.withoutEmail = options.withoutEmail ?? new Set();
+    this.withoutEmail = options.withoutEmail ?? (async () => new Set<string>());
     this.name = options.name ?? "substack";
     this.draft = new SubstackDraftDestination(client, options);
   }
@@ -494,20 +495,27 @@ export class SubstackPublishDestination implements DestinationAdapter {
   ): DestinationPreview {
     if (!this.eligible(article.data))
       throw new Error("substack: approval not eligible to publish");
-    const preview = this.draft.render(article);
-    return this.withoutEmail.has(
-      `${article.data.publicationId}/${article.data.postId}`,
-    )
-      ? { ...preview, subscriberEmail: "suppressed" }
-      : preview;
+    return {
+      ...this.draft.render(article),
+      post: `${article.data.publicationId}/${article.data.postId}`,
+    };
   }
 
   async deliver(preview: DestinationPreview, key: string) {
     if (preview.draftAuthorization)
       throw new Error("substack: drafts are never published");
+    // The live email policy is read before anything is created; if it cannot
+    // be read, nothing happens and the delivery is retried later.
+    let withoutEmail: ReadonlySet<string>;
+    try {
+      withoutEmail = await this.withoutEmail();
+    } catch {
+      throw new DestinationUnavailableError("unavailable", 30_000);
+    }
+    // A preview saved before #388 has no post and keeps its original behaviour.
+    const send = !(preview.post && withoutEmail.has(preview.post));
     const created = await this.draft.deliver(preview, key);
     const id = created.externalId!;
-    const send = preview.subscriberEmail !== "suppressed";
     try {
       await this.client.publishDraft(id, { send });
     } catch {
