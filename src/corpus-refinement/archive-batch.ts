@@ -9,7 +9,8 @@ import { CorpusRefinementInputSchema, type CorpusRefinementInput } from "./contr
  * claim carries its statement, its saved utterance (the quoted source passage)
  * and whether that record found it covered. Claims are taken in extraction
  * order until the claim or character budget is reached; the rest are recorded
- * as deferred. Read-only: nothing in the archive or content is written.
+ * as deferred. Claims are drawn round-robin across the posts, in order.
+ * Read-only: nothing in the archive or content is written.
  */
 
 type Store = Pick<GitArtifactStore, "list" | "read" | "lookup">;
@@ -52,6 +53,7 @@ export async function buildArchiveBatch(
   const sources: ArchiveBatch["sources"] = [];
   const missing: string[] = [];
   let chars = 0;
+  const perPost: CorpusRefinementInput["claims"][] = [];
   for (const post of options.posts) {
     const [publicationId, postId] = post.split("/");
     if (!publicationId || !postId) {
@@ -75,24 +77,38 @@ export async function buildArchiveBatch(
     ) as ClaimExtraction;
     sources.push({ post, coverage: latest.path, claims: latest.record.claimResult });
     const status = new Map(latest.record.claims.map((c) => [c.claimRecordId, c.status]));
-    for (const c of extraction.claims) {
-      const id = c.claimRecordId;
-      const statement = c.claim?.statement?.trim();
-      if (!id || !statement) continue;
-      const utterance = c.occurrence?.passage?.trim().slice(0, 4000);
-      const size = statement.length + (utterance?.length ?? 0);
+    perPost.push(
+      extraction.claims.flatMap((c) => {
+        const id = c.claimRecordId;
+        const statement = c.claim?.statement?.trim();
+        if (!id || !statement) return [];
+        const utterance = c.occurrence?.passage?.trim().slice(0, 4000);
+        return [
+          {
+            id,
+            statement: statement.slice(0, 2000),
+            ...(utterance ? { utterance } : {}),
+            covered: status.get(id) === "covered",
+            post,
+          },
+        ];
+      }),
+    );
+  }
+  // Round-robin across posts, in the given order, so a bounded batch draws
+  // from every post rather than filling up from the first (#832).
+  const longest = Math.max(0, ...perPost.map((p) => p.length));
+  for (let i = 0; i < longest; i++) {
+    for (const list of perPost) {
+      const claim = list[i];
+      if (!claim) continue;
+      const size = claim.statement.length + (claim.utterance?.length ?? 0);
       if (claims.length >= options.maxClaims || chars + size > options.maxChars) {
-        deferred.push(id);
+        deferred.push(claim.id);
         continue;
       }
       chars += size;
-      claims.push({
-        id,
-        statement: statement.slice(0, 2000),
-        ...(utterance ? { utterance } : {}),
-        covered: status.get(id) === "covered",
-        post,
-      });
+      claims.push(claim);
     }
   }
   const input = CorpusRefinementInputSchema.parse({
