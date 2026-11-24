@@ -1,6 +1,9 @@
 import type { DiscoveryAcceptance } from "./staged-need-evidence.js";
 import { canonicalNeedId, CanonicalNeedSchema } from "./canonical-need.js";
-import { researchNeedBindings, retainResearchNeedBindings } from "./need-bindings.js";
+import {
+  researchNeedBindings,
+  retainResearchNeedBindings,
+} from "./need-bindings.js";
 import {
   researchNeedEvidence,
   cachedResearchEvidenceStore,
@@ -11,12 +14,21 @@ import {
 import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
+import {
+  parseThemeProposalResult,
+  type ThemeProposalResult,
+} from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
-import { ThemeMappingCatalogue, normaliseMappingKey } from "./theme-mappings.js";
+import {
+  ThemeMappingCatalogue,
+  normaliseMappingKey,
+} from "./theme-mappings.js";
 import { listCanonicalThemes, ThemeStore } from "./theme-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import {
   DossierStore,
   StaleDossierError,
@@ -157,7 +169,10 @@ export class EmbeddingShortlister implements ThemeShortlister {
     dossiers: DossierSummary[],
   ): Promise<Shortlist> {
     if (this.embedder.vectorSpace !== this.expectedVectorSpace) {
-      return new LexicalShortlister("incompatible vector space").shortlist(theme, dossiers);
+      return new LexicalShortlister("incompatible vector space").shortlist(
+        theme,
+        dossiers,
+      );
     }
     if (dossiers.length === 0) return { method: "embedding", candidates: [] };
     let vectors: number[][];
@@ -167,16 +182,25 @@ export class EmbeddingShortlister implements ThemeShortlister {
         ...dossiers.map((d) => `${d.title}. ${d.scope}`),
       ]);
     } catch {
-      return new LexicalShortlister("embedding unavailable").shortlist(theme, dossiers);
+      return new LexicalShortlister("embedding unavailable").shortlist(
+        theme,
+        dossiers,
+      );
     }
     const width = vectors[0]?.length ?? 0;
     const valid =
       Array.isArray(vectors) &&
       vectors.length === dossiers.length + 1 &&
       width > 0 &&
-      vectors.every((v) => Array.isArray(v) && v.length === width && v.every(Number.isFinite));
+      vectors.every(
+        (v) =>
+          Array.isArray(v) && v.length === width && v.every(Number.isFinite),
+      );
     if (!valid)
-      return new LexicalShortlister("embedding response invalid").shortlist(theme, dossiers);
+      return new LexicalShortlister("embedding response invalid").shortlist(
+        theme,
+        dossiers,
+      );
     const [q, ...rest] = vectors;
     const candidates = dossiers
       .map((d, i) => ({ ...d, score: cosine(q, rest[i]) }))
@@ -192,19 +216,26 @@ export interface ThemeEquivalenceJudge {
     theme: { title: string; description: string },
     shortlist: Shortlist,
   ): Promise<
-    { themeId: string; rationale: string } | { themeId: null; rationale: string; abstain?: boolean }
+    | { themeId: string; rationale: string }
+    | { themeId: null; rationale: string; abstain?: boolean }
   >;
 }
 
 /** Threshold judge: the best candidate when its score clears the method's bar, else a new dossier. */
 export class ThresholdJudge implements ThemeEquivalenceJudge {
   constructor(private readonly bars = { embedding: 0.85, lexical: 0.5 }) {}
-  async decide(theme: { title: string; description: string }, shortlist: Shortlist) {
+  async decide(
+    theme: { title: string; description: string },
+    shortlist: Shortlist,
+  ) {
     // A dossier with the identical title is the same theme for this default judge;
     // a judge that understands meaning may still reject a homonym.
     const same = (x: string) => x.normalize("NFKC").trim().toLowerCase();
-    const identical = shortlist.candidates.find((c) => same(c.title) === same(theme.title));
-    if (identical) return { themeId: identical.themeId, rationale: "identical title" };
+    const identical = shortlist.candidates.find(
+      (c) => same(c.title) === same(theme.title),
+    );
+    if (identical)
+      return { themeId: identical.themeId, rationale: "identical title" };
     const best = shortlist.candidates[0];
     if (best && best.score >= this.bars[shortlist.method]) {
       return {
@@ -216,13 +247,20 @@ export class ThresholdJudge implements ThemeEquivalenceJudge {
   }
 }
 
-const titleWords = (text: string) => new Set(normaliseMappingKey(text).split(" ").filter(Boolean));
+const titleWords = (text: string) =>
+  new Set(normaliseMappingKey(text).split(" ").filter(Boolean));
 const titleSimilarity = (a: string, b: string) => {
   const left = titleWords(a);
   const right = titleWords(b);
   const union = new Set([...left, ...right]).size;
   return union ? [...left].filter((word) => right.has(word)).length / union : 0;
 };
+/** Words whose presence on one side only can reverse a scope's meaning. */
+const POLARITY = new Set(
+  "not no never none without against anti pro for permit permits permitted allow allows allowed prohibit prohibits prohibited ban bans banned forbid forbids forbidden oppose opposes opposed support supports supported deny denies denied reject rejects rejected accept accepts accepted legal illegal lawful unlawful true false increase increases decrease decreases".split(
+    " ",
+  ),
+);
 /** New-plan policy: titles select candidates; conflicting/unknown meaning stays unresolved. */
 export class TitleFirstJudge extends ThresholdJudge {
   override async decide(
@@ -239,13 +277,22 @@ export class TitleFirstJudge extends ThresholdJudge {
       const query = meaningful(theme.description);
       const compatible = exact.filter((c) => {
         if (
-          normaliseMappingKey(c.scope) === normaliseMappingKey(theme.description) &&
+          normaliseMappingKey(c.scope) ===
+            normaliseMappingKey(theme.description) &&
           query.size > 0
         )
           return true;
         const scope = meaningful(c.scope);
         const overlap = [...query].filter((t) => scope.has(t)).length;
-        return overlap > 0 && overlap / new Set([...query, ...scope]).size >= 0.5;
+        // Shared vocabulary does not show shared meaning when the words that
+        // differ change polarity ("permits" vs "prohibits"): abstain instead.
+        const differing = [...query, ...scope].filter(
+          (t) => !(query.has(t) && scope.has(t)),
+        );
+        if (differing.some((t) => POLARITY.has(t))) return false;
+        return (
+          overlap > 0 && overlap / new Set([...query, ...scope]).size >= 0.5
+        );
       });
       if (compatible.length === 1)
         return {
@@ -261,7 +308,9 @@ export class TitleFirstJudge extends ThresholdJudge {
             : "same-title description conflicts or lacks enough scope",
       };
     }
-    const titled = shortlist.candidates.filter((c) => titleSimilarity(theme.title, c.title) >= 0.5);
+    const titled = shortlist.candidates.filter(
+      (c) => titleSimilarity(theme.title, c.title) >= 0.5,
+    );
     if (titled.length) {
       const ranked = titled
         .map((c) => ({
@@ -271,24 +320,34 @@ export class TitleFirstJudge extends ThresholdJudge {
         }))
         .sort(
           (a, b) =>
-            b.title - a.title || b.scope - a.scope || a.c.themeId.localeCompare(b.c.themeId),
+            b.title - a.title ||
+            b.scope - a.scope ||
+            a.c.themeId.localeCompare(b.c.themeId),
         );
       const best = ranked[0]!;
       if (
         best.scope >= 0.5 &&
-        (ranked.length === 1 || best.title > ranked[1]!.title || best.scope > ranked[1]!.scope)
+        (ranked.length === 1 ||
+          best.title > ranked[1]!.title ||
+          best.scope > ranked[1]!.scope)
       )
         return {
           themeId: best.c.themeId,
-          rationale: "title-primary similarity with compatible description scope",
+          rationale:
+            "title-primary similarity with compatible description scope",
         };
-      return { themeId: null, abstain: true, rationale: "near-title meaning remains ambiguous" };
+      return {
+        themeId: null,
+        abstain: true,
+        rationale: "near-title meaning remains ambiguous",
+      };
     }
     if (shortlist.candidates.length)
       return {
         themeId: null,
         abstain: true,
-        rationale: "description similarity alone does not establish title equivalence",
+        rationale:
+          "description similarity alone does not establish title equivalence",
       };
     return { themeId: null, rationale: "no existing title candidate" };
   }
@@ -303,7 +362,10 @@ export function newDossierId(title: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
     .replace(/-+$/, "");
-  const hash = createHash("sha256").update(title.trim().toLowerCase()).digest("hex").slice(0, 8);
+  const hash = createHash("sha256")
+    .update(title.trim().toLowerCase())
+    .digest("hex")
+    .slice(0, 8);
   return `${slug || "theme"}-${hash}`;
 }
 
@@ -321,7 +383,12 @@ export const CoverageStatusSchema = z.enum([
 export type CoverageStatus = z.infer<typeof CoverageStatusSchema>;
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    hash: z.string(),
+  })
   .strict();
 
 export const CoverageRecordSchema = z
@@ -389,7 +456,9 @@ export const CoverageRecordSchema = z
           status: CoverageStatusSchema,
           reused: z.boolean(),
           jobIds: z.array(z.string()),
-          citations: z.array(z.object({ url: z.string(), passage: z.string() }).strict()),
+          citations: z.array(
+            z.object({ url: z.string(), passage: z.string() }).strict(),
+          ),
           evidenceFrom: z
             .object({ dossier: Ref, citationIds: z.array(z.string()) })
             .strict()
@@ -463,7 +532,9 @@ interface AcceptedClaim {
   need?: z.infer<typeof CanonicalNeedSchema>;
 }
 
-function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): AcceptedClaim[] {
+function acceptedClaims(
+  record: z.infer<typeof ClaimExtractionRecordSchema>,
+): AcceptedClaim[] {
   // Versions 2 and 3 share the accepted/candidate contract; version 1 is legacy.
   if (record.schemaVersion < 2) return [];
   const seen = new Map<string, AcceptedClaim>();
@@ -471,10 +542,14 @@ function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): Ac
     const parsed = ClaimText.safeParse(c.claim);
     if (!c.claimRecordId || !parsed.success) continue;
     const prior = seen.get(c.claimRecordId);
-    const proposalIds = [...new Set([...(prior?.proposalIds ?? []), ...c.themeIds])];
+    const proposalIds = [
+      ...new Set([...(prior?.proposalIds ?? []), ...c.themeIds]),
+    ];
     seen.set(c.claimRecordId, {
       key: c.claimRecordId,
-      extracted: [{ claimRecordId: c.claimRecordId, statement: parsed.data.statement }],
+      extracted: [
+        { claimRecordId: c.claimRecordId, statement: parsed.data.statement },
+      ],
       claimRecordId: c.claimRecordId,
       statement: parsed.data.statement,
       proposalIds,
@@ -490,11 +565,19 @@ function assess(
   manifest: ResearchManifest | undefined,
 ): Map<
   string,
-  { status: CoverageStatus; citations: { url: string; passage: string }[]; reason?: string }
+  {
+    status: CoverageStatus;
+    citations: { url: string; passage: string }[];
+    reason?: string;
+  }
 > {
   const out = new Map<
     string,
-    { status: CoverageStatus; citations: { url: string; passage: string }[]; reason?: string }
+    {
+      status: CoverageStatus;
+      citations: { url: string; passage: string }[];
+      reason?: string;
+    }
   >();
   for (const claim of claims) {
     if (job.status === "not-commissioned") {
@@ -592,7 +675,8 @@ export function mergeCoverage(
     // Never let a later failed or unsupported assessment erase evidence another
     // assessment has already saved for the same claim.
     const saved = coverage.get(claim.claimRecordId);
-    if (saved?.status === "covered" && claim.status !== "evidence-found") continue;
+    if (saved?.status === "covered" && claim.status !== "evidence-found")
+      continue;
     if (!saved && coverage.size >= MAX_DOSSIER_ENTRIES) {
       overflow.push(claim.claimRecordId);
       continue;
@@ -641,7 +725,9 @@ export function mergeCoverage(
       : []),
     ...[...coverage.values()]
       .filter((c) => c.status === "gap")
-      .map((c) => `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000)),
+      .map((c) =>
+        `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000),
+      ),
   ].slice(0, 200);
   return {
     ...metadata,
@@ -655,7 +741,12 @@ export function mergeCoverage(
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
 type RequestPlanEntry =
   | { mode: "full" }
-  | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
+  | {
+      mode: "targeted";
+      batches: string[][];
+      question?: string;
+      promptVersion?: string;
+    };
 const RequestPlanEntries = z.record(
   z.string(),
   z.union([
@@ -710,7 +801,9 @@ const CanonicalRequestPlanSchema = z
   });
 const RequestPlanSchema = z.union([
   CanonicalRequestPlanSchema,
-  z.object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries }).strict(),
+  z
+    .object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries })
+    .strict(),
   OrderedRequestPlanSchema,
 ]);
 type RequestPlan = z.infer<typeof RequestPlanSchema>;
@@ -726,7 +819,8 @@ function commissioningOrder(groups: string[], history: string[][]): string[] {
   for (const sequence of sequences) {
     let next = 0;
     for (const id of recorded) if (sequence[next] === id) next++;
-    if (next !== sequence.length) throw new Error("research-plan-order-conflict");
+    if (next !== sequence.length)
+      throw new Error("research-plan-order-conflict");
   }
   return [...recorded, ...groups.filter((id) => !recorded.includes(id))];
 }
@@ -751,8 +845,13 @@ async function retainedPlan(
     .slice(0, 32);
   const path = `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`;
   const existing = await artifacts.lookup(path);
-  if (existing) return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
-  const ref = await writeOnce(artifacts, path, RequestPlanSchema.parse(proposed()));
+  if (existing)
+    return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
+  const ref = await writeOnce(
+    artifacts,
+    path,
+    RequestPlanSchema.parse(proposed()),
+  );
   return RequestPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
 }
 
@@ -773,22 +872,32 @@ async function priorMappings(
   for (const path of paths) {
     const ref = await artifacts.lookup(path);
     if (!ref) continue;
-    const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+    const parsed = CoverageRecordSchema.safeParse(
+      JSON.parse(await artifacts.read(ref)),
+    );
     if (!parsed.success) continue;
     const r = parsed.data;
-    const same = (a: { commit: string; path: string; hash: string }, b: ArtifactRef) =>
-      a.commit === b.commit && a.path === b.path && a.hash === `sha256:${b.sha256}`;
-    if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
+    const same = (
+      a: { commit: string; path: string; hash: string },
+      b: ArtifactRef,
+    ) =>
+      a.commit === b.commit &&
+      a.path === b.path &&
+      a.hash === `sha256:${b.sha256}`;
+    if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult))
+      continue;
     commissioningOrders?.push([
       ...new Set(r.jobs.filter((j) => j.pass === 1).map((j) => j.dossierId)),
     ]);
-    for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    for (const m of r.mappings)
+      if (!out.has(m.proposalId)) out.set(m.proposalId, m);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
       if (j.targetedClaims && targetedBatches) {
         const batches = targetedBatches.get(j.dossierId) ?? [];
         const key = JSON.stringify(j.targetedClaims);
-        if (!batches.some((b) => JSON.stringify(b) === key)) batches.push(j.targetedClaims);
+        if (!batches.some((b) => JSON.stringify(b) === key))
+          batches.push(j.targetedClaims);
         targetedBatches.set(j.dossierId, batches);
       }
     }
@@ -819,7 +928,10 @@ async function saveDossier(
       body: `# ${title}\n\nDossier maintained by the librarian.`,
     };
     try {
-      return await store.save({ ...base, metadata: update(base.metadata) }, current?.ref);
+      return await store.save(
+        { ...base, metadata: update(base.metadata) },
+        current?.ref,
+      );
     } catch (error) {
       if (error instanceof StaleDossierError && attempt < 3) continue;
       throw error;
@@ -845,7 +957,10 @@ export async function readCoverageAnalysis(
   const claimRecord = ClaimExtractionRecordSchema.parse(
     JSON.parse(await artifacts.read(claimResult)),
   );
-  const post = { publicationId: themes.post.publicationId, postId: themes.post.postId };
+  const post = {
+    publicationId: themes.post.publicationId,
+    postId: themes.post.postId,
+  };
   if (
     claimRecord.post.publicationId !== post.publicationId ||
     claimRecord.post.postId !== post.postId
@@ -856,10 +971,14 @@ export async function readCoverageAnalysis(
     claimRecord.themeResult &&
     claimRecord.themeResult !== `${themeResult.commit}:${themeResult.path}`
   ) {
-    throw new Error("claim result was extracted against a different theme result");
+    throw new Error(
+      "claim result was extracted against a different theme result",
+    );
   }
   if (claimRecord.sourceVersion !== themes.sourceVersion) {
-    throw new Error("theme and claim results describe different source versions");
+    throw new Error(
+      "theme and claim results describe different source versions",
+    );
   }
   return { themes, claimRecord, post };
 }
@@ -869,8 +988,14 @@ export async function readCoverageAnalysis(
  * carries its configured disambiguation, so research concerns the intended
  * person and not a namesake; other themes are named by title as before.
  */
-function researchSubject(p: { title: string; description?: string; origin?: string }): string {
-  return p.origin === "source-author" && p.description ? `${p.title} (${p.description})` : p.title;
+function researchSubject(p: {
+  title: string;
+  description?: string;
+  origin?: string;
+}): string {
+  return p.origin === "source-author" && p.description
+    ? `${p.title} (${p.description})`
+    : p.title;
 }
 
 export async function assessPostCoverage(input: {
@@ -882,7 +1007,10 @@ export async function assessPostCoverage(input: {
   shortlister: ThemeShortlister;
   judge?: ThemeEquivalenceJudge;
   /** Claims whose remaining gap could materially change the writer's account. */
-  consequential?: (claim: { claimRecordId: string; statement: string }) => boolean;
+  consequential?: (claim: {
+    claimRecordId: string;
+    statement: string;
+  }) => boolean;
   now?: () => Date;
   /**
    * Job IDs the workflow already journaled for this analysis (#658). A run
@@ -899,20 +1027,25 @@ export async function assessPostCoverage(input: {
     input.claimResult,
   );
   const planKey = createHash("sha256")
-    .update(JSON.stringify([toRef(input.themeResult), toRef(input.claimResult)]))
+    .update(
+      JSON.stringify([toRef(input.themeResult), toRef(input.claimResult)]),
+    )
     .digest("hex")
     .slice(0, 32);
   const priorPlanRef = await input.artifacts.lookup(
     `librarian/request-plans/${post.publicationId}/${post.postId}/${planKey}.json`,
   );
   const priorPlan = priorPlanRef
-    ? RequestPlanSchema.parse(JSON.parse(await input.artifacts.read(priorPlanRef)))
+    ? RequestPlanSchema.parse(
+        JSON.parse(await input.artifacts.read(priorPlanRef)),
+      )
     : undefined;
   const canonicalMode = priorPlan
     ? priorPlan.schemaVersion === 3
     : claimRecord.schemaVersion >= 3 && !input.pinnedJobIds?.size;
   const judge: ThemeEquivalenceJudge =
-    input.judge ?? (canonicalMode ? new TitleFirstJudge() : new ThresholdJudge());
+    input.judge ??
+    (canonicalMode ? new TitleFirstJudge() : new ThresholdJudge());
   const dossiers = new DossierStore(input.artifacts);
   const summaries: DossierSummary[] = [];
   const existing = new Map<string, StoredDossier>();
@@ -931,12 +1064,18 @@ export async function assessPostCoverage(input: {
     const d = await dossiers.current(id);
     if (!d) continue;
     existing.set(id, d);
-    summaries.push({ themeId: id, title: d.metadata.title, scope: d.metadata.scope });
+    summaries.push({
+      themeId: id,
+      title: d.metadata.title,
+      scope: d.metadata.scope,
+    });
   }
   // Canonical themes exist without research (#528): an established theme with
   // no dossier yet is still a mapping target, so it is never duplicated.
   const established = new Set(existing.keys());
-  for (const theme of await listCanonicalThemes(new ThemeStore(input.artifacts))) {
+  for (const theme of await listCanonicalThemes(
+    new ThemeStore(input.artifacts),
+  )) {
     established.add(theme.id);
     if (existing.has(theme.id)) {
       if (canonicalMode) {
@@ -955,7 +1094,9 @@ export async function assessPostCoverage(input: {
 
   // 1. Map proposed themes to dossiers.
   const mappings: CoverageRecord["mappings"] = [];
-  const unresolvedProposals: NonNullable<CoverageRecord["unresolvedProposals"]> = [];
+  const unresolvedProposals: NonNullable<
+    CoverageRecord["unresolvedProposals"]
+  > = [];
   const dossierFor = new Map<string, string>();
   const titles = new Map<string, string>();
   /** Research subject per dossier from this analysis's own proposals (never editable dossier titles). */
@@ -984,9 +1125,16 @@ export async function assessPostCoverage(input: {
     const kept = savedMapping.get(p.id);
     if (kept) {
       dossierFor.set(p.id, kept.dossierId);
-      titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
-      if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, researchSubject(p));
-      mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
+      titles.set(
+        kept.dossierId,
+        existing.get(kept.dossierId)?.metadata.title ?? p.title,
+      );
+      if (!subjects.has(kept.dossierId))
+        subjects.set(kept.dossierId, researchSubject(p));
+      mappings.push({
+        ...kept,
+        created: kept.created && !existing.has(kept.dossierId),
+      });
       // Coverage from before canonical themes existed still establishes one.
       await themeStore.ensure({
         id: kept.dossierId,
@@ -1027,7 +1175,11 @@ export async function assessPostCoverage(input: {
     let shortlist = await input.shortlister.shortlist(p, summaries);
     if (canonicalMode) {
       const aliases = await catalogue.titleCandidates(p.title);
-      if (aliases.some((a) => !a.mapping.scope && a.mapping.status === "unresolved")) {
+      if (
+        aliases.some(
+          (a) => !a.mapping.scope && a.mapping.status === "unresolved",
+        )
+      ) {
         unresolvedProposals.push({
           proposalId: p.id,
           title: p.title,
@@ -1037,9 +1189,14 @@ export async function assessPostCoverage(input: {
         continue;
       }
       const exact = [
-        ...summaries.filter((s) => normaliseMappingKey(s.title) === normaliseMappingKey(p.title)),
+        ...summaries.filter(
+          (s) => normaliseMappingKey(s.title) === normaliseMappingKey(p.title),
+        ),
         ...aliases
-          .filter((a) => !a.mapping.scope && established.has(a.mapping.canonicalThemeId))
+          .filter(
+            (a) =>
+              !a.mapping.scope && established.has(a.mapping.canonicalThemeId),
+          )
           .map((a) => ({
             themeId: a.mapping.canonicalThemeId,
             title: p.title,
@@ -1062,7 +1219,8 @@ export async function assessPostCoverage(input: {
           proposalId: p.id,
           title: p.title,
           description: p.description,
-          reason: "same-title candidates exceed bounded disambiguation shortlist",
+          reason:
+            "same-title candidates exceed bounded disambiguation shortlist",
         });
         continue;
       }
@@ -1072,18 +1230,23 @@ export async function assessPostCoverage(input: {
         .sort(
           (a, b) =>
             b.score - a.score ||
-            titleSimilarity(p.description, b.scope) - titleSimilarity(p.description, a.scope) ||
+            titleSimilarity(p.description, b.scope) -
+              titleSimilarity(p.description, a.scope) ||
             a.themeId.localeCompare(b.themeId),
         );
       const priority = [
         ...candidates,
-        ...titleRanked.filter((c) => !candidates.some((e) => e.themeId === c.themeId)),
+        ...titleRanked.filter(
+          (c) => !candidates.some((e) => e.themeId === c.themeId),
+        ),
       ];
       shortlist = {
         ...shortlist,
         candidates: [
           ...priority,
-          ...shortlist.candidates.filter((c) => !priority.some((e) => e.themeId === c.themeId)),
+          ...shortlist.candidates.filter(
+            (c) => !priority.some((e) => e.themeId === c.themeId),
+          ),
         ].slice(0, 5),
       };
     }
@@ -1099,7 +1262,11 @@ export async function assessPostCoverage(input: {
     }
     let dossierId = decision.themeId ?? newDossierId(p.title);
     // A rejected equivalence must never land in the existing dossier it rejected.
-    for (let n = 2; decision.themeId === null && established.has(dossierId); n++) {
+    for (
+      let n = 2;
+      decision.themeId === null && established.has(dossierId);
+      n++
+    ) {
       dossierId = newDossierId(`${p.title}#${n}`);
     }
     if (!subjects.has(dossierId)) subjects.set(dossierId, researchSubject(p));
@@ -1133,7 +1300,10 @@ export async function assessPostCoverage(input: {
         decidedBy: { publicationId: post.publicationId, postId: post.postId },
         rationale: decision.rationale.slice(0, 1000),
         method: shortlist.method,
-        source: { themeResult: toRef(input.themeResult), proposalId: p.id.slice(0, 200) },
+        source: {
+          themeResult: toRef(input.themeResult),
+          proposalId: p.id.slice(0, 200),
+        },
       });
       const winner = recorded.mapping;
       // Pin exactly the stored version this post's coverage now depends on.
@@ -1202,13 +1372,18 @@ export async function assessPostCoverage(input: {
         existing.dossierId !== job.dossierId ||
         existing.pass !== job.pass ||
         existing.outcome !== job.outcome ||
-        JSON.stringify(existing.result ?? null) !== JSON.stringify(job.result ?? null) ||
-        JSON.stringify(existing.manifest ?? null) !== JSON.stringify(job.manifest ?? null)
+        JSON.stringify(existing.result ?? null) !==
+          JSON.stringify(job.result ?? null) ||
+        JSON.stringify(existing.manifest ?? null) !==
+          JSON.stringify(job.manifest ?? null)
       )
         throw new Error("research-job-reference-conflict");
       if (job.targetedClaims)
         existing.targetedClaims = [
-          ...new Set([...(existing.targetedClaims ?? []), ...job.targetedClaims]),
+          ...new Set([
+            ...(existing.targetedClaims ?? []),
+            ...job.targetedClaims,
+          ]),
         ];
       return;
     }
@@ -1217,7 +1392,8 @@ export async function assessPostCoverage(input: {
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
   const groups = new Map<string, AcceptedClaim[]>();
   for (const claim of claims) {
-    const home = claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
+    const home =
+      claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
     if (!home) {
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
@@ -1234,7 +1410,9 @@ export async function assessPostCoverage(input: {
     // Reuse evidence from any dossier this claim is mapped to, home first.
     const mapped = [
       ...new Set(
-        claim.proposalIds.map((id) => dossierFor.get(id)).filter((x): x is string => Boolean(x)),
+        claim.proposalIds
+          .map((id) => dossierFor.get(id))
+          .filter((x): x is string => Boolean(x)),
       ),
     ];
     if (canonicalMode) {
@@ -1264,22 +1442,38 @@ export async function assessPostCoverage(input: {
       if (claim.need) {
         for (const id of mapped) {
           const dossier = existing.get(id);
-          let proof = dossier?.metadata.researchNeeds?.find(
-            (p) => canonicalNeedId(p.need) === canonicalNeedId(claim.need!),
-          );
-          if (!proof && dossier?.metadata.claims.some((c) => c.status === "covered")) {
+          const proofs: ResearchNeedEvidence[] =
+            dossier?.metadata.researchNeeds?.filter(
+              (p) => canonicalNeedId(p.need) === canonicalNeedId(claim.need!),
+            ) ?? [];
+          if (
+            !proofs.length &&
+            dossier?.metadata.claims.some((c) => c.status === "covered")
+          ) {
             const legacy = await legacyNeedLookup(claim.need);
-            if (legacy.status === "found") proof = legacy.proof;
+            if (legacy.status === "found") proofs.push(legacy.proof);
             else
-              reuseLimitations.push({ claimRecordId: claim.claimRecordId, reason: legacy.reason });
+              reuseLimitations.push({
+                claimRecordId: claim.claimRecordId,
+                reason: legacy.reason,
+              });
           }
-          if (!dossier || !proof) continue;
-          const checked = await readResearchNeedEvidence(
-            evidenceArtifacts,
-            proof,
-            input.discoveryAcceptance,
-          );
-          if (checked.citations.length === 0) continue;
+          if (!dossier) continue;
+          // Use the first saved proof that still has validated support.
+          let checked:
+            Awaited<ReturnType<typeof readResearchNeedEvidence>> | undefined;
+          for (const proof of proofs) {
+            const candidate = await readResearchNeedEvidence(
+              evidenceArtifacts,
+              proof,
+              input.discoveryAcceptance,
+            );
+            if (candidate.citations.length) {
+              checked = candidate;
+              break;
+            }
+          }
+          if (!checked) continue;
           retainJob({
             jobId: checked.result.jobId,
             dossierId: id,
@@ -1300,7 +1494,9 @@ export async function assessPostCoverage(input: {
               dossier: toRef(dossier.ref),
               citationIds: dossier.metadata.citations
                 .filter((c) =>
-                  checked.citations.some((p) => p.url === c.url && p.passage === c.passage),
+                  checked.citations.some(
+                    (p) => p.url === c.url && p.passage === c.passage,
+                  ),
                 )
                 .map((c) => c.id),
             },
@@ -1324,7 +1520,9 @@ export async function assessPostCoverage(input: {
       }
     }
     if (!canonicalMode && homeDossier && prior?.status === "covered") {
-      const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
+      const cites = homeDossier.metadata.citations.filter((c) =>
+        prior.citations.includes(c.id),
+      );
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
@@ -1334,7 +1532,10 @@ export async function assessPostCoverage(input: {
         jobIds: [],
         citations: cites.map((c) => ({ url: c.url, passage: c.passage })),
         // The exact dossier version the reused evidence was read from.
-        evidenceFrom: { dossier: toRef(homeDossier.ref), citationIds: prior.citations },
+        evidenceFrom: {
+          dossier: toRef(homeDossier.ref),
+          citationIds: prior.citations,
+        },
       });
     }
     // Every claim stays in its dossier's group, so the request for this
@@ -1367,7 +1568,14 @@ export async function assessPostCoverage(input: {
     targeted = false,
     question?: string,
   ) => {
-    const request = buildRequest(dossierId, group, pass, previousJobId, targeted, question);
+    const request = buildRequest(
+      dossierId,
+      group,
+      pass,
+      previousJobId,
+      targeted,
+      question,
+    );
     return commissionAndAssess(
       dossierId,
       group,
@@ -1382,8 +1590,15 @@ export async function assessPostCoverage(input: {
    */
   function boundedClaims<T extends { claimRecordId: string }>(all: T[]) {
     const claims = all.slice(0, MAX_CLAIMS_PER_REQUEST);
-    const omitted = all.slice(MAX_CLAIMS_PER_REQUEST).map((c) => c.claimRecordId);
-    return { claims, ...(omitted.length ? { omittedClaimRecordIds: omitted.slice(0, 500) } : {}) };
+    const omitted = all
+      .slice(MAX_CLAIMS_PER_REQUEST)
+      .map((c) => c.claimRecordId);
+    return {
+      claims,
+      ...(omitted.length
+        ? { omittedClaimRecordIds: omitted.slice(0, 500) }
+        : {}),
+    };
   }
   function buildRequest(
     dossierId: string,
@@ -1395,12 +1610,21 @@ export async function assessPostCoverage(input: {
   ): ResearchRequest {
     const canonical = canonicalMode && group.every((c) => !!c.need);
     const needs = canonical
-      ? [...new Map(group.map((c) => [canonicalNeedId(c.need!), c.need!])).values()].sort((a, b) =>
-          canonicalNeedId(a).localeCompare(canonicalNeedId(b)),
-        )
+      ? [
+          ...new Map(
+            group.map((c) => [canonicalNeedId(c.need!), c.need!]),
+          ).values(),
+        ].sort((a, b) => canonicalNeedId(a).localeCompare(canonicalNeedId(b)))
       : undefined;
     return {
-      ...(needs ? { canonicalNeeds: { version: "canonical-theme-needs-v1" as const, needs: needs.slice(0, MAX_CLAIMS_PER_REQUEST) } } : {}),
+      ...(needs
+        ? {
+            canonicalNeeds: {
+              version: "canonical-theme-needs-v1" as const,
+              needs: needs.slice(0, MAX_CLAIMS_PER_REQUEST),
+            },
+          }
+        : {}),
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
       origin: targeted ? "theme" : "extraction",
       pass,
@@ -1408,21 +1632,22 @@ export async function assessPostCoverage(input: {
       ...(targeted ? {} : { post: postRefs }),
       ...boundedClaims(
         needs
-        ? needs.map((n) => ({
-            claimRecordId: canonicalNeedId(n),
-            statement: n.proposition.statement,
-            themeIds: [dossierId],
-          }))
-        : group
-            .flatMap((c) => c.extracted)
-            .map((e) => ({
-              claimRecordId: e.claimRecordId,
-              statement: e.statement,
+          ? needs.map((n) => ({
+              claimRecordId: canonicalNeedId(n),
+              statement: n.proposition.statement,
               themeIds: [dossierId],
-            })),
+            }))
+          : group
+              .flatMap((c) => c.extracted)
+              .map((e) => ({
+                claimRecordId: e.claimRecordId,
+                statement: e.statement,
+                themeIds: [dossierId],
+              })),
       ),
       question: targeted
-        ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
+        ? (question ??
+          THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
         : pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
@@ -1460,7 +1685,9 @@ export async function assessPostCoverage(input: {
         path: m.path,
         sha256: m.hash.replace(/^sha256:/, ""),
       };
-      manifest = ResearchManifestSchema.parse(JSON.parse(await input.artifacts.read(manifestRef)));
+      manifest = ResearchManifestSchema.parse(
+        JSON.parse(await input.artifacts.read(manifestRef)),
+      );
     }
     retainJob({
       jobId: job.jobId,
@@ -1478,8 +1705,13 @@ export async function assessPostCoverage(input: {
       ...(targetedClaims ? { targetedClaims } : {}),
     });
     let assessedGroup = group;
-    if (request.canonicalNeeds && job.status === "finished" && job.result?.outcome !== "failed") {
-      if (!job.resultRef) throw new Error("research-need-result-reference-required");
+    if (
+      request.canonicalNeeds &&
+      job.status === "finished" &&
+      job.result?.outcome !== "failed"
+    ) {
+      if (!job.resultRef)
+        throw new Error("research-need-result-reference-required");
       const proofs: ResearchNeedEvidence[] = [];
       for (const need of request.canonicalNeeds.needs) {
         const proof = await researchNeedEvidence(
@@ -1491,10 +1723,15 @@ export async function assessPostCoverage(input: {
         );
         proofs.push(proof);
       }
-      newEvidence.set(dossierId, [...(newEvidence.get(dossierId) ?? []), ...proofs]);
+      newEvidence.set(dossierId, [
+        ...(newEvidence.get(dossierId) ?? []),
+        ...proofs,
+      ]);
       assessedGroup = group.map((c) => ({
         ...c,
-        extracted: [{ claimRecordId: canonicalNeedId(c.need!), statement: c.statement }],
+        extracted: [
+          { claimRecordId: canonicalNeedId(c.need!), statement: c.statement },
+        ],
       }));
     }
     return {
@@ -1521,7 +1758,9 @@ export async function assessPostCoverage(input: {
     const saved = existing.get(dossierId);
     const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
     const fullRequestedBefore = chunks(sortedAll).some((g) =>
-      priorJobIds.has(researchJobId(buildRequest(dossierId, g, 1, undefined, false))),
+      priorJobIds.has(
+        researchJobId(buildRequest(dossierId, g, 1, undefined, false)),
+      ),
     );
     if (saved && saved.metadata.claims.length > 0 && !fullRequestedBefore) {
       const replay = priorTargeted.get(dossierId);
@@ -1535,7 +1774,10 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
-        question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
+        question: THEME_ENHANCEMENT.instructions.replaceAll(
+          "{{theme}}",
+          dossierId,
+        ),
         promptVersion: THEME_ENHANCEMENT.version,
       });
     } else {
@@ -1549,7 +1791,9 @@ export async function assessPostCoverage(input: {
     input.claimResult,
     () => ({
       schemaVersion: canonicalMode ? 3 : 2,
-      dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
+      dossiers: Object.fromEntries(
+        [...planned].sort(([a], [b]) => a.localeCompare(b)),
+      ),
       order: commissioningOrder(
         [...groups.keys()].filter((id) => planned.has(id)),
         priorOrders,
@@ -1560,7 +1804,8 @@ export async function assessPostCoverage(input: {
   // that authoritative version before making any research request.
   if ((plan.schemaVersion === 3) !== canonicalMode)
     throw new Error("research-plan-version-changed");
-  const order = plan.schemaVersion !== 1 ? plan.order : Object.keys(plan.dossiers);
+  const order =
+    plan.schemaVersion !== 1 ? plan.order : Object.keys(plan.dossiers);
   for (const dossierId of order) {
     const entry = plan.dossiers[dossierId]!;
     const all = groups.get(dossierId);
@@ -1571,8 +1816,11 @@ export async function assessPostCoverage(input: {
     if (entry.mode === "targeted") {
       const byKey = new Map(all.map((c) => [c.key, c]));
       for (const batch of entry.batches) {
-        const group = batch.map((k) => byKey.get(k)).filter((c): c is AcceptedClaim => !!c);
-        if (group.length > 0) await enhanceGroup(dossierId, group, entry.question);
+        const group = batch
+          .map((k) => byKey.get(k))
+          .filter((c): c is AcceptedClaim => !!c);
+        if (group.length > 0)
+          await enhanceGroup(dossierId, group, entry.question);
       }
     } else {
       const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
@@ -1594,7 +1842,8 @@ export async function assessPostCoverage(input: {
         reused: false,
         jobIds: [],
         citations: [],
-        reason: "not part of this analysis's retained research plan; reassess as a new analysis",
+        reason:
+          "not part of this analysis's retained research plan; reassess as a new analysis",
       });
     }
   }
@@ -1606,7 +1855,11 @@ export async function assessPostCoverage(input: {
     return list.length ? [list] : [];
   }
 
-  async function enhanceGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+  async function enhanceGroup(
+    dossierId: string,
+    group: AcceptedClaim[],
+    question?: string,
+  ) {
     const targeted = await run(dossierId, group, 1, undefined, true, question);
     for (const claim of group) {
       // Replaying the identical request must not replace evidence found since.
@@ -1661,8 +1914,14 @@ export async function assessPostCoverage(input: {
         // second pass is recorded as such rather than hidden behind pass 1.
         ...(a.status === "evidence-found"
           ? { status: a.status, citations: a.citations, reason: undefined }
-          : a.status === "pending" || a.status === "research-failed" || a.status === "claimant-only"
-            ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
+          : a.status === "pending" ||
+              a.status === "research-failed" ||
+              a.status === "claimant-only"
+            ? {
+                status: a.status,
+                citations: [],
+                reason: `second pass: ${a.reason ?? a.status}`,
+              }
             : {}),
       });
     }
@@ -1714,8 +1973,13 @@ export async function assessPostCoverage(input: {
             ? {
                 researchNeeds: [
                   ...new Map(
-                    [...(m.researchNeeds ?? []), ...newEvidence.get(dossierId)!].map((p) => [
-                      canonicalNeedId(p.need),
+                    // One proof per need and result: a later unsupported result
+                    // must not replace an earlier supporting proof.
+                    [
+                      ...(m.researchNeeds ?? []),
+                      ...newEvidence.get(dossierId)!,
+                    ].map((p) => [
+                      `${canonicalNeedId(p.need)}|${p.result.repository}|${p.result.path}|${p.result.hash}`,
                       p,
                     ]),
                   ).values(),
@@ -1732,7 +1996,10 @@ export async function assessPostCoverage(input: {
     }
   }
   for (const [id, d] of existing) {
-    if (!byDossier.has(id) && [...outcomes.values()].some((o) => o.dossierId === id)) {
+    if (
+      !byDossier.has(id) &&
+      [...outcomes.values()].some((o) => o.dossierId === id)
+    ) {
       dossierRefs.push({ dossierId: id, ref: toRef(d.ref) });
     }
   }
@@ -1755,7 +2022,9 @@ export async function assessPostCoverage(input: {
       return reason ? { ...rest, reason } : rest;
     }),
     jobs,
-    dossiers: dossierRefs.sort((a, b) => a.dossierId.localeCompare(b.dossierId)),
+    dossiers: dossierRefs.sort((a, b) =>
+      a.dossierId.localeCompare(b.dossierId),
+    ),
     ...(unsaved.length > 0 ? { unsavedDossiers: unsaved.sort() } : {}),
     assessedAt: now,
   });
@@ -1777,7 +2046,9 @@ export async function assessPostCoverage(input: {
     record,
   );
   // An unchanged reassessment maps to an earlier record; return what is stored there.
-  const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+  const stored = CoverageRecordSchema.parse(
+    JSON.parse(await input.artifacts.read(ref)),
+  );
   if (saveError) throw saveError;
   return { record: stored, ref };
 }
@@ -1801,13 +2072,16 @@ export interface RankedResearchRequest {
  * never re-requested.
  */
 /** The original commissioning order, kept for analyses planned before ranking (#533). */
-export function originalOrder(requests: ResearchRequest[]): RankedResearchRequest[] {
+export function originalOrder(
+  requests: ResearchRequest[],
+): RankedResearchRequest[] {
   return requests.map((request, i) => ({
     request,
     jobId: researchJobId(request),
     rank: i + 1,
     claimsNeedingEvidence: request.claims.length,
-    rationale: "planned before ranking existed; the original commissioning order is kept",
+    rationale:
+      "planned before ranking existed; the original commissioning order is kept",
   }));
 }
 
@@ -1829,11 +2103,18 @@ export async function retainedOrdering(
     .slice(0, 32);
   const path = `librarian/research-ordering/${post.publicationId}/${post.postId}/${key}.json`;
   const Saved = z
-    .object({ schemaVersion: z.literal(1), ordering: z.enum(["ranked", "original"]) })
+    .object({
+      schemaVersion: z.literal(1),
+      ordering: z.enum(["ranked", "original"]),
+    })
     .strict();
   const existing = await artifacts.lookup(path);
-  if (existing) return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
-  const ref = await writeOnce(artifacts, path, { schemaVersion: 1, ordering: await decide() });
+  if (existing)
+    return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
+  const ref = await writeOnce(artifacts, path, {
+    schemaVersion: 1,
+    ordering: await decide(),
+  });
   return Saved.parse(JSON.parse(await artifacts.read(ref))).ordering;
 }
 
@@ -1862,7 +2143,9 @@ export async function analysedBefore(
     for (const path of paths) {
       const ref = await artifacts.lookup(path);
       if (!ref) continue;
-      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+      const parsed = CoverageRecordSchema.safeParse(
+        JSON.parse(await artifacts.read(ref)),
+      );
       if (!parsed.success) throw new Error("analysis history record invalid");
       const r = parsed.data;
       const exact = (saved: z.infer<typeof Ref>, supplied: ArtifactRef) =>
@@ -1870,7 +2153,11 @@ export async function analysedBefore(
         saved.commit === supplied.commit &&
         saved.path === supplied.path &&
         saved.hash === `sha256:${supplied.sha256}`;
-      if (exact(r.themeResult, themeResult) && exact(r.claimResult, claimResult)) return true;
+      if (
+        exact(r.themeResult, themeResult) &&
+        exact(r.claimResult, claimResult)
+      )
+        return true;
     }
     if (paths.length < 1000) return false;
     after = paths.at(-1);
@@ -1878,9 +2165,15 @@ export async function analysedBefore(
   throw new Error("analysis history scan incomplete");
 }
 
-export function rankResearchRequests(requests: ResearchRequest[]): RankedResearchRequest[] {
+export function rankResearchRequests(
+  requests: ResearchRequest[],
+): RankedResearchRequest[] {
   return requests
-    .map((request) => ({ request, jobId: researchJobId(request), n: request.claims.length }))
+    .map((request) => ({
+      request,
+      jobId: researchJobId(request),
+      n: request.claims.length,
+    }))
     .sort((a, b) => b.n - a.n || a.jobId.localeCompare(b.jobId))
     .map((r, i) => ({
       request: r.request,
@@ -1912,7 +2205,11 @@ export async function saveResearchSelection(
   // fewer remaining gaps gets its own record, never an earlier one's.
   const key = createHash("sha256")
     .update(
-      JSON.stringify([toRef(themeResult), toRef(claimResult), ranked.map((r) => r.jobId).sort()]),
+      JSON.stringify([
+        toRef(themeResult),
+        toRef(claimResult),
+        ranked.map((r) => r.jobId).sort(),
+      ]),
     )
     .digest("hex")
     .slice(0, 32);
@@ -1985,7 +2282,11 @@ export async function readResearchSelection(
     throw new Error("research selection binding mismatch");
   return saved.candidates.map((candidate, index) => {
     const request = byId.get(candidate.jobId);
-    if (!request || candidate.rank !== index + 1 || candidate.origin !== request.origin)
+    if (
+      !request ||
+      candidate.rank !== index + 1 ||
+      candidate.origin !== request.origin
+    )
       throw new Error("research selection candidate mismatch");
     return request;
   });

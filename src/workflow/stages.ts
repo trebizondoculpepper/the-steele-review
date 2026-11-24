@@ -27,13 +27,25 @@ import { writeOnce } from "../research/job.js";
 import { selectAndSaveResearch } from "../research/research-allowance.js";
 import { createHash } from "node:crypto";
 import { isCanonicalArticlePath } from "../drafting/article-identity.js";
-import { sourceContextFor, saveSourceContext } from "../content/source-context.js";
-import { postAttribution, type ParsedSourceMetadata } from "../content/source-metadata.js";
+import {
+  sourceContextFor,
+  saveSourceContext,
+} from "../content/source-context.js";
+import {
+  postAttribution,
+  type ParsedSourceMetadata,
+} from "../content/source-metadata.js";
 import type { MechanicalPolicy } from "../drafting/mechanical-policy.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { extractGroundedClaims } from "../analysis/grounded-claims.js";
-import { parseThemeProposalResult, proposeThemes } from "../analysis/theme-proposals.js";
-import { collectionArtifactPath, CollectionRecordSchema } from "../collection/collection-store.js";
+import {
+  parseThemeProposalResult,
+  proposeThemes,
+} from "../analysis/theme-proposals.js";
+import {
+  collectionArtifactPath,
+  CollectionRecordSchema,
+} from "../collection/collection-store.js";
 import { transcriptTimingsFor } from "../content/embedding-consumer.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import {
@@ -147,11 +159,15 @@ export function articleStages(deps: {
       throw error;
     }
     const parsed = CollectionRecordSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) throw new StageError("source", "unsupported-capture-format");
+    if (!parsed.success)
+      throw new StageError("source", "unsupported-capture-format");
     const record = parsed.data;
     // Hash verification authenticates the bytes, not the identity: a caller
     // supplied reference could point at a valid capture of a different post.
-    if (record.item.publicationId !== post.publicationId || record.item.postId !== post.postId)
+    if (
+      record.item.publicationId !== post.publicationId ||
+      record.item.postId !== post.postId
+    )
       throw new StageError("source", "capture-identity-mismatch");
     if (!record.complete) throw new StageError("source", "incomplete-capture");
     const attribution = postAttribution(deps.sourceMetadata, record.item);
@@ -164,12 +180,20 @@ export function articleStages(deps: {
         post.source ? { namespace: post.source.namespace } : undefined,
       ),
     );
-    return { ref, record, sourceVersion: sourceVersionFor(record.text), sourceContext };
+    return {
+      ref,
+      record,
+      sourceVersion: sourceVersionFor(record.text),
+      sourceContext,
+    };
   };
 
   // Planning captures the librarian's requests without commissioning research.
   /** Timed out, failed, or not part of the pinned batch: an explicit gap. */
-  const pinnedGap = (jobId: string, p: PinnedResearch | undefined): CommissionedJob => ({
+  const pinnedGap = (
+    jobId: string,
+    p: PinnedResearch | undefined,
+  ): CommissionedJob => ({
     jobId,
     status: "finished",
     result: {
@@ -180,14 +204,24 @@ export function articleStages(deps: {
       finishedAt: new Date(0).toISOString(),
     },
   });
-  const planned = async (themes: Ref, claims: Ref): Promise<ResearchRequest[]> => {
+  const planned = async (
+    themes: Ref,
+    claims: Ref,
+  ): Promise<ResearchRequest[]> => {
     const { post } = await readCoverageAnalysis(deps.content, themes, claims);
     // Ordering is decided once per analysis, before this planning writes any
     // coverage record (#533): an analysis already assessed before ranking
     // keeps its original order, so retained recoveries still match. The
     // decision is saved write-once, so every retry follows it.
-    const ordering = await retainedOrdering(deps.content, post, themes, claims, async () =>
-      (await analysedBefore(deps.content, post, themes, claims)) ? "original" : "ranked",
+    const ordering = await retainedOrdering(
+      deps.content,
+      post,
+      themes,
+      claims,
+      async () =>
+        (await analysedBefore(deps.content, post, themes, claims))
+          ? "original"
+          : "ranked",
     );
     const requests: ResearchRequest[] = [];
     await assessPostCoverage({
@@ -204,7 +238,9 @@ export function articleStages(deps: {
     // Most useful gap first: the workflow commissions the first
     // `researchRequestLimit` of this order, and the selection is saved.
     const ordered =
-      ordering === "original" ? originalOrder(requests) : rankResearchRequests(requests);
+      ordering === "original"
+        ? originalOrder(requests)
+        : rankResearchRequests(requests);
     const selection = await saveResearchSelection(
       deps.content,
       post,
@@ -213,7 +249,14 @@ export function articleStages(deps: {
       ordered,
       ordering,
     );
-    return readResearchSelection(deps.content, selection, themes, claims, ordered, ordering);
+    return readResearchSelection(
+      deps.content,
+      selection,
+      themes,
+      claims,
+      ordered,
+      ordering,
+    );
   };
 
   return {
@@ -248,7 +291,9 @@ export function articleStages(deps: {
           const metadata = PackageDraftMetadataSchema.parse(
             JSON.parse(await deps.content.read(details.version.metadata)),
           );
-          const writerPackage = WriterPackageSchema.parse(JSON.parse(await deps.content.read(pkg)));
+          const writerPackage = WriterPackageSchema.parse(
+            JSON.parse(await deps.content.read(pkg)),
+          );
           return authorizeConfiguredDraft({
             content: deps.content,
             operations: deps.operations,
@@ -292,7 +337,9 @@ export function articleStages(deps: {
     }),
     async saveEditorialSummary(history, input) {
       const value = { ...history, input };
-      const key = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+      const key = createHash("sha256")
+        .update(JSON.stringify(value))
+        .digest("hex");
       return writeOnce(
         deps.content,
         `editorial-loops/${input.publicationId}/${input.postId}/${key}.json`,
@@ -300,7 +347,8 @@ export function articleStages(deps: {
       );
     },
     async themes(post) {
-      const { ref, record, sourceVersion, sourceContext } = await loadSource(post);
+      const { ref, record, sourceVersion, sourceContext } =
+        await loadSource(post);
       if (sourceVersion !== post.sourceVersion)
         throw new StageError("themes", "source-version-changed");
       const out = await proposeThemes({
@@ -321,15 +369,19 @@ export function articleStages(deps: {
       });
       if (out.status !== "proposed") {
         // A provider failure may be transient (bounded retry); the rest are permanent.
-        if (out.reason === "provider-failed") throw new Error("themes: provider-failed");
+        if (out.reason === "provider-failed")
+          throw new Error("themes: provider-failed");
         throw new StageError("themes", out.reason);
       }
       return plain(out.ref);
     },
 
     async claims(post, themes) {
-      const { ref, record, sourceVersion, sourceContext } = await loadSource(post);
-      const themeResult = parseThemeProposalResult(JSON.parse(await deps.content.read(themes)));
+      const { ref, record, sourceVersion, sourceContext } =
+        await loadSource(post);
+      const themeResult = parseThemeProposalResult(
+        JSON.parse(await deps.content.read(themes)),
+      );
       const attribution = postAttribution(deps.sourceMetadata, {
         publicationId: post.publicationId,
         ...(record.item.author ? { author: record.item.author } : {}),
@@ -357,13 +409,16 @@ export function articleStages(deps: {
           publicationId: post.publicationId,
           postId: post.postId,
           url: record.item.url,
-          ...(record.item.publishedAt ? { publishedAt: record.item.publishedAt } : {}),
+          ...(record.item.publishedAt
+            ? { publishedAt: record.item.publishedAt }
+            : {}),
           ...(record.item.author ? { author: record.item.author } : {}),
           ...transcriptTimingsFor(record),
         },
       });
       if (out.status !== "extracted") {
-        if (out.reason === "provider-failed") throw new Error("claims: provider-failed");
+        if (out.reason === "provider-failed")
+          throw new Error("claims: provider-failed");
         throw new StageError("claims", out.reason);
       }
       return plain(out.recordRef);
@@ -377,7 +432,10 @@ export function articleStages(deps: {
         themeResult: themes,
         claimResult: claims,
         // Planned order is the librarian ranking (`planResearch`).
-        candidates: requests.map((r, i) => ({ jobId: researchJobId(r), rank: i + 1 })),
+        candidates: requests.map((r, i) => ({
+          jobId: researchJobId(r),
+          rank: i + 1,
+        })),
         allowance,
       });
       return record.decisions;
@@ -405,18 +463,27 @@ export function articleStages(deps: {
                 : {}),
             };
             return {
-              discover: (request: ResearchRequest) => discoverStage(staged, request),
+              discover: (request: ResearchRequest) =>
+                discoverStage(staged, request),
               inventory: (d: StageRef) => inventoryStage(staged, d),
               retrieve: (i: StageRef) => retrieveStage(staged, i),
               ids: (i: StageRef) => retrievalIds(staged, i),
-              support: (d: StageRef, i: StageRef, id: string) => supportStage(staged, d, i, id),
+              support: (d: StageRef, i: StageRef, id: string) =>
+                supportStage(staged, d, i, id),
               supportBundle: (d: StageRef, i: StageRef, ids: string[]) =>
                 supportBundleStage(staged, d, i, ids),
-              retrieveOne: (i: StageRef, id: string) => retrieveOneStage(staged, i, id),
-              assemble: (d: StageRef, i: StageRef) => assembleStage(staged, d, i),
+              retrieveOne: (i: StageRef, id: string) =>
+                retrieveOneStage(staged, i, id),
+              assemble: (d: StageRef, i: StageRef) =>
+                assembleStage(staged, d, i),
               failed: (request: ResearchRequest, failure: string) =>
-                finishFailedStage(staged, request, failure as Parameters<typeof failedJob>[1]),
-              existing: (request: ResearchRequest) => existingJob(staged, request),
+                finishFailedStage(
+                  staged,
+                  request,
+                  failure as Parameters<typeof failedJob>[1],
+                ),
+              existing: (request: ResearchRequest) =>
+                existingJob(staged, request),
               rounds: MAX_RETRIEVAL_ROUNDS,
               roundDelayMs: 30_000,
             };
@@ -433,10 +500,14 @@ export function articleStages(deps: {
         sonar: deps.research.sonar,
         fetcher: deps.research.fetcher,
         ...(deps.research.judge ? { judge: deps.research.judge } : {}),
-        ...(deps.research.monitoredHosts ? { monitoredHosts: deps.research.monitoredHosts } : {}),
+        ...(deps.research.monitoredHosts
+          ? { monitoredHosts: deps.research.monitoredHosts }
+          : {}),
       });
       if (out.status === "busy") return { jobId: out.jobId, status: "busy" };
-      const resultRef = await deps.content.lookup(`research-jobs/${out.jobId}/result.json`);
+      const resultRef = await deps.content.lookup(
+        `research-jobs/${out.jobId}/result.json`,
+      );
       return {
         jobId: out.jobId,
         status: "finished",
@@ -457,12 +528,14 @@ export function articleStages(deps: {
         claimResult: claims,
         shortlister: deps.shortlister,
         pinnedJobIds: new Set(pinned.map((p) => p.jobId)),
+        discoveryAcceptance: deps.operations,
         consequential: () => true,
         commission: async (request) => {
           const jobId = researchJobId(request);
           const p = byJob.get(jobId);
           if (p?.outcome === "finished") return p.job;
-          if (p?.outcome === "not-commissioned") return { jobId, status: "not-commissioned" };
+          if (p?.outcome === "not-commissioned")
+            return { jobId, status: "not-commissioned" };
           if (!p && request.pass > 1) {
             followUps.push(request);
             return { jobId, status: "busy" };
@@ -501,7 +574,8 @@ export function articleStages(deps: {
           const jobId = researchJobId(request);
           const p = byJob.get(jobId);
           if (p?.outcome === "finished") return p.job;
-          if (p?.outcome === "not-commissioned") return { jobId, status: "not-commissioned" };
+          if (p?.outcome === "not-commissioned")
+            return { jobId, status: "not-commissioned" };
           return pinnedGap(jobId, p);
         },
         // The reassessment after a follow-up round (#597) derives the same
@@ -514,7 +588,9 @@ export function articleStages(deps: {
     async package(coverage) {
       let comparisons: ArtifactRef[] = [];
       if (deps.history) {
-        const record = CoverageRecordSchema.parse(JSON.parse(await deps.content.read(coverage)));
+        const record = CoverageRecordSchema.parse(
+          JSON.parse(await deps.content.read(coverage)),
+        );
         const claimResult = await deps.content.lookup(record.claimResult.path);
         if (claimResult) {
           comparisons = await saveSpeakerComparisons({
@@ -545,10 +621,14 @@ export function articleStages(deps: {
         provider: deps.models.writer,
         sourceUrl,
       });
-      const diagnostics = "diagnostics" in out ? out.diagnostics?.map(plain) : undefined;
+      const diagnostics =
+        "diagnostics" in out ? out.diagnostics?.map(plain) : undefined;
       const mechanicalRun =
-        "mechanicalRun" in out && out.mechanicalRun ? plain(out.mechanicalRun) : undefined;
-      if (out.status === "drafted") return { ref: plain(out.draft), diagnostics, mechanicalRun };
+        "mechanicalRun" in out && out.mechanicalRun
+          ? plain(out.mechanicalRun)
+          : undefined;
+      if (out.status === "drafted")
+        return { ref: plain(out.draft), diagnostics, mechanicalRun };
       return {
         failure:
           out.status === "failed"
@@ -567,10 +647,16 @@ export function articleStages(deps: {
       // A stable path at a pinned commit is an immutable article version.
       // Canonical metadata must come from that same snapshot, never HEAD.
       const canonicalMetadata = isCanonicalArticlePath(draft.path)
-        ? await deps.content.lookupAt(draft.commit, draft.path.replace(/\.md$/, ".json"))
+        ? await deps.content.lookupAt(
+            draft.commit,
+            draft.path.replace(/\.md$/, ".json"),
+          )
         : undefined;
       const metadata = isCanonicalArticlePath(draft.path)
-        ? canonicalMetadata && { ...canonicalMetadata.ref, commit: draft.commit }
+        ? canonicalMetadata && {
+            ...canonicalMetadata.ref,
+            commit: draft.commit,
+          }
         : await deps.content.lookup(draft.path.replace(/\.md$/, ".json"));
       await deps.content.read(draft); // Validate the caller's exact body hash.
       if (!metadata) throw new StageError("verify", "draft-metadata-missing");
@@ -586,7 +672,11 @@ export function articleStages(deps: {
         sourceUrl,
       });
       if (out.outcome === "approved")
-        return { approved: true, ref: plain(out.report), draft: plain(out.draft) };
+        return {
+          approved: true,
+          ref: plain(out.report),
+          draft: plain(out.draft),
+        };
       if (out.outcome === "unresolved") {
         return {
           approved: false,
