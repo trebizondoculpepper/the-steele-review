@@ -113,7 +113,12 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     // The middle stage ran twice (one failure, one success); the last once.
     expect(calls.ideas).toBe(before.ideas + 2);
     expect(calls.underlying).toBe(before.underlying + 1);
-    expect(await artifacts.list("corpus-refinement/run-recover", 10)).toHaveLength(3);
+    // One artifact per stage, plus the pinned batch they all read (#856).
+    expect((await artifacts.list("corpus-refinement/run-recover", 10)).sort()).toEqual(
+      ["batch", "check-coverage", "map-claims-to-ideas", "map-ideas-to-underlying"].map(
+        (name) => `corpus-refinement/run-recover/${name}.json`,
+      ),
+    );
   });
 
   it("fails rather than reuse a stale artifact saved from other inputs or logic", async () => {
@@ -173,7 +178,12 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     expect(calls.ideas).toBe(before.ideas + 1);
     expect(calls.underlying).toBe(before.underlying + 1);
     // Exactly one artifact per stage; the handoff is the saved version.
-    expect(await artifacts.list("corpus-refinement/run-crash", 10)).toHaveLength(3);
+    // One artifact per stage, plus the pinned batch they all read (#856).
+    expect((await artifacts.list("corpus-refinement/run-crash", 10)).sort()).toEqual(
+      ["batch", "check-coverage", "map-claims-to-ideas", "map-ideas-to-underlying"].map(
+        (name) => `corpus-refinement/run-crash/${name}.json`,
+      ),
+    );
     expect(out.stages[1]!.artifact.path).toBe(
       corpusRefinementPath("run-crash", "map-claims-to-ideas"),
     );
