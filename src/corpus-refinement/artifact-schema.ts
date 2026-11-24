@@ -107,9 +107,9 @@ export function readStageArtifact<S extends CorpusRefinementStage>(
     .safeParse(raw);
   if (!envelope.success) return fail("not-an-artifact");
   const e = envelope.data;
-  if (e.schemaVersion !== 1) return fail(`schema-version:${String(e.schemaVersion)}`);
-  if (e.stage !== expected.stage) return fail(`stage:${String(e.stage)}`);
-  if (e.runId !== expected.runId) return fail(`run:${String(e.runId)}`);
+  if (e.schemaVersion !== 1) return fail("schema-version-mismatch");
+  if (e.stage !== expected.stage) return fail("stage-mismatch");
+  if (e.runId !== expected.runId) return fail("run-mismatch");
   if (typeof e.identity !== "string" || !e.identity) return fail("identity-missing");
   if (expected.identity !== undefined && e.identity !== expected.identity)
     return fail("identity-mismatch");

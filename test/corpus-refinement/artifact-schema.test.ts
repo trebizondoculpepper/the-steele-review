@@ -34,12 +34,27 @@ describe("saved Corpus Refinement artifacts are validated before use (#848)", ()
   it("rejects each kind of mismatch with a clear reason", () => {
     expect(reason("{not json")).toBe("malformed-json");
     expect(reason("[1,2]")).toBe("not-an-artifact");
-    expect(reason(artifact({ schemaVersion: 2 }))).toBe("schema-version:2");
-    expect(reason(artifact({ stage: "check-coverage" }))).toBe("stage:check-coverage");
-    expect(reason(artifact({ runId: "run-b" }))).toBe("run:run-b");
+    expect(reason(artifact({ schemaVersion: 2 }))).toBe("schema-version-mismatch");
+    expect(reason(artifact({ stage: "check-coverage" }))).toBe("stage-mismatch");
+    expect(reason(artifact({ runId: "run-b" }))).toBe("run-mismatch");
     expect(reason(artifact({ identity: "" }))).toBe("identity-missing");
     expect(reason(artifact(), `sha256:${"b".repeat(64)}`)).toBe("identity-mismatch");
   });
+
+  it.each(["schemaVersion", "stage", "runId"])(
+    "keeps invalid %s values out of diagnostics",
+    (field) => {
+      const marker = "synthetic-private-value";
+      expect(() => readStageArtifact(artifact({ [field]: marker }), expected)).toThrow(
+        CorpusArtifactError,
+      );
+      try {
+        readStageArtifact(artifact({ [field]: marker }), expected);
+      } catch (error) {
+        expect(String(error)).not.toContain(marker);
+      }
+    },
+  );
 
   it("rejects a malformed payload even with the expected identity", () => {
     expect(reason(artifact({ value: { ideas: [{ id: "idea-1" }] } }), ID)).toBe(
