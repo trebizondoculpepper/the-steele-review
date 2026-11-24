@@ -29,6 +29,8 @@ import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
  *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
 import { corpusRefinementAction } from "../dashboard/corpus-refinement.js";
+import { parsePollSources, pollNowAction } from "../dashboard/poll-now.js";
+import { discoveryPollClient } from "../controllers/discovery-poll-client.js";
 import { corpusRefinementSubmitter } from "../corpus-refinement/submission.js";
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
@@ -105,6 +107,8 @@ const env = z
       (v) => (v === "" ? undefined : v),
       z.url({ protocol: /^https?$/ }).optional(),
     ),
+    /** Sources Poll now may poll (#824), e.g. `substack:saveusnow`. */
+    STEELE_POLL_SOURCES: z.string().max(2000).optional(),
     STEELE_DASHBOARD_ORIGIN: z
       .url({ protocol: /^https?$/ })
       .refine((value) => value === new URL(value).origin)
@@ -322,6 +326,18 @@ const configView = [
     },
   },
 ];
+// Poll now (#824): the scheduled DiscoveryPoll handler, on demand, per source type.
+const pollSources = parsePollSources(env.data.STEELE_POLL_SOURCES);
+const pollNow =
+  env.data.RESTATE_INGRESS_URL && pollSources.length && env.data.STEELE_DASHBOARD_ORIGIN
+    ? pollNowAction({
+        sources: pollSources,
+        poll: (() => {
+          const client = discoveryPollClient(env.data.RESTATE_INGRESS_URL!);
+          return (source) => client.pollNow(source.id);
+        })(),
+      })
+    : undefined;
 const views = [
   overview,
   ...configView,
@@ -330,6 +346,9 @@ const views = [
   ...(refetch ? [refetch.view] : []),
   ...(recovery ? [recovery.view] : []),
   ...articleViews({
+    ...(pollNow
+      ? { pollPanel: (url: URL) => pollNow.panel(url, env.data.STEELE_DASHBOARD_ORIGIN ?? "") }
+      : {}),
     canTrigger: Boolean(trigger),
     canRecover: Boolean(recovery),
     canRefetch: Boolean(refetch),
@@ -467,7 +486,7 @@ const trashAction = trashStore?.action();
 // action route is registered at all.
 const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
 const actions =
-  (trigger || trashAction || refetch || corpusAction) && actionOrigin
+  (trigger || trashAction || refetch || corpusAction || pollNow) && actionOrigin
     ? {
         origin: actionOrigin,
         routes: {
@@ -477,6 +496,7 @@ const actions =
           ...(refetch ? { "/articles/refetch": refetch.submit } : {}),
           ...(configAction ? { "/config/save": configAction.submit } : {}),
           ...(corpusAction ? { "/corpus-refinement/run": corpusAction.submit } : {}),
+          ...(pollNow ? { "/articles/poll": pollNow.submit } : {}),
         },
       }
     : undefined;

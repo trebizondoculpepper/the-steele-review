@@ -57,6 +57,8 @@ export interface ArticleViewDeps {
   actionOrigin?: string;
   /** Links to Restate's own execution UI (#561), from private configuration. */
   restate?: { links: RestateUiLinks; lookup?: InvocationLookupPort };
+  /** The Poll now panel (#824), when polling is configured. */
+  pollPanel?: (url: URL) => string;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -217,7 +219,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       const searchForm = deps.articles.page
         ? `<form method="get" action="/articles" class="search"><input type="hidden" name="sort" value="${sort}">${filter === "all" ? "" : `<input type="hidden" name="status" value="${escapeHtml(filter)}">`}<label>Search title and text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Publication <input name="publication" value="${escapeHtml(publication)}" maxlength="300"></label> <button>Search</button></form>`
         : "";
-      const pagingControls = `${searchForm}${filterLinks}${
+      const pagingControls = `${deps.pollPanel ? deps.pollPanel(url) : ""}${searchForm}${filterLinks}${
         deps.articles.page
           ? `<p class="sorting">Sort: ${
               sort === "newest"
