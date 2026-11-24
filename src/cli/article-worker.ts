@@ -2,6 +2,7 @@ import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-reco
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { corpusRefinementWorkflow } from "../corpus-refinement/workflow.js";
+import { assertIsolatedStore, CorpusStorageConflictError } from "../corpus-refinement/storage.js";
 import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
 import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
@@ -186,9 +187,20 @@ function main(): number {
   // Corpus Refinement prototype (#830): independent of article production,
   // deterministic stubs, artifacts in its own isolated repository (never the
   // content or archive repositories).
-  const corpusRefinementPath =
-    process.env.STEELE_CORPUS_REFINEMENT_PATH ||
-    join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype");
+  // The store must not resolve to, contain or sit inside a live repository,
+  // including through an alias (#847); refuse to start rather than write there.
+  let corpusRefinementPath: string;
+  try {
+    corpusRefinementPath = assertIsolatedStore(
+      process.env.STEELE_CORPUS_REFINEMENT_PATH ||
+        join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype"),
+      [c.STEELE_ARCHIVE_PATH, c.STEELE_CONTENT_PATH],
+    );
+  } catch (error) {
+    if (!(error instanceof CorpusStorageConflictError)) throw error;
+    console.error(`article-worker: ${error.message}`);
+    return 2;
+  }
   const corpusRefinement = new GitArtifactStore({
     repoPath: corpusRefinementPath,
     repository: "corpus-refinement-prototype",
