@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as restate from "@restatedev/restate-sdk";
+import type { z } from "zod";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
+import type { ExtractionOutcome, ItemIssue } from "./contracts.js";
 
 /**
  * The shared model step for Corpus Refinement (#835), first half of the
@@ -98,3 +100,67 @@ export async function callModel(
     }
   });
 }
+
+/**
+ * Extracts candidate records from a recorded response and validates each one
+ * on its own (#836): JSON is parsed locally, then each item is checked against
+ * the stage's schema and the stage's own evidence rules (source references,
+ * quotations). Valid records are kept even when others fail; no model is used
+ * to repair output, and no saving or repair decision is made here.
+ */
+export function extractRecords<T>(
+  text: string,
+  options: {
+    /** The response key holding the candidate list, e.g. "ideas". */
+    listKey: string;
+    schema: z.ZodType<T>;
+    /** Stage-supplied evidence rule: a reason to reject the item, or undefined. */
+    check?: (item: T) => string | undefined;
+    maxItems?: number;
+  },
+): ExtractionOutcome<T> {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  let parsed: unknown;
+  try {
+    parsed = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || typeof parsed !== "object" || parsed === null)
+    return { accepted: [], issues: [{ index: -1, reason: "malformed-json" }] };
+  const list = (parsed as Record<string, unknown>)[options.listKey];
+  if (!Array.isArray(list))
+    return { accepted: [], issues: [{ index: -1, reason: `missing-list:${options.listKey}` }] };
+  const max = options.maxItems ?? 500;
+  const accepted: T[] = [];
+  const issues: ItemIssue[] = [];
+  if (list.length > max) issues.push({ index: -1, reason: `truncated:${list.length - max}` });
+  list.slice(0, max).forEach((raw, index) => {
+    const rawId =
+      raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string"
+        ? ((raw as { id: string }).id.slice(0, 200) as string)
+        : undefined;
+    const withId = (reason: string): ItemIssue => ({
+      index,
+      ...(rawId ? { id: rawId } : {}),
+      reason,
+    });
+    const item = options.schema.safeParse(raw);
+    if (!item.success) {
+      const path = item.error.issues[0]?.path.join(".") || "item";
+      issues.push(withId(`schema:${path}`));
+      return;
+    }
+    const rejected = options.check?.(item.data);
+    if (rejected) issues.push(withId(rejected));
+    else accepted.push(item.data);
+  });
+  return { accepted, issues };
+}
+
+const normalise = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim();
+
+/** Evidence rule helper: the quotation appears verbatim (whitespace-normalised) in the source. */
+export const quotedIn = (quote: string, source: string) =>
+  normalise(quote).length > 0 && normalise(source).includes(normalise(quote));

@@ -79,3 +79,21 @@ export function syntheticBatch(runId: string, size: number): CorpusRefinementInp
     })),
   };
 }
+
+/** One rejected candidate record, or a whole-response problem (index -1) (#836). */
+export interface ItemIssue {
+  index: number;
+  /** The candidate's own ID, when it had a readable one. */
+  id?: string;
+  reason: string;
+}
+
+/**
+ * Typed validation outcome of one model response (#836): the records that
+ * passed and the issues found. Both may be non-empty; what to save, defer or
+ * repair is the workflow's decision.
+ */
+export interface ExtractionOutcome<T> {
+  accepted: T[];
+  issues: ItemIssue[];
+}
