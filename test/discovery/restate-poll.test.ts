@@ -34,6 +34,7 @@ beforeAll(async () => {
           sources: ["alpha", "beta", "gamma", "delta"],
           intervalMs: 60 * 60 * 1000, // long: tests drive polls explicitly
           maxBackoffMs: 4 * 60 * 60 * 1000,
+          coalesceMs: 1_000,
           fetchItems: async function* (key) {
             fetches++;
             if (failFeed.has(key)) throw new TypeError("synthetic feed failure");
@@ -113,6 +114,7 @@ describe("discovery polls as Restate jobs (#823)", { timeout: 120_000 }, () => {
 
     failFeed.add("delta");
     const start = await poll("delta").start();
+    // The start poll lands just after the manual one and is coalesced into it.
     await new Promise((r) => setTimeout(r, 1500));
     const failed = await poll("delta").poll({ reason: "scheduled", generation: start.generation });
     expect(failed).toMatchObject({
@@ -122,7 +124,7 @@ describe("discovery polls as Restate jobs (#823)", { timeout: 120_000 }, () => {
     // Backoff doubles the interval after consecutive failures.
     expect(failed.nextDelayMs).toBeGreaterThan(60 * 60 * 1000);
     const last = statuses.filter((s) => s.key === "delta").at(-1)!.status;
-    expect(last).toMatchObject({ lastOutcome: "failed", consecutiveFailures: 2 });
+    expect(last).toMatchObject({ lastOutcome: "failed", consecutiveFailures: 1 });
     failFeed.delete("delta");
   });
 
@@ -131,6 +133,38 @@ describe("discovery polls as Restate jobs (#823)", { timeout: 120_000 }, () => {
     await expect(poll("alpha").poll({ reason: "sometimes" } as never)).rejects.toThrow(
       /invalid poll request/,
     );
+  });
+
+  it("coalesces a scheduled poll too, and keeps its schedule going", async () => {
+    feeds.beta = [item("b-one"), item("b-two")];
+    const start = await poll("beta").start();
+    await new Promise((r) => setTimeout(r, 1500));
+    await poll("beta").poll({ reason: "manual" });
+    const before = fetches;
+    const scheduled = await poll("beta").poll({
+      reason: "scheduled",
+      generation: start.generation,
+    });
+    expect(scheduled.status).toBe("coalesced");
+    expect(scheduled.nextDelayMs).toBe(60 * 60 * 1000);
+    expect(fetches).toBe(before);
+  });
+
+  it("refuses timing that the old runner refused", () => {
+    const base = {
+      sources: ["x"],
+      fetchItems: async function* () {},
+      publisher: { publish: async () => undefined },
+    };
+    expect(() => discoveryPollObject({ ...base, intervalMs: 500, maxBackoffMs: 60_000 })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      discoveryPollObject({ ...base, intervalMs: 300_000, maxBackoffMs: 1_000 }),
+    ).toThrow(/not be less than intervalMs/);
+    expect(() =>
+      discoveryPollObject({ ...base, intervalMs: 60_000, maxBackoffMs: 2 * 86_400_000 }),
+    ).toThrow(RangeError);
   });
 
   it("refuses a source this endpoint does not serve", async () => {

@@ -80,6 +80,8 @@ export interface DiscoveryPollDeps {
   maxBackoffMs: number;
   /** Sources this endpoint serves; any other key is refused. */
   sources: string[];
+  /** Window in which a poll reuses the previous result; default {@link COALESCE_MS}. */
+  coalesceMs?: number;
   /** Best effort: a status that cannot be written must not fail the poll. */
   writeStatus?: (key: string, status: PollStatus) => Promise<void>;
 }
@@ -104,15 +106,14 @@ export function nextDelay(
 }
 
 /**
- * Run a step with bounded retries, keeping the last error's class name: a
- * step that gives up surfaces as a TerminalError without its original class.
+ * Run a step with bounded retries. A step that gives up surfaces as a
+ * TerminalError; its error class name is kept in durable metadata.
  */
 async function step<T>(
   ctx: restate.ObjectContext,
   name: string,
   fn: () => Promise<T>,
 ): Promise<{ ok: true; value: T } | { ok: false; errorName: string }> {
-  let lastError = "RetriesExhausted";
   try {
     const value = await ctx.run(
       name,
@@ -120,8 +121,10 @@ async function step<T>(
         try {
           return await fn();
         } catch (error) {
-          lastError = error instanceof Error ? error.name : "UnknownError";
-          throw error;
+          // The class name travels as journaled metadata, so a replay after a
+          // restart reports the same outcome as the original attempt.
+          const errorName = error instanceof Error ? error.name : "UnknownError";
+          throw new restate.RetryableError(`${name} failed`, { metadata: { errorName } });
         }
       },
       STEP,
@@ -129,14 +132,36 @@ async function step<T>(
     return { ok: true, value };
   } catch (error) {
     if (!(error instanceof restate.TerminalError)) throw error;
-    return { ok: false, errorName: lastError };
+    const recorded = error.metadata?.errorName;
+    return {
+      ok: false,
+      errorName: recorded && /^[A-Za-z]{1,60}$/.test(recorded) ? recorded : "RetriesExhausted",
+    };
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export function discoveryPollObject(deps: DiscoveryPollDeps) {
+  // The same bounds the in-process runner enforced: 1 second to 24 hours,
+  // and a backoff ceiling no lower than the interval.
+  for (const [name, value] of [
+    ["intervalMs", deps.intervalMs],
+    ["maxBackoffMs", deps.maxBackoffMs],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1_000 || value > DAY_MS)
+      throw new RangeError(`${name} must be between 1 second and 24 hours`);
+  }
+  if (deps.maxBackoffMs < deps.intervalMs)
+    throw new RangeError("maxBackoffMs must not be less than intervalMs");
   const served = new Set(deps.sources);
   const self = (ctx: restate.ObjectContext) =>
     ctx.objectSendClient<typeof object>({ name: DISCOVERY_POLL }, ctx.key);
+  const scheduleNext = (
+    ctx: restate.ObjectContext,
+    generation: string | undefined,
+    delay: number,
+  ) => self(ctx).poll({ reason: "scheduled", generation }, restate.rpc.sendOpts({ delay }));
 
   const object = restate.object({
     name: DISCOVERY_POLL,
@@ -160,28 +185,38 @@ export function discoveryPollObject(deps: DiscoveryPollDeps) {
         if (scheduled && request.generation !== (await ctx.get<string>("generation"))) {
           return { status: "superseded", discovered: 0, published: 0 };
         }
-        const now = await ctx.date.now();
+        const startedAt = await ctx.date.now();
         const lastAt = await ctx.get<number>("lastCompletedAt");
-        if (!scheduled && lastAt !== null && now - lastAt < COALESCE_MS) {
+        // Any poll, scheduled or on demand, arriving soon after a completed
+        // one reuses its result. A scheduled poll still keeps its chain going.
+        if (lastAt !== null && startedAt - lastAt < (deps.coalesceMs ?? COALESCE_MS)) {
           const last = await ctx.get<PollOutcome>("lastOutcome");
-          return { ...(last ?? { discovered: 0, published: 0 }), status: "coalesced" };
+          const coalesced: PollOutcome = {
+            ...(last ?? { discovered: 0, published: 0 }),
+            status: "coalesced",
+          };
+          delete coalesced.nextDelayMs;
+          if (scheduled) {
+            coalesced.nextDelayMs = nextDelay(deps, (await ctx.get<number>("failures")) ?? 0);
+            scheduleNext(ctx, request.generation, coalesced.nextDelayMs);
+          }
+          return coalesced;
         }
 
         const outcome = await pollOnce(ctx);
+        // Completion, not start: a long poll must not shorten the coalescing window.
+        const completedAt = await ctx.date.now();
         const runs = ((await ctx.get<number>("runs")) ?? 0) + 1;
         const failures =
           outcome.status === "failed" ? ((await ctx.get<number>("failures")) ?? 0) + 1 : 0;
         ctx.set("runs", runs);
         ctx.set("failures", failures);
-        ctx.set("lastCompletedAt", now);
+        ctx.set("lastCompletedAt", completedAt);
         ctx.set("lastOutcome", outcome);
 
         if (scheduled) {
           outcome.nextDelayMs = nextDelay(deps, failures);
-          self(ctx).poll(
-            { reason: "scheduled", generation: request.generation },
-            restate.rpc.sendOpts({ delay: outcome.nextDelayMs }),
-          );
+          scheduleNext(ctx, request.generation, outcome.nextDelayMs);
         }
         if (deps.writeStatus) {
           const status: PollStatus = {
@@ -190,7 +225,7 @@ export function discoveryPollObject(deps: DiscoveryPollDeps) {
             consecutiveFailures: failures,
             lastOutcome: outcome.status,
             lastPublished: outcome.published,
-            lastPollAt: new Date(now).toISOString(),
+            lastPollAt: new Date(completedAt).toISOString(),
             ...(outcome.nextDelayMs !== undefined ? { nextDelayMs: outcome.nextDelayMs } : {}),
           };
           const write = deps.writeStatus;
