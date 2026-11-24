@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -90,6 +90,22 @@ describe("Corpus Refinement storage isolation (#847)", () => {
     } catch (error) {
       expect((error as Error).message).toBe(
         "Corpus Refinement store (STEELE_CORPUS_REFINEMENT_PATH) overlaps the live repository (STEELE_ARCHIVE_PATH)",
+      );
+      expect((error as Error).message).not.toContain(root);
+    }
+  });
+
+  it("reports an unresolvable path by variable and error code, never the path", async () => {
+    // A file where a directory is expected: ENOTDIR from the filesystem.
+    const file = join(root, "a-file");
+    await writeFile(file, "x");
+    try {
+      check(`${file}/store`)();
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(CorpusStorageConflictError);
+      expect((error as Error).message).toBe(
+        "Corpus Refinement path (STEELE_CORPUS_REFINEMENT_PATH) could not be resolved (ENOTDIR)",
       );
       expect((error as Error).message).not.toContain(root);
     }

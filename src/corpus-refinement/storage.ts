@@ -26,12 +26,16 @@ export class CorpusStorageConflictError extends Error {
   constructor(
     readonly store: string,
     readonly live: string,
-    readonly reason: "overlap" | "unsafe-path",
+    readonly reason: "overlap" | "unsafe-path" | "unresolvable",
+    /** For an unresolvable path: the filesystem error code only, such as ENOTDIR. */
+    readonly code?: string,
   ) {
     super(
       reason === "overlap"
         ? `Corpus Refinement store (${store}) overlaps the live repository (${live})`
-        : `Corpus Refinement path (${live}) has '..' after a missing directory`,
+        : reason === "unsafe-path"
+          ? `Corpus Refinement path (${live}) has '..' after a missing directory`
+          : `Corpus Refinement path (${live}) could not be resolved (${code})`,
     );
     this.name = "CorpusStorageConflictError";
   }
@@ -44,6 +48,16 @@ interface Resolved {
   tail: string[];
   /** Full canonical spelling: existing plus tail. */
   full: string;
+}
+
+/**
+ * A filesystem error names the configured path in its message; report only
+ * the variable name and a bounded error code instead.
+ */
+function unresolvable(name: string, error: unknown): CorpusStorageConflictError {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  const safe = typeof code === "string" && /^E[A-Z]{2,15}$/.test(code) ? code : "EUNKNOWN";
+  return new CorpusStorageConflictError(name, name, "unresolvable", safe);
 }
 
 /**
@@ -62,7 +76,7 @@ function canonical(entry: NamedPath & { path: string }): Resolved {
       const existing = realpathSync.native(candidate);
       return { existing, tail, full: tail.length ? resolve(existing, ...tail) : existing };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unresolvable(entry.name, error);
       const missing = parts.pop()!;
       if (missing === ".." || missing === ".")
         throw new CorpusStorageConflictError(entry.name, entry.name, "unsafe-path");
@@ -117,8 +131,14 @@ export function assertIsolatedStore(
   const storeResolved = canonical(store);
   for (const entry of live) {
     if (!entry.path) continue;
-    if (overlaps(storeResolved, canonical({ name: entry.name, path: entry.path })))
-      throw new CorpusStorageConflictError(store.name, entry.name, "overlap");
+    const liveResolved = canonical({ name: entry.name, path: entry.path });
+    let overlap: boolean;
+    try {
+      overlap = overlaps(storeResolved, liveResolved);
+    } catch (error) {
+      throw unresolvable(entry.name, error);
+    }
+    if (overlap) throw new CorpusStorageConflictError(store.name, entry.name, "overlap");
   }
   return storeResolved.full;
 }
