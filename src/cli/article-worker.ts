@@ -28,6 +28,7 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *                                                    per-stage overrides
  *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_TOKENS?
  *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
+ *   STEELE_CROSS_SPEAKER?                            "1" adds cross-speaker parallels to the essay (#388); needs ELASTICSEARCH_URL
  *   ELASTICSEARCH_URL?, ELASTICSEARCH_API_KEY[_FILE]?  claim-occurrence index; enables same-speaker
  *                                                    history in the essay (#370)
  *   STEELE_MODEL_HISTORY?                            model for history matching and comparison
@@ -92,6 +93,7 @@ function main(): number {
   // Same-speaker history needs the occurrence index; without it the essay
   // simply has no historical section.
   let history;
+  let crossSpeaker;
   if (process.env.ELASTICSEARCH_URL) {
     try {
       const es = elasticsearchConnection();
@@ -99,6 +101,8 @@ function main(): number {
         search: new ElasticsearchController(es.url, es.apiKey),
         provider: model("STEELE_MODEL_HISTORY"),
       };
+      // Cross-speaker parallels (#388): opt-in, on the same index and model.
+      if (process.env.STEELE_CROSS_SPEAKER === "1") crossSpeaker = history;
     } catch {
       console.error("article-worker: Elasticsearch or history model is not configured");
       return 2;
@@ -151,6 +155,7 @@ function main(): number {
           : {}),
       },
       ...(history ? { history } : {}),
+      ...(crossSpeaker ? { crossSpeaker } : {}),
       owner: `article-worker@${hostname()}:${process.pid}`,
     });
     continuation = editorialContinuationWorkflow({

@@ -42,7 +42,8 @@ export interface SpeakerComparisonDeps {
   index?: string;
 }
 
-function claimOccurrences(raw: string): ClaimOccurrence[] {
+/** Accepted themed assertions of a claim result, with the resolved post author (#387). */
+export function claimOccurrences(raw: string): ClaimOccurrence[] {
   const record = ClaimExtractionRecordSchema.parse(JSON.parse(raw));
   const out: ClaimOccurrence[] = [];
   for (const c of record.claims) {

@@ -125,9 +125,13 @@ export const WriterPackageSchema = z
                         artifact: Ref,
                         start: z.number().int(),
                         end: z.number().int(),
+                        /** Cross-speaker parallels (#388): who said the earlier passage. */
+                        speaker: z.string().optional(),
                       })
                       .strict(),
                   ),
+                  /** Cross-speaker parallels (#388): whether the other account agrees or diverges. */
+                  relation: z.enum(["agrees", "diverges"]).optional(),
                   /** Generated comparison text; never evidence. */
                   comparison: z.object({ text: z.string(), isEvidence: z.literal(false) }).strict(),
                   conflictRationale: z.string().optional(),
@@ -284,8 +288,10 @@ const ComparisonResultSchema = z.looseObject({
           artifact: Ref,
           start: z.number().int(),
           end: z.number().int(),
+          speaker: z.string().optional(),
         }),
       ),
+      relation: z.enum(["agrees", "diverges"]).optional(),
     }),
   ),
 });
@@ -544,7 +550,9 @@ export async function buildWriterPackage(input: {
           artifact: e.artifact,
           start: e.start,
           end: e.end,
+          ...(e.speaker ? { speaker: e.speaker } : {}),
         })),
+        ...(f.relation ? { relation: f.relation } : {}),
         comparison: { text: f.explanation.text, isEvidence: false },
         ...(f.conflictRationale ? { conflictRationale: f.conflictRationale } : {}),
         ...(f.changedCircumstances ? { changedCircumstances: f.changedCircumstances } : {}),
