@@ -1,10 +1,19 @@
 import { it, expect } from "vite-plus/test";
-import { canonicalNeed, canonicalNeedId } from "../../src/research/canonical-need.js";
+import {
+  canonicalNeed,
+  canonicalNeedId,
+} from "../../src/research/canonical-need.js";
 import { createClaim } from "../../src/analysis/claim.js";
 import { createClaimOccurrence } from "../../src/analysis/claim-occurrence.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 const statement = "The ENMOD Convention was adopted on 10 December 1976.";
-function fixture(postId = "first", text = statement) {
+function fixture(
+  postId = "first",
+  text = statement,
+  dates: { text: string; value?: string }[] = [
+    { text: "10 December 1976", value: "1976-12-10" },
+  ],
+) {
   const artifact = {
     repository: "synthetic",
     commit: "a".repeat(40),
@@ -28,7 +37,7 @@ function fixture(postId = "first", text = statement) {
       span: { start: 0, end: text.length },
       passage: text,
       entities: ["ENMOD Convention"],
-      dates: [{ text: "10 December 1976", value: "1976-12-10" }],
+      dates,
       extraction: {
         modelVersion: "synthetic",
         promptVersion: "synthetic",
@@ -69,7 +78,9 @@ function fixture(postId = "first", text = statement) {
 it("shares full accepted semantic claims independently of extraction IDs and source authors", () => {
   const a = fixture();
   const b = { ...fixture("second"), claimRecordId: "renamed" };
-  expect(canonicalNeedId(canonicalNeed(a))).toBe(canonicalNeedId(canonicalNeed(b)));
+  expect(canonicalNeedId(canonicalNeed(a))).toBe(
+    canonicalNeedId(canonicalNeed(b)),
+  );
 });
 it("keeps permissive legacy data occurrence-specific even with identical grouped IDs", () => {
   const a = fixture();
@@ -81,7 +92,9 @@ it("keeps permissive legacy data occurrence-specific even with identical grouped
   expect(canonicalNeedId(canonicalNeed(legacy(a)))).not.toBe(
     canonicalNeedId(canonicalNeed(legacy(b))),
   );
-  expect(canonicalNeedId(canonicalNeed(legacy(a)))).toBe(canonicalNeedId(canonicalNeed(legacy(a))));
+  expect(canonicalNeedId(canonicalNeed(legacy(a)))).toBe(
+    canonicalNeedId(canonicalNeed(legacy(a))),
+  );
 });
 it("scopes missing or mismatched accepted semantic associations to the exact occurrence", () => {
   const a = fixture();
@@ -89,16 +102,24 @@ it("scopes missing or mismatched accepted semantic associations to the exact occ
   const unknown = (f: ReturnType<typeof fixture>) => ({
     ...f,
     kind: "quotation" as const,
-    occurrence: { ...f.occurrence, assertionKind: "quotation", speaker: { kind: "unknown" } },
+    occurrence: {
+      ...f.occurrence,
+      assertionKind: "quotation",
+      speaker: { kind: "unknown" },
+    },
   });
   expect(canonicalNeedId(canonicalNeed(unknown(a)))).not.toBe(
     canonicalNeedId(canonicalNeed(unknown(b))),
   );
   expect(
-    canonicalNeed({ ...a, occurrence: { ...a.occurrence, claimId: `sha256:${"e".repeat(64)}` } })
-      .occurrenceScope,
+    canonicalNeed({
+      ...a,
+      occurrence: { ...a.occurrence, claimId: `sha256:${"e".repeat(64)}` },
+    }).occurrenceScope,
   ).toBeDefined();
-  expect(canonicalNeed({ ...a, claim: { statement } }).occurrenceScope).toBeDefined();
+  expect(
+    canonicalNeed({ ...a, claim: { statement } }).occurrenceScope,
+  ).toBeDefined();
 });
 it("preserves quantity, punctuation, case, negation and semantic qualifiers", () => {
   const variants = [
@@ -113,7 +134,12 @@ it("preserves quantity, punctuation, case, negation and semantic qualifiers", ()
     new Set(
       variants.map((v) =>
         canonicalNeedId(
-          canonicalNeed(fixture("same", `The ENMOD Convention cost ${v} on 10 December 1976.`)),
+          canonicalNeed(
+            fixture(
+              "same",
+              `The ENMOD Convention cost ${v} on 10 December 1976.`,
+            ),
+          ),
         ),
       ),
     ).size,
@@ -128,4 +154,33 @@ it("preserves quantity, punctuation, case, negation and semantic qualifiers", ()
       }),
     ),
   );
+});
+
+it("scopes dates whose meaning depends on the publication date, across posts", () => {
+  for (const text of [
+    "two days ago",
+    "on Monday",
+    "March 3",
+    "last spring",
+    "yesterday",
+  ]) {
+    const claim = `The council approved the measure ${text}.`;
+    const a = canonicalNeed(fixture("first", claim, [{ text }]));
+    const b = canonicalNeed(fixture("second", claim, [{ text }]));
+    expect(a.occurrenceScope, text).toBeDefined();
+    expect(canonicalNeedId(a), text).not.toBe(canonicalNeedId(b));
+  }
+});
+
+it("shares fully specified dates and bare years across posts", () => {
+  for (const dates of [
+    [{ text: "3 March 2021", value: "2021-03-03" }],
+    [{ text: "in 2019" }],
+  ]) {
+    const claim = `The council approved the measure ${dates[0]!.text}.`;
+    const a = canonicalNeed(fixture("first", claim, dates));
+    const b = canonicalNeed(fixture("second", claim, dates));
+    expect(a.occurrenceScope).toBeUndefined();
+    expect(canonicalNeedId(a)).toBe(canonicalNeedId(b));
+  }
 });
