@@ -1,47 +1,94 @@
-import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * Keep the Corpus Refinement experiment store apart from the live repositories
  * (#847). The experiment writes its own artifacts; it must never initialise or
  * write inside the archive or content repositories, nor contain them.
  *
- * Paths are compared after resolving symbolic links, so an alias of a live
- * repository is caught too. A path that does not exist yet is resolved through
+ * Paths are resolved the way the kernel resolves them: symbolic links are
+ * followed before any `..` is applied, so an alias of a live repository is
+ * caught. Existing directories are compared by filesystem identity (device and
+ * inode), so two spellings of one directory on a case-insensitive volume are
+ * the same directory. A store path that does not exist yet is resolved through
  * its nearest existing ancestor.
+ *
+ * Error messages name configuration variables only, never their values.
  */
+
+export interface NamedPath {
+  /** The configuration variable the path came from, safe to log. */
+  name: string;
+  path: string | undefined;
+}
 
 export class CorpusStorageConflictError extends Error {
   constructor(
     readonly store: string,
     readonly live: string,
+    readonly reason: "overlap" | "unsafe-path",
   ) {
-    super(`Corpus Refinement store ${store} overlaps the live repository ${live}`);
+    super(
+      reason === "overlap"
+        ? `Corpus Refinement store (${store}) overlaps the live repository (${live})`
+        : `Corpus Refinement path (${live}) has '..' after a missing directory`,
+    );
     this.name = "CorpusStorageConflictError";
   }
 }
 
-/** Resolve symbolic links, walking up to the nearest existing ancestor. */
-function canonical(path: string): string {
-  const absolute = resolve(path);
-  const missing: string[] = [];
-  let current = absolute;
-  for (;;) {
+interface Resolved {
+  /** Canonical path of the deepest existing directory. */
+  existing: string;
+  /** Path components below it that do not exist yet. */
+  tail: string[];
+  /** Full canonical spelling: existing plus tail. */
+  full: string;
+}
+
+/**
+ * Resolve as the kernel does: hand the unnormalised spelling to the native
+ * realpath (Node's default realpathSync normalises `..` first), so
+ * a symbolic link is followed before a `..` after it. Only components that do
+ * not exist are peeled off, and a missing component may not be `.` or `..`.
+ */
+function canonical(entry: NamedPath & { path: string }): Resolved {
+  const spelled = isAbsolute(entry.path) ? entry.path : `${process.cwd()}${sep}${entry.path}`;
+  const parts = spelled.split(sep);
+  const tail: string[] = [];
+  while (parts.length) {
+    const candidate = parts.join(sep) || sep;
     try {
-      const real = realpathSync(current);
-      return missing.length ? resolve(real, ...missing.reverse()) : real;
+      const existing = realpathSync.native(candidate);
+      return { existing, tail, full: tail.length ? resolve(existing, ...tail) : existing };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = dirname(current);
-      if (parent === current) return absolute;
-      missing.push(basename(current));
-      current = parent;
+      const missing = parts.pop()!;
+      if (missing === ".." || missing === ".")
+        throw new CorpusStorageConflictError(entry.name, entry.name, "unsafe-path");
+      if (missing) tail.unshift(missing);
     }
+  }
+  const root = realpathSync.native(sep);
+  return { existing: root, tail, full: resolve(root, ...tail) };
+}
+
+const identity = (path: string) => {
+  const s = statSync(path);
+  return `${s.dev}:${s.ino}`;
+};
+
+/** Identities of a directory and every ancestor up to the root. */
+function lineage(path: string): Set<string> {
+  const ids = new Set<string>();
+  for (let current = path; ; current = dirname(current)) {
+    ids.add(identity(current));
+    if (dirname(current) === current) return ids;
   }
 }
 
-/** True when either path is the other or lies inside it. */
-function overlaps(a: string, b: string): boolean {
+/** True when either path is the other or lies inside it, by spelling. */
+function nested(a: string, b: string): boolean {
   const inside = (child: string, parent: string) => {
     const rel = relative(parent, child);
     return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
@@ -49,17 +96,29 @@ function overlaps(a: string, b: string): boolean {
   return inside(a, b) || inside(b, a);
 }
 
+/** True when the store is, contains or lies inside the live path. */
+function overlaps(store: Resolved, live: Resolved): boolean {
+  if (nested(store.full, live.full)) return true;
+  // Identity checks cover spellings that differ only in case on a
+  // case-insensitive volume.
+  if (!live.tail.length && lineage(store.existing).has(identity(live.existing))) return true;
+  if (!store.tail.length && lineage(live.existing).has(identity(store.existing))) return true;
+  return false;
+}
+
 /**
  * Return the canonical store path, or throw when it resolves to, contains or
  * lies inside any configured live repository. Unset live paths are ignored.
  */
-export function assertIsolatedStore(store: string, live: (string | undefined)[]): string {
-  const storeReal = canonical(store);
-  for (const path of live) {
-    if (!path) continue;
-    if (overlaps(storeReal, canonical(path))) {
-      throw new CorpusStorageConflictError(store, path);
-    }
+export function assertIsolatedStore(
+  store: NamedPath & { path: string },
+  live: NamedPath[],
+): string {
+  const storeResolved = canonical(store);
+  for (const entry of live) {
+    if (!entry.path) continue;
+    if (overlaps(storeResolved, canonical({ name: entry.name, path: entry.path })))
+      throw new CorpusStorageConflictError(store.name, entry.name, "overlap");
   }
-  return storeReal;
+  return storeResolved.full;
 }

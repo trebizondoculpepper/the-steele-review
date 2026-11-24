@@ -189,18 +189,47 @@ function main(): number {
   // content or archive repositories).
   // The store must not resolve to, contain or sit inside a live repository,
   // including through an alias (#847); refuse to start rather than write there.
+  // Errors name the variables only, never their values.
+  const corpusStore = {
+    name: process.env.STEELE_CORPUS_REFINEMENT_PATH
+      ? "STEELE_CORPUS_REFINEMENT_PATH"
+      : "default beside STEELE_STATE_PATH",
+    path:
+      process.env.STEELE_CORPUS_REFINEMENT_PATH ||
+      join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype"),
+  };
+  const liveRepositories = [
+    { name: "STEELE_ARCHIVE_PATH", path: c.STEELE_ARCHIVE_PATH },
+    { name: "STEELE_CONTENT_PATH", path: c.STEELE_CONTENT_PATH },
+  ];
   let corpusRefinementPath: string;
   try {
-    corpusRefinementPath = assertIsolatedStore(
-      process.env.STEELE_CORPUS_REFINEMENT_PATH ||
-        join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype"),
-      [c.STEELE_ARCHIVE_PATH, c.STEELE_CONTENT_PATH],
-    );
+    corpusRefinementPath = assertIsolatedStore(corpusStore, liveRepositories);
   } catch (error) {
     if (!(error instanceof CorpusStorageConflictError)) throw error;
     console.error(`article-worker: ${error.message}`);
     return 2;
   }
+  /**
+   * Check again when the store is created: a directory swapped for a symbolic
+   * link after startup must not redirect the store into a live repository.
+   * The created directory must still be the one validated at startup.
+   */
+  const recheckCorpusStore = () => {
+    try {
+      const now = assertIsolatedStore(
+        { name: corpusStore.name, path: corpusRefinementPath },
+        liveRepositories,
+      );
+      if (now !== corpusRefinementPath) throw new Error("moved");
+    } catch (error) {
+      throw new restate.TerminalError(
+        error instanceof CorpusStorageConflictError
+          ? `article-worker: ${error.message}`
+          : `article-worker: Corpus Refinement store (${corpusStore.name}) changed after startup`,
+      );
+    }
+  };
   const corpusRefinement = new GitArtifactStore({
     repoPath: corpusRefinementPath,
     repository: "corpus-refinement-prototype",
@@ -217,7 +246,9 @@ function main(): number {
         provider: model("STEELE_MODEL_CORPUS"),
         // Created on first use, so a missing prototype repository never blocks startup.
         ready: async () => {
+          recheckCorpusStore();
           await mkdir(corpusRefinementPath, { recursive: true, mode: 0o700 });
+          recheckCorpusStore();
           await corpusRefinement.initialise();
         },
       }),
