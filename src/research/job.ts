@@ -98,8 +98,10 @@ export const ResearchRequestSchema = z
     }
     if (r.canonicalNeeds) {
       const needs = r.canonicalNeeds.needs;
+      // New canonical work is theme-only; extraction-origin canonical requests
+      // saved by the earlier format stay readable, so their evidence is reused.
       if (
-        r.origin !== "theme" ||
+        (r.origin !== "theme" && r.origin !== "extraction") ||
         needs.length !== r.claims.length ||
         needs.some(
           (n) =>
