@@ -2,7 +2,7 @@
 
 A designer clarification prompt is a Markdown brief that the owner pastes straight to the designer to unblock work. An implementer writes one at the end of a block of work, whenever some items need clarification and others are waiting on a precondition. The owner asks for it by name: "designer clarification prompt".
 
-The aim: if the designer acts on every item in the prompt, nothing the implementer could pick up is left blocked.
+The aim: once the designer has acted on every item, and the owner has completed every Human item, nothing the implementer could pick up is left blocked. Items that need the owner stay blocked until the owner acts.
 
 ## When to write one
 
@@ -12,7 +12,7 @@ The aim: if the designer acts on every item in the prompt, nothing the implement
 
 ## How to build it
 
-1. **Find what's blocked.** For each `status:ready` ticket that pdb refuses, read its open native blockers. Follow each chain to its root: the ticket or PR whose state is what actually blocks it.
+1. **Find what's blocked.** For each `status:ready` or `status:incomplete` ticket that pdb refuses, read its open native blockers. Follow each chain to its root: the ticket or PR whose state is what actually blocks it.
 2. **Read each root's state.** Check its status label, its open question, any review findings, its assignee, and whether a PR delivers it.
 3. **Classify the action each root needs:**
    - **Automatic.** The designer can act alone, by changing a label, reviewing and merging a PR, recording a refinement, or giving a short answer from what they already know.
@@ -26,7 +26,8 @@ The aim: if the designer acts on every item in the prompt, nothing the implement
 ```markdown
 # Designer clarification prompt: <repository> (<date>)
 
-You are the designer for <repository>. The implementer `<agent>` has no claimable work.
+You are the designer for <repository>. Queue state: <for example, "no claimable work",
+or "claimable: #n, #m; the items below block the rest">.
 Act on each item below, then record it in pdb (`pdb question resolve`, status labels,
 review sign-off or merge). Where an item says Human, pass it to the owner with the
 options shown. Do not remove a dependency to unblock work unless it is genuinely wrong;
@@ -45,5 +46,6 @@ if it is, say why.
   Unblocks: <chain>.
 
 ## Expected result
-<which tickets become claimable, and in what order>
+<which tickets become claimable, and in what order. Say which of them also need the
+Human items above to be completed by the owner.>
 ```
