@@ -24,6 +24,8 @@ import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configu
  *                                                    and email subscribers (#789); anything else stays off
  *   STEELE_SUBSTACK_PUBLISH_FROM?                    required with publish-with-email: only approvals at
  *                                                    or after this ISO time are published (no backlog)
+ *   STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL?           comma-separated publicationId/postId pairs published
+ *                                                    without subscriber email (owner-authorized validation, #388)
  *   STEELE_SUBSTACK_BYLINE_ID?                       explicit destination byline id (digits)
  *   STEELE_PUBLISHER_DESTINATION?                    default substack
  *   STEELE_PUBLISHER_CONSUMER?                       default steele-publisher-substack
@@ -58,6 +60,12 @@ const EnvSchema = z.object({
   STEELE_SUBSTACK_SESSION_FILE: z.string().min(1),
   STEELE_SUBSTACK_DELIVERY: z.string().optional(),
   STEELE_SUBSTACK_PUBLISH_FROM: z.iso.datetime({ offset: true }).optional(),
+  STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL: z
+    .string()
+    .regex(
+      /^[a-z0-9][a-z0-9-]{0,199}\/[a-z0-9][a-z0-9-]{0,199}(,[a-z0-9][a-z0-9-]{0,199}\/[a-z0-9][a-z0-9-]{0,199}){0,19}$/,
+    )
+    .optional(),
   STEELE_SUBSTACK_BYLINE_ID: z
     .string()
     .regex(/^[0-9]+$/)
@@ -69,7 +77,11 @@ const EnvSchema = z.object({
   STEELE_PUBLISHER_CONSUMER: z.string().min(1).default(SUBSTACK_CONSUMER),
   STEELE_PUBLICATION_STREAM: z.string().min(1).default(PUBLICATION_STREAM),
   STEELE_PUBLISHER_DELAY_MS: z.coerce.number().int().min(0).default(0),
-  STEELE_PUBLISHER_RETRY_DELAY_MS: z.coerce.number().int().positive().default(30_000),
+  STEELE_PUBLISHER_RETRY_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30_000),
 });
 
 async function main(): Promise<number> {
@@ -78,7 +90,9 @@ async function main(): Promise<number> {
   );
   if (!env.success) {
     const fields = [...new Set(env.error.issues.map((i) => i.path.join(".")))];
-    console.error(`substack-publisher: invalid or missing configuration: ${fields.join(", ")}`);
+    console.error(
+      `substack-publisher: invalid or missing configuration: ${fields.join(", ")}`,
+    );
     return 2;
   }
   const c = env.data;
@@ -91,18 +105,23 @@ async function main(): Promise<number> {
       }),
     );
   // Re-read per request so a replaced session file takes effect without a restart.
-  const session = async () => (await readFile(c.STEELE_SUBSTACK_SESSION_FILE, "utf8")).trim();
+  const session = async () =>
+    (await readFile(c.STEELE_SUBSTACK_SESSION_FILE, "utf8")).trim();
   try {
     if (!(await session())) throw new Error("empty");
   } catch {
-    console.error("substack-publisher: session file is missing, unreadable or empty");
+    console.error(
+      "substack-publisher: session file is missing, unreadable or empty",
+    );
     return 2;
   }
   let client: SubstackClient;
   try {
     client = new SubstackClient({ origin: c.STEELE_SUBSTACK_ORIGIN, session });
   } catch {
-    console.error("substack-publisher: STEELE_SUBSTACK_ORIGIN must be a bare https origin");
+    console.error(
+      "substack-publisher: STEELE_SUBSTACK_ORIGIN must be a bare https origin",
+    );
     return 2;
   }
   const abort = new AbortController();
@@ -112,13 +131,17 @@ async function main(): Promise<number> {
   const publishing = c.STEELE_SUBSTACK_DELIVERY === "publish-with-email";
   if (publishing && !c.STEELE_SUBSTACK_PUBLISH_FROM) {
     // Never publish without an explicit cutoff: the backlog must stay out.
-    console.error("substack-publisher: publish-with-email needs STEELE_SUBSTACK_PUBLISH_FROM");
+    console.error(
+      "substack-publisher: publish-with-email needs STEELE_SUBSTACK_PUBLISH_FROM",
+    );
     return 2;
   }
   if (c.STEELE_SUBSTACK_DELIVERY !== "live" && !publishing) {
     // Ready but not delivering: approvals stay queued for this consumer.
     log({ state: "ready", delivery: "off" });
-    await sleep(2 ** 31 - 1, undefined, { signal: abort.signal }).catch(() => undefined);
+    await sleep(2 ** 31 - 1, undefined, { signal: abort.signal }).catch(
+      () => undefined,
+    );
     log({ state: "stopped" });
     return 0;
   }
@@ -137,7 +160,9 @@ async function main(): Promise<number> {
   const operations = new OperationStore({ path: c.STEELE_STATE_PATH });
   const nats = new NatsController(natsConn.url, natsConn.token);
   try {
-    await nats.connect(`steele-substack-publisher-${c.STEELE_PUBLISHER_DESTINATION}`);
+    await nats.connect(
+      `steele-substack-publisher-${c.STEELE_PUBLISHER_DESTINATION}`,
+    );
     const deliveryControl = draftDeliveryConfiguration().control;
     await runPublisherService({
       nats,
@@ -148,12 +173,23 @@ async function main(): Promise<number> {
         ? new SubstackPublishDestination(client, {
             name: c.STEELE_PUBLISHER_DESTINATION,
             publishFrom: c.STEELE_SUBSTACK_PUBLISH_FROM!,
-            ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
+            ...(c.STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL
+              ? {
+                  withoutEmail: new Set(
+                    c.STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL.split(","),
+                  ),
+                }
+              : {}),
+            ...(c.STEELE_SUBSTACK_BYLINE_ID
+              ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }
+              : {}),
           })
         : new SubstackDraftDestination(client, {
             deliveryControl,
             name: c.STEELE_PUBLISHER_DESTINATION,
-            ...(c.STEELE_SUBSTACK_BYLINE_ID ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID } : {}),
+            ...(c.STEELE_SUBSTACK_BYLINE_ID
+              ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }
+              : {}),
           }),
       content,
       operations,
