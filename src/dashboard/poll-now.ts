@@ -39,6 +39,9 @@ export interface PollOutcomeLike {
   failure?: { stage: string; errorName: string };
 }
 
+/** Source types with a poller today; others are shown, but cannot be polled yet. */
+export const POLLABLE_TYPES: readonly SourceType[] = ["substack"];
+
 export interface PollNowDeps {
   sources: PollSource[];
   /** Poll one source now through the scheduled job's handler. */
@@ -109,25 +112,39 @@ function toResult(id: string, out: PollOutcomeLike): SourcePollResult {
   };
 }
 
-export function pollNowAction(deps: PollNowDeps) {
+export function pollNowAction(input: PollNowDeps) {
+  // Only types with a poller are polled; a configured type without one is
+  // never sent to another type's poller (#824).
+  const deps = { ...input, sources: input.sources.filter((s) => POLLABLE_TYPES.includes(s.type)) };
   /** The panel shown on the Articles page; `actionOrigin` prefixes the form target. */
   const panel = (url: URL, actionOrigin = ""): string => {
     const forms = SOURCE_TYPES.map((type) => {
       const count = deps.sources.filter((s) => s.type === type).length;
       return count === 0
-        ? `<p><button disabled>Poll ${type} now</button> <span class="empty">no configured ${type} sources</span></p>`
+        ? `<p><button disabled>Poll ${type} now</button> <span class="empty">${
+            POLLABLE_TYPES.includes(type)
+              ? `no configured ${type} sources`
+              : `no ${type} poller yet`
+          }</span></p>`
         : `<form method="post" action="${escapeHtml(actionOrigin)}/articles/poll"><input type="hidden" name="type" value="${type}"><button name="confirm" value="yes">Poll ${type} now</button> <span class="empty">${count} configured source${count === 1 ? "" : "s"}</span></form>`;
     }).join("");
     const polled = url.searchParams.get("polled");
     const results = decode(url.searchParams.get("results"));
     let report = "";
     if (polled && (SOURCE_TYPES as readonly string[]).includes(polled) && results) {
-      const failed = results.filter((r) => r.status !== "complete" && r.status !== "coalesced");
+      // A coalesced result repeats the previous poll, which may itself have failed.
+      const failed = results.filter(
+        (r) => !(r.status === "complete" || (r.status === "coalesced" && !r.failure)),
+      );
       const rows = results
         .map(
           (r) =>
             `<tr><td><code>${escapeHtml(r.id)}</code></td><td>${escapeHtml(
-              r.status === "coalesced" ? "already polled just now" : r.status,
+              r.status === "coalesced"
+                ? r.failure
+                  ? "failed just now (not retried yet)"
+                  : "already polled just now"
+                : r.status,
             )}</td><td>${r.discovered ?? "—"}</td><td>${r.published ?? "—"}</td><td>${
               r.failure ? escapeHtml(r.failure) : "—"
             }</td></tr>`,

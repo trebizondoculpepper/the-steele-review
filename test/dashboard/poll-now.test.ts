@@ -48,7 +48,9 @@ beforeAll(async () => {
   );
   const ingress = clients.connect({ url: env.baseUrl() });
   const action = pollNowAction({
-    sources: parsePollSources("substack:alpha,substack:broken,bogus:x,substack:Not Valid"),
+    sources: parsePollSources(
+      "substack:alpha,substack:broken,telegram:chan,bogus:x,substack:Not Valid",
+    ),
     poll: (source: PollSource) =>
       ingress
         .objectClient<DiscoveryPollObject>({ name: "DiscoveryPoll" }, source.id)
@@ -92,7 +94,10 @@ describe("Poll now on the Articles page (#824)", { timeout: 120_000 }, () => {
     const html = await (await fetch(`${base}/articles`)).text();
     expect(html).toContain("Poll substack now");
     expect(html).toContain("2 configured sources");
-    expect(html).toMatch(/<button disabled>Poll telegram now<\/button>/);
+    // A configured Telegram source is never sent to the Substack poller.
+    expect(html).toMatch(
+      /<button disabled>Poll telegram now<\/button> <span class="empty">no telegram poller yet/,
+    );
   });
 
   it("discovers a new item, and reports each source including a partial failure", async () => {
@@ -103,6 +108,10 @@ describe("Poll now on the Articles page (#824)", { timeout: 120_000 }, () => {
     expect(page).toContain("Polled substack: 1 of 2 sources succeeded; 1 did not");
     expect(page).toMatch(/<code>alpha<\/code><\/td><td>complete<\/td><td>1<\/td><td>1<\/td>/);
     expect(page).toContain("source:TypeError");
+    // A click right after the failure is coalesced into it, and still counts as failed.
+    const again = await click();
+    expect(again.page).toContain("1 of 2 sources succeeded; 1 did not");
+    expect(again.page).toContain("failed just now (not retried yet)");
   });
 
   it("does not duplicate discovery on repeated clicks, and finds the next new item", async () => {

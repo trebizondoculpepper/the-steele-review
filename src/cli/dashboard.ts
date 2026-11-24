@@ -28,10 +28,9 @@ import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
  *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
  *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
-import * as clients from "@restatedev/restate-sdk-clients";
 import { corpusRefinementAction } from "../dashboard/corpus-refinement.js";
 import { parsePollSources, pollNowAction } from "../dashboard/poll-now.js";
-import type { DiscoveryPollObject } from "../discovery/restate-poll.js";
+import { discoveryPollClient } from "../controllers/discovery-poll-client.js";
 import { corpusRefinementSubmitter } from "../corpus-refinement/submission.js";
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
@@ -334,14 +333,8 @@ const pollNow =
     ? pollNowAction({
         sources: pollSources,
         poll: (() => {
-          const ingress = clients.connect({ url: env.data.RESTATE_INGRESS_URL! });
-          return (source) =>
-            ingress
-              .objectClient<DiscoveryPollObject>({ name: "DiscoveryPoll" }, source.id)
-              .poll(
-                { reason: "manual" },
-                clients.rpc.opts({ signal: AbortSignal.timeout(60_000) }),
-              );
+          const client = discoveryPollClient(env.data.RESTATE_INGRESS_URL!);
+          return (source) => client.pollNow(source.id);
         })(),
       })
     : undefined;
