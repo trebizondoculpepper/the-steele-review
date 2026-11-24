@@ -9,6 +9,7 @@ import {
   corpusRefinementPath,
   type CorpusRefinementInput,
   type IdeasResult,
+  type RejectedOutput,
   type UnderlyingResult,
 } from "../../src/corpus-refinement/contracts.js";
 import { corpusRefinementWorkflow } from "../../src/corpus-refinement/workflow.js";
@@ -172,6 +173,8 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     provider.calls.length = 0;
     // The first mapping's save fails once, after its model result was recorded.
     crashAfterSave.add(corpusRefinementPath("run-composed", "map-claims-to-ideas"));
+    // And the named rejected output's save fails once too (#857).
+    crashAfterSave.add(corpusRefinementPath("run-composed", "map-claims-to-ideas-rejected"));
     const wf = client("run-composed");
     await wf.workflowSubmit(batch("run-composed"));
     const out = await wf.workflowAttach();
@@ -221,6 +224,29 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     expect(underlying.promptVersion).toMatch(
       /^corpus-refinement-map-ideas-to-underlying-ideas-sha256:/,
     );
+
+    // Rejected outputs (#857): saved by name and routed by exact reference;
+    // only the accepted ideas reached the second mapper (checked above).
+    expect(out.rejected?.map((r) => r.stage)).toEqual([
+      "map-claims-to-ideas-rejected",
+      "map-ideas-to-underlying-rejected",
+    ]);
+    const firstRejected = await valueOf<RejectedOutput>(out.rejected![0]!.artifact);
+    expect(firstRejected).toEqual({
+      from: "map-claims-to-ideas",
+      sent: 2,
+      unplaced: [],
+      issues: ideas.issues,
+    });
+    const secondRejected = await valueOf<RejectedOutput>(out.rejected![1]!.artifact);
+    expect(secondRejected).toMatchObject({
+      from: "map-ideas-to-underlying",
+      sent: 2,
+      unplaced: [],
+    });
+    expect(secondRejected.issues).toEqual(underlying.issues);
+    // One saved file per named output, despite two save failures and retries.
+    expect((await artifacts.list("corpus-refinement/run-composed", 20)).length).toBe(6);
 
     // A duplicate submission replays: no further model calls.
     await wf.workflowSubmit(batch("run-composed"));
@@ -274,5 +300,22 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
       },
     });
     await expect(wf.workflowAttach()).rejects.toThrow(/pinned catalogue is not a valid catalogue/);
+  });
+
+  it("names the claims a mapper left unplaced (#857)", async () => {
+    provider.calls.length = 0;
+    const wf = client("run-unplaced");
+    // c5 is uncovered but the fake mapper places only c1 and c3.
+    await wf.workflowSubmit({
+      ...batch("run-unplaced"),
+      claims: [
+        ...batch("run-unplaced").claims,
+        { id: "c5", statement: "An uncovered claim nobody mapped.", covered: false },
+      ],
+    });
+    const out = await wf.workflowAttach();
+    const first = await valueOf<RejectedOutput>(out.rejected![0]!.artifact);
+    expect(first).toMatchObject({ sent: 3, unplaced: ["c5"] });
+    expect(provider.calls).toHaveLength(2);
   });
 });
