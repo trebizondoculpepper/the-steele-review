@@ -21,6 +21,7 @@ import {
 import { runModelStage } from "./model-step.js";
 import { CorpusArtifactError, readStageArtifact, type StagePayloads } from "./artifact-schema.js";
 import { UnderlyingCatalogueSchema } from "./catalogue.js";
+import { BatchError, readBatch, saveBatch, stepInput, toBatch } from "./batch.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
 /**
@@ -81,7 +82,8 @@ export function corpusRefinementWorkflow(deps: {
     try {
       return await fn();
     } catch (error) {
-      if (error instanceof CorpusArtifactError) throw new restate.TerminalError(error.message);
+      if (error instanceof CorpusArtifactError || error instanceof BatchError)
+        throw new restate.TerminalError(error.message);
       throw error;
     }
   };
@@ -146,12 +148,26 @@ export function corpusRefinementWorkflow(deps: {
         if (ctx.key !== input.runId)
           throw new restate.TerminalError("corpus-refinement: run ID does not match the key");
 
+        // Pinned batch input (#856): the exact records are saved before any
+        // step consumes them, then read back validated. Every step works from
+        // that saved version; a replay reopens it. Mode travels as a typed
+        // parameter, apart from the data.
+        const submitted = toBatch(input);
+        const batchRef = await ctx.run("save-batch", () =>
+          guarded(async () => plain(await saveBatch(deps.artifacts, submitted.batch))),
+        );
+        const batch = await ctx.run("read-batch", () =>
+          guarded(() => readBatch(deps.artifacts, batchRef as ArtifactRef, input.runId)),
+        );
+        const work = stepInput(batch, submitted.parameters);
+        const batchPin = { batch: key(batchRef) };
+
         const coverage = await ctx.run("check-coverage", () =>
-          stage(input.runId, "check-coverage", input, () => logic.checkCoverage(input)),
+          stage(work.runId, "check-coverage", batchPin, () => logic.checkCoverage(work)),
         );
         let ideas: StageRef;
         let underlying: StageRef;
-        if (input.mode === "archive") {
+        if (work.mode === "archive") {
           if (!deps.provider)
             throw new restate.TerminalError(
               "corpus-refinement: archive mode needs a model provider",
@@ -165,16 +181,17 @@ export function corpusRefinementWorkflow(deps: {
           const coverageValue = await ctx.run("map-claims-to-ideas:input", () =>
             load(coverage, input.runId, "check-coverage"),
           );
-          const mapped = await runModelStage(
-            ctx,
-            provider,
-            claimsToIdeasSpec(input, coverageValue),
-          );
+          const mapped = await runModelStage(ctx, provider, claimsToIdeasSpec(work, coverageValue));
           ideas = await ctx.run("map-claims-to-ideas", () =>
             stage(
               input.runId,
               "map-claims-to-ideas",
-              { input, coverage: key(coverage), prompt: mapped.promptVersion, model: mapped.model },
+              {
+                ...batchPin,
+                coverage: key(coverage),
+                prompt: mapped.promptVersion,
+                model: mapped.model,
+              },
               async (): Promise<IdeasResult> => ({
                 ideas: mapped.accepted,
                 issues: mapped.issues,
@@ -238,9 +255,9 @@ export function corpusRefinementWorkflow(deps: {
             stage(
               input.runId,
               "map-claims-to-ideas",
-              { input, coverage: key(coverage) },
+              { ...batchPin, coverage: key(coverage) },
               async () =>
-                logic.mapClaimsToIdeas(input, await load(coverage, input.runId, "check-coverage")),
+                logic.mapClaimsToIdeas(work, await load(coverage, work.runId, "check-coverage")),
             ),
           );
           underlying = await ctx.run("map-ideas-to-underlying", () =>
