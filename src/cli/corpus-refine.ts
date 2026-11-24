@@ -10,10 +10,11 @@
  * to it and reports `already-submitted`, never a second run.
  */
 import { parseArgs } from "node:util";
-import * as clients from "@restatedev/restate-sdk-clients";
 import { z } from "zod";
-import { CorpusRefinementInputSchema, syntheticBatch } from "../corpus-refinement/contracts.js";
-import type { CorpusRefinementApi } from "../corpus-refinement/workflow.js";
+import {
+  CorpusRefinementInputError,
+  corpusRefinementSubmitter,
+} from "../corpus-refinement/submission.js";
 
 const USAGE = "Usage: corpus-refine --run-id <id> [--size <1..200>] [--wait] [--json]";
 
@@ -38,30 +39,23 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
-  const input = CorpusRefinementInputSchema.safeParse(syntheticBatch(values["run-id"], size.data));
-  if (!input.success) {
-    console.error("corpus-refine: invalid run ID");
-    return 2;
-  }
-  const wf = clients
-    .connect({ url: url.data })
-    .workflowClient<CorpusRefinementApi>({ name: "CorpusRefinement" }, input.data.runId);
+  // The same submission contract as the dashboard action (#831).
+  const submitter = corpusRefinementSubmitter(url.data);
   let submission;
   try {
-    submission = await wf.workflowSubmit(input.data);
-  } catch {
+    submission = await submitter.submit(values["run-id"], size.data);
+  } catch (error) {
+    if (error instanceof CorpusRefinementInputError) {
+      console.error("corpus-refine: invalid run ID");
+      return 2;
+    }
     console.error(JSON.stringify({ event: "corpus-refine", outcome: "submission-failed" }));
     return 1;
   }
-  const out: Record<string, unknown> = {
-    event: "corpus-refine",
-    runId: input.data.runId,
-    invocationId: submission.invocationId,
-    submitted: submission.status === "PreviouslyAccepted" ? "already-submitted" : "started",
-  };
+  const out: Record<string, unknown> = { event: "corpus-refine", ...submission };
   if (values.wait) {
     try {
-      out.result = await wf.workflowAttach();
+      out.result = await submitter.attach(submission.runId);
     } catch {
       // A failed run or a lost connection: report it without raw client errors.
       console.error(JSON.stringify({ ...out, outcome: "failed-or-unavailable" }));
