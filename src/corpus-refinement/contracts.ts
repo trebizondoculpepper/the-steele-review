@@ -43,10 +43,23 @@ export interface CoverageResult {
   uncovered: string[];
 }
 export interface IdeasResult {
-  ideas: { id: string; claimIds: string[] }[];
+  ideas: {
+    id: string;
+    claimIds: string[];
+    statement?: string;
+    evidence?: { claimId: string; quote: string }[];
+  }[];
+  /** Candidates the stage rejected (#836, #837); kept visible, never passed on. */
+  issues?: ItemIssue[];
+  /** Prompt and model that produced a model-backed result. */
+  promptVersion?: string;
+  model?: string;
 }
 export interface UnderlyingResult {
-  underlying: { id: string; ideaIds: string[] }[];
+  underlying: { id: string; ideaIds: string[]; statement?: string; rationale?: string }[];
+  issues?: ItemIssue[];
+  promptVersion?: string;
+  model?: string;
 }
 
 /** The saved envelope of one stage artifact: what produced it, and its value. */

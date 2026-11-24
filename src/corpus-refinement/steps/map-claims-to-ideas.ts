@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { loadStagePrompt, quotedIn, type ModelStageSpec } from "../model-step.js";
 import type { CorpusRefinementInput, CoverageResult, IdeasResult } from "../contracts.js";
 
 /**
@@ -19,5 +21,53 @@ export async function mapClaimsToIdeas(
     ideas: [...groups.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, claimIds]) => ({ id: `idea-${key}`, claimIds })),
+  };
+}
+
+/** One candidate idea, as the model must return it (#837). */
+export const IdeaRecordSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
+    statement: z.string().min(1).max(1000),
+    claimIds: z.array(z.string().min(1).max(200)).min(1).max(200),
+    evidence: z
+      .array(z.object({ claimId: z.string().min(1), quote: z.string().min(1).max(2000) }).strict())
+      .min(1)
+      .max(50),
+  })
+  .strict();
+export type IdeaRecord = z.infer<typeof IdeaRecordSchema>;
+
+/**
+ * The claims-to-ideas mapping as a model-backed stage (#837): its prompt,
+ * schema and evidence rule. Only uncovered claims are sent; an idea may only
+ * cite those claims, and every quotation must appear in the cited claim.
+ */
+export function claimsToIdeasSpec(
+  input: CorpusRefinementInput,
+  coverage: CoverageResult,
+): ModelStageSpec<IdeaRecord> {
+  const claims = input.claims.filter((c) => coverage.uncovered.includes(c.id));
+  const byId = new Map(claims.map((c) => [c.id, c.statement]));
+  // IDs of ideas already accepted: a second idea with the same ID would make
+  // later references ambiguous. Rejected candidates reserve nothing.
+  const accepted = new Set<string>();
+  return {
+    stage: "map-claims-to-ideas",
+    prompt: loadStagePrompt("map-claims-to-ideas"),
+    input: { claims },
+    listKey: "ideas",
+    schema: IdeaRecordSchema,
+    check: (idea) => {
+      const unknown = idea.claimIds.find((id) => !byId.has(id));
+      if (unknown) return `unknown-claim:${unknown}`;
+      for (const e of idea.evidence) {
+        if (!idea.claimIds.includes(e.claimId)) return `evidence-outside-idea:${e.claimId}`;
+        if (!quotedIn(e.quote, byId.get(e.claimId)!)) return `quote-not-in-claim:${e.claimId}`;
+      }
+      if (accepted.has(idea.id)) return `duplicate-idea:${idea.id}`;
+      accepted.add(idea.id);
+      return undefined;
+    },
   };
 }
