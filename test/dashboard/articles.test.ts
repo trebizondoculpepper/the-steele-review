@@ -333,9 +333,10 @@ describe("article pages (#377)", () => {
     expect(html).toContain("does not bind to the saved draft");
     expect(html).toContain("redraft");
     // Simulated deliveries are labelled; only the real receipt carries a link.
-    expect(html).toContain("simulated");
+    // Each delivery says what it did (#809): simulated, draft or published.
+    expect(html).toContain("simulated (no external effect)");
     expect(html).toContain('href="https://example.test/post"');
-    expect(html).toContain("delivered");
+    expect(html).toContain("published, subscribers emailed");
     expect(html).not.toContain(">published<");
   });
 
@@ -546,9 +547,7 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
         detail: async () => undefined,
       },
     });
-    const html = await detail!.render(
-      new URL("http://x/articles/trace?publication=pub&post=p1"),
-    );
+    const html = await detail!.render(new URL("http://x/articles/trace?publication=pub&post=p1"));
     expect(html).toContain("Editorial timeline");
     // Ordering: assessment, judgment, failed assessment, approval judgment.
     const revise = html.indexOf("judgment: decided / revise");
@@ -558,8 +557,12 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
     expect(failed).toBeGreaterThan(revise);
     expect(approve).toBeGreaterThan(failed);
     expect(html).toContain("requested an editorial revision");
-    expect(html).toContain(`/assessments/view?path=${encodeURIComponent(`assessments/pub/p1/${"3".repeat(32)}.json`)}`);
-    expect(html).toContain(`/judgments/view?path=${encodeURIComponent(`judgments/pub/p1/${"4".repeat(32)}.json`)}`);
+    expect(html).toContain(
+      `/assessments/view?path=${encodeURIComponent(`assessments/pub/p1/${"3".repeat(32)}.json`)}`,
+    );
+    expect(html).toContain(
+      `/judgments/view?path=${encodeURIComponent(`judgments/pub/p1/${"4".repeat(32)}.json`)}`,
+    );
     expect(html).toContain("Mechanical writer repair turns are not editorial revisions");
     expect(html).toContain("/assessments?post=pub%2Fp1");
     expect(html).toContain("/judgments?post=pub%2Fp1");
@@ -580,9 +583,7 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
         detail: async () => undefined,
       },
     });
-    const html = await detail!.render(
-      new URL("http://x/articles/trace?publication=pub&post=p1"),
-    );
+    const html = await detail!.render(new URL("http://x/articles/trace?publication=pub&post=p1"));
     expect(html).toContain("Judge attempts are unavailable");
     expect(html).toContain("bounded");
     expect(html).toContain("could not be read");
@@ -604,9 +605,7 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
         detail: async () => undefined,
       },
     });
-    const html = await detail!.render(
-      new URL("http://x/articles/trace?publication=pub&post=p1"),
-    );
+    const html = await detail!.render(new URL("http://x/articles/trace?publication=pub&post=p1"));
     expect(html).not.toContain("No assessor or judge attempts are saved");
     expect(html).toContain("bounded");
     expect(html).toContain("could not be read");
@@ -621,9 +620,7 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
         find: async () => ({ ...post, sourceVersion: `sha256:${"a".repeat(64)}` }),
       },
     });
-    const html = await detail!.render(
-      new URL("http://x/articles/trace?publication=pub&post=p1"),
-    );
+    const html = await detail!.render(new URL("http://x/articles/trace?publication=pub&post=p1"));
     expect(html).not.toContain("No assessor or judge attempts are saved");
     expect(html).toContain("unavailable");
   });
@@ -643,9 +640,7 @@ describe("editorial timeline (#644)", { timeout: 60_000 }, () => {
         detail: async () => undefined,
       },
     });
-    const html = await detail!.render(
-      new URL("http://x/articles/trace?publication=pub&post=p1"),
-    );
+    const html = await detail!.render(new URL("http://x/articles/trace?publication=pub&post=p1"));
     expect(html).toContain("No assessor or judge attempts are saved");
     expect(html).toContain("not approval");
   });
