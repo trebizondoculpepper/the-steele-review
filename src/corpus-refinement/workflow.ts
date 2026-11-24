@@ -11,6 +11,7 @@ import {
   type IdeasResult,
   type StageRef,
   type UnderlyingResult,
+  groupingReport,
 } from "./contracts.js";
 import { checkClaimCoverage } from "./steps/check-claim-coverage.js";
 import { claimsToIdeasSpec, mapClaimsToIdeas } from "./steps/map-claims-to-ideas.js";
@@ -177,6 +178,7 @@ export function corpusRefinementWorkflow(deps: {
               { input, coverage: key(coverage), prompt: mapped.promptVersion, model: mapped.model },
               async (): Promise<IdeasResult> => ({
                 ideas: mapped.accepted,
+                grouping: groupingReport(mapped.accepted),
                 issues: mapped.issues,
                 promptVersion: mapped.promptVersion,
                 model: mapped.model,

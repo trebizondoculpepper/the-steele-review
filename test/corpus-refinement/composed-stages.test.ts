@@ -198,6 +198,8 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
       { index: 4, id: "idea-masts-illness", reason: "duplicate-idea:idea-masts-illness" },
     ]);
     expect(ideas.promptVersion).toMatch(/^corpus-refinement-map-claims-to-ideas-sha256:/);
+    // Group sizes are recorded with the result (#849).
+    expect(ideas.grouping).toEqual({ claims: 2, ideas: 2, sizes: { "1": 2 } });
     expect(ideas.model).toBe("fake/corpus-model");
 
     // The second mapping received only the accepted ideas.
