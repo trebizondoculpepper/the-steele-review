@@ -201,6 +201,11 @@ export interface ReceiptsPort {
   ): Promise<ReceiptsResult>;
 }
 
+/** The status of one exact ArticleRun workflow key (#522). */
+export interface RunByKeyPort {
+  byKey(key: string): Promise<RunState>;
+}
+
 export interface RunStatusPort {
   /** The ArticleRun workflow for this exact revision. */
   status(post: { publicationId: string; postId: string; sourceVersion: string }): Promise<RunState>;

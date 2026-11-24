@@ -1,4 +1,4 @@
-import type { ArchivedArticle, RunState, RunStatusPort } from "./articles.js";
+import type { ArchivedArticle, RunByKeyPort, RunState } from "./articles.js";
 import { escapeHtml } from "./server.js";
 
 /**
@@ -36,7 +36,8 @@ export interface ActiveRunsPort {
 export interface RunningNowInput {
   active: ActiveRunsPort;
   articles: { find(publicationId: string, postId: string): Promise<ArchivedArticle | undefined> };
-  runs: RunStatusPort;
+  /** Status of the invocation's exact workflow key: attempts and recoveries as themselves. */
+  runs: RunByKeyPort;
   /** Restate console link for one invocation, when configured. */
   invocationLink?: (id: string) => string | undefined;
   /** Progress older than this is reported as stale. */
@@ -120,19 +121,16 @@ export async function collectRunningNow(input: RunningNowInput): Promise<Running
         } catch {
           article = undefined;
         }
-        // The run's progress is read only for the indexed revision it was keyed by.
+        // Progress of this exact invocation's key, so an active recovery or a
+        // later attempt is never replaced by its finished parent (#522).
         let run: RunState | undefined;
-        if (article && article.sourceVersion.slice(7, 39) === prefix) {
-          try {
-            run = await input.runs.status({
-              publicationId,
-              postId,
-              sourceVersion: article.sourceVersion,
-            });
-          } catch {
-            run = undefined;
-          }
+        try {
+          run = await input.runs.byKey(inv.key);
+        } catch {
+          run = undefined;
         }
+        // The title is shown only when the index holds the revision this run is keyed by.
+        if (article && article.sourceVersion.slice(7, 39) !== prefix) article = undefined;
         // A run that has finished since the query is no longer running.
         if (run && run.state === "finished") return undefined;
         const progress = run?.state === "running" ? run.progress : undefined;
