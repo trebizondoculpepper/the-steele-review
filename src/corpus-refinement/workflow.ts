@@ -6,7 +6,6 @@ import {
   corpusRefinementPath,
   type CorpusRefinementInput,
   type CorpusRefinementResult,
-  type CorpusRefinementStage,
   type CorpusRefinementOutput,
   type CorpusRefinementRejected,
   type RejectedOutput,
