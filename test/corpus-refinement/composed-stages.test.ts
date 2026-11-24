@@ -16,14 +16,20 @@ import { corpusRefinementWorkflow } from "../../src/corpus-refinement/workflow.j
 // Deterministic fixtures and a fake provider only: no paid calls (#837).
 const batch = (runId: string): CorpusRefinementInput => ({
   runId,
+  mode: "archive",
   claims: [
-    { id: "c0", statement: "Covered claim about meters." },
-    { id: "c1", statement: "The new mast is secretly making people in the town ill." },
-    { id: "c2", statement: "Smart meters are a weapon." },
-    { id: "c3", statement: "5G towers spread the virus to residents." },
+    { id: "c0", statement: "Covered claim about meters.", covered: true },
+    {
+      id: "c1",
+      statement: "The new mast is secretly making people in the town ill.",
+      covered: false,
+    },
+    { id: "c2", statement: "Smart meters are a weapon.", covered: true },
+    { id: "c3", statement: "5G towers spread the virus to residents.", covered: false },
   ],
+  deferred: ["c9"],
 });
-// The stub coverage stage marks odd-indexed claims (c1, c3) uncovered.
+// Saved coverage marks c1 and c3 uncovered.
 const IDEAS_RESPONSE = JSON.stringify({
   ideas: [
     {
@@ -149,6 +155,12 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     await wf.workflowSubmit(batch("run-composed"));
     const out = await wf.workflowAttach();
 
+    // Coverage came from the saved flags, with the batch bounds recorded.
+    const coverage = await valueOf<{ uncovered: string[]; deferred: string[] }>(
+      out.stages[0]!.artifact,
+    );
+    expect(coverage.uncovered).toEqual(["c1", "c3"]);
+    expect(coverage.deferred).toEqual(["c9"]);
     // One call per mapping, despite the save failure and retry.
     expect(provider.calls.map((c) => c.stage)).toEqual(["ideas", "underlying"]);
     // Only uncovered claims were sent to the first mapping.

@@ -20,6 +20,7 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   STEELE_STATE_PATH                                state controller (research job leases)
+ *   STEELE_MODEL_CORPUS?                             Corpus Refinement archive-mode model (#832)
  *   STEELE_CORPUS_REFINEMENT_PATH?                   Corpus Refinement prototype repository (#830);
  *                                                    default: beside the state file
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
@@ -200,6 +201,8 @@ function main(): number {
       judgeRecovery,
       corpusRefinementWorkflow({
         artifacts: corpusRefinement,
+        // Archive-mode experiment only (#832); fixture runs never call it.
+        provider: model("STEELE_MODEL_CORPUS"),
         // Created on first use, so a missing prototype repository never blocks startup.
         ready: async () => {
           await mkdir(corpusRefinementPath, { recursive: true, mode: 0o700 });

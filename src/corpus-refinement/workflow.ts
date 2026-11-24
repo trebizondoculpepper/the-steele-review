@@ -130,7 +130,11 @@ export function corpusRefinementWorkflow(deps: {
         );
         let ideas: StageRef;
         let underlying: StageRef;
-        if (deps.provider) {
+        if (input.mode === "archive") {
+          if (!deps.provider)
+            throw new restate.TerminalError(
+              "corpus-refinement: archive mode needs a model provider",
+            );
           // Model-backed mappings (#837): the same composed stage, each with its
           // own prompt, schema and evidence rule. The model call is its own
           // named durable step and the save is another, so a failed save never

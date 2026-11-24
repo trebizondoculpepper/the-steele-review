@@ -48,14 +48,21 @@ export function claimsToIdeasSpec(
   coverage: CoverageResult,
 ): ModelStageSpec<IdeaRecord> {
   const claims = input.claims.filter((c) => coverage.uncovered.includes(c.id));
-  const byId = new Map(claims.map((c) => [c.id, c.statement]));
+  // A quotation may come from the claim's statement or its saved utterance (#832).
+  const byId = new Map(claims.map((c) => [c.id, `${c.statement}\n${c.utterance ?? ""}`]));
   // IDs of ideas already accepted: a second idea with the same ID would make
   // later references ambiguous. Rejected candidates reserve nothing.
   const accepted = new Set<string>();
   return {
     stage: "map-claims-to-ideas",
     prompt: loadStagePrompt("map-claims-to-ideas"),
-    input: { claims },
+    input: {
+      claims: claims.map((c) => ({
+        id: c.id,
+        statement: c.statement,
+        ...(c.utterance ? { utterance: c.utterance } : {}),
+      })),
+    },
     listKey: "ideas",
     schema: IdeaRecordSchema,
     check: (idea) => {

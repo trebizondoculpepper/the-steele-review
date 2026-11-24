@@ -18,14 +18,31 @@ const RunId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/);
 export const CorpusRefinementInputSchema = z
   .object({
     runId: RunId,
+    /**
+     * `fixture` (default): deterministic stubs, no model calls. `archive`
+     * (#832): a bounded batch of archived claims, with coverage from saved
+     * records and both mappings model-backed.
+     */
+    mode: z.enum(["fixture", "archive"]).optional(),
     claims: z
       .array(
         z
-          .object({ id: z.string().min(1).max(200), statement: z.string().min(1).max(2000) })
+          .object({
+            id: z.string().min(1).max(200),
+            statement: z.string().min(1).max(2000),
+            /** Archive mode: the claim's saved utterance, quoted from the source. */
+            utterance: z.string().max(4000).optional(),
+            /** Archive mode: covered by saved evidence in the librarian's coverage record. */
+            covered: z.boolean().optional(),
+            /** Archive mode: the post the claim came from (publicationId/postId). */
+            post: z.string().max(400).optional(),
+          })
           .strict(),
       )
       .min(1)
       .max(200),
+    /** Archive mode: claims left out of this bounded batch, recorded, never dropped silently. */
+    deferred: z.array(z.string().min(1).max(200)).max(5000).optional(),
   })
   .strict();
 export type CorpusRefinementInput = z.infer<typeof CorpusRefinementInputSchema>;
@@ -41,6 +58,9 @@ export interface StageRef {
 export interface CoverageResult {
   covered: string[];
   uncovered: string[];
+  /** Archive mode: the claims in the batch, and those deferred from it (#832). */
+  included?: string[];
+  deferred?: string[];
 }
 export interface IdeasResult {
   ideas: {
