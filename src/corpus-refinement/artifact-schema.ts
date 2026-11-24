@@ -2,7 +2,6 @@ import { z } from "zod";
 import type {
   CorpusRefinementOutput,
   RejectedOutput,
-  CorpusRefinementStage,
   CoverageResult,
   IdeasResult,
   UnderlyingResult,
