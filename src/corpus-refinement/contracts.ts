@@ -43,6 +43,21 @@ export const CorpusRefinementInputSchema = z
       .max(200),
     /** Archive mode: claims left out of this bounded batch, recorded, never dropped silently. */
     deferred: z.array(z.string().min(1).max(200)).max(5000).optional(),
+    /**
+     * Archive mode (#852): the exact reviewed version of the underlying-idea
+     * catalogue the second mapping may reuse. The workflow only reads it;
+     * proposed changes are saved for review, never applied.
+     */
+    catalogue: z
+      .object({
+        repository: z.string().min(1).max(200),
+        // The artifact store's own format: a full 40- or 64-character hash.
+        commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+        path: z.string().min(1).max(400),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type CorpusRefinementInput = z.infer<typeof CorpusRefinementInputSchema>;
@@ -75,8 +90,23 @@ export interface IdeasResult {
   promptVersion?: string;
   model?: string;
 }
+/** How a group relates to the reviewed catalogue (#852). */
+export type CatalogueMatch =
+  | { decision: "reuse"; catalogueId: string }
+  | { decision: "new" }
+  | { decision: "uncertain"; candidates: string[] };
+
 export interface UnderlyingResult {
-  underlying: { id: string; ideaIds: string[]; statement?: string; rationale?: string }[];
+  underlying: {
+    id: string;
+    ideaIds: string[];
+    statement?: string;
+    rationale?: string;
+    /** Present when a catalogue was supplied: a proposal, applied only after review. */
+    match?: CatalogueMatch;
+  }[];
+  /** The exact catalogue version the proposals were made against. */
+  catalogue?: StageRef;
   issues?: ItemIssue[];
   promptVersion?: string;
   model?: string;

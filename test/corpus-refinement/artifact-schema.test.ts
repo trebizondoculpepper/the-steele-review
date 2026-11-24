@@ -62,4 +62,32 @@ describe("saved Corpus Refinement artifacts are validated before use (#848)", ()
     );
     expect(reason(artifact({ value: null }), ID)).toBe("payload:root");
   });
+
+  it("keeps catalogue proposals and the pinned catalogue on read (#852)", () => {
+    const catalogue = {
+      repository: "r",
+      commit: "a".repeat(40),
+      path: "p",
+      sha256: "b".repeat(64),
+    };
+    const text = JSON.stringify({
+      schemaVersion: 1,
+      stage: "map-ideas-to-underlying",
+      runId: "run-a",
+      identity: ID,
+      value: {
+        underlying: [
+          {
+            id: "g1",
+            ideaIds: ["i1", "i2"],
+            match: { decision: "reuse", catalogueId: "g1" },
+          },
+        ],
+        catalogue,
+      },
+    });
+    const out = readStageArtifact(text, { runId: "run-a", stage: "map-ideas-to-underlying" });
+    expect(out.value.underlying[0]!.match).toEqual({ decision: "reuse", catalogueId: "g1" });
+    expect(out.value.catalogue).toEqual(catalogue);
+  });
 });

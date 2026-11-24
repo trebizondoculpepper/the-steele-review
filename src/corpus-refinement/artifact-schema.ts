@@ -50,8 +50,20 @@ const Underlying = z.object({
       ideaIds: Ids,
       statement: z.string().optional(),
       rationale: z.string().optional(),
+      // The proposed relation to the pinned catalogue (#852).
+      match: z
+        .discriminatedUnion("decision", [
+          z.object({ decision: z.literal("reuse"), catalogueId: z.string() }),
+          z.object({ decision: z.literal("new") }),
+          z.object({ decision: z.literal("uncertain"), candidates: Ids }),
+        ])
+        .optional(),
     }),
   ),
+  /** The exact catalogue version the proposals were made against (#852). */
+  catalogue: z
+    .object({ repository: z.string(), commit: z.string(), path: z.string(), sha256: z.string() })
+    .optional(),
   ...ModelFields,
 });
 

@@ -20,6 +20,7 @@ import {
 } from "./steps/map-ideas-to-underlying-ideas.js";
 import { runModelStage } from "./model-step.js";
 import { CorpusArtifactError, readStageArtifact, type StagePayloads } from "./artifact-schema.js";
+import { UnderlyingCatalogueSchema } from "./catalogue.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
 /**
@@ -185,14 +186,47 @@ export function corpusRefinementWorkflow(deps: {
           const ideasValue = await ctx.run("map-ideas-to-underlying:input", () =>
             load(ideas, input.runId, "map-claims-to-ideas"),
           );
-          const grouped = await runModelStage(ctx, provider, ideasToUnderlyingSpec(ideasValue));
+          // The reviewed catalogue, read at its pinned version only (#852).
+          // The workflow never writes it: proposals are saved for review.
+          const pinned = input.catalogue;
+          const catalogue = pinned
+            ? await ctx.run("map-ideas-to-underlying:catalogue", async () => {
+                // A store failure is retried; a bad pinned version never changes,
+                // so malformed JSON or the wrong shape is terminal.
+                const text = await deps.artifacts.read(pinned as ArtifactRef);
+                let raw: unknown;
+                try {
+                  raw = JSON.parse(text);
+                } catch {
+                  raw = undefined;
+                }
+                const parsed = UnderlyingCatalogueSchema.safeParse(raw);
+                if (!parsed.success)
+                  throw new restate.TerminalError(
+                    "corpus-refinement: the pinned catalogue is not a valid catalogue",
+                  );
+                return parsed.data;
+              })
+            : undefined;
+          const grouped = await runModelStage(
+            ctx,
+            provider,
+            ideasToUnderlyingSpec(ideasValue, catalogue),
+          );
           underlying = await ctx.run("map-ideas-to-underlying", () =>
             stage(
               input.runId,
               "map-ideas-to-underlying",
-              { ideas: key(ideas), prompt: grouped.promptVersion, model: grouped.model },
+              {
+                ideas: key(ideas),
+                // Only when pinned, so runs without a catalogue keep their identity.
+                ...(pinned ? { catalogue: key(pinned) } : {}),
+                prompt: grouped.promptVersion,
+                model: grouped.model,
+              },
               async (): Promise<UnderlyingResult> => ({
                 underlying: grouped.accepted,
+                ...(pinned ? { catalogue: pinned } : {}),
                 issues: grouped.issues,
                 promptVersion: grouped.promptVersion,
                 model: grouped.model,
