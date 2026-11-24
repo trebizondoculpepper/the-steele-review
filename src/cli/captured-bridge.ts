@@ -110,6 +110,8 @@ async function main(): Promise<number> {
           ...(c.STEELE_BRIDGE_RETRY_DELAY_MS
             ? { retryDelayMs: c.STEELE_BRIDGE_RETRY_DELAY_MS }
             : {}),
+          // One automatic run per post (#874), recorded in the typed state store.
+          ...(state ? { admit: (post) => state.admitAutomaticArticle(post) } : {}),
           submit: async (key, input) => {
             if (content) {
               const prepared = await prepareCapturedArticleSubmission({

@@ -40,6 +40,13 @@ export interface CapturedBridgeOptions {
   editorialPolicy?: EditorialPolicy;
   /** Submit (or attach to) the workflow with this key. Throws when Restate is unreachable. */
   submit(key: string, input: ArticleRunInput): Promise<SubmitResult>;
+  /**
+   * Automatic admission by post (#874): whether this exact revision may run
+   * automatically. Absent keeps admission by revision only.
+   */
+  admit?(post: { publicationId: string; postId: string; sourceVersion: string }): {
+    admitted: boolean;
+  };
   retryDelayMs?: number;
 }
 
@@ -48,7 +55,7 @@ export type BridgeDecision =
   | {
       action: "ack";
       outcome: "skipped";
-      reason: "not-live" | "source-disabled" | "incomplete";
+      reason: "not-live" | "source-disabled" | "incomplete" | "already-admitted";
     }
   | { action: "nak"; delayMs: number; reason: "submission-failed"; key: string }
   | { action: "term"; reason: "invalid-event" };
@@ -114,6 +121,26 @@ export async function handleCapturedContent(
     return { action: "ack", outcome: "skipped", reason: skipReason };
   }
 
+  // One automatic run per post (#874): an edit to an admitted post updates its
+  // source but starts no second run; the admitted revision itself reattaches.
+  if (options.admit) {
+    let admitted: boolean;
+    try {
+      admitted = options.admit(input).admitted;
+    } catch {
+      logPipeline(input, "capture-bridge", "admission-failed", input.sourceVersion);
+      return {
+        action: "nak",
+        delayMs: options.retryDelayMs ?? 30_000,
+        reason: "submission-failed",
+        key: articleRunKey(input),
+      };
+    }
+    if (!admitted) {
+      logPipeline(input, "capture-bridge", "already-admitted", input.sourceVersion);
+      return { action: "ack", outcome: "skipped", reason: "already-admitted" };
+    }
+  }
   const key = articleRunKey(input);
   try {
     const outcome = await options.submit(key, input);
