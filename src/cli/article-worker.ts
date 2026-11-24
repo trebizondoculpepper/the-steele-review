@@ -1,7 +1,7 @@
 import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-recovery.js";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { corpusRefinementWorkflow } from "../workflow/corpus-refinement.js";
+import { corpusRefinementWorkflow } from "../corpus-refinement/workflow.js";
 import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
 import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";

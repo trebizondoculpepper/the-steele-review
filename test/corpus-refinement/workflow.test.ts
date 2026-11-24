@@ -6,13 +6,15 @@ import * as clients from "@restatedev/restate-sdk-clients";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import {
-  STUB_CORPUS_REFINEMENT,
   corpusRefinementPath,
-  corpusRefinementWorkflow,
   syntheticBatch,
-  type CorpusRefinementLogic,
   type IdeasResult,
-} from "../../src/workflow/corpus-refinement.js";
+} from "../../src/corpus-refinement/contracts.js";
+import {
+  STUB_CORPUS_REFINEMENT,
+  corpusRefinementWorkflow,
+  type CorpusRefinementLogic,
+} from "../../src/corpus-refinement/workflow.js";
 
 // Isolated test repository; deterministic stubs; no model calls (#830).
 let dir: string;
@@ -21,6 +23,7 @@ let env: RestateTestEnvironment;
 let ingress: clients.Ingress;
 const calls = { coverage: 0, ideas: 0, underlying: 0 };
 const failMiddleOnce = new Set<string>();
+const crashAfterSave = new Set<string>();
 const logic: CorpusRefinementLogic = {
   version: STUB_CORPUS_REFINEMENT.version,
   checkCoverage: async (input) => (calls.coverage++, STUB_CORPUS_REFINEMENT.checkCoverage(input)),
@@ -131,5 +134,23 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     // Nothing downstream ran on the stale result.
     expect(calls.ideas).toBe(before.ideas);
     expect(calls.underlying).toBe(before.underlying);
+  });
+
+  it("recovers from a save that landed before the handoff was recorded (#830)", async () => {
+    crashAfterSave.add(corpusRefinementPath("run-crash", "map-claims-to-ideas"));
+    const before = { ...calls };
+    const wf = client("run-crash");
+    await wf.workflowSubmit(syntheticBatch("run-crash", 6));
+    const out = await wf.workflowAttach();
+    expect(out.stages.map((s) => s.stage)).toHaveLength(3);
+    // The middle stage computed once: the retry found its saved artifact
+    // (same identity) and reused it instead of computing again.
+    expect(calls.ideas).toBe(before.ideas + 1);
+    expect(calls.underlying).toBe(before.underlying + 1);
+    // Exactly one artifact per stage; the handoff is the saved version.
+    expect(await artifacts.list("corpus-refinement/run-crash", 10)).toHaveLength(3);
+    expect(out.stages[1]!.artifact.path).toBe(
+      corpusRefinementPath("run-crash", "map-claims-to-ideas"),
+    );
   });
 });

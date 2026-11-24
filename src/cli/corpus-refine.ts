@@ -12,11 +12,8 @@
 import { parseArgs } from "node:util";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { z } from "zod";
-import {
-  CorpusRefinementInputSchema,
-  syntheticBatch,
-  type CorpusRefinementApi,
-} from "../workflow/corpus-refinement.js";
+import { CorpusRefinementInputSchema, syntheticBatch } from "../corpus-refinement/contracts.js";
+import type { CorpusRefinementApi } from "../corpus-refinement/workflow.js";
 
 const USAGE = "Usage: corpus-refine --run-id <id> [--size <1..200>] [--wait] [--json]";
 
