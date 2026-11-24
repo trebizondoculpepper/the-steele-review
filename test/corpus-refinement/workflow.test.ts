@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import * as clients from "@restatedev/restate-sdk-clients";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import {
+  CorpusRefinementInputSchema,
   corpusRefinementPath,
   syntheticBatch,
   type IdeasResult,
@@ -132,6 +134,29 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     await wf.workflowSubmit(syntheticBatch("run-stale", 3));
     await expect(wf.workflowAttach()).rejects.toThrow(/saved from different inputs or logic/);
     // Nothing downstream ran on the stale result.
+    expect(calls.ideas).toBe(before.ideas);
+    expect(calls.underlying).toBe(before.underlying);
+  });
+
+  it("rejects a malformed artifact even when it carries the expected identity (#848)", async () => {
+    const input = CorpusRefinementInputSchema.parse(syntheticBatch("run-malformed", 3));
+    const identity = `sha256:${createHash("sha256")
+      .update(JSON.stringify({ stage: "check-coverage", logic: logic.version, inputs: input }))
+      .digest("hex")}`;
+    await artifacts.write(
+      corpusRefinementPath("run-malformed", "check-coverage"),
+      JSON.stringify({
+        schemaVersion: 1,
+        stage: "check-coverage",
+        runId: "run-malformed",
+        identity,
+        value: { covered: "not-a-list" },
+      }),
+    );
+    const before = { ...calls };
+    const wf = client("run-malformed");
+    await wf.workflowSubmit(input);
+    await expect(wf.workflowAttach()).rejects.toThrow(/not usable \(payload:covered\)/);
     expect(calls.ideas).toBe(before.ideas);
     expect(calls.underlying).toBe(before.underlying);
   });
