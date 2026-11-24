@@ -1,3 +1,4 @@
+import { deliveryLabel } from "./articles.js";
 import { articleRunKey } from "../workflow/article-run.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import {
@@ -498,7 +499,7 @@ export function renderTrace(t: ArticleTrace): string {
           const link = confirmed
             ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
             : "";
-          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", deliveryLabel(r))}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
         })
         .join(
           "",
@@ -518,28 +519,35 @@ export function renderTrace(t: ArticleTrace): string {
         // merged proposal list shows the same topic twice and hides which
         // result is current (#765).
         const groups = t.themes.results
-          .map((result: {
-            result: string;
-            current: boolean;
-            modelVersion: string;
-            promptVersion: string;
-            proposedAt: string;
-            themes: readonly { result: string; id: string; title: string; description?: string }[];
-          }) => {
-            const list =
-              result.themes.length === 0
-                ? '<p class="empty">This extraction saved no proposals.</p>'
-                : `<ul>${result.themes
-                    .map((theme) => {
-                      const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
-                      return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
-                        theme.description ? ` — ${escapeHtml(theme.description)}` : ""
-                      } <span class="empty">(extractor proposal, not canonical)</span></li>`;
-                    })
-                    .join("")}</ul>`;
-            return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
+          .map(
+            (result: {
+              result: string;
+              current: boolean;
+              modelVersion: string;
+              promptVersion: string;
+              proposedAt: string;
+              themes: readonly {
+                result: string;
+                id: string;
+                title: string;
+                description?: string;
+              }[];
+            }) => {
+              const list =
+                result.themes.length === 0
+                  ? '<p class="empty">This extraction saved no proposals.</p>'
+                  : `<ul>${result.themes
+                      .map((theme) => {
+                        const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                        return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                          theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                        } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                      })
+                      .join("")}</ul>`;
+              return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
 <p class="empty"><code>${escapeHtml(result.result)}</code> · ${escapeHtml(result.modelVersion)} · ${escapeHtml(result.promptVersion)} · saved ${escapeHtml(result.proposedAt)}</p>${list}`;
-          })
+            },
+          )
           .join("");
         const many =
           t.themes.results.length > 1
@@ -590,7 +598,7 @@ export function renderTrace(t: ArticleTrace): string {
       const link = confirmed
         ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
         : "";
-      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", deliveryLabel(r))}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
     })
     .join("");
   const receipts =

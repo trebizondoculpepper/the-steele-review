@@ -1,10 +1,15 @@
+import { deliveryKindOf } from "./articles.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readPublicationPayload, sameArtifact } from "../drafting/publication-payload.js";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { articleRunKey, type ArticleRunApi, type ArticleRunFinal } from "../workflow/article-run.js";
+import {
+  articleRunKey,
+  type ArticleRunApi,
+  type ArticleRunFinal,
+} from "../workflow/article-run.js";
 import { isCreditBlocked } from "./article-views.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
@@ -320,6 +325,8 @@ export function contentReceipts(
                 simulated: receipt.simulated,
                 deliveredAt: receipt.deliveredAt,
                 ...(confirmed ? { url: receipt.url } : {}),
+                kind: deliveryKindOf(receipt),
+                ...(receipt.judgmentDecision ? { judgmentDecision: receipt.judgmentDecision } : {}),
               });
             } catch {
               // An unreadable receipt is omitted, never guessed.

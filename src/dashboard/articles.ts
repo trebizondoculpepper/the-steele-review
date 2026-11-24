@@ -110,6 +110,43 @@ export interface ReceiptView {
   deliveredAt: string;
   /** Present only for a confirmed real delivery over HTTPS. */
   url?: string;
+  /** What the delivery did (#809); absent on views built before it existed. */
+  kind?: DeliveryKind;
+  /** For a completed-cycle release (#820): the judge's actual decision. */
+  judgmentDecision?: "approve" | "revise";
+}
+
+/**
+ * What a delivery did (#809), so a reader can tell them apart:
+ * - `simulated`: a placeholder delivery with no external effect;
+ * - `draft`: an unpublished destination draft, with no subscriber email;
+ * - `published`: published publicly, with subscriber email requested.
+ */
+export type DeliveryKind = "simulated" | "draft" | "published";
+
+/** Derives the kind from a saved receipt's own recorded facts, never guessed. */
+export function deliveryKindOf(receipt: {
+  simulated: boolean;
+  action: string;
+  publicationSafety?: unknown;
+}): DeliveryKind {
+  if (receipt.simulated) return "simulated";
+  return receipt.action === "publish" && receipt.publicationSafety ? "published" : "draft";
+}
+
+/** Reader-facing label for a delivery (#809). */
+export function deliveryLabel(
+  r: Pick<ReceiptView, "simulated" | "action" | "kind" | "judgmentDecision">,
+): string {
+  const kind =
+    r.kind ?? (r.simulated ? "simulated" : r.action === "publish" ? "published" : "draft");
+  const base =
+    kind === "simulated"
+      ? "simulated (no external effect)"
+      : kind === "published"
+        ? "published, subscribers emailed"
+        : "unpublished draft";
+  return r.judgmentDecision === "revise" ? `${base}, released after one correction cycle` : base;
 }
 
 /** Reads saved drafts and verification reports through the artifact controller. */
