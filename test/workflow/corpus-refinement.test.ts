@@ -1,0 +1,111 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
+import * as clients from "@restatedev/restate-sdk-clients";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import {
+  STUB_CORPUS_REFINEMENT,
+  corpusRefinementPath,
+  corpusRefinementWorkflow,
+  syntheticBatch,
+  type CorpusRefinementLogic,
+  type IdeasResult,
+} from "../../src/workflow/corpus-refinement.js";
+
+// Isolated test repository; deterministic stubs; no model calls (#830).
+let dir: string;
+let artifacts: GitArtifactStore;
+let env: RestateTestEnvironment;
+let ingress: clients.Ingress;
+const calls = { coverage: 0, ideas: 0, underlying: 0 };
+const failMiddleOnce = new Set<string>();
+const logic: CorpusRefinementLogic = {
+  checkCoverage: async (input) => (calls.coverage++, STUB_CORPUS_REFINEMENT.checkCoverage(input)),
+  mapClaimsToIdeas: async (input, coverage) => {
+    calls.ideas++;
+    if (failMiddleOnce.delete(input.runId)) throw new Error("synthetic transient failure");
+    return STUB_CORPUS_REFINEMENT.mapClaimsToIdeas(input, coverage);
+  },
+  mapIdeasToUnderlying: async (ideas) => (
+    calls.underlying++,
+    STUB_CORPUS_REFINEMENT.mapIdeasToUnderlying(ideas)
+  ),
+};
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "corpus-refinement-"));
+  artifacts = new GitArtifactStore({ repoPath: dir, repository: "corpus-test" });
+  await artifacts.initialise();
+  env = await RestateTestEnvironment.start(
+    {
+      services: [corpusRefinementWorkflow({ artifacts, logic })],
+      serviceEndpointAccess: "docker-host",
+    },
+    () => new RestateContainer("1.8.1"),
+  );
+  ingress = clients.connect({ url: env.baseUrl() });
+}, 240_000);
+afterAll(async () => {
+  await env?.stop();
+  await rm(dir, { recursive: true, force: true });
+});
+
+const client = (runId: string) =>
+  ingress.workflowClient<ReturnType<typeof corpusRefinementWorkflow>>(
+    { name: "CorpusRefinement" },
+    runId,
+  );
+
+describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, () => {
+  it("runs the three stages in order, handing each exact saved reference forward", async () => {
+    const before = { ...calls };
+    const wf = client("run-ordered");
+    await wf.workflowSubmit(syntheticBatch("run-ordered", 10));
+    const out = await wf.workflowAttach();
+    expect(out.stages.map((s) => s.stage)).toEqual([
+      "check-coverage",
+      "map-claims-to-ideas",
+      "map-ideas-to-underlying",
+    ]);
+    for (const s of out.stages)
+      expect(s.artifact.path).toBe(corpusRefinementPath("run-ordered", s.stage));
+    // Each artifact is the exact versioned one the next stage read.
+    const ideas = JSON.parse(await artifacts.read(out.stages[1]!.artifact as never)) as IdeasResult;
+    const underlying = JSON.parse(await artifacts.read(out.stages[2]!.artifact as never));
+    expect(underlying.underlying[0].ideaIds).toEqual(ideas.ideas.map((i) => i.id));
+    expect(calls).toEqual({
+      coverage: before.coverage + 1,
+      ideas: before.ideas + 1,
+      underlying: before.underlying + 1,
+    });
+  });
+
+  it("treats a duplicate submission of the same run ID as the same run", async () => {
+    const wf = client("run-duplicate");
+    const first = await wf.workflowSubmit(syntheticBatch("run-duplicate", 4));
+    const firstResult = await wf.workflowAttach();
+    const before = { ...calls };
+    const second = await wf.workflowSubmit(syntheticBatch("run-duplicate", 4));
+    expect(second.status).toBe("PreviouslyAccepted");
+    expect(second.invocationId).toBe(first.invocationId);
+    expect(await wf.workflowAttach()).toEqual(firstResult);
+    // No stage ran again.
+    expect(calls).toEqual(before);
+  });
+
+  it("recovers when the middle stage fails once, without repeating the first", async () => {
+    failMiddleOnce.add("run-recover");
+    const before = { ...calls };
+    const wf = client("run-recover");
+    await wf.workflowSubmit(syntheticBatch("run-recover", 6));
+    const out = await wf.workflowAttach();
+    expect(out.stages).toHaveLength(3);
+    expect(calls.coverage).toBe(before.coverage + 1);
+    // The middle stage ran twice (one failure, one success); the last once.
+    expect(calls.ideas).toBe(before.ideas + 2);
+    expect(calls.underlying).toBe(before.underlying + 1);
+    expect(await artifacts.list("corpus-refinement/run-recover", 10)).toHaveLength(3);
+  });
+});
