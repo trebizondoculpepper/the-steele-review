@@ -91,10 +91,11 @@ describe("reproducible archive batch (#832)", () => {
       maxChars: 10_000,
     });
     expect(batch.input.mode).toBe("archive");
+    // Round-robin across posts: a1, b1, a2, then b2 is deferred.
     expect(batch.input.claims.map((c) => [c.id, c.covered, c.post])).toEqual([
       ["a1", true, "pub/a"],
-      ["a2", false, "pub/a"],
       ["b1", false, "pub/b"],
+      ["a2", false, "pub/a"],
     ]);
     expect(batch.input.claims[0]!.utterance).toBe("the mast is making us ill");
     expect(batch.input.deferred).toEqual(["b2"]);
