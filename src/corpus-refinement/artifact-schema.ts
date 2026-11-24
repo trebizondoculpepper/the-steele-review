@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RejectedClaimsBatch } from "./rejected-claims.js";
 import type {
   CorpusRefinementOutput,
   RejectedOutput,
@@ -83,12 +84,30 @@ const Rejected = z.object({
   issues: z.array(Issue),
 });
 
+const RejectedClaims = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("corpus-rejected-claims"),
+  runId: z.string(),
+  sources: z.looseObject({}),
+  entries: z.array(
+    z.looseObject({
+      claimId: z.string(),
+      statement: z.string(),
+      stage: z.enum(["map-claims-to-ideas", "map-ideas-to-underlying"]),
+      reason: z.enum(["unmapped", "idea-not-grouped"]),
+    }),
+  ),
+  candidates: z.array(z.looseObject({ stage: z.string(), index: z.number(), reason: z.string() })),
+  technical: z.array(z.looseObject({ stage: z.string(), reason: z.string() })),
+});
+
 const PAYLOADS = {
   "check-coverage": Coverage,
   "map-claims-to-ideas": Ideas,
   "map-ideas-to-underlying": Underlying,
   "map-claims-to-ideas-rejected": Rejected,
   "map-ideas-to-underlying-rejected": Rejected,
+  "rejected-claims": RejectedClaims,
 } satisfies Record<CorpusRefinementOutput, z.ZodType>;
 
 export interface StagePayloads {
@@ -97,6 +116,7 @@ export interface StagePayloads {
   "map-ideas-to-underlying": UnderlyingResult;
   "map-claims-to-ideas-rejected": RejectedOutput;
   "map-ideas-to-underlying-rejected": RejectedOutput;
+  "rejected-claims": RejectedClaimsBatch;
 }
 
 export class CorpusArtifactError extends Error {

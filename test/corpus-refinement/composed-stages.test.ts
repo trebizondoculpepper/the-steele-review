@@ -114,13 +114,20 @@ const CATALOGUE_RESPONSE = JSON.stringify({
     },
   ],
 });
+/** When set, the first mapper also returns this valid idea (#855). */
+let extraIdea: unknown;
 const provider = {
   modelVersion: "fake/corpus-model",
   calls: [] as { stage: string; user: string }[],
   async complete(request: { system: string; user: string; maxOutputChars: number }) {
     const stage = request.system.includes("underlying ideas") ? "underlying" : "ideas";
     this.calls.push({ stage, user: request.user });
-    if (stage === "ideas") return IDEAS_RESPONSE;
+    if (stage === "ideas") {
+      if (!extraIdea) return IDEAS_RESPONSE;
+      const r = JSON.parse(IDEAS_RESPONSE);
+      r.ideas.push(extraIdea);
+      return JSON.stringify(r);
+    }
     return JSON.parse(request.user).catalogue ? CATALOGUE_RESPONSE : UNDERLYING_RESPONSE;
   },
 };
@@ -246,7 +253,14 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     });
     expect(secondRejected.issues).toEqual(underlying.issues);
     // One saved file per named output, despite two save failures and retries.
-    expect((await artifacts.list("corpus-refinement/run-composed", 20)).length).toBe(6);
+    expect((await artifacts.list("corpus-refinement/run-composed", 20)).length).toBe(7);
+    // The reject handler's batch (#855): no claim was rejected here, but the
+    // invalid candidates of both mappers are kept by reference.
+    const rejectedClaims = await valueOf<{ entries: unknown[]; candidates: unknown[] }>(
+      out.rejectedClaims!,
+    );
+    expect(rejectedClaims.entries).toEqual([]);
+    expect(rejectedClaims.candidates).toHaveLength(6);
 
     // A duplicate submission replays: no further model calls.
     await wf.workflowSubmit(batch("run-composed"));
@@ -317,5 +331,43 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     const first = await valueOf<RejectedOutput>(out.rejected![0]!.artifact);
     expect(first).toMatchObject({ sent: 3, unplaced: ["c5"] });
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it("traces a rejection in the second mapping to its claim, and replays without duplicates (#855)", async () => {
+    provider.calls.length = 0;
+    // c5 becomes its own valid idea, which the second mapper then leaves ungrouped.
+    extraIdea = {
+      id: "idea-unmapped",
+      statement: "Something nobody grouped.",
+      claimIds: ["c5"],
+      evidence: [{ claimId: "c5", quote: "nobody mapped" }],
+    };
+    const input = {
+      ...batch("run-second-reject"),
+      claims: [
+        ...batch("run-second-reject").claims,
+        { id: "c5", statement: "An uncovered claim nobody mapped.", covered: false },
+      ],
+    };
+    const wf = client("run-second-reject");
+    await wf.workflowSubmit(input);
+    const out = await wf.workflowAttach();
+    const value = await valueOf<{
+      entries: { claimId: string; reason: string; ideaId?: string }[];
+    }>(out.rejectedClaims!);
+    expect(value.entries).toEqual([
+      expect.objectContaining({
+        claimId: "c5",
+        stage: "map-ideas-to-underlying",
+        reason: "idea-not-grouped",
+        ideaId: "idea-unmapped",
+      }),
+    ]);
+    // Replay: the same saved batch, no further model calls, no duplicate entries.
+    await wf.workflowSubmit(input);
+    const again = await wf.workflowAttach();
+    expect(again.rejectedClaims).toEqual(out.rejectedClaims);
+    expect(provider.calls).toHaveLength(2);
+    extraIdea = undefined;
   });
 });

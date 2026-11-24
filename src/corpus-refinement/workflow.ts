@@ -25,6 +25,7 @@ import {
 import { runModelStage } from "./model-step.js";
 import { CorpusArtifactError, readStageArtifact, type StagePayloads } from "./artifact-schema.js";
 import { UnderlyingCatalogueSchema } from "./catalogue.js";
+import { collectRejectedClaims, type RejectedClaimsBatch } from "./rejected-claims.js";
 import { BatchError, readBatch, saveBatch, stepInput, toBatch } from "./batch.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
@@ -179,6 +180,7 @@ export function corpusRefinementWorkflow(deps: {
         let ideas: StageRef;
         let underlying: StageRef;
         const rejected: { stage: CorpusRefinementRejected; artifact: StageRef }[] = [];
+        let rejectedClaims: StageRef | undefined;
         /** Records a mapper was given that no accepted output contains (#857). */
         const unplaced = (sent: string[], placed: string[]) => {
           const kept = new Set(placed);
@@ -312,6 +314,38 @@ export function corpusRefinementWorkflow(deps: {
               ),
             ),
           });
+          // Reject handler (#855): one named save of the run's rejected claims,
+          // built from the saved rejected outputs by exact reference.
+          const groupedIdeas = grouped.accepted.flatMap((g) => g.ideaIds);
+          rejectedClaims = await ctx.run("rejected-claims", () =>
+            stage(
+              input.runId,
+              "rejected-claims",
+              {
+                batch: key(batchRef),
+                ideas: key(ideas),
+                rejected: rejected.map((r) => key(r.artifact)),
+              },
+              async (): Promise<RejectedClaimsBatch> =>
+                collectRejectedClaims({
+                  runId: input.runId,
+                  claims: work.claims,
+                  ideas: ideasValue,
+                  grouped: groupedIdeas,
+                  rejected: await Promise.all(
+                    rejected.map(async (r) => ({
+                      output: r.artifact,
+                      value: await load(r.artifact, input.runId, r.stage),
+                    })),
+                  ),
+                  sources: {
+                    batch: plain(batchRef as ArtifactRef),
+                    ideas,
+                    rejected: rejected.map((r) => r.artifact),
+                  },
+                }),
+            ),
+          );
         } else {
           ideas = await ctx.run("map-claims-to-ideas", () =>
             stage(
@@ -336,6 +370,7 @@ export function corpusRefinementWorkflow(deps: {
             { stage: "map-ideas-to-underlying", artifact: underlying },
           ],
           ...(rejected.length ? { rejected } : {}),
+          ...(rejectedClaims ? { rejectedClaims } : {}),
         };
       },
     },
