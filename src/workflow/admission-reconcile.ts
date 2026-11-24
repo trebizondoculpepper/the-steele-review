@@ -15,14 +15,14 @@ import type { OperationStore } from "../controllers/operation-store.js";
 export interface AdmissionCandidate {
   publicationId: string;
   postId: string;
-  /** `pub/post@<32 hex>`, the base ArticleRun key. */
+  /** The ArticleRun key that ran, with any attempt suffix kept. */
   workflowKey: string;
   source: "restate" | "submission";
 }
 
 /** An ArticleRun key, optionally with an attempt or recovery suffix. */
 const RUN_KEY =
-  /^([a-z0-9][a-z0-9-]{0,199})\/([a-z0-9][a-z0-9-]{0,199})@([0-9a-f]{32})(?:~[a-z0-9-]{1,80})*$/;
+  /^([a-z0-9][a-z0-9-]{0,199})\/([a-z0-9][a-z0-9-]{0,199})@([0-9a-f]{32})((?:~[a-z0-9-]{1,80})*)$/;
 /** A captured submission: `article-submissions/<pub>/<post>/<64 hex>/<hash>.json`. */
 const SUBMISSION =
   /^article-submissions\/([a-z0-9][a-z0-9-]{0,199})\/([a-z0-9][a-z0-9-]{0,199})\/([0-9a-f]{64})\/[0-9a-f]{64}\.json$/;
@@ -35,7 +35,7 @@ export function candidatesFromWorkflowKeys(keys: string[]): AdmissionCandidate[]
           {
             publicationId: m[1]!,
             postId: m[2]!,
-            workflowKey: `${m[1]}/${m[2]}@${m[3]}`,
+            workflowKey: `${m[1]}/${m[2]}@${m[3]}${m[4] ?? ""}`,
             source: "restate" as const,
           },
         ]
@@ -80,6 +80,8 @@ export function reconcileAdmissions(
   const ordered = [...candidates].sort(
     (a, b) =>
       Number(a.source === "restate") - Number(b.source === "restate") ||
+      // A base automatic run, if the post had one, is the admission to keep.
+      Number(a.workflowKey.includes("~")) - Number(b.workflowKey.includes("~")) ||
       a.workflowKey.localeCompare(b.workflowKey),
   );
   const seen = new Set<string>();

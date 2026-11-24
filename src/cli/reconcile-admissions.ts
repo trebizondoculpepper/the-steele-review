@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
 import { OperationStore } from "../controllers/operation-store.js";
+import { articleRunKeys, RestateAdminError } from "../controllers/restate-admin.js";
 import {
   candidatesFromSubmissionPaths,
   candidatesFromWorkflowKeys,
@@ -23,21 +24,6 @@ const EnvSchema = z.object({
   STEELE_CONTENT_PATH: z.string().min(1).optional(),
   STEELE_CONTENT_REPOSITORY: z.string().min(1).optional(),
 });
-
-async function restateKeys(adminUrl: string): Promise<string[]> {
-  const res = await fetch(`${adminUrl.replace(/\/+$/, "")}/query`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({
-      query:
-        "SELECT DISTINCT target_service_key AS key FROM sys_invocation WHERE target_service_name = 'ArticleRun' AND target_handler_name = 'run'",
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error("restate query failed");
-  const body = (await res.json()) as { rows?: { key?: unknown }[] };
-  return (body.rows ?? []).flatMap((r) => (typeof r.key === "string" ? [r.key] : []));
-}
 
 async function submissionPaths(content: GitArtifactStore): Promise<string[]> {
   const out: string[] = [];
@@ -67,7 +53,9 @@ async function main(): Promise<number> {
     candidates.push(...candidatesFromSubmissionPaths(await submissionPaths(content)));
   }
   if (e.STEELE_RESTATE_ADMIN_URL)
-    candidates.push(...candidatesFromWorkflowKeys(await restateKeys(e.STEELE_RESTATE_ADMIN_URL)));
+    candidates.push(
+      ...candidatesFromWorkflowKeys(await articleRunKeys(e.STEELE_RESTATE_ADMIN_URL)),
+    );
   const operations = new OperationStore({ path: e.STEELE_STATE_PATH });
   try {
     const report = reconcileAdmissions(operations, candidates, { apply });
@@ -78,4 +66,9 @@ async function main(): Promise<number> {
   }
 }
 
-process.exitCode = await main();
+// Failures are reported by category only: never an endpoint, path or nested cause.
+process.exitCode = await main().catch((error: unknown) => {
+  const category = error instanceof RestateAdminError ? `restate-${error.category}` : "failed";
+  console.error(JSON.stringify({ event: "reconcile-admissions", state: "failed", category }));
+  return 1;
+});

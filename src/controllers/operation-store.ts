@@ -905,7 +905,13 @@ export class OperationStore {
         });
         this.insertAdmission(slot, admission);
       }
-      return { admitted: admission.revision === revision, admission };
+      // Only the base automatic run reattaches. A post known only from an
+      // explicit rerun (a suffixed key) already ran; its base run never did and
+      // must not start now.
+      return {
+        admitted: admission.revision === revision && !admission.workflowKey.includes("~"),
+        admission,
+      };
     });
   }
 
@@ -936,7 +942,8 @@ export class OperationStore {
           publicationId: parsed.publicationId,
           postId: parsed.postId,
           revision,
-          workflowKey: parsed.workflowKey.replace(/~.*$/, ""),
+          // Kept exactly, suffix included: see admitAutomaticArticle.
+          workflowKey: parsed.workflowKey,
           basis: "reconciled",
           admittedAt: new Date(this.now()).toISOString(),
         }),

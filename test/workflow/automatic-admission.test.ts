@@ -183,4 +183,34 @@ describe("one automatic article run per post (#874)", () => {
     expect(s.automaticAdmission("example-pub", "old")?.basis).toBe("prior-intent");
     expect(s.automaticAdmission("example-pub", "older")?.basis).toBe("reconciled");
   });
+
+  it("starts no base run for a post known only from an explicit rerun", async () => {
+    const s = store();
+    reconcileAdmissions(
+      s,
+      candidatesFromWorkflowKeys([`example-pub/rerun-only@${"a".repeat(32)}~run-abc`]),
+      { apply: true },
+    );
+    expect(s.automaticAdmission("example-pub", "rerun-only")?.workflowKey).toMatch(/~run-abc$/);
+    const b = bridge(s);
+    // Even the same revision is refused: the base run never ran and must not start now.
+    expect(await b.deliver(event("rerun-only", rev("a")))).toMatchObject({
+      reason: "already-admitted",
+    });
+    expect(b.runs.size).toBe(0);
+  });
+
+  it("reports an unreachable Restate by category only", async () => {
+    const { articleRunKeys, RestateAdminError } =
+      await import("../../src/controllers/restate-admin.js");
+    const failing = (async () => {
+      throw new TypeError("fetch failed: connect ECONNREFUSED 10.0.0.9:9070");
+    }) as typeof fetch;
+    const error = await articleRunKeys("http://admin.example.test:9070", { fetch: failing }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(RestateAdminError);
+    expect(String((error as Error).message)).toBe("restate admin unreachable");
+    expect(JSON.stringify(error)).not.toMatch(/10\.0\.0\.9|admin\.example/);
+  });
 });
