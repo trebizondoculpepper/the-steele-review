@@ -87,19 +87,22 @@ export function corpusRefinementWorkflow(deps: {
       throw error;
     }
   };
+  /** Prepare the isolated repository once, before the first write of any kind. */
+  const ensureReady = async () => {
+    if (!deps.ready) return;
+    prepared ??= deps.ready().catch((error) => {
+      prepared = undefined; // a later attempt may succeed
+      throw error;
+    });
+    await prepared;
+  };
   const stage = async <T>(
     runId: string,
     name: CorpusRefinementStage,
     inputs: unknown,
     compute: () => Promise<T>,
   ): Promise<StageRef> => {
-    if (deps.ready) {
-      prepared ??= deps.ready().catch((error) => {
-        prepared = undefined; // a later attempt may succeed
-        throw error;
-      });
-      await prepared;
-    }
+    await ensureReady();
     const identity = `sha256:${createHash("sha256")
       .update(JSON.stringify({ stage: name, logic: logic.version, inputs }))
       .digest("hex")}`;
@@ -153,8 +156,12 @@ export function corpusRefinementWorkflow(deps: {
         // that saved version; a replay reopens it. Mode travels as a typed
         // parameter, apart from the data.
         const submitted = toBatch(input);
+        // The batch is the run's first write: prepare the repository first.
         const batchRef = await ctx.run("save-batch", () =>
-          guarded(async () => plain(await saveBatch(deps.artifacts, submitted.batch))),
+          guarded(async () => {
+            await ensureReady();
+            return plain(await saveBatch(deps.artifacts, submitted.batch));
+          }),
         );
         const batch = await ctx.run("read-batch", () =>
           guarded(() => readBatch(deps.artifacts, batchRef as ArtifactRef, input.runId)),

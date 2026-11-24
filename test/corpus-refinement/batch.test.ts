@@ -80,4 +80,11 @@ describe("pinned batch input (#856)", () => {
       await reason(JSON.stringify({ ...valid, records: [...valid.records, ...valid.records] })),
     ).toBe("schema:records");
   });
+
+  it("keeps a storage failure retryable instead of calling it malformed", async () => {
+    const ref = await saveBatch(artifacts, toBatch(input("run-e", ["c1"])).batch);
+    const failing = { read: async () => Promise.reject(new Error("synthetic storage outage")) };
+    await expect(readBatch(failing, ref, "run-e")).rejects.toThrow("synthetic storage outage");
+    await expect(readBatch(failing, ref, "run-e")).rejects.not.toBeInstanceOf(BatchError);
+  });
 });

@@ -97,9 +97,11 @@ export async function readBatch(
   ref: ArtifactRef,
   runId: string,
 ): Promise<CorpusRefinementBatch> {
+  // A storage failure stays retryable: only the content itself can be malformed.
+  const text = await artifacts.read(ref);
   let raw: unknown;
   try {
-    raw = JSON.parse(await artifacts.read(ref));
+    raw = JSON.parse(text);
   } catch {
     throw new BatchError(runId, "malformed-json");
   }
