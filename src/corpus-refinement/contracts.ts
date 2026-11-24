@@ -89,7 +89,33 @@ export interface IdeasResult {
   /** Prompt and model that produced a model-backed result. */
   promptVersion?: string;
   model?: string;
+  /** How claims were grouped (#849); flags a near one-to-one result for review. */
+  grouping?: GroupingReport;
 }
+
+export interface GroupingReport {
+  /** Distinct claims placed under an accepted idea. */
+  claims: number;
+  ideas: number;
+  /** Number of ideas holding each count of claims, e.g. {"1": 40, "2": 3}. */
+  sizes: Record<string, number>;
+  /** Present when almost every idea holds a single claim: worth a look, never a forced merge. */
+  review?: "near-one-to-one";
+}
+
+/** Group sizes for accepted ideas (#849). */
+export function groupingReport(ideas: { claimIds: string[] }[]): GroupingReport {
+  const sizes: Record<string, number> = {};
+  for (const idea of ideas) {
+    const n = String(new Set(idea.claimIds).size);
+    sizes[n] = (sizes[n] ?? 0) + 1;
+  }
+  const claims = new Set(ideas.flatMap((i) => i.claimIds)).size;
+  // Near one-to-one: at least five claims, and nine in ten ideas are singletons.
+  const near = claims >= 5 && ideas.length > 0 && (sizes["1"] ?? 0) / ideas.length >= 0.9;
+  return { claims, ideas: ideas.length, sizes, ...(near ? { review: "near-one-to-one" } : {}) };
+}
+
 /** How a group relates to the reviewed catalogue (#852). */
 export type CatalogueMatch =
   | { decision: "reuse"; catalogueId: string }

@@ -33,6 +33,14 @@ const Coverage = z.object({
   deferred: Ids.optional(),
 });
 const Ideas = z.object({
+  grouping: z
+    .object({
+      claims: z.number().int().min(0),
+      ideas: z.number().int().min(0),
+      sizes: z.record(z.string(), z.number().int().min(0)),
+      review: z.literal("near-one-to-one").optional(),
+    })
+    .optional(),
   ideas: z.array(
     z.object({
       id: z.string().min(1),
