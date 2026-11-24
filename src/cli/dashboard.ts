@@ -28,6 +28,8 @@ import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
  *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
  *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
+import { corpusRefinementAction } from "../dashboard/corpus-refinement.js";
+import { corpusRefinementSubmitter } from "../corpus-refinement/submission.js";
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
@@ -419,6 +421,19 @@ const views = [
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
 
+// Run Corpus Refinement from the console (#831): the same workflow and
+// submission contract as the CLI, fixture mode only.
+const corpusAction = env.data.RESTATE_INGRESS_URL
+  ? corpusRefinementAction({
+      submitter: corpusRefinementSubmitter(env.data.RESTATE_INGRESS_URL),
+      ...(() => {
+        const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
+        return links ? { links } : {};
+      })(),
+    })
+  : undefined;
+if (corpusAction && env.data.STEELE_DASHBOARD_ORIGIN) views.push(corpusAction.view);
+
 // Recoverable trash for saved drafts (#478); markers live in the content repo.
 // Writing markers mutates the content repository, so the console only offers
 // this when the deployment explicitly enables it (#478).
@@ -429,7 +444,7 @@ const trashAction = trashStore?.action();
 // action route is registered at all.
 const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
 const actions =
-  (trigger || trashAction || refetch) && actionOrigin
+  (trigger || trashAction || refetch || corpusAction) && actionOrigin
     ? {
         origin: actionOrigin,
         routes: {
@@ -438,6 +453,7 @@ const actions =
           ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
           ...(refetch ? { "/articles/refetch": refetch.submit } : {}),
           ...(configAction ? { "/config/save": configAction.submit } : {}),
+          ...(corpusAction ? { "/corpus-refinement/run": corpusAction.submit } : {}),
         },
       }
     : undefined;
