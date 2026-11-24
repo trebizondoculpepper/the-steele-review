@@ -109,14 +109,17 @@ beforeAll(async () => {
   const service = restate.service({
     name: "MappingBlockTest",
     handlers: {
-      map: async (ctx: restate.Context, req: { runId: string; batch: StageRef }) =>
+      map: async (
+        ctx: restate.Context,
+        req: { runId: string; batch: StageRef; catalogue?: StageRef },
+      ) =>
         runMappingBlock(
           ctx,
           { artifacts: store, classifier },
           {
             runId: req.runId,
             batch: req.batch,
-            catalogue: catalogueRef,
+            catalogue: req.catalogue ?? catalogueRef,
             settings: { minConfidence: "medium" },
           },
         ),
@@ -197,5 +200,23 @@ describe("the mapping block in Restate (#861)", { timeout: 120_000 }, () => {
     expect(classifyCalls).toBe(before + 2);
     expect(unmapped.records.map((r: { reason: string }) => r.reason)).toEqual(["new-idea"]);
     expect(mapped.records).toHaveLength(1);
+  });
+
+  it("fails terminally on a pinned catalogue that is not valid JSON", async () => {
+    const broken = plainRef(
+      await artifacts.write("corpus-refinement/catalogue/broken.json", "{not json"),
+    );
+    const batch = plainRef(
+      await saveBatch(
+        artifacts,
+        toBatch({ runId: "map-broken", mode: "archive", claims: [{ id: "c1", statement: "S." }] })
+          .batch,
+      ),
+    );
+    await expect(
+      ingress
+        .serviceClient<{ map: (r: unknown) => Promise<unknown> }>({ name: "MappingBlockTest" })
+        .map({ runId: "map-broken", batch, catalogue: broken }),
+    ).rejects.toThrow(/pinned catalogue is not usable/);
   });
 });

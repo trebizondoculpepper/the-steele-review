@@ -151,17 +151,28 @@ export async function runMappingBlock(
   const batch = await ctx.run("mapping:read-batch", () =>
     terminal(() => readBatch(deps.artifacts, input.batch as ArtifactRef, input.runId)),
   );
-  const catalogue = await ctx.run("mapping:read-catalogue", () =>
-    terminal(async () =>
-      UnderlyingCatalogueSchema.parse(
-        JSON.parse(await deps.artifacts.read(input.catalogue as ArtifactRef)),
-      ),
-    ),
-  );
+  const catalogue = await ctx.run("mapping:read-catalogue", async () => {
+    // A storage failure is retried; a pinned version never changes, so
+    // malformed JSON or the wrong shape is terminal.
+    const text = await deps.artifacts.read(input.catalogue as ArtifactRef);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      raw = undefined;
+    }
+    const parsed = UnderlyingCatalogueSchema.safeParse(raw);
+    if (!parsed.success)
+      throw new restate.TerminalError("corpus-refinement: the pinned catalogue is not usable");
+    return parsed.data;
+  });
   // Provider failures throw here and are retried by Restate: never "unmapped".
-  const decisions = await ctx.run("mapping:classify", () =>
-    deps.classifier.classify(batch.records, catalogue, settings),
-  );
+  // The decisions and the identity of what made them are journaled together,
+  // so a replay after a redeploy never credits old decisions to a new classifier.
+  const { decisions, classifierVersion } = await ctx.run("mapping:classify", async () => ({
+    decisions: await deps.classifier.classify(batch.records, catalogue, settings),
+    classifierVersion: deps.classifier.version,
+  }));
   const { mapped, unmapped } = dispose(batch.records, decisions, catalogue, settings);
   const post = new Map(batch.records.map((r) => [r.id, r.post]));
   const source = (id: string): RecordReference => ({
@@ -174,7 +185,7 @@ export async function runMappingBlock(
     runId: input.runId,
     batch: input.batch,
     catalogue: input.catalogue,
-    classifier: deps.classifier.version,
+    classifier: classifierVersion,
     settings,
   };
   // Saved one at a time; each is write-once, so a retry between saves reuses
