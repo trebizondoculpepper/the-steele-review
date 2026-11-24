@@ -66,7 +66,11 @@ export function statusView(
    * The validated Restate Console home (#816), from private configuration.
    * Omitted when absent or invalid; the link only opens the existing UI.
    */
-  options: { consoleUrl?: string } = {},
+  options: {
+    consoleUrl?: string;
+    /** The "Running now" section (#522); when present, Overview refreshes itself. */
+    runningNow?: () => Promise<string>;
+  } = {},
 ): DashboardView {
   const consoleLink = options.consoleUrl
     ? `<p><a href="${escapeHtml(options.consoleUrl)}" target="_blank" rel="noopener noreferrer">Open Restate Console</a></p>\n`
@@ -74,12 +78,23 @@ export function statusView(
   return {
     path: "/overview",
     title: "Overview",
+    // Bounded polling so running work appears without a manual reload (#522).
+    ...(options.runningNow ? { refreshSeconds: 15 } : {}),
     async render() {
+      // Independent of the status snapshot: one failing source hides neither.
+      let running = "";
+      if (options.runningNow) {
+        try {
+          running = await options.runningNow();
+        } catch {
+          running = '<h2>Running now</h2><p class="empty">Running workflows are unavailable.</p>';
+        }
+      }
       let snapshot: StatusSnapshot;
       try {
         snapshot = await source.read();
       } catch {
-        return '<p class="empty">System status is unavailable: no source could be read.</p>';
+        return `${consoleLink}${running}<p class="empty">System status is unavailable: no source could be read.</p>`;
       }
       const services = snapshot.services
         .map((s) => `<tr><td>${escapeHtml(s.name)}</td><td>${badge(s.state)}</td></tr>`)
@@ -106,7 +121,7 @@ export function statusView(
         snapshot.feedPoll.at === undefined
           ? badge(snapshot.feedPoll.state)
           : `${badge(snapshot.feedPoll.state)} last poll ${time(snapshot.feedPoll.at)}`;
-      return `${consoleLink}<p>Observed at ${time(snapshot.observedAt)}. Each source is independent: a failure in one does not hide another.</p>
+      return `${consoleLink}${running}<p>Observed at ${time(snapshot.observedAt)}. Each source is independent: a failure in one does not hide another.</p>
 <h2>Services</h2>
 <div class="wrap"><table><thead><tr><th>Component</th><th>Check</th></tr></thead><tbody>${services}</tbody></table></div>
 <h2>Pipeline</h2>

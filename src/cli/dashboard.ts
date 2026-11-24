@@ -38,6 +38,11 @@ import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import { fileCheckpoint } from "../collection/catchup-checkpoint.js";
 import { systemStatusSource } from "../dashboard/status-adapters.js";
 import { statusView } from "../dashboard/status.js";
+import {
+  collectRunningNow,
+  renderRunningNow,
+  restateActiveRuns,
+} from "../dashboard/running-now.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
@@ -236,8 +241,26 @@ const overview = statusView(
   }),
   // One console link on Overview (#816), only from a validated private base.
   (() => {
-    const home = restateUiLinks(env.data.STEELE_RESTATE_UI_URL)?.home;
-    return home ? { consoleUrl: home } : {};
+    const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
+    const runningArticles = es
+      ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined)
+      : undefined;
+    // Running now (#522): needs the admin query API, run status and the index.
+    const running =
+      env.data.STEELE_RESTATE_ADMIN_URL && env.data.RESTATE_INGRESS_URL && runningArticles
+        ? {
+            active: restateActiveRuns(env.data.STEELE_RESTATE_ADMIN_URL),
+            articles: runningArticles,
+            runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, attemptSource),
+            ...(links ? { invocationLink: links.invocation } : {}),
+          }
+        : undefined;
+    return {
+      ...(links?.home ? { consoleUrl: links.home } : {}),
+      ...(running
+        ? { runningNow: async () => renderRunningNow(await collectRunningNow(running)) }
+        : {}),
+    };
   })(),
 );
 // Live article-stage activity for the console (#479).
