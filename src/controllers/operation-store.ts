@@ -147,6 +147,31 @@ export class OperationStoreError extends Error {
 }
 
 const Key = z.string().min(1).max(512);
+
+/** Automatic article admission by post (#874). */
+const PostIdentity = {
+  publicationId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+  postId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,199}$/),
+};
+const AdmissionInputSchema = z
+  .object({ ...PostIdentity, sourceVersion: z.string().regex(/^sha256:[0-9a-f]{64}$/) })
+  .strict();
+const ReconcileAdmissionSchema = z
+  .object({ ...PostIdentity, workflowKey: z.string().min(1).max(512) })
+  .strict();
+export const AutomaticAdmissionSchema = z
+  .object({
+    ...PostIdentity,
+    /** The admitted source revision: the 32-hex prefix the workflow key uses. */
+    revision: z.string().regex(/^[0-9a-f]{32}$/),
+    workflowKey: z.string().min(1).max(512),
+    basis: z.enum(["first-capture", "prior-intent", "reconciled"]),
+    admittedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type AutomaticAdmission = z.infer<typeof AutomaticAdmissionSchema>;
+const admissionSlot = (publicationId: string, postId: string) =>
+  `automatic-admission:${publicationId}/${postId}`;
 const Owner = z.string().min(1).max(200);
 const Positive = z.number().int().positive();
 
@@ -830,6 +855,114 @@ export class OperationStore {
     return row?.status === "completed"
       ? ResearchRecoveryBindingSchema.parse(JSON.parse(row.artifact!))
       : undefined;
+  }
+
+  /**
+   * Automatic article admission by post (#874): at most one automatic
+   * ArticleRun per publication and publisher post ID. The first revision
+   * admitted for a post is pinned; that same revision is admitted again (a
+   * retry or resend reattaches to its run), and any other revision of the
+   * post (an edit) is refused. A post with an earlier captured-article intent
+   * counts as already admitted under that revision, so switching to this key
+   * never replays posts processed before it. Atomic in one transaction.
+   */
+  admitAutomaticArticle(input: { publicationId: string; postId: string; sourceVersion: string }): {
+    admitted: boolean;
+    admission: AutomaticAdmission;
+  } {
+    // Only the post identity and revision matter; callers may pass a whole run input.
+    const parsed = AdmissionInputSchema.parse({
+      publicationId: input.publicationId,
+      postId: input.postId,
+      sourceVersion: input.sourceVersion,
+    });
+    const revision = parsed.sourceVersion.slice(7, 39);
+    const slot = admissionSlot(parsed.publicationId, parsed.postId);
+    return this.transaction(() => {
+      let admission = this.storedAdmission(slot);
+      if (!admission) {
+        // Posts processed before this key existed: their first intent is the admission.
+        const prior = this.db
+          .prepare(
+            "SELECT artifact FROM operations WHERE key >= ? AND key < ? AND status = 'completed' ORDER BY updated_at ASC, key ASC LIMIT 1",
+          )
+          .get(
+            `captured-article-intent:${parsed.publicationId}/${parsed.postId}:`,
+            `captured-article-intent:${parsed.publicationId}/${parsed.postId};`,
+          ) as { artifact: string } | undefined;
+        const earlier = prior
+          ? CapturedArticleIntentSchema.parse(JSON.parse(prior.artifact))
+          : undefined;
+        admission = AutomaticAdmissionSchema.parse({
+          publicationId: parsed.publicationId,
+          postId: parsed.postId,
+          revision: earlier ? earlier.sourceVersion.slice(7, 39) : revision,
+          workflowKey: earlier
+            ? earlier.workflowKey
+            : `${parsed.publicationId}/${parsed.postId}@${revision}`,
+          basis: earlier ? "prior-intent" : "first-capture",
+          admittedAt: new Date(this.now()).toISOString(),
+        });
+        this.insertAdmission(slot, admission);
+      }
+      return { admitted: admission.revision === revision, admission };
+    });
+  }
+
+  /**
+   * Record that a post already had an automatic run, from Restate's own
+   * execution records, before switching admission keys (#874). Never
+   * replaces an existing admission. Returns whether it recorded one.
+   */
+  reconcileAutomaticAdmission(input: {
+    publicationId: string;
+    postId: string;
+    workflowKey: string;
+  }): boolean {
+    const parsed = ReconcileAdmissionSchema.parse({
+      publicationId: input.publicationId,
+      postId: input.postId,
+      workflowKey: input.workflowKey,
+    });
+    const revision = /@([0-9a-f]{32})/.exec(parsed.workflowKey)?.[1];
+    if (!revision || !parsed.workflowKey.startsWith(`${parsed.publicationId}/${parsed.postId}@`))
+      throw new OperationStoreError("invalid-input");
+    const slot = admissionSlot(parsed.publicationId, parsed.postId);
+    return this.transaction(() => {
+      if (this.storedAdmission(slot)) return false;
+      this.insertAdmission(
+        slot,
+        AutomaticAdmissionSchema.parse({
+          publicationId: parsed.publicationId,
+          postId: parsed.postId,
+          revision,
+          workflowKey: parsed.workflowKey.replace(/~.*$/, ""),
+          basis: "reconciled",
+          admittedAt: new Date(this.now()).toISOString(),
+        }),
+      );
+      return true;
+    });
+  }
+
+  /** The recorded automatic admission for one post, if any (#874). */
+  automaticAdmission(publicationId: string, postId: string): AutomaticAdmission | undefined {
+    return this.storedAdmission(admissionSlot(publicationId, postId));
+  }
+
+  private storedAdmission(slot: string): AutomaticAdmission | undefined {
+    const row = this.row(slot);
+    return row?.status === "completed"
+      ? AutomaticAdmissionSchema.parse(JSON.parse(row.artifact!))
+      : undefined;
+  }
+
+  private insertAdmission(slot: string, admission: AutomaticAdmission): void {
+    this.db
+      .prepare(
+        "INSERT INTO operations (key, status, attempts, max_attempts, artifact, updated_at) VALUES (?, 'completed', 0, 1, ?, ?)",
+      )
+      .run(slot, JSON.stringify(admission), this.now());
   }
 
   /** First accepted capture submission wins; keep the legacy base workflow identity on redelivery. */
