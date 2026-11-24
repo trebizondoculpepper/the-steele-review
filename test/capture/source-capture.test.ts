@@ -3,7 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { captureSource, resendSource, sourcePath } from "../../src/capture/source-capture.js";
+import {
+  captureSource,
+  dispatchPendingSources,
+  resendSource,
+  sourcePath,
+} from "../../src/capture/source-capture.js";
+import { CollectionRecordSchema } from "../../src/collection/collection-store.js";
+import { OperationStore } from "../../src/controllers/operation-store.js";
+import { handleCapturedContent } from "../../src/workflow/captured-bridge.js";
 import type { SubstackItem } from "../../src/content/substack-item.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import type { CollectionResult } from "../../src/controllers/substack/collect.js";
@@ -45,20 +53,19 @@ const fetched = (
 let dir: string;
 let artifacts: GitArtifactStore;
 /** Like a deduplicating consumer: a repeated event ID is not a new event. */
-let delivered: { id: string; path: string; hash: string }[];
-let failNextPublish: boolean;
+let delivered: { id: string; path: string; hash: string; payload: string }[];
+let publishFailures: number;
+let operations: OperationStore;
 const publisher = {
-  async publish(event: { id: string; data?: { artifact: { path: string; hash: string } } }) {
-    if (failNextPublish) {
-      failNextPublish = false;
+  async publish(_subject: string, payload: Uint8Array, { msgId }: { msgId: string }) {
+    if (publishFailures > 0) {
+      publishFailures--;
       throw new Error("synthetic broker outage");
     }
-    if (!delivered.some((d) => d.id === event.id))
-      delivered.push({
-        id: event.id,
-        path: event.data!.artifact.path,
-        hash: event.data!.artifact.hash,
-      });
+    const text = new TextDecoder().decode(payload);
+    const artifact = JSON.parse(text).data.artifact as { path: string; hash: string };
+    if (!delivered.some((d) => d.id === msgId))
+      delivered.push({ id: msgId, path: artifact.path, hash: artifact.hash, payload: text });
   },
 };
 const commitsTouching = (path: string) =>
@@ -71,15 +78,19 @@ beforeEach(async () => {
   artifacts = new GitArtifactStore({ repoPath: dir, repository: "archive" });
   await artifacts.initialise();
   delivered = [];
-  failNextPublish = false;
+  publishFailures = 0;
+  operations = new OperationStore({ path: join(dir, "state.sqlite") });
 });
 afterEach(async () => {
+  operations.close();
   await rm(dir, { recursive: true, force: true });
 });
 const deps = (result: () => CollectionResult, images = true) => ({
   collector: { collect: async () => result() },
   artifacts,
-  publisher: publisher as never,
+  operations,
+  publisher,
+  retryDelayMs: 0,
   ...(images
     ? { images: { fetch: async () => ({ bytes: PNG, contentType: "image/png" as const }) } }
     : {}),
@@ -97,10 +108,13 @@ describe("source capture as one block (#865)", () => {
     expect(out.ref.path).toBe("substack/example-pub/a-post/source.json");
     expect(out.preview).toBe("retained");
     const saved = JSON.parse(await artifacts.read(out.ref));
-    expect(saved.previewImage.retained.artifact.path).toMatch(/^substack\/example-pub\/a-post\/images\//);
-    // Nothing volatile is saved: no capture time, reason or collector state.
-    expect(JSON.stringify(saved)).not.toMatch(/acquiredAt|ingestionReason|reingestion/);
-    expect(delivered).toEqual([
+    expect(saved.previewImage.retained.artifact.path).toMatch(
+      /^substack\/example-pub\/a-post\/images\//,
+    );
+    // Only how the text was obtained; no collector details or retry state.
+    expect(Object.keys(saved.provenance).sort()).toEqual(["acquiredAt", "method", "sourceUrl"]);
+    expect(saved.reingestion).toBeUndefined();
+    expect(delivered.map(({ id, path, hash }) => ({ id, path, hash }))).toEqual([
       { id: out.eventId, path: out.ref.path, hash: `sha256:${out.ref.sha256}` },
     ]);
   });
@@ -168,28 +182,89 @@ describe("source capture as one block (#865)", () => {
     expect(none.preview).toBe("no-preview");
   });
 
-  it("recovers from an interruption between save and announce without a second event", async () => {
-    failNextPublish = true;
-    await expect(
-      captureSource(
-        item,
-        deps(() => fetched("Saved, then the broker failed.")),
-        { reason: "live" },
-      ),
-    ).rejects.toThrow(/broker outage/);
-    expect(await artifacts.lookup(sourcePath(item))).toBeDefined();
-    expect(delivered).toHaveLength(0);
-    const retried = await captureSource(
+  it("keeps a failed announcement pending and sends it before a later capture", async () => {
+    publishFailures = 1;
+    const first = await captureSource(
       item,
       deps(() => fetched("Saved, then the broker failed.")),
       {
         reason: "live",
       },
     );
-    if (retried.status === "not-captured") throw new Error();
-    expect(retried.status).toBe("unchanged");
+    if (first.status === "not-captured") throw new Error(first.reason);
+    expect(first).toMatchObject({ status: "saved", announced: false });
+    expect(delivered).toHaveLength(0);
+
+    // The source changes before the retry. The earlier version's announcement
+    // still goes out first, then the new version's: no downstream work is lost.
+    const second = await captureSource(
+      item,
+      deps(() => fetched("Edited after the outage.")),
+      {
+        reason: "live",
+      },
+    );
+    if (second.status === "not-captured") throw new Error(second.reason);
+    expect(second).toMatchObject({ status: "saved", announced: true });
+    expect(delivered.map((d) => d.id)).toEqual([first.eventId, second.eventId]);
+    expect(delivered[0]!.hash).toBe(`sha256:${first.ref.sha256}`);
+    // Both versions stay readable by the references their events carry.
+    expect(JSON.parse(await artifacts.read(first.ref)).text).toBe("Saved, then the broker failed.");
+  });
+
+  it("sends pending announcements on their own, without fetching", async () => {
+    publishFailures = 1;
+    const out = await captureSource(
+      item,
+      deps(() => fetched("Pending.")),
+      { reason: "live" },
+    );
+    if (out.status === "not-captured") throw new Error();
+    expect(await dispatchPendingSources({ operations, publisher }, item)).toEqual({
+      sent: [out.eventId],
+      failed: [],
+    });
+    expect(await dispatchPendingSources({ operations, publisher }, item)).toEqual({
+      sent: [],
+      failed: [],
+    });
     expect(delivered).toHaveLength(1);
-    expect(commitsTouching(sourcePath(item))).toBe(1);
+  });
+
+  it("saves a record the existing capture consumers read, through to the article run", async () => {
+    const out = await captureSource(
+      item,
+      deps(() => fetched("Readable downstream.")),
+      {
+        reason: "live",
+      },
+    );
+    if (out.status === "not-captured") throw new Error();
+    // The saved file is a valid capture record.
+    const saved = CollectionRecordSchema.parse(JSON.parse(await artifacts.read(out.ref)));
+    expect(saved).toMatchObject({ text: "Readable downstream.", ingestionReason: "live" });
+    // The bridge admits the announced source, and the workflow input points at it.
+    const submitted: {
+      key: string;
+      source: { artifact: { repository: string; commit: string; path: string; sha256: string } };
+    }[] = [];
+    const decision = await handleCapturedContent(delivered[0]!.payload, {
+      enabledSources: new Set(["substack/example-pub"]),
+      researchDeadlineMs: 60_000,
+      submit: async (key, input) => {
+        submitted.push({ key, source: input.source as never });
+        return "started";
+      },
+    });
+    expect(decision).toMatchObject({ action: "ack", outcome: "started" });
+    expect(submitted[0]!.source.artifact).toMatchObject({
+      path: out.ref.path,
+      sha256: out.ref.sha256,
+      commit: out.ref.commit,
+    });
+    // What the workflow reads back through that reference parses as a capture.
+    const read = await artifacts.read(submitted[0]!.source.artifact);
+    expect(CollectionRecordSchema.safeParse(JSON.parse(read)).success).toBe(true);
   });
 
   it("resends the saved references with the same event identity, without fetching", async () => {
@@ -199,22 +274,12 @@ describe("source capture as one block (#865)", () => {
       { reason: "live" },
     );
     if (out.status === "not-captured") throw new Error();
-    const resent = await resendSource(
-      item,
-      { artifacts, publisher: publisher as never },
-      { reason: "live" },
-    );
+    const resent = await resendSource(item, { artifacts, publisher });
     expect(resent).toMatchObject({ status: "resent", eventId: out.eventId });
     expect(delivered).toHaveLength(1);
     expect(
-      await resendSource(
-        { ...item, postId: "never-captured" },
-        { artifacts, publisher: publisher as never },
-        { reason: "live" },
-      ),
-    ).toEqual({
-      status: "not-saved",
-    });
+      await resendSource({ ...item, postId: "never-captured" }, { artifacts, publisher }),
+    ).toEqual({ status: "not-saved" });
   });
 
   it("captures nothing when the source has no text yet", async () => {
