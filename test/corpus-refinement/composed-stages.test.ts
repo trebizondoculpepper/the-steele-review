@@ -258,4 +258,19 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     // Only reviewed changes reach later batches: the catalogue is untouched.
     expect((await artifacts.lookup(CATALOGUE_PATH))?.commit).toBe(saved.commit);
   });
+
+  it("fails a run whose pinned catalogue is not valid JSON, without retrying (#852)", async () => {
+    const saved = await artifacts.write("corpus-refinement/catalogue/broken.json", "{not json");
+    const wf = client("run-bad-catalogue");
+    await wf.workflowSubmit({
+      ...batch("run-bad-catalogue"),
+      catalogue: {
+        repository: saved.repository,
+        commit: saved.commit,
+        path: saved.path,
+        sha256: saved.sha256,
+      },
+    });
+    await expect(wf.workflowAttach()).rejects.toThrow(/pinned catalogue is not a valid catalogue/);
+  });
 });

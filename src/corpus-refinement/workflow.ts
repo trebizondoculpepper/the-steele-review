@@ -191,9 +191,16 @@ export function corpusRefinementWorkflow(deps: {
           const pinned = input.catalogue;
           const catalogue = pinned
             ? await ctx.run("map-ideas-to-underlying:catalogue", async () => {
-                const parsed = UnderlyingCatalogueSchema.safeParse(
-                  JSON.parse(await deps.artifacts.read(pinned as ArtifactRef)),
-                );
+                // A store failure is retried; a bad pinned version never changes,
+                // so malformed JSON or the wrong shape is terminal.
+                const text = await deps.artifacts.read(pinned as ArtifactRef);
+                let raw: unknown;
+                try {
+                  raw = JSON.parse(text);
+                } catch {
+                  raw = undefined;
+                }
+                const parsed = UnderlyingCatalogueSchema.safeParse(raw);
                 if (!parsed.success)
                   throw new restate.TerminalError(
                     "corpus-refinement: the pinned catalogue is not a valid catalogue",
