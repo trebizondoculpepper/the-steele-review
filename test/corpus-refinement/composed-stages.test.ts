@@ -12,6 +12,7 @@ import {
   type UnderlyingResult,
 } from "../../src/corpus-refinement/contracts.js";
 import { corpusRefinementWorkflow } from "../../src/corpus-refinement/workflow.js";
+import { CATALOGUE_PATH, SEED_CATALOGUE } from "../../src/corpus-refinement/catalogue.js";
 
 // Deterministic fixtures and a fake provider only: no paid calls (#837).
 const batch = (runId: string): CorpusRefinementInput => ({
@@ -93,13 +94,33 @@ const UNDERLYING_RESPONSE = JSON.stringify({
     },
   ],
 });
+// With a pinned catalogue (#852): one reuse proposal, one invalid reuse.
+const CATALOGUE_RESPONSE = JSON.stringify({
+  underlying: [
+    {
+      id: "transport-infrastructure-causes-illness",
+      statement: "Telecom infrastructure makes people ill.",
+      ideaIds: ["idea-masts-illness", "idea-towers-virus"],
+      rationale: "Both allege illness from infrastructure, with no claim of intent.",
+      match: { decision: "reuse", catalogueId: "transport-infrastructure-causes-illness" },
+    },
+    {
+      id: "not-in-catalogue",
+      statement: "x",
+      ideaIds: ["idea-masts-illness", "idea-towers-virus"],
+      rationale: "x",
+      match: { decision: "reuse", catalogueId: "not-in-catalogue" },
+    },
+  ],
+});
 const provider = {
   modelVersion: "fake/corpus-model",
   calls: [] as { stage: string; user: string }[],
   async complete(request: { system: string; user: string; maxOutputChars: number }) {
     const stage = request.system.includes("underlying ideas") ? "underlying" : "ideas";
     this.calls.push({ stage, user: request.user });
-    return stage === "ideas" ? IDEAS_RESPONSE : UNDERLYING_RESPONSE;
+    if (stage === "ideas") return IDEAS_RESPONSE;
+    return JSON.parse(request.user).catalogue ? CATALOGUE_RESPONSE : UNDERLYING_RESPONSE;
   },
 };
 
@@ -203,5 +224,38 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     await wf.workflowSubmit(batch("run-composed"));
     await wf.workflowAttach();
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it("proposes catalogue reuse against a pinned version and never edits the catalogue (#852)", async () => {
+    provider.calls.length = 0;
+    const saved = await artifacts.write(CATALOGUE_PATH, JSON.stringify(SEED_CATALOGUE));
+    const catalogue = {
+      repository: saved.repository,
+      commit: saved.commit,
+      path: saved.path,
+      sha256: saved.sha256,
+    };
+    const wf = client("run-catalogue");
+    await wf.workflowSubmit({ ...batch("run-catalogue"), catalogue });
+    const out = await wf.workflowAttach();
+
+    // The mapper saw the reviewed entries as data.
+    const sent = JSON.parse(provider.calls[1]!.user) as { catalogue: { id: string }[] };
+    expect(sent.catalogue.map((e) => e.id)).toEqual(SEED_CATALOGUE.entries.map((e) => e.id));
+    // The proposal is saved with its rationale and the exact catalogue version.
+    const underlying = await valueOf<UnderlyingResult>(out.stages[2]!.artifact);
+    expect(underlying.catalogue).toEqual(catalogue);
+    expect(underlying.underlying.map((u) => [u.id, u.match])).toEqual([
+      [
+        "transport-infrastructure-causes-illness",
+        { decision: "reuse", catalogueId: "transport-infrastructure-causes-illness" },
+      ],
+    ]);
+    expect(underlying.underlying[0]!.rationale).toMatch(/no claim of intent/);
+    expect(underlying.issues).toEqual([
+      { index: 1, id: "not-in-catalogue", reason: "unknown-catalogue-id:not-in-catalogue" },
+    ]);
+    // Only reviewed changes reach later batches: the catalogue is untouched.
+    expect((await artifacts.lookup(CATALOGUE_PATH))?.commit).toBe(saved.commit);
   });
 });
