@@ -13,6 +13,30 @@ export const CORPUS_REFINEMENT_STAGES = [
 ] as const;
 export type CorpusRefinementStage = (typeof CORPUS_REFINEMENT_STAGES)[number];
 
+/**
+ * Named rejected outputs of the two mappers (#857), saved beside each
+ * mapper's accepted output before anything is routed. Accepted records go to
+ * the next mapper; rejected outputs are handed off for review (#855).
+ */
+export const CORPUS_REFINEMENT_REJECTED = [
+  "map-claims-to-ideas-rejected",
+  "map-ideas-to-underlying-rejected",
+] as const;
+export type CorpusRefinementRejected = (typeof CORPUS_REFINEMENT_REJECTED)[number];
+/** Any saved, named output of a run. */
+export type CorpusRefinementOutput = CorpusRefinementStage | CorpusRefinementRejected;
+
+/** What a mapper did not carry forward (#857). */
+export interface RejectedOutput {
+  from: "map-claims-to-ideas" | "map-ideas-to-underlying";
+  /** How many records the mapper was given. */
+  sent: number;
+  /** Records it was given that no accepted output contains, in input order. */
+  unplaced: string[];
+  /** Candidates the mapper returned that failed validation. */
+  issues: ItemIssue[];
+}
+
 const RunId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/);
 
 export const CorpusRefinementInputSchema = z
@@ -149,12 +173,14 @@ export interface StageArtifact<T> {
 }
 
 /** Where one stage's artifact lives, derived only from the run ID and stage name. */
-export const corpusRefinementPath = (runId: string, stage: CorpusRefinementStage) =>
+export const corpusRefinementPath = (runId: string, stage: CorpusRefinementOutput) =>
   `corpus-refinement/${runId}/${stage}.json`;
 
 export interface CorpusRefinementResult {
   runId: string;
   stages: { stage: CorpusRefinementStage; artifact: StageRef }[];
+  /** Archive mode (#857): each mapper's rejected output, routed for review by exact reference. */
+  rejected?: { stage: CorpusRefinementRejected; artifact: StageRef }[];
 }
 
 /** A bounded synthetic batch for the prototype CLI and tests. */

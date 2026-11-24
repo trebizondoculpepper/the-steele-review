@@ -7,6 +7,9 @@ import {
   type CorpusRefinementInput,
   type CorpusRefinementResult,
   type CorpusRefinementStage,
+  type CorpusRefinementOutput,
+  type CorpusRefinementRejected,
+  type RejectedOutput,
   type CoverageResult,
   type IdeasResult,
   type StageRef,
@@ -99,7 +102,7 @@ export function corpusRefinementWorkflow(deps: {
   };
   const stage = async <T>(
     runId: string,
-    name: CorpusRefinementStage,
+    name: CorpusRefinementOutput,
     inputs: unknown,
     compute: () => Promise<T>,
   ): Promise<StageRef> => {
@@ -130,7 +133,7 @@ export function corpusRefinementWorkflow(deps: {
     );
   };
   /** A pinned downstream read, validated against the run and stage it must be (#848). */
-  const load = async <S extends CorpusRefinementStage>(
+  const load = async <S extends CorpusRefinementOutput>(
     ref: StageRef,
     runId: string,
     stage: S,
@@ -175,6 +178,12 @@ export function corpusRefinementWorkflow(deps: {
         );
         let ideas: StageRef;
         let underlying: StageRef;
+        const rejected: { stage: CorpusRefinementRejected; artifact: StageRef }[] = [];
+        /** Records a mapper was given that no accepted output contains (#857). */
+        const unplaced = (sent: string[], placed: string[]) => {
+          const kept = new Set(placed);
+          return sent.filter((id) => !kept.has(id));
+        };
         if (work.mode === "archive") {
           if (!deps.provider)
             throw new restate.TerminalError(
@@ -209,6 +218,31 @@ export function corpusRefinementWorkflow(deps: {
               }),
             ),
           );
+          // Named rejected output, saved before anything is routed onward (#857):
+          // the claims sent but placed in no accepted idea, and the invalid
+          // candidates. Built from the recorded model response, so a failed
+          // save retries without a second call.
+          const sentClaims = coverageValue.uncovered;
+          rejected.push({
+            stage: "map-claims-to-ideas-rejected",
+            artifact: await ctx.run("map-claims-to-ideas-rejected", () =>
+              stage(
+                input.runId,
+                "map-claims-to-ideas-rejected",
+                { accepted: key(ideas), prompt: mapped.promptVersion, model: mapped.model },
+                async (): Promise<RejectedOutput> => ({
+                  from: "map-claims-to-ideas",
+                  sent: sentClaims.length,
+                  unplaced: unplaced(
+                    sentClaims,
+                    mapped.accepted.flatMap((i) => i.claimIds),
+                  ),
+                  issues: mapped.issues,
+                }),
+              ),
+            ),
+          });
+          // Only the accepted output is routed to the second mapper.
           const ideasValue = await ctx.run("map-ideas-to-underlying:input", () =>
             load(ideas, input.runId, "map-claims-to-ideas"),
           );
@@ -259,6 +293,25 @@ export function corpusRefinementWorkflow(deps: {
               }),
             ),
           );
+          rejected.push({
+            stage: "map-ideas-to-underlying-rejected",
+            artifact: await ctx.run("map-ideas-to-underlying-rejected", () =>
+              stage(
+                input.runId,
+                "map-ideas-to-underlying-rejected",
+                { accepted: key(underlying), prompt: grouped.promptVersion, model: grouped.model },
+                async (): Promise<RejectedOutput> => ({
+                  from: "map-ideas-to-underlying",
+                  sent: ideasValue.ideas.length,
+                  unplaced: unplaced(
+                    ideasValue.ideas.map((i) => i.id),
+                    grouped.accepted.flatMap((g) => g.ideaIds),
+                  ),
+                  issues: grouped.issues,
+                }),
+              ),
+            ),
+          });
         } else {
           ideas = await ctx.run("map-claims-to-ideas", () =>
             stage(
@@ -282,6 +335,7 @@ export function corpusRefinementWorkflow(deps: {
             { stage: "map-claims-to-ideas", artifact: ideas },
             { stage: "map-ideas-to-underlying", artifact: underlying },
           ],
+          ...(rejected.length ? { rejected } : {}),
         };
       },
     },

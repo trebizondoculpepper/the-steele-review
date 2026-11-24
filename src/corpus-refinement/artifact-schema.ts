@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type {
+  CorpusRefinementOutput,
+  RejectedOutput,
   CorpusRefinementStage,
   CoverageResult,
   IdeasResult,
@@ -75,21 +77,32 @@ const Underlying = z.object({
   ...ModelFields,
 });
 
+const Rejected = z.object({
+  from: z.enum(["map-claims-to-ideas", "map-ideas-to-underlying"]),
+  sent: z.number().int().min(0),
+  unplaced: Ids,
+  issues: z.array(Issue),
+});
+
 const PAYLOADS = {
   "check-coverage": Coverage,
   "map-claims-to-ideas": Ideas,
   "map-ideas-to-underlying": Underlying,
-} satisfies Record<CorpusRefinementStage, z.ZodType>;
+  "map-claims-to-ideas-rejected": Rejected,
+  "map-ideas-to-underlying-rejected": Rejected,
+} satisfies Record<CorpusRefinementOutput, z.ZodType>;
 
 export interface StagePayloads {
   "check-coverage": CoverageResult;
   "map-claims-to-ideas": IdeasResult;
   "map-ideas-to-underlying": UnderlyingResult;
+  "map-claims-to-ideas-rejected": RejectedOutput;
+  "map-ideas-to-underlying-rejected": RejectedOutput;
 }
 
 export class CorpusArtifactError extends Error {
   constructor(
-    readonly stage: CorpusRefinementStage,
+    readonly stage: CorpusRefinementOutput,
     readonly runId: string,
     readonly reason: string,
   ) {
@@ -103,7 +116,7 @@ export class CorpusArtifactError extends Error {
  * `identity`, when given, must match too (reuse checks it; a pinned
  * downstream read already holds the exact version and checks the rest).
  */
-export function readStageArtifact<S extends CorpusRefinementStage>(
+export function readStageArtifact<S extends CorpusRefinementOutput>(
   text: string,
   expected: { runId: string; stage: S; identity?: string },
 ): { identity: string; value: StagePayloads[S] } {
