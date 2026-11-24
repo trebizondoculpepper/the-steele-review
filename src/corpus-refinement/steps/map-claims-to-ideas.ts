@@ -49,6 +49,9 @@ export function claimsToIdeasSpec(
 ): ModelStageSpec<IdeaRecord> {
   const claims = input.claims.filter((c) => coverage.uncovered.includes(c.id));
   const byId = new Map(claims.map((c) => [c.id, c.statement]));
+  // IDs of ideas already accepted: a second idea with the same ID would make
+  // later references ambiguous. Rejected candidates reserve nothing.
+  const accepted = new Set<string>();
   return {
     stage: "map-claims-to-ideas",
     prompt: loadStagePrompt("map-claims-to-ideas"),
@@ -62,6 +65,8 @@ export function claimsToIdeasSpec(
         if (!idea.claimIds.includes(e.claimId)) return `evidence-outside-idea:${e.claimId}`;
         if (!quotedIn(e.quote, byId.get(e.claimId)!)) return `quote-not-in-claim:${e.claimId}`;
       }
+      if (accepted.has(idea.id)) return `duplicate-idea:${idea.id}`;
+      accepted.add(idea.id);
       return undefined;
     },
   };

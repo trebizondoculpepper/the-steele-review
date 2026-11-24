@@ -36,6 +36,9 @@ export function ideasToUnderlyingSpec(ideas: IdeasResult): ModelStageSpec<Underl
     listKey: "underlying",
     schema: UnderlyingRecordSchema,
     check: (group) => {
+      // At least two distinct ideas: repeating one ID is not a shared proposition.
+      if (new Set(group.ideaIds).size !== group.ideaIds.length)
+        return `repeated-idea:${group.ideaIds.find((id, i) => group.ideaIds.indexOf(id) !== i)}`;
       const unknown = group.ideaIds.find((id) => !known.has(id));
       if (unknown) return `unknown-idea:${unknown}`;
       const repeated = group.ideaIds.find((id) => used.has(id));

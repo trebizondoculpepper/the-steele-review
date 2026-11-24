@@ -47,6 +47,13 @@ const IDEAS_RESPONSE = JSON.stringify({
     },
     // Invalid: fails the schema (no evidence).
     { id: "idea-no-evidence", statement: "x", claimIds: ["c1"], evidence: [] },
+    // Invalid: valid on its own, but reuses an accepted idea's ID.
+    {
+      id: "idea-masts-illness",
+      statement: "A different idea under the same ID.",
+      claimIds: ["c3"],
+      evidence: [{ claimId: "c3", quote: "spread the virus" }],
+    },
   ],
 });
 const UNDERLYING_RESPONSE = JSON.stringify({
@@ -56,6 +63,13 @@ const UNDERLYING_RESPONSE = JSON.stringify({
       statement: "Telecom infrastructure harms health.",
       ideaIds: ["idea-masts-illness", "idea-towers-virus"],
       rationale: "Both claim transmitters cause illness.",
+    },
+    // Invalid: one idea repeated is not two ideas.
+    {
+      id: "underlying-single",
+      statement: "Only one idea, twice.",
+      ideaIds: ["idea-towers-virus", "idea-towers-virus"],
+      rationale: "x",
     },
     // Invalid: cites an idea the previous stage rejected.
     {
@@ -141,6 +155,7 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     expect(ideas.issues).toEqual([
       { index: 2, id: "idea-meters-weapon", reason: "unknown-claim:c2" },
       { index: 3, id: "idea-no-evidence", reason: "schema:evidence" },
+      { index: 4, id: "idea-masts-illness", reason: "duplicate-idea:idea-masts-illness" },
     ]);
     expect(ideas.promptVersion).toMatch(/^corpus-refinement-map-claims-to-ideas-sha256:/);
     expect(ideas.model).toBe("fake/corpus-model");
@@ -153,7 +168,8 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     const underlying = await valueOf<UnderlyingResult>(out.stages[2]!.artifact);
     expect(underlying.underlying.map((u) => u.id)).toEqual(["underlying-radiation-harm"]);
     expect(underlying.issues).toEqual([
-      { index: 1, id: "underlying-control", reason: "unknown-idea:idea-meters-weapon" },
+      { index: 1, id: "underlying-single", reason: "repeated-idea:idea-towers-virus" },
+      { index: 2, id: "underlying-control", reason: "unknown-idea:idea-meters-weapon" },
     ]);
     expect(underlying.promptVersion).toMatch(
       /^corpus-refinement-map-ideas-to-underlying-ideas-sha256:/,
