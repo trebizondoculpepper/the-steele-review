@@ -1,4 +1,7 @@
 import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-recovery.js";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { corpusRefinementWorkflow } from "../corpus-refinement/workflow.js";
 import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
 import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
@@ -17,6 +20,8 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   STEELE_STATE_PATH                                state controller (research job leases)
+ *   STEELE_CORPUS_REFINEMENT_PATH?                   Corpus Refinement prototype repository (#830);
+ *                                                    default: beside the state file
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
  *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?, STEELE_MODEL_VERIFIER?
  *                                                    per-stage overrides
@@ -177,8 +182,31 @@ function main(): number {
     console.error("article-worker: model or research provider is not configured");
     return 2;
   }
+  // Corpus Refinement prototype (#830): independent of article production,
+  // deterministic stubs, artifacts in its own isolated repository (never the
+  // content or archive repositories).
+  const corpusRefinementPath =
+    process.env.STEELE_CORPUS_REFINEMENT_PATH ||
+    join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype");
+  const corpusRefinement = new GitArtifactStore({
+    repoPath: corpusRefinementPath,
+    repository: "corpus-refinement-prototype",
+  });
   restate.serve({
-    services: [articleRunWorkflow(stages), researchService(stages), continuation, judgeRecovery],
+    services: [
+      articleRunWorkflow(stages),
+      researchService(stages),
+      continuation,
+      judgeRecovery,
+      corpusRefinementWorkflow({
+        artifacts: corpusRefinement,
+        // Created on first use, so a missing prototype repository never blocks startup.
+        ready: async () => {
+          await mkdir(corpusRefinementPath, { recursive: true, mode: 0o700 });
+          await corpusRefinement.initialise();
+        },
+      }),
+    ],
     port: c.STEELE_ARTICLE_WORKER_PORT,
   });
   console.log(
