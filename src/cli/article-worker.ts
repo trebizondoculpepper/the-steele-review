@@ -1,4 +1,5 @@
 import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-recovery.js";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { corpusRefinementWorkflow } from "../workflow/corpus-refinement.js";
 import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
@@ -184,10 +185,11 @@ function main(): number {
   // Corpus Refinement prototype (#830): independent of article production,
   // deterministic stubs, artifacts in its own isolated repository (never the
   // content or archive repositories).
+  const corpusRefinementPath =
+    process.env.STEELE_CORPUS_REFINEMENT_PATH ||
+    join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype");
   const corpusRefinement = new GitArtifactStore({
-    repoPath:
-      process.env.STEELE_CORPUS_REFINEMENT_PATH ||
-      join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype"),
+    repoPath: corpusRefinementPath,
     repository: "corpus-refinement-prototype",
   });
   restate.serve({
@@ -199,7 +201,10 @@ function main(): number {
       corpusRefinementWorkflow({
         artifacts: corpusRefinement,
         // Created on first use, so a missing prototype repository never blocks startup.
-        ready: () => corpusRefinement.initialise(),
+        ready: async () => {
+          await mkdir(corpusRefinementPath, { recursive: true, mode: 0o700 });
+          await corpusRefinement.initialise();
+        },
       }),
     ],
     port: c.STEELE_ARTICLE_WORKER_PORT,

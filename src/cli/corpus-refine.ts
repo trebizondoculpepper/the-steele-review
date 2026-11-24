@@ -62,7 +62,15 @@ async function main(): Promise<number> {
     invocationId: submission.invocationId,
     submitted: submission.status === "PreviouslyAccepted" ? "already-submitted" : "started",
   };
-  if (values.wait) out.result = await wf.workflowAttach();
+  if (values.wait) {
+    try {
+      out.result = await wf.workflowAttach();
+    } catch {
+      // A failed run or a lost connection: report it without raw client errors.
+      console.error(JSON.stringify({ ...out, outcome: "failed-or-unavailable" }));
+      return 1;
+    }
+  }
   console.log(
     values.json || values.wait
       ? JSON.stringify(out)
