@@ -19,6 +19,7 @@ import {
   mapIdeasToUnderlyingIdeas,
 } from "./steps/map-ideas-to-underlying-ideas.js";
 import { runModelStage } from "./model-step.js";
+import { CorpusArtifactError, readStageArtifact, type StagePayloads } from "./artifact-schema.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
 /**
@@ -73,6 +74,16 @@ export function corpusRefinementWorkflow(deps: {
    * that identity matches; a run ID reused with other inputs or changed logic
    * fails instead of silently returning a stale result.
    */
+  const read = (ref: StageRef) => deps.artifacts.read(ref as ArtifactRef);
+  /** An unusable saved artifact is terminal: retrying cannot repair it. */
+  const guarded = async <T>(fn: () => T | Promise<T>): Promise<Awaited<T>> => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof CorpusArtifactError) throw new restate.TerminalError(error.message);
+      throw error;
+    }
+  };
   const stage = async <T>(
     runId: string,
     name: CorpusRefinementStage,
@@ -92,7 +103,11 @@ export function corpusRefinementWorkflow(deps: {
     const path = corpusRefinementPath(runId, name);
     const existing = await deps.artifacts.lookup(path);
     if (existing) {
-      const saved = JSON.parse(await deps.artifacts.read(existing)) as { identity?: string };
+      // Validate the whole artifact before reuse (#848): run, stage, schema
+      // version and payload shape, then the identity of what produced it.
+      const saved = await guarded(async () =>
+        readStageArtifact(await read(existing), { runId, stage: name }),
+      );
       if (saved.identity !== identity)
         throw new restate.TerminalError(
           `corpus-refinement: ${name} for ${runId} was saved from different inputs or logic`,
@@ -107,8 +122,13 @@ export function corpusRefinementWorkflow(deps: {
       ),
     );
   };
-  const load = async <T>(ref: StageRef): Promise<T> =>
-    (JSON.parse(await deps.artifacts.read(ref as ArtifactRef)) as { value: T }).value;
+  /** A pinned downstream read, validated against the run and stage it must be (#848). */
+  const load = async <S extends CorpusRefinementStage>(
+    ref: StageRef,
+    runId: string,
+    stage: S,
+  ): Promise<StagePayloads[S]> =>
+    (await guarded(async () => readStageArtifact(await read(ref), { runId, stage }))).value;
   /** The exact version of a handed-off artifact, for the next stage's identity. */
   const key = (ref: StageRef) => [ref.repository, ref.commit, ref.path, ref.sha256];
 
@@ -142,7 +162,7 @@ export function corpusRefinementWorkflow(deps: {
           // stay visible in the saved artifact.
           const provider = deps.provider;
           const coverageValue = await ctx.run("map-claims-to-ideas:input", () =>
-            load<CoverageResult>(coverage),
+            load(coverage, input.runId, "check-coverage"),
           );
           const mapped = await runModelStage(
             ctx,
@@ -163,7 +183,7 @@ export function corpusRefinementWorkflow(deps: {
             ),
           );
           const ideasValue = await ctx.run("map-ideas-to-underlying:input", () =>
-            load<IdeasResult>(ideas),
+            load(ideas, input.runId, "map-claims-to-ideas"),
           );
           const grouped = await runModelStage(ctx, provider, ideasToUnderlyingSpec(ideasValue));
           underlying = await ctx.run("map-ideas-to-underlying", () =>
@@ -185,12 +205,13 @@ export function corpusRefinementWorkflow(deps: {
               input.runId,
               "map-claims-to-ideas",
               { input, coverage: key(coverage) },
-              async () => logic.mapClaimsToIdeas(input, await load<CoverageResult>(coverage)),
+              async () =>
+                logic.mapClaimsToIdeas(input, await load(coverage, input.runId, "check-coverage")),
             ),
           );
           underlying = await ctx.run("map-ideas-to-underlying", () =>
             stage(input.runId, "map-ideas-to-underlying", { ideas: key(ideas) }, async () =>
-              logic.mapIdeasToUnderlying(await load<IdeasResult>(ideas)),
+              logic.mapIdeasToUnderlying(await load(ideas, input.runId, "map-claims-to-ideas")),
             ),
           );
         }
