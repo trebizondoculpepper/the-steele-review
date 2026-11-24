@@ -7,7 +7,7 @@
     "authorize-draft-rehearsal": "node --enable-source-maps dist/cli/authorize-draft-rehearsal.js",
     "substack-publisher-one": "node --enable-source-maps dist/cli/substack-publisher-one.js",
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
-    "build": "tsc && node -e \"require('node:fs').cpSync('src/prompts', 'dist/prompts', {recursive:true})\"",
+    "build": "tsc && node -e \"const fs=require('node:fs');fs.cpSync('src/prompts','dist/prompts',{recursive:true});fs.cpSync('src/corpus-refinement/prompts','dist/corpus-refinement/prompts',{recursive:true})\"",
     "check": "vp check",
     "typecheck": "tsc --noEmit",
     "lint": "vp lint",
