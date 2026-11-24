@@ -164,3 +164,43 @@ const normalise = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim();
 /** Evidence rule helper: the quotation appears verbatim (whitespace-normalised) in the source. */
 export const quotedIn = (quote: string, source: string) =>
   normalise(quote).length > 0 && normalise(source).includes(normalise(quote));
+
+/** What one model-backed stage supplies to the shared stage function (#837). */
+export interface ModelStageSpec<T> {
+  /** Stage name; the durable call is named from it. */
+  stage: string;
+  prompt: StagePrompt;
+  /** Pinned stage input, sent as data. */
+  input: unknown;
+  listKey: string;
+  schema: z.ZodType<T>;
+  check?: (item: T) => string | undefined;
+  maxOutputChars?: number;
+}
+
+/** Result of one composed model stage: validated records plus provenance. */
+export interface ModelStageResult<T> extends ExtractionOutcome<T> {
+  promptVersion: string;
+  model: string;
+}
+
+/**
+ * The composable model stage (#833, #837): input preparation, one named
+ * durable model call, local structured extraction and per-item validation.
+ * Each mapping supplies its own prompt, schema and evidence rule; Restate owns
+ * durability and retries; saving, deferral and repair stay with the workflow.
+ */
+export async function runModelStage<T>(
+  ctx: restate.Context,
+  provider: ExtractionModelProvider,
+  spec: ModelStageSpec<T>,
+): Promise<ModelStageResult<T>> {
+  const request = prepareRequest(spec.prompt, spec.input, spec.maxOutputChars);
+  const response = await callModel(ctx, provider, modelCallName(spec.stage), request);
+  const outcome = extractRecords(response.text, {
+    listKey: spec.listKey,
+    schema: spec.schema,
+    ...(spec.check ? { check: spec.check } : {}),
+  });
+  return { ...outcome, promptVersion: response.promptVersion, model: response.model };
+}

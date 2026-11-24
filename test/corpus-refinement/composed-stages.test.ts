@@ -1,0 +1,167 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as clients from "@restatedev/restate-sdk-clients";
+import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import {
+  corpusRefinementPath,
+  type CorpusRefinementInput,
+  type IdeasResult,
+  type UnderlyingResult,
+} from "../../src/corpus-refinement/contracts.js";
+import { corpusRefinementWorkflow } from "../../src/corpus-refinement/workflow.js";
+
+// Deterministic fixtures and a fake provider only: no paid calls (#837).
+const batch = (runId: string): CorpusRefinementInput => ({
+  runId,
+  claims: [
+    { id: "c0", statement: "Covered claim about meters." },
+    { id: "c1", statement: "The new mast is secretly making people in the town ill." },
+    { id: "c2", statement: "Smart meters are a weapon." },
+    { id: "c3", statement: "5G towers spread the virus to residents." },
+  ],
+});
+// The stub coverage stage marks odd-indexed claims (c1, c3) uncovered.
+const IDEAS_RESPONSE = JSON.stringify({
+  ideas: [
+    {
+      id: "idea-masts-illness",
+      statement: "Phone masts make people ill.",
+      claimIds: ["c1"],
+      evidence: [{ claimId: "c1", quote: "secretly making people in the town ill" }],
+    },
+    {
+      id: "idea-towers-virus",
+      statement: "Towers spread disease.",
+      claimIds: ["c3"],
+      evidence: [{ claimId: "c3", quote: "5G towers spread the virus" }],
+    },
+    // Invalid: c2 was covered, so not sent; the quote is invented too.
+    {
+      id: "idea-meters-weapon",
+      statement: "Meters are weapons.",
+      claimIds: ["c2"],
+      evidence: [{ claimId: "c2", quote: "meters are a weapon" }],
+    },
+    // Invalid: fails the schema (no evidence).
+    { id: "idea-no-evidence", statement: "x", claimIds: ["c1"], evidence: [] },
+  ],
+});
+const UNDERLYING_RESPONSE = JSON.stringify({
+  underlying: [
+    {
+      id: "underlying-radiation-harm",
+      statement: "Telecom infrastructure harms health.",
+      ideaIds: ["idea-masts-illness", "idea-towers-virus"],
+      rationale: "Both claim transmitters cause illness.",
+    },
+    // Invalid: cites an idea the previous stage rejected.
+    {
+      id: "underlying-control",
+      statement: "Devices control people.",
+      ideaIds: ["idea-meters-weapon", "idea-masts-illness"],
+      rationale: "x",
+    },
+  ],
+});
+const provider = {
+  modelVersion: "fake/corpus-model",
+  calls: [] as { stage: string; user: string }[],
+  async complete(request: { system: string; user: string; maxOutputChars: number }) {
+    const stage = request.system.includes("underlying ideas") ? "underlying" : "ideas";
+    this.calls.push({ stage, user: request.user });
+    return stage === "ideas" ? IDEAS_RESPONSE : UNDERLYING_RESPONSE;
+  },
+};
+
+let dir: string;
+let artifacts: GitArtifactStore;
+let env: RestateTestEnvironment;
+let ingress: clients.Ingress;
+const crashAfterSave = new Set<string>();
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "corpus-composed-"));
+  artifacts = new GitArtifactStore({ repoPath: dir, repository: "corpus-test" });
+  await artifacts.initialise();
+  env = await RestateTestEnvironment.start(
+    {
+      services: [
+        corpusRefinementWorkflow({
+          artifacts: {
+            lookup: (path) => artifacts.lookup(path),
+            read: (ref) => artifacts.read(ref),
+            write: async (path, content) => {
+              const saved = await artifacts.write(path, content);
+              if (crashAfterSave.delete(path)) throw new Error("synthetic save failure");
+              return saved;
+            },
+          },
+          provider,
+        }),
+      ],
+      serviceEndpointAccess: "docker-host",
+    },
+    () => new RestateContainer("1.8.1"),
+  );
+  ingress = clients.connect({ url: env.baseUrl() });
+}, 240_000);
+afterAll(async () => {
+  await env?.stop();
+  await rm(dir, { recursive: true, force: true });
+});
+const client = (runId: string) =>
+  ingress.workflowClient<ReturnType<typeof corpusRefinementWorkflow>>(
+    { name: "CorpusRefinement" },
+    runId,
+  );
+const valueOf = async <T>(ref: unknown) =>
+  (JSON.parse(await artifacts.read(ref as never)) as { value: T }).value;
+
+describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, () => {
+  it("passes valid records forward, keeps issues visible, and never repeats a recorded call", async () => {
+    provider.calls.length = 0;
+    // The first mapping's save fails once, after its model result was recorded.
+    crashAfterSave.add(corpusRefinementPath("run-composed", "map-claims-to-ideas"));
+    const wf = client("run-composed");
+    await wf.workflowSubmit(batch("run-composed"));
+    const out = await wf.workflowAttach();
+
+    // One call per mapping, despite the save failure and retry.
+    expect(provider.calls.map((c) => c.stage)).toEqual(["ideas", "underlying"]);
+    // Only uncovered claims were sent to the first mapping.
+    expect(JSON.parse(provider.calls[0]!.user).claims.map((c: { id: string }) => c.id)).toEqual([
+      "c1",
+      "c3",
+    ]);
+
+    const ideas = await valueOf<IdeasResult>(out.stages[1]!.artifact);
+    expect(ideas.ideas.map((i) => i.id)).toEqual(["idea-masts-illness", "idea-towers-virus"]);
+    expect(ideas.issues).toEqual([
+      { index: 2, id: "idea-meters-weapon", reason: "unknown-claim:c2" },
+      { index: 3, id: "idea-no-evidence", reason: "schema:evidence" },
+    ]);
+    expect(ideas.promptVersion).toMatch(/^corpus-refinement-map-claims-to-ideas-sha256:/);
+    expect(ideas.model).toBe("fake/corpus-model");
+
+    // The second mapping received only the accepted ideas.
+    expect(JSON.parse(provider.calls[1]!.user).ideas.map((i: { id: string }) => i.id)).toEqual([
+      "idea-masts-illness",
+      "idea-towers-virus",
+    ]);
+    const underlying = await valueOf<UnderlyingResult>(out.stages[2]!.artifact);
+    expect(underlying.underlying.map((u) => u.id)).toEqual(["underlying-radiation-harm"]);
+    expect(underlying.issues).toEqual([
+      { index: 1, id: "underlying-control", reason: "unknown-idea:idea-meters-weapon" },
+    ]);
+    expect(underlying.promptVersion).toMatch(
+      /^corpus-refinement-map-ideas-to-underlying-ideas-sha256:/,
+    );
+
+    // A duplicate submission replays: no further model calls.
+    await wf.workflowSubmit(batch("run-composed"));
+    await wf.workflowAttach();
+    expect(provider.calls).toHaveLength(2);
+  });
+});

@@ -13,8 +13,13 @@ import {
   type UnderlyingResult,
 } from "./contracts.js";
 import { checkClaimCoverage } from "./steps/check-claim-coverage.js";
-import { mapClaimsToIdeas } from "./steps/map-claims-to-ideas.js";
-import { mapIdeasToUnderlyingIdeas } from "./steps/map-ideas-to-underlying-ideas.js";
+import { claimsToIdeasSpec, mapClaimsToIdeas } from "./steps/map-claims-to-ideas.js";
+import {
+  ideasToUnderlyingSpec,
+  mapIdeasToUnderlyingIdeas,
+} from "./steps/map-ideas-to-underlying-ideas.js";
+import { runModelStage } from "./model-step.js";
+import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
 /**
  * Corpus Refinement workflow (#830): wires the three stages together and owns
@@ -51,6 +56,11 @@ const plain = (ref: ArtifactRef): StageRef => ({
 export function corpusRefinementWorkflow(deps: {
   artifacts: Pick<GitArtifactStore, "write" | "read" | "lookup">;
   logic?: CorpusRefinementLogic;
+  /**
+   * When present, both mapping stages are model-backed through the shared
+   * composable stage (#837); otherwise the deterministic stubs run.
+   */
+  provider?: ExtractionModelProvider;
   /** Prepares the isolated repository once, before the first save. */
   ready?: () => Promise<unknown>;
 }) {
@@ -118,16 +128,68 @@ export function corpusRefinementWorkflow(deps: {
         const coverage = await ctx.run("check-coverage", () =>
           stage(input.runId, "check-coverage", input, () => logic.checkCoverage(input)),
         );
-        const ideas = await ctx.run("map-claims-to-ideas", () =>
-          stage(input.runId, "map-claims-to-ideas", { input, coverage: key(coverage) }, async () =>
-            logic.mapClaimsToIdeas(input, await load<CoverageResult>(coverage)),
-          ),
-        );
-        const underlying = await ctx.run("map-ideas-to-underlying", () =>
-          stage(input.runId, "map-ideas-to-underlying", { ideas: key(ideas) }, async () =>
-            logic.mapIdeasToUnderlying(await load<IdeasResult>(ideas)),
-          ),
-        );
+        let ideas: StageRef;
+        let underlying: StageRef;
+        if (deps.provider) {
+          // Model-backed mappings (#837): the same composed stage, each with its
+          // own prompt, schema and evidence rule. The model call is its own
+          // named durable step and the save is another, so a failed save never
+          // repeats a recorded call. Only accepted records pass forward; issues
+          // stay visible in the saved artifact.
+          const provider = deps.provider;
+          const coverageValue = await ctx.run("map-claims-to-ideas:input", () =>
+            load<CoverageResult>(coverage),
+          );
+          const mapped = await runModelStage(
+            ctx,
+            provider,
+            claimsToIdeasSpec(input, coverageValue),
+          );
+          ideas = await ctx.run("map-claims-to-ideas", () =>
+            stage(
+              input.runId,
+              "map-claims-to-ideas",
+              { input, coverage: key(coverage), prompt: mapped.promptVersion, model: mapped.model },
+              async (): Promise<IdeasResult> => ({
+                ideas: mapped.accepted,
+                issues: mapped.issues,
+                promptVersion: mapped.promptVersion,
+                model: mapped.model,
+              }),
+            ),
+          );
+          const ideasValue = await ctx.run("map-ideas-to-underlying:input", () =>
+            load<IdeasResult>(ideas),
+          );
+          const grouped = await runModelStage(ctx, provider, ideasToUnderlyingSpec(ideasValue));
+          underlying = await ctx.run("map-ideas-to-underlying", () =>
+            stage(
+              input.runId,
+              "map-ideas-to-underlying",
+              { ideas: key(ideas), prompt: grouped.promptVersion, model: grouped.model },
+              async (): Promise<UnderlyingResult> => ({
+                underlying: grouped.accepted,
+                issues: grouped.issues,
+                promptVersion: grouped.promptVersion,
+                model: grouped.model,
+              }),
+            ),
+          );
+        } else {
+          ideas = await ctx.run("map-claims-to-ideas", () =>
+            stage(
+              input.runId,
+              "map-claims-to-ideas",
+              { input, coverage: key(coverage) },
+              async () => logic.mapClaimsToIdeas(input, await load<CoverageResult>(coverage)),
+            ),
+          );
+          underlying = await ctx.run("map-ideas-to-underlying", () =>
+            stage(input.runId, "map-ideas-to-underlying", { ideas: key(ideas) }, async () =>
+              logic.mapIdeasToUnderlying(await load<IdeasResult>(ideas)),
+            ),
+          );
+        }
         return {
           runId: input.runId,
           stages: [
