@@ -84,11 +84,20 @@ const Rejected = z.object({
   issues: z.array(Issue),
 });
 
+const Ref = z
+  .object({
+    repository: z.string().min(1),
+    commit: z.string().min(1),
+    path: z.string().min(1),
+    sha256: z.string().min(1),
+  })
+  .strict();
 const RejectedClaims = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("corpus-rejected-claims"),
   runId: z.string(),
-  sources: z.looseObject({}),
+  // Provenance is required: a batch without its exact sources is not usable (#855).
+  sources: z.object({ batch: Ref, ideas: Ref, rejected: z.array(Ref) }).strict(),
   entries: z.array(
     z.looseObject({
       claimId: z.string(),
@@ -97,8 +106,15 @@ const RejectedClaims = z.object({
       reason: z.enum(["unmapped", "idea-not-grouped"]),
     }),
   ),
-  candidates: z.array(z.looseObject({ stage: z.string(), index: z.number(), reason: z.string() })),
-  technical: z.array(z.looseObject({ stage: z.string(), reason: z.string() })),
+  candidates: z.array(
+    z.looseObject({
+      stage: z.string(),
+      index: z.number().int().min(0),
+      reason: z.string(),
+      output: Ref,
+    }),
+  ),
+  technical: z.array(z.looseObject({ stage: z.string(), reason: z.string(), output: Ref })),
 });
 
 const PAYLOADS = {
