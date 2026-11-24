@@ -64,6 +64,13 @@ const UNDERLYING_RESPONSE = JSON.stringify({
       ideaIds: ["idea-masts-illness", "idea-towers-virus"],
       rationale: "Both claim transmitters cause illness.",
     },
+    // Invalid: reuses the accepted group's ID (its ideas are also taken).
+    {
+      id: "underlying-radiation-harm",
+      statement: "Another proposition under the same ID.",
+      ideaIds: ["idea-masts-illness", "idea-towers-virus"],
+      rationale: "x",
+    },
     // Invalid: one idea repeated is not two ideas.
     {
       id: "underlying-single",
@@ -168,8 +175,13 @@ describe("one composable stage for both mappings (#837)", { timeout: 120_000 }, 
     const underlying = await valueOf<UnderlyingResult>(out.stages[2]!.artifact);
     expect(underlying.underlying.map((u) => u.id)).toEqual(["underlying-radiation-harm"]);
     expect(underlying.issues).toEqual([
-      { index: 1, id: "underlying-single", reason: "repeated-idea:idea-towers-virus" },
-      { index: 2, id: "underlying-control", reason: "unknown-idea:idea-meters-weapon" },
+      {
+        index: 1,
+        id: "underlying-radiation-harm",
+        reason: "idea-in-two-groups:idea-masts-illness",
+      },
+      { index: 2, id: "underlying-single", reason: "repeated-idea:idea-towers-virus" },
+      { index: 3, id: "underlying-control", reason: "unknown-idea:idea-meters-weapon" },
     ]);
     expect(underlying.promptVersion).toMatch(
       /^corpus-refinement-map-ideas-to-underlying-ideas-sha256:/,

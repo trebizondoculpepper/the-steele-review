@@ -29,6 +29,8 @@ export type UnderlyingRecord = z.infer<typeof UnderlyingRecordSchema>;
 export function ideasToUnderlyingSpec(ideas: IdeasResult): ModelStageSpec<UnderlyingRecord> {
   const known = new Set(ideas.ideas.map((i) => i.id));
   const used = new Set<string>();
+  // Accepted group IDs: one ID must name one proposition.
+  const groups = new Set<string>();
   return {
     stage: "map-ideas-to-underlying",
     prompt: loadStagePrompt("map-ideas-to-underlying-ideas"),
@@ -43,6 +45,8 @@ export function ideasToUnderlyingSpec(ideas: IdeasResult): ModelStageSpec<Underl
       if (unknown) return `unknown-idea:${unknown}`;
       const repeated = group.ideaIds.find((id) => used.has(id));
       if (repeated) return `idea-in-two-groups:${repeated}`;
+      if (groups.has(group.id)) return `duplicate-group:${group.id}`;
+      groups.add(group.id);
       for (const id of group.ideaIds) used.add(id);
       return undefined;
     },

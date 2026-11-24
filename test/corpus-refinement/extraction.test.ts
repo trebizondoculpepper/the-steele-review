@@ -95,3 +95,24 @@ describe("Corpus Refinement extraction and partial validation (#836)", () => {
     expect(quotedIn("   ", CLAIMS.c1!)).toBe(false);
   });
 });
+
+describe("underlying groups keep one ID per proposition (#837)", () => {
+  it("rejects a second group with an accepted group's ID", async () => {
+    const { ideasToUnderlyingSpec } =
+      await import("../../src/corpus-refinement/steps/map-ideas-to-underlying-ideas.js");
+    const spec = ideasToUnderlyingSpec({
+      ideas: ["a", "b", "c", "d"].map((id) => ({ id: `idea-${id}`, claimIds: ["c1"] })),
+    });
+    const out = extractRecords(
+      JSON.stringify({
+        underlying: [
+          { id: "u-one", statement: "s", ideaIds: ["idea-a", "idea-b"], rationale: "r" },
+          { id: "u-one", statement: "other", ideaIds: ["idea-c", "idea-d"], rationale: "r" },
+        ],
+      }),
+      { listKey: spec.listKey, schema: spec.schema, check: spec.check! },
+    );
+    expect(out.accepted.map((u) => u.ideaIds)).toEqual([["idea-a", "idea-b"]]);
+    expect(out.issues).toEqual([{ index: 1, id: "u-one", reason: "duplicate-group:u-one" }]);
+  });
+});
