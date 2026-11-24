@@ -22,6 +22,7 @@ let ingress: clients.Ingress;
 const calls = { coverage: 0, ideas: 0, underlying: 0 };
 const failMiddleOnce = new Set<string>();
 const logic: CorpusRefinementLogic = {
+  version: STUB_CORPUS_REFINEMENT.version,
   checkCoverage: async (input) => (calls.coverage++, STUB_CORPUS_REFINEMENT.checkCoverage(input)),
   mapClaimsToIdeas: async (input, coverage) => {
     calls.ideas++;
@@ -72,8 +73,9 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     for (const s of out.stages)
       expect(s.artifact.path).toBe(corpusRefinementPath("run-ordered", s.stage));
     // Each artifact is the exact versioned one the next stage read.
-    const ideas = JSON.parse(await artifacts.read(out.stages[1]!.artifact as never)) as IdeasResult;
-    const underlying = JSON.parse(await artifacts.read(out.stages[2]!.artifact as never));
+    const ideas = JSON.parse(await artifacts.read(out.stages[1]!.artifact as never))
+      .value as IdeasResult;
+    const underlying = JSON.parse(await artifacts.read(out.stages[2]!.artifact as never)).value;
     expect(underlying.underlying[0].ideaIds).toEqual(ideas.ideas.map((i) => i.id));
     expect(calls).toEqual({
       coverage: before.coverage + 1,
@@ -107,5 +109,27 @@ describe("Corpus Refinement prototype on Restate (#830)", { timeout: 120_000 }, 
     expect(calls.ideas).toBe(before.ideas + 2);
     expect(calls.underlying).toBe(before.underlying + 1);
     expect(await artifacts.list("corpus-refinement/run-recover", 10)).toHaveLength(3);
+  });
+
+  it("fails rather than reuse a stale artifact saved from other inputs or logic", async () => {
+    // As after a reset Restate journal: the repository already holds this run
+    // ID's first-stage artifact, produced from something else.
+    await artifacts.write(
+      corpusRefinementPath("run-stale", "check-coverage"),
+      JSON.stringify({
+        schemaVersion: 1,
+        stage: "check-coverage",
+        runId: "run-stale",
+        identity: "sha256:" + "0".repeat(64),
+        value: { covered: ["x"], uncovered: [] },
+      }),
+    );
+    const before = { ...calls };
+    const wf = client("run-stale");
+    await wf.workflowSubmit(syntheticBatch("run-stale", 3));
+    await expect(wf.workflowAttach()).rejects.toThrow(/saved from different inputs or logic/);
+    // Nothing downstream ran on the stale result.
+    expect(calls.ideas).toBe(before.ideas);
+    expect(calls.underlying).toBe(before.underlying);
   });
 });
