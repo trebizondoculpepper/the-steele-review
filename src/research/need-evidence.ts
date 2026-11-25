@@ -233,6 +233,8 @@ export async function researchNeedEvidence(
 async function legacyRequestNeeds(
   artifacts: EvidenceStore,
   request: z.infer<typeof ResearchRequestSchema>,
+  /** Need derivation (#828): 2 for new lookups; a saved proof's own version when validating it. */
+  derivation: 1 | 2 = 2,
 ) {
   const out = new Map<string, string | undefined>();
   if (request.origin !== "extraction" || !request.post) return out;
@@ -270,6 +272,7 @@ async function legacyRequestNeeds(
       )
         return undefined;
       return canonicalNeed({
+        derivation,
         themeId: requested.themeIds[0]!,
         claimRecordId: requested.claimRecordId,
         kind: claim.kind,
@@ -306,7 +309,10 @@ async function legacyRequestNeed(
   expected: z.infer<typeof CanonicalNeedSchema>,
 ) {
   if (expected.occurrenceScope) return undefined;
-  return (await legacyRequestNeeds(artifacts, request)).get(
+  // Validate a saved proof under the rules its need was derived with, so
+  // proofs saved before derivation 2 stay readable on replay.
+  const derivation = expected.version === "canonical-theme-need-v2" ? 2 : 1;
+  return (await legacyRequestNeeds(artifacts, request, derivation)).get(
     canonicalNeedId(expected),
   );
 }
