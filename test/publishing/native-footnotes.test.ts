@@ -140,4 +140,27 @@ describe("native Substack footnotes (#811)", () => {
     expect(JSON.stringify(quote)).toContain("[7]");
     expect(JSON.stringify(quote)).not.toContain("footnoteAnchor");
   });
+
+  it("keeps a multi-paragraph passage whole and finds later definitions (#897 review)", () => {
+    const md = `First [1] and second [2].
+
+## Sources
+
+Original post: [The post](<https://pub.example.com/p/p1>)
+
+1. https://a.example/one: "Opening paragraph.
+
+Closing paragraph."
+2. https://b.example/two: "Second source."
+`;
+    const doc = convert(md);
+    const footnotes = doc.content.filter((n) => n.type === "footnote");
+    expect(footnotes).toHaveLength(2);
+    expect(JSON.stringify(footnotes[0])).toContain("Closing paragraph.");
+    expect(JSON.stringify(footnotes[1])).toContain("Second source.");
+    expect(doc.content.some((n) => n.type === "ordered_list")).toBe(false);
+    expect(
+      JSON.stringify(doc.content.filter((n) => n.type !== "footnote")),
+    ).not.toContain("Closing paragraph.");
+  });
 });

@@ -374,13 +374,22 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
     (n, i) => i > sourcesAt && n.type === "ordered_list",
   );
   if (listAt < 0) return doc;
-  const list = content[listAt] as Extract<PmNode, { type: "ordered_list" }>;
-  const definitions = new Map<number, PmNode[]>(
-    list.content.map((item, i) => [
-      list.attrs.order + i,
-      (item as Extract<PmNode, { type: "list_item" }>).content,
-    ]),
-  );
+  // A passage with a blank line splits the numbered list into several
+  // lists, with the passage's later paragraphs between them. Collect every
+  // definition across the whole Sources section, attaching each block that
+  // follows an item to that item, so a passage is never cut short.
+  const definitions = new Map<number, PmNode[]>();
+  let last: number | undefined;
+  for (const n of content.slice(listAt)) {
+    if (n.type === "ordered_list") {
+      n.content.forEach((item, i) => {
+        last = n.attrs.order + i;
+        definitions.set(last, [
+          ...(item as Extract<PmNode, { type: "list_item" }>).content,
+        ]);
+      });
+    } else if (last !== undefined) definitions.get(last)!.push(n);
+  }
   const used = new Set<number>();
   const footnotes: PmNode[] = [];
   const MARKER = /\s*\[(\d+)\](?!\()/g;
@@ -426,15 +435,14 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
   };
   const body = content.slice(0, sourcesAt).map(convert);
   if (footnotes.length === 0) return doc;
-  const unused = list.content.filter((_, i) => !used.has(list.attrs.order + i));
-  const sources = content
-    .slice(sourcesAt)
-    .flatMap((n, i): PmNode[] =>
-      i + sourcesAt !== listAt
-        ? [n]
-        : unused.length
-          ? [{ type: "bullet_list", content: unused }]
-          : [],
-    );
+  const unused = [...definitions]
+    .filter(([n]) => !used.has(n))
+    .map(([, blocks]): PmNode => ({ type: "list_item", content: blocks }));
+  const sources = [
+    ...content.slice(sourcesAt, listAt),
+    ...(unused.length
+      ? [{ type: "bullet_list", content: unused } as PmNode]
+      : []),
+  ];
   return { type: "doc", content: [...body, ...sources, ...footnotes] };
 }
