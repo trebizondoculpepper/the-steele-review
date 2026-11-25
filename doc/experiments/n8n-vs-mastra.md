@@ -24,7 +24,7 @@ Out of scope: research, assessor or judge stages, correction loops, multi-agent 
 - **No usable text:** if a post has neither article text nor a supplied transcript, the run stops with the outcome `no-usable-text`, recorded as a warning. Paid transcription isn't added.
 - **Comparison post (pinned for #923):** `https://saveusnow.substack.com/p/if-you-go-to-the-patents-and-the`, Substack post ID `226395148`. It was published on 25 November 2026, is about 15.6 minutes of audio, and has a 2,169-word supplied transcript.
   - The source version is pinned by content hash, not by URL. #923 records the hash, and both platforms must start from that same hash.
-  - If Substack changes the transcript before the comparison, both platforms use the earlier saved version. That is exactly what historical selection is for.
+  - #923 captures the post once, on one platform, exports that version and imports it into the other platform (`exportVersion`/`importVersion` below). Both stores then hold the identical pinned bundle, whatever Substack changes later.
 
 ## Writing step
 
@@ -35,7 +35,7 @@ Out of scope: research, assessor or judge stages, correction loops, multi-agent 
 | Output | JSON matching [`experiments/shared/schemas/article-v1.schema.json`](../../experiments/shared/schemas/article-v1.schema.json), validated before saving |
 | Parameters | `temperature: 0.2`, `max_tokens: 2000`, `response_format: {"type":"json_object"}`, `usage: {"include": true}`; no tools, no web search, reasoning off |
 | Input limit | Reject a source text over 60,000 characters with outcome `source-too-large` |
-| Timeout | 120 s per call; at most 1 automatic retry, only for transport errors or HTTP 429/5xx before any response body is received |
+| Timeout and retry | 120 s per call. Live calls are never retried automatically: if a live call times out or loses its connection, the attempt stops with `provider-uncertain`, and any further call is a deliberate fresh attempt that counts against the live budget. Fake-model runs may retry once automatically. |
 | Cost cap | Each call is pre-checked against an estimated maximum of USD 0.01 (about USD 0.0006 at current prices) |
 | Live budget | One live writing call per platform for #923, two in total. Every other run uses the fake model. The experiment as a whole stops before it would spend more than USD 0.10 on model calls. |
 
@@ -49,6 +49,8 @@ The article is rendered to Markdown with this layout, in this order:
 
 Rendering is deterministic code, not a second model call. Each platform implements it natively, and a shared fixture defines the expected Markdown.
 
+The prompt's word limits (summary 120–250 words, conclusion ≤ 120) are advisory. Both platforms count words the same way (whitespace-separated tokens after removing Markdown punctuation), record the counts with the article, and add a `length-outside-guidance` warning when a limit is missed. They do not reject the output, so the comparison can report length differences.
+
 Model output that fails schema validation is a visible failure (`invalid-model-output`). It keeps the raw response and its usage, and it is not automatically retried. A deliberate fresh attempt can be started instead.
 
 ## Identities
@@ -58,12 +60,29 @@ Model output that fails schema validation is a visible failure (`invalid-model-o
 | Experiment | `exp-911` | Fixed for this comparison |
 | Platform | `n8n` or `mastra` | Always part of the attempt and delivery IDs, so the two platforms never share a delivery |
 | Source item | `substack:saveusnow:<postId>` | The numeric post ID, stable across slug edits |
-| Source version | `<sourceItem>@sha256:<hex>` | The hash covers the canonical retained bundle: the post JSON fields used, plus the transcript text. Identical content captured again reuses the existing version instead of creating a duplicate. |
+| Source version | `<sourceItem>@sha256:<hex>` | SHA-256 of the canonical bundle bytes defined below. Identical content captured again reuses the existing version instead of creating a duplicate. |
 | Run attempt | `<platform>-<UTC yyyymmddThhmmssZ>-<4 random hex>` | Created by an explicit start or fresh rerun. A retry of the same attempt keeps it. |
 | Article version | `<attempt>/article@sha256:<hex of rendered Markdown>` | Saved once per attempt. A retry reuses it instead of calling the model again. |
 | Delivery request | `exp-911:<platform>:<attempt>` | Same ID means the same immutable payload. A fresh attempt gets a new ID, and can deliberately create a new, separately labelled draft. |
 
 Draft titles carry a visible label: `[exp-911 <platform> <attempt>] <article title>`.
+
+## Canonical source bundle
+
+The source version hash is computed over one canonical representation, the same on both platforms:
+
+- **Content:** a JSON object with schema `source-bundle-v1` and exactly these fields:
+  - `schema`, `item`, `postId` (string), `slug`, `url` (canonical `https://<publication>/p/<slug>`), `title`;
+  - `publishedAt` and `updatedAt` (ISO 8601 UTC, millisecond precision, or `null`);
+  - `author` (byline name or `null`), `medium` (`audio`, `video`, `written` or `unknown`), `audience`;
+  - `mediaUploadId` (or `null`), `textSource` (`supplied-transcript` or `article-html`), and `text`.
+- **Text normalisation:**
+  - For a transcript, `text` is the transcript segments' text, each trimmed, joined with `\n`.
+  - For an article, it is the plain text of `body_html`.
+  - In both cases the text is then Unicode NFC with `\r\n` replaced by `\n`, and trailing whitespace removed.
+- **Serialisation:** [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) JSON Canonicalization Scheme: keys sorted, no insignificant whitespace, UTF-8.
+- **Not hashed:** capture time, fetch provenance, warnings and the signed transcript URL. These are stored next to the bundle as capture metadata, never inside it.
+- **Shared fixture:** [`experiments/shared/fixtures/source-bundle-v1.example.json`](../../experiments/shared/fixtures/source-bundle-v1.example.json) and its expected hash in [`source-bundle-v1.example.sha256`](../../experiments/shared/fixtures/source-bundle-v1.example.sha256). The fixture file is stored already canonical, so its SHA-256 equals the expected hash. Each platform's test parses it, re-canonicalises it with its own code, and must reproduce that hash.
 
 ## Retained versions: required operations
 
@@ -75,6 +94,8 @@ Each platform provides these through its native interface (n8n: a manual or webh
 | `listVersions` | source item | all saved versions, each with its hash, capture time, text length and warnings |
 | `readVersion` | source version | metadata, provenance and usable text, read from storage without refetching |
 | `capture` | source item or post URL on the allowed publication | a new or reused source version |
+| `exportVersion` | source version | the canonical bundle bytes plus capture metadata, as one file |
+| `importVersion` | an exported file | the same source version ID; rejected unless the recomputed hash matches |
 | `startRun` | source version | a new attempt, pinned to that exact version |
 | `retryRun` | attempt | resumes that attempt, reusing any completed model output and delivery |
 | `rerun` | source version, which may be an older one | a new attempt; the older version is used without refetching |
@@ -110,7 +131,7 @@ It also carries the draft ID, a draft readback with unpublished and no-email con
 
 - Each stage shows its status, start and finish time, inputs and outputs (or artifact references), and errors with a sanitised category.
 - The writing stage also shows the model, the prompt identity, and token usage and cost where OpenRouter reports them.
-- A stopped run shows why it stopped: `no-usable-text`, `source-too-large`, `invalid-model-output`, `budget-exceeded`, `delivery-conflict`, `delivery-uncertain` or `provider-error`.
+- A stopped run shows why it stopped: `no-usable-text`, `source-too-large`, `invalid-model-output`, `provider-uncertain`, `budget-exceeded`, `delivery-conflict`, `delivery-uncertain` or `provider-error`.
 - RSS activation sets a baseline. Items already in the feed are recorded as seen and are not run, and an unchanged feed starts nothing. This is checked with a fixture feed.
 - Older-version selection is checked with two fixture versions: restart the storage, then run the older version and show its exact text reaches the writing stage.
 - Interruption is checked twice: once after the model output is saved but before delivery, and once after the draft is created but before the receipt is saved. Recovery must not call the model or create a draft a second time.
