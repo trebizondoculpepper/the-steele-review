@@ -113,9 +113,7 @@ const ref = (r: ArtifactRef) => ({
 
 /** A researcher stand-in: saves a manifest/result per request and records calls. */
 function researcher(
-  plan: (
-    req: ResearchRequest,
-  ) =>
+  plan: (req: ResearchRequest) =>
     | "busy"
     | "failed"
     | {
@@ -1453,5 +1451,42 @@ describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
       r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
     ).not.toContain("claim-revenue");
     expect(r.requests.length).toBeGreaterThan(0);
+  });
+
+  it("never reuses another post's evidence for a period-dependent claim (#903 review)", async () => {
+    const revenue = (period: string) => ({
+      id: "claim-revenue-q",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text: period },
+    });
+    const support = (req: ResearchRequest) => ({
+      passages: req.claims.map((c) => ({
+        claimRecordId: c.claimRecordId,
+        url: SHARED,
+      })),
+    });
+    const first = await analysis("period-q3", [revenue("Q3 2026")]);
+    await assessPostCoverage({
+      artifacts,
+      ...first,
+      commission: researcher(support).commission,
+      shortlister: new LexicalShortlister(),
+    });
+    // Same statement in another post, about another period: researched again.
+    const second = await analysis("period-q4", [revenue("Q4 2026")]);
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const claim = record.claims.find(
+      (c) => c.claimRecordId === "claim-revenue-q",
+    )!;
+    expect(claim.reused).toBe(false);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
+    ).toContain("claim-revenue-q");
   });
 });

@@ -1,7 +1,10 @@
 import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { reportingPeriodExclusion } from "./reporting-period.js";
+import {
+  reportingPeriodExclusion,
+  reportingPeriodIdentity,
+} from "./reporting-period.js";
 import {
   parseThemeProposalResult,
   type ThemeProposalResult,
@@ -380,6 +383,12 @@ interface AcceptedClaim {
   extracted: { claimRecordId: string; statement: string }[];
   /** Why the claim is left out of the eligible research set (#889), if it is. */
   excluded?: string;
+  /**
+   * The claim's reporting period bears on its identity (#889): saved evidence
+   * found under the same statement may be for another period, so it is never
+   * reused here and the claim is researched for itself.
+   */
+  periodScoped?: boolean;
 }
 
 function acceptedClaims(
@@ -396,8 +405,11 @@ function acceptedClaims(
       ...new Set([...(prior?.proposalIds ?? []), ...c.themeIds]),
     ];
     const excluded = prior?.excluded ?? reportingPeriodExclusion(c.claim);
+    const periodScoped =
+      prior?.periodScoped || reportingPeriodIdentity(c.claim) !== undefined;
     seen.set(c.claimRecordId, {
       ...(excluded ? { excluded } : {}),
+      ...(periodScoped ? { periodScoped } : {}),
       key: c.claimRecordId,
       extracted: [
         { claimRecordId: c.claimRecordId, statement: parsed.data.statement },
@@ -1100,7 +1112,7 @@ export async function assessPostCoverage(input: {
     ];
     let homeDossier: StoredDossier | undefined;
     let prior: DossierMetadata["claims"][number] | undefined;
-    for (const id of mapped) {
+    for (const id of claim.periodScoped ? [] : mapped) {
       const d = existing.get(id);
       // Coverage may be stored under the canonical ID or the extracted (merged-away) one.
       const c = d?.metadata.claims.find(
