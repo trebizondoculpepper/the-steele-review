@@ -1,13 +1,23 @@
-import { sha256, type ArtifactRef, type GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  sha256,
+  type ArtifactRef,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
-import { CollectionRecordSchema, type CollectionRecord } from "../collection/collection-store.js";
+import {
+  CollectionRecordSchema,
+  type CollectionRecord,
+} from "../collection/collection-store.js";
 import {
   retainEmbeddedImages,
   retainPreviewImage,
   type ImageFetcherPort,
   type PreviewRetentionOutcome,
 } from "../collection/preview-retention.js";
-import type { CollectorPort, EventPublisherPort } from "../collection/worker.js";
+import type {
+  CollectorPort,
+  EventPublisherPort,
+} from "../collection/worker.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { contextArtifactReference } from "../content/source-context.js";
 import type { SubstackItem } from "../content/substack-item.js";
@@ -46,7 +56,10 @@ import type { IngestionReason } from "../events/discovery-event.js";
 
 export interface SourceCaptureDeps {
   collector: CollectorPort;
-  artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise" | "writeBinary">;
+  artifacts: Pick<
+    GitArtifactStore,
+    "lookup" | "read" | "revise" | "writeBinary"
+  >;
   /** The state controller's outbox: announcements are recorded here first. */
   operations: Pick<
     OperationStore,
@@ -76,8 +89,9 @@ export type SourceCaptureOutcome =
     }
   | { status: "not-captured"; reason: string };
 
-export const sourcePath = (item: Pick<SubstackItem, "publicationId" | "postId">) =>
-  `substack/${item.publicationId}/${item.postId}/source.json`;
+export const sourcePath = (
+  item: Pick<SubstackItem, "publicationId" | "postId">,
+) => `substack/${item.publicationId}/${item.postId}/source.json`;
 
 /** The outbox operation key for announcing one saved version of one source. */
 const announceKey = (ref: Pick<ArtifactRef, "path" | "sha256">) =>
@@ -107,7 +121,11 @@ function content(record: CollectionRecord): string {
 }
 
 /** The pending announcement for one saved version. */
-function announcement(record: CollectionRecord, ref: ArtifactRef, now?: () => Date) {
+function announcement(
+  record: CollectionRecord,
+  ref: ArtifactRef,
+  now?: () => Date,
+) {
   const event = createCapturedContentEvent(
     substackCapturedContent({
       artifact: contextArtifactReference(ref),
@@ -134,18 +152,30 @@ export async function dispatchPendingSources(
   deps: Pick<SourceCaptureDeps, "operations" | "publisher" | "retryDelayMs">,
   only?: Pick<SubstackItem, "publicationId" | "postId">,
 ): Promise<{ sent: string[]; failed: string[] }> {
-  const prefix = only ? `capture-source:${sourcePath(only)}@` : "capture-source:";
+  const prefix = only
+    ? `capture-source:${sourcePath(only)}@`
+    : "capture-source:";
   const out = { sent: [] as string[], failed: [] as string[] };
-  for (const pending of deps.operations.duePendingEvents(100, CAPTURED_CONTENT_SUBJECT)) {
+  for (const pending of deps.operations.duePendingEvents(
+    100,
+    CAPTURED_CONTENT_SUBJECT,
+  )) {
     if (!pending.operationKey.startsWith(prefix)) continue;
     try {
-      await deps.publisher.publish(pending.subject, encoder.encode(pending.payload), {
-        msgId: pending.eventId,
-      });
+      await deps.publisher.publish(
+        pending.subject,
+        encoder.encode(pending.payload),
+        {
+          msgId: pending.eventId,
+        },
+      );
       deps.operations.markEventSent(pending.eventId);
       out.sent.push(pending.eventId);
     } catch {
-      deps.operations.markEventRetry(pending.eventId, deps.retryDelayMs ?? 30_000);
+      deps.operations.markEventRetry(
+        pending.eventId,
+        deps.retryDelayMs ?? 30_000,
+      );
       out.failed.push(pending.eventId);
     }
   }
@@ -169,12 +199,16 @@ export async function captureSource(
   } catch {
     return { status: "not-captured", reason: "collector-error" };
   }
-  if (acquired.kind !== "text") return { status: "not-captured", reason: acquired.kind };
+  if (acquired.kind !== "text")
+    return { status: "not-captured", reason: acquired.kind };
 
   const now = deps.now ?? (() => new Date());
   const variant = acquired.provenance.transcriptVariant;
   let record: CollectionRecord = {
-    item: { ...item, ...(acquired.item.author ? { author: acquired.item.author } : {}) },
+    item: {
+      ...item,
+      ...(acquired.item.author ? { author: acquired.item.author } : {}),
+    },
     ingestionReason: options.reason,
     text: acquired.text,
     complete: acquired.complete,
@@ -213,11 +247,29 @@ export async function captureSource(
   const path = sourcePath(item);
   const existing = await deps.artifacts.lookup(path);
   if (existing) {
-    const saved = CollectionRecordSchema.safeParse(JSON.parse(await deps.artifacts.read(existing)));
-    if (saved.success && content(saved.data) === content(record)) record = saved.data;
+    const saved = CollectionRecordSchema.safeParse(
+      JSON.parse(await deps.artifacts.read(existing)),
+    );
+    if (saved.success && content(saved.data) === content(record))
+      record = saved.data;
+    else if (saved.success) {
+      // About to replace the saved version (#902). If a crash came after it
+      // was saved but before its announcement was recorded, record that
+      // announcement now, keyed by its own exact version; already recorded,
+      // this is a no-op. A changed source never displaces an earlier version.
+      deps.operations.reconcileCompleted(
+        announceKey(existing),
+        { ref: existing },
+        [announcement(saved.data, existing, deps.now)],
+      );
+    }
   }
   const bytes = serialise(CollectionRecordSchema.parse(record));
-  const ref = await deps.artifacts.revise(path, bytes, existing?.sha256 ?? null);
+  const ref = await deps.artifacts.revise(
+    path,
+    bytes,
+    existing?.sha256 ?? null,
+  );
   const unchanged = existing?.sha256 === sha256(bytes);
 
   // Record the announcement durably, then publish it.
@@ -243,10 +295,15 @@ export async function captureSource(
 export async function resendSource(
   item: Pick<SubstackItem, "publicationId" | "postId">,
   deps: Pick<SourceCaptureDeps, "artifacts" | "publisher" | "now">,
-): Promise<{ status: "resent"; ref: ArtifactRef; eventId: string } | { status: "not-saved" }> {
+): Promise<
+  | { status: "resent"; ref: ArtifactRef; eventId: string }
+  | { status: "not-saved" }
+> {
   const ref = await deps.artifacts.lookup(sourcePath(item));
   if (!ref) return { status: "not-saved" };
-  const record = CollectionRecordSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
+  const record = CollectionRecordSchema.parse(
+    JSON.parse(await deps.artifacts.read(ref)),
+  );
   const event = announcement(record, ref, deps.now);
   await deps.publisher.publish(event.subject, encoder.encode(event.payload), {
     msgId: event.eventId,
