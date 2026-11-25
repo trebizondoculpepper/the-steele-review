@@ -1,3 +1,4 @@
+import { MAX_CLAIMS_PER_REQUEST } from "../../src/research/librarian.js";
 import {
   sourceContextFor,
   saveSourceContext,
@@ -965,7 +966,10 @@ it(
   { timeout: 30000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-pending-canonical-"));
-    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
     await artifacts.initialise();
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
     try {
@@ -983,7 +987,11 @@ it(
         if (opened.status === "run") claimed++;
         return { status: "busy" as const, jobId: opened.jobId };
       };
-      const first = await analysis(artifacts, "pending-first", `claim-${"b".repeat(32)}`);
+      const first = await analysis(
+        artifacts,
+        "pending-first",
+        `claim-${"b".repeat(32)}`,
+      );
       const pendingFirst = await assessPostCoverage({
         artifacts,
         ...first,
@@ -991,7 +999,8 @@ it(
         commission,
       });
       const themeId = pendingFirst.record.mappings[0]!.dossierId;
-      const { ThemeMappingCatalogue } = await import("../../src/research/theme-mappings.js");
+      const { ThemeMappingCatalogue } =
+        await import("../../src/research/theme-mappings.js");
       await new ThemeMappingCatalogue(artifacts).recordPinned({
         schemaVersion: 1,
         proposal: "Treaty obligations",
@@ -1001,10 +1010,15 @@ it(
         decidedBy: { publicationId: "pub", postId: "synthetic-alias" },
         rationale: "synthetic verified canonical alias",
       });
-      const second = await analysis(artifacts, "pending-second", `claim-${"c".repeat(32)}`, {
-        title: "Treaty obligations",
-        reverse: true,
-      });
+      const second = await analysis(
+        artifacts,
+        "pending-second",
+        `claim-${"c".repeat(32)}`,
+        {
+          title: "Treaty obligations",
+          reverse: true,
+        },
+      );
       const pendingSecond = await assessPostCoverage({
         artifacts,
         ...second,
@@ -1019,7 +1033,9 @@ it(
       expect(requests[0]!.question).not.toContain("Treaty obligations");
       expect(researchJobId(requests[0]!)).toBe(researchJobId(requests[1]!));
       expect(claimed).toBe(1);
-      expect(pendingFirst.record.needBindings).not.toEqual(pendingSecond.record.needBindings);
+      expect(pendingFirst.record.needBindings).not.toEqual(
+        pendingSecond.record.needBindings,
+      );
       const reconnect = await runResearchJob({
         artifacts,
         operations,
@@ -1043,7 +1059,10 @@ it(
           },
         },
       });
-      expect(reconnect).toMatchObject({ status: "busy", jobId: researchJobId(requests[0]!) });
+      expect(reconnect).toMatchObject({
+        status: "busy",
+        jobId: researchJobId(requests[0]!),
+      });
       expect(providerCalls).toBe(0);
     } finally {
       operations.close();
@@ -1058,15 +1077,21 @@ it(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-canonical-batches-"));
     try {
-      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
       await artifacts.initialise();
       const assertions = Array.from(
         { length: 101 },
-        (_, i) => `The ENMOD Convention synthetic assertion ${i} was recorded on 10 December 1976.`,
+        (_, i) =>
+          `The ENMOD Convention synthetic assertion ${i} was recorded on 10 December 1976.`,
       );
       const one = await analysis(artifacts, "batches-first", "unused", {
         statements: assertions,
-        claimIds: assertions.map((_, i) => `claim-${i.toString(16).padStart(32, "0")}`),
+        claimIds: assertions.map(
+          (_, i) => `claim-${i.toString(16).padStart(32, "0")}`,
+        ),
       });
       const first = librarianFixtures(artifacts).researcher(() => "busy");
       await assessPostCoverage({
@@ -1078,7 +1103,9 @@ it(
       const two = await analysis(artifacts, "batches-second", "unused", {
         statements: assertions,
         reverse: true,
-        claimIds: assertions.map((_, i) => `claim-${(300 - i).toString(16).padStart(32, "0")}`),
+        claimIds: assertions.map(
+          (_, i) => `claim-${(300 - i).toString(16).padStart(32, "0")}`,
+        ),
       });
       const second = librarianFixtures(artifacts).researcher(() => "busy");
       await assessPostCoverage({
@@ -1087,9 +1114,24 @@ it(
         shortlister: new LexicalShortlister(),
         commission: second.commission,
       });
-      expect(first.requests.map((r) => r.claims.length)).toEqual([100, 1]);
+      // One initial request per theme (#891): the effective cap is
+      // MAX_CLAIMS_PER_REQUEST, and every other claim is an explicit gap.
+      expect(first.requests.map((r) => r.claims.length)).toEqual([
+        MAX_CLAIMS_PER_REQUEST,
+      ]);
+      expect(first.requests[0]!.omittedClaimRecordIds).toHaveLength(
+        101 - MAX_CLAIMS_PER_REQUEST,
+      );
+      expect(
+        new Set([
+          ...first.requests[0]!.claims.map((c) => c.claimRecordId),
+          ...first.requests[0]!.omittedClaimRecordIds!,
+        ]).size,
+      ).toBe(101);
       expect(second.requests).toEqual(first.requests);
-      expect(second.requests.map(researchJobId)).toEqual(first.requests.map(researchJobId));
+      expect(second.requests.map(researchJobId)).toEqual(
+        first.requests.map(researchJobId),
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

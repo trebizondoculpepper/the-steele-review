@@ -225,7 +225,10 @@ it("does not infer shared scope from a full schema-4 wrapper around an unnamed g
     });
   };
   expect(generic("first").occurrenceScope).toBeDefined();
-  expect(canonicalNeedId(generic("first"))).not.toBe(canonicalNeedId(generic("second")));
+  expect(canonicalNeedId(generic("first"))).not.toBe(
+    canonicalNeedId(generic("second")),
+  );
+});
 
 it("scopes dates whose meaning depends on the publication date, across posts", () => {
   for (const text of [
