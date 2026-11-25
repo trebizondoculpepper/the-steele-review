@@ -200,6 +200,8 @@ export const DeliveryReceiptSchema = z
      * Live publication evidence (#789): read back as published, with email
      * requested, or suppressed and read back as never sent (#388).
      */
+    /** Featured image outcome (#894), when the approval pinned one. */
+    featuredImage: z.enum(["set", "unavailable", "unconfirmed"]).optional(),
     publicationSafety: z
       .object({
         published: z.literal(true),

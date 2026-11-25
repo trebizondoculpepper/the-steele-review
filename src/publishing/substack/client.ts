@@ -43,7 +43,9 @@ export interface SubstackClientConfig {
   fetch?: typeof fetch;
 }
 
-const Id = z.union([z.number().int(), z.string().regex(/^[0-9]+$/)]).transform(String);
+const Id = z
+  .union([z.number().int(), z.string().regex(/^[0-9]+$/)])
+  .transform(String);
 
 const DraftShape = z.looseObject({
   id: Id,
@@ -52,6 +54,8 @@ const DraftShape = z.looseObject({
   is_published: z.boolean().optional(),
   email_sent_at: z.string().nullable().optional(),
   draft_created_at: z.string().nullable().optional(),
+  /** Featured image URL (#894). */
+  cover_image: z.string().nullable().optional(),
   /** Bylines the editor reports for the draft, when it reports any. */
   draft_bylines: z
     .array(z.looseObject({ id: Id.optional(), name: z.string().optional() }))
@@ -77,7 +81,8 @@ export const DraftSchema = DraftShape.transform((d) => {
       typeof b === "number" || typeof b === "string"
         ? b
         : b && typeof b === "object"
-          ? ((b as { user_id?: unknown; id?: unknown }).user_id ?? (b as { id?: unknown }).id)
+          ? ((b as { user_id?: unknown; id?: unknown }).user_id ??
+            (b as { id?: unknown }).id)
           : undefined;
     const id = Id.safeParse(raw);
     return id.success ? [id.data] : [];
@@ -93,12 +98,19 @@ export interface NewDraft {
   body: unknown;
   /** Explicit destination byline IDs; omitted means no explicit selection. */
   bylines?: string[];
+  /** Featured (cover) image URL returned by {@link SubstackClient.uploadImage} (#894). */
+  coverImage?: string;
 }
 
 /** Pure adapter-owned target binding; requires no session or transport. */
 export function substackDraftOriginIdentity(origin: string): string {
   const url = new URL(origin);
-  if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.username)
+  if (
+    url.protocol !== "https:" ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.username
+  )
     throw new Error("substack: invalid draft origin");
   return `sha256:${createHash("sha256")
     .update(JSON.stringify(["substack-draft-origin-v1", url.origin]))
@@ -114,7 +126,12 @@ export class SubstackClient {
 
   constructor(private readonly config: SubstackClientConfig) {
     const url = new URL(config.origin);
-    if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.username) {
+    if (
+      url.protocol !== "https:" ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.username
+    ) {
       throw new Error("substack origin must be a bare https origin");
     }
     this.origin = url.origin;
@@ -131,9 +148,11 @@ export class SubstackClient {
     sideEffect: boolean,
   ): Promise<unknown> {
     const session = (await this.config.session()).trim();
-    if (!session || /[\s;,]/.test(session)) throw new SubstackError("auth-expired");
+    if (!session || /[\s;,]/.test(session))
+      throw new SubstackError("auth-expired");
     const url = new URL(path, this.origin);
-    if (url.origin !== this.origin) throw new Error("substack path left the origin");
+    if (url.origin !== this.origin)
+      throw new Error("substack path left the origin");
     const deadline = AbortSignal.timeout(this.timeoutMs);
     let response: Response;
     try {
@@ -157,12 +176,17 @@ export class SubstackClient {
       throw new SubstackError("auth-expired", status);
     }
     if (status === 429) throw new SubstackError("rate-limited", status);
-    if (status >= 500) throw new SubstackError(sideEffect ? "uncertain" : "unavailable", status);
-    if (status < 200 || status >= 300) throw new SubstackError("invalid-response", status);
+    if (status >= 500)
+      throw new SubstackError(sideEffect ? "uncertain" : "unavailable", status);
+    if (status < 200 || status >= 300)
+      throw new SubstackError("invalid-response", status);
     try {
       return await response.json();
     } catch {
-      throw new SubstackError(sideEffect ? "uncertain" : "invalid-response", status);
+      throw new SubstackError(
+        sideEffect ? "uncertain" : "invalid-response",
+        status,
+      );
     }
   }
 
@@ -181,12 +205,17 @@ export class SubstackClient {
     );
     const parsed = z
       .array(DraftSchema)
-      .safeParse(Array.isArray(raw) ? raw : (raw as { posts?: unknown })?.posts);
+      .safeParse(
+        Array.isArray(raw) ? raw : (raw as { posts?: unknown })?.posts,
+      );
     if (!parsed.success) throw new SubstackError("invalid-response");
     return parsed.data;
   }
 
-  async createDraft(draft: NewDraft, signal?: AbortSignal): Promise<{ id: string }> {
+  async createDraft(
+    draft: NewDraft,
+    signal?: AbortSignal,
+  ): Promise<{ id: string }> {
     const raw = await this.request(
       "POST",
       "/api/v1/drafts",
@@ -198,6 +227,7 @@ export class SubstackClient {
         draft_body: JSON.stringify(draft.body),
         audience: "everyone",
         type: "newsletter",
+        ...(draft.coverImage ? { cover_image: draft.coverImage } : {}),
       },
       signal,
       true,
@@ -208,10 +238,41 @@ export class SubstackClient {
     return { id: parsed.data.id };
   }
 
+  /**
+   * Upload one image for use as a featured image (#894). Uploading creates
+   * no post; the returned https URL is set on the draft when it is created.
+   */
+  async uploadImage(
+    bytes: Uint8Array,
+    contentType: "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const raw = await this.request(
+      "POST",
+      "/api/v1/image",
+      {
+        image: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`,
+      },
+      signal,
+      true,
+    );
+    const parsed = z
+      .looseObject({ url: z.url({ protocol: /^https$/ }) })
+      .safeParse(raw);
+    if (!parsed.success) throw new SubstackError("invalid-response");
+    return parsed.data.url;
+  }
+
   async getDraft(id: string, signal?: AbortSignal): Promise<SubstackDraft> {
     if (!/^[0-9]+$/.test(id)) throw new Error("invalid draft id");
     const parsed = DraftSchema.safeParse(
-      await this.request("GET", `/api/v1/drafts/${id}`, undefined, signal, false),
+      await this.request(
+        "GET",
+        `/api/v1/drafts/${id}`,
+        undefined,
+        signal,
+        false,
+      ),
     );
     if (!parsed.success) throw new SubstackError("invalid-response");
     return parsed.data;
@@ -222,7 +283,11 @@ export class SubstackClient {
    * `send` is true. Private web API, like the rest of this client. A
    * non-definitive response is `uncertain`: the post may be live.
    */
-  async publishDraft(id: string, options: { send: boolean }, signal?: AbortSignal): Promise<void> {
+  async publishDraft(
+    id: string,
+    options: { send: boolean },
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!/^[0-9]+$/.test(id)) throw new Error("invalid draft id");
     await this.request(
       "POST",

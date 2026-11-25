@@ -333,6 +333,7 @@ function fakeSubstack() {
     create?: Array<SubstackError | "lost">;
     get?: SubstackError[];
     publish?: Array<SubstackError | "lost">;
+    upload?: SubstackError[];
   } = {};
   const api = {
     drafts,
@@ -348,7 +349,19 @@ function fakeSubstack() {
       if (f) throw f;
       return [...drafts].reverse().slice(offset, offset + limit);
     },
-    async createDraft(d: { title: string; body: unknown; bylines?: string[] }) {
+    uploads: [] as Array<{ bytes: number; contentType: string }>,
+    async uploadImage(bytes: Uint8Array, contentType: string) {
+      const f = faults.upload?.shift();
+      if (f) throw f;
+      api.uploads.push({ bytes: bytes.length, contentType });
+      return `https://substack-post-media.example/image-${api.uploads.length}.png`;
+    },
+    async createDraft(d: {
+      title: string;
+      body: unknown;
+      bylines?: string[];
+      coverImage?: string;
+    }) {
       const f = faults.create?.shift();
       if (f instanceof SubstackError) throw f;
       const draft = {
@@ -358,6 +371,7 @@ function fakeSubstack() {
         is_published: false,
         draft_created_at: new Date().toISOString(),
         draft_bylines: (d.bylines ?? []).map((id) => ({ id })),
+        ...(d.coverImage ? { cover_image: d.coverImage } : {}),
       };
       drafts.push(draft);
       if (f === "lost") throw new SubstackError("uncertain"); // created, response lost
@@ -848,6 +862,70 @@ describe("Substack live publication with subscriber email (#789)", () => {
       ),
     ).rejects.toBeInstanceOf(UncertainDeliveryError);
     expect(await d.reconcile()).toBe("unknown");
+  });
+});
+
+describe("featured image from the verified manifest (#894)", () => {
+  const image = {
+    artifact: {
+      repository: "content",
+      commit: "c".repeat(40),
+      path: `publication-images/${"d".repeat(64)}.png`,
+      hash: `sha256:${"d".repeat(64)}`,
+    },
+    contentType: "image/png" as const,
+    bytes: 4,
+  };
+  const publication = {
+    mode: "legacy-body-only",
+    previewImage: image,
+  } as never;
+  const images = (fail = false) => ({
+    readBinary: async () => {
+      if (fail) throw new Error("missing");
+      return Buffer.from([1, 2, 3, 4]);
+    },
+  });
+
+  it("uploads the pinned image and creates the draft with it as the cover", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s, { images: images() });
+    const preview = d.render({ markdown: WRITER_MARKDOWN, data, publication });
+    const receipt = await d.deliver(preview, "k");
+    expect(s.uploads).toEqual([{ bytes: 4, contentType: "image/png" }]);
+    expect(s.drafts[0]!.cover_image).toBe(
+      "https://substack-post-media.example/image-1.png",
+    );
+    expect(receipt).toMatchObject({ featuredImage: "set" });
+  });
+
+  it("continues without a featured image when the image or upload is unavailable", async () => {
+    for (const setup of [
+      { reader: images(true), fault: undefined },
+      { reader: images(), fault: new SubstackError("rate-limited", 429) },
+    ]) {
+      const s = fakeSubstack();
+      if (setup.fault) s.faults.upload = [setup.fault];
+      const d = new SubstackDraftDestination(s, { images: setup.reader });
+      const receipt = await d.deliver(
+        d.render({ markdown: WRITER_MARKDOWN, data, publication }),
+        "k",
+      );
+      expect(s.drafts).toHaveLength(1);
+      expect(s.drafts[0]!.cover_image).toBeUndefined();
+      expect(receipt).toMatchObject({ featuredImage: "unavailable" });
+    }
+  });
+
+  it("creates the draft as before when the approval pinned no image", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackDraftDestination(s, { images: images() });
+    const receipt = await d.deliver(
+      d.render({ markdown: WRITER_MARKDOWN, data }),
+      "k",
+    );
+    expect(s.uploads).toHaveLength(0);
+    expect(receipt).not.toHaveProperty("featuredImage");
   });
 });
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { OpenRouterProvider } from "../../src/controllers/openrouter.js";
 import {
   parseSourceMetadata,
@@ -721,6 +722,55 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       (await readPublicationPayload(content, plain.report.publication)).payload
         .previewImage,
     ).toBeUndefined();
+  });
+
+  it("copies the retained preview image into the content repository the publisher reads (#894)", async () => {
+    const { metadata } = await drafted();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const base = JSON.parse(await archive.read({} as never));
+    const withImage = {
+      read: async () =>
+        JSON.stringify({
+          ...base,
+          previewImage: {
+            url: "https://cdn.example/cover.png",
+            source: "cover_image",
+            kind: "uploaded",
+            retained: {
+              artifact: {
+                repository: "archive",
+                commit: "c".repeat(40),
+                path: `substack/pub/p1/images/${hash}.png`,
+                hash: `sha256:${hash}`,
+              },
+              contentType: "image/png",
+              bytes: bytes.length,
+            },
+          },
+        }),
+      readBinary: async () => bytes,
+    } as unknown as GitArtifactStore;
+    const out = await verifyPackageDraft({
+      content,
+      archive: withImage,
+      metadata,
+      verifier: model("fake/verifier", APPROVE),
+    });
+    if (out.status !== "verified" || out.report.schemaVersion !== 2)
+      throw new Error("expected");
+    const { payload } = await readPublicationPayload(
+      content,
+      out.report.publication,
+    );
+    expect(payload.previewImage!.artifact.path).toBe(
+      `publication-images/${hash}.png`,
+    );
+    const copied = await content.readBinary({
+      ...payload.previewImage!.artifact,
+      sha256: hash,
+    } as never);
+    expect(Buffer.compare(copied, bytes)).toBe(0);
   });
 
   it("asks for a redraft when the evidence is overstated", async () => {

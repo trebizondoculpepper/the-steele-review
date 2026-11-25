@@ -170,12 +170,15 @@ async function main(): Promise<number> {
             name: c.STEELE_PUBLISHER_DESTINATION,
             publishFrom: c.STEELE_SUBSTACK_PUBLISH_FROM!,
             emailPolicy: emailPolicyFromConfiguration(),
+            // Pinned featured images are read from the content repository (#894).
+            images: content,
             ...(c.STEELE_SUBSTACK_BYLINE_ID
               ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }
               : {}),
           })
         : new SubstackDraftDestination(client, {
             deliveryControl,
+            images: content,
             name: c.STEELE_PUBLISHER_DESTINATION,
             ...(c.STEELE_SUBSTACK_BYLINE_ID
               ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }

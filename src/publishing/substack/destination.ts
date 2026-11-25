@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { EmailPolicy } from "../../config/publish-email-policy.js";
 import { z } from "zod";
+import type { GitArtifactStore } from "../../controllers/artifact-store.js";
 import {
   DestinationUnavailableError,
   UncertainDeliveryError,
@@ -52,6 +53,26 @@ const PreviewBodySchema = z
     fingerprint: z.string(),
     /** The explicit byline pinned when the intent was rendered, if any. */
     bylineId: BylineId.optional(),
+    /** The verified manifest's pinned featured image (#894), if it has one. */
+    coverImage: z
+      .object({
+        artifact: z
+          .object({
+            repository: z.string(),
+            commit: z.string(),
+            path: z.string(),
+            hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+          })
+          .strict(),
+        contentType: z.enum([
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp",
+        ]),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -70,6 +91,11 @@ export interface SubstackDestinationOptions {
   bylineId?: string;
   /** Reads the live configuration handler before any new owner-draft effect. */
   deliveryControl?: DraftDeliveryControl;
+  /**
+   * Reads pinned featured-image bytes from the content repository (#894).
+   * Without it, drafts are created without a featured image.
+   */
+  images?: Pick<GitArtifactStore, "readBinary">;
 }
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
@@ -132,8 +158,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
   readonly name: string;
   readonly action = "draft";
   private readonly options: Required<
-    Omit<SubstackDestinationOptions, "name" | "bylineId" | "deliveryControl">
+    Omit<
+      SubstackDestinationOptions,
+      "name" | "bylineId" | "deliveryControl" | "images"
+    >
   >;
+  private readonly images: SubstackDestinationOptions["images"];
   private readonly bylineId: string | undefined;
   private readonly deliveryControl: DraftDeliveryControl | undefined;
 
@@ -142,7 +172,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       SubstackClient,
       "createDraft" | "getDraft" | "listDrafts"
     > &
-      Partial<Pick<SubstackClient, "draftTargetIdentity">>,
+      Partial<Pick<SubstackClient, "draftTargetIdentity" | "uploadImage">>,
     options: SubstackDestinationOptions = {},
   ) {
     this.name = options.name ?? "substack";
@@ -154,6 +184,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
     }
     this.bylineId = options.bylineId;
     this.deliveryControl = options.deliveryControl;
+    this.images = options.images;
     this.options = {
       authRetryMs: options.authRetryMs ?? 15 * 60_000,
       rateLimitRetryMs: options.rateLimitRetryMs ?? 5 * 60_000,
@@ -240,6 +271,14 @@ export class SubstackDraftDestination implements DestinationAdapter {
       body,
       fingerprint: bodyFingerprint(body),
       ...(this.bylineId === undefined ? {} : { bylineId: this.bylineId }),
+      ...(publication?.previewImage
+        ? {
+            coverImage: {
+              artifact: publication.previewImage.artifact,
+              contentType: publication.previewImage.contentType,
+            },
+          }
+        : {}),
     };
     return {
       body: JSON.stringify(preview),
@@ -319,12 +358,16 @@ export class SubstackDraftDestination implements DestinationAdapter {
     }
     let id: string;
     await this.requireLive(preview);
+    // Featured image (#894): uploaded before the draft exists, so a failure
+    // leaves nothing half-made; the draft is then created without one.
+    const coverImage = await this.uploadCover(p);
     try {
       ({ id } = await this.client.createDraft({
         title: p.title,
         subtitle: p.subtitle,
         body: p.body,
         ...(p.bylineId === undefined ? {} : { bylines: [p.bylineId] }),
+        ...(coverImage ? { coverImage } : {}),
       }));
     } catch (error) {
       if (error instanceof SubstackError && error.code === "uncertain") {
@@ -347,7 +390,41 @@ export class SubstackDraftDestination implements DestinationAdapter {
       // Created but not as sent: record it so it is reviewed, never re-created.
       throw new UncertainDeliveryError();
     }
-    return receiptFor(stored, !!preview.draftAuthorization);
+    return {
+      ...receiptFor(stored, !!preview.draftAuthorization),
+      ...(p.coverImage
+        ? {
+            featuredImage: !coverImage
+              ? ("unavailable" as const)
+              : stored.cover_image === coverImage
+                ? ("set" as const)
+                : ("unconfirmed" as const),
+          }
+        : {}),
+    };
+  }
+
+  /** Upload the pinned featured image; undefined when there is none or it fails. */
+  private async uploadCover(
+    p: z.infer<typeof PreviewBodySchema>,
+  ): Promise<string | undefined> {
+    if (!p.coverImage || !this.images || !this.client.uploadImage)
+      return undefined;
+    const a = p.coverImage.artifact;
+    try {
+      const bytes = await this.images.readBinary({
+        repository: a.repository,
+        commit: a.commit,
+        path: a.path,
+        sha256: a.hash.slice("sha256:".length),
+      });
+      return await this.client.uploadImage(
+        new Uint8Array(bytes),
+        p.coverImage.contentType,
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   async reconcile(

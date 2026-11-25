@@ -248,8 +248,10 @@ export type VerifyOutcome =
  * no retained preview, simply has no image.
  */
 async function sourcePreviewImage(
-  archive: Pick<GitArtifactStore, "read">,
+  archive: Pick<GitArtifactStore, "read"> &
+    Partial<Pick<GitArtifactStore, "readBinary">>,
   source: ArtifactRef,
+  content?: Pick<GitArtifactStore, "writeBinary">,
 ): Promise<PublicationPreviewImage | undefined> {
   let raw: unknown;
   try {
@@ -262,13 +264,45 @@ async function sourcePreviewImage(
   const retained = record.success
     ? record.data.previewImage?.retained
     : undefined;
-  return retained
-    ? {
-        artifact: retained.artifact,
-        contentType: retained.contentType,
-        bytes: retained.bytes,
-      }
-    : undefined;
+  if (!retained) return undefined;
+  // Copy the exact bytes into the content repository the publisher reads
+  // (#894), so the publisher never needs the archive. A missing or unreadable
+  // image means no featured image, never a failed verification.
+  if (content && archive.readBinary) {
+    const hash = retained.artifact.hash.slice("sha256:".length);
+    let bytes: Buffer;
+    try {
+      bytes = await archive.readBinary({
+        repository: retained.artifact.repository,
+        commit: retained.artifact.commit,
+        path: retained.artifact.path,
+        sha256: hash,
+      });
+    } catch {
+      return undefined;
+    }
+    const ext = retained.artifact.path.split(".").pop();
+    const copy = await content.writeBinary(
+      `publication-images/${hash}.${ext}`,
+      bytes,
+      hash,
+    );
+    return {
+      artifact: {
+        repository: copy.repository,
+        commit: copy.commit,
+        path: copy.path,
+        hash: `sha256:${copy.sha256}`,
+      },
+      contentType: retained.contentType,
+      bytes: retained.bytes,
+    };
+  }
+  return {
+    artifact: retained.artifact,
+    contentType: retained.contentType,
+    bytes: retained.bytes,
+  };
 }
 
 export async function loadArticleForReview(input: {
@@ -309,6 +343,7 @@ export async function loadArticleForReview(input: {
   const previewImage = await sourcePreviewImage(
     input.archive,
     toArtifactRef(pkg.source.artifact),
+    input.content,
   );
   const publication = await savePublicationPayload({
     content: input.content,
