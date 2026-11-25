@@ -459,6 +459,8 @@ export class SubstackPublishDestination implements DestinationAdapter {
   readonly supportsPublicationPayload = true;
   private readonly draft: SubstackDraftDestination;
   private readonly publishFrom: number;
+  private readonly withoutEmail: () => Promise<ReadonlySet<string>>;
+  private prepared: ReadonlySet<string> | undefined;
 
   constructor(
     private readonly client: Pick<
@@ -468,12 +470,20 @@ export class SubstackPublishDestination implements DestinationAdapter {
     options: Omit<SubstackDestinationOptions, "deliveryControl"> & {
       /** Only approvals at or after this instant are published (ISO 8601). */
       publishFrom: string;
+      /**
+       * Current posts (`publicationId/postId`) to publish without subscriber
+       * email, for an owner-authorized validation run (#388). Read from live
+       * configuration immediately before each delivery. Every other post is
+       * published with email as before.
+       */
+      withoutEmail?: () => Promise<ReadonlySet<string>>;
     },
   ) {
     const from = Date.parse(options.publishFrom);
     if (!Number.isFinite(from))
       throw new Error("substack: invalid publish activation time");
     this.publishFrom = from;
+    this.withoutEmail = options.withoutEmail ?? (async () => new Set<string>());
     this.name = options.name ?? "substack";
     this.draft = new SubstackDraftDestination(client, options);
   }
@@ -490,16 +500,39 @@ export class SubstackPublishDestination implements DestinationAdapter {
   ): DestinationPreview {
     if (!this.eligible(article.data))
       throw new Error("substack: approval not eligible to publish");
-    return this.draft.render(article);
+    return {
+      ...this.draft.render(article),
+      post: `${article.data.publicationId}/${article.data.postId}`,
+    };
+  }
+
+  /** Read the live email policy before any delivery intent is recorded (#388). */
+  async prepare(): Promise<void> {
+    try {
+      this.prepared = await this.withoutEmail();
+    } catch {
+      throw new DestinationUnavailableError("unavailable", 30_000);
+    }
   }
 
   async deliver(preview: DestinationPreview, key: string) {
     if (preview.draftAuthorization)
       throw new Error("substack: drafts are never published");
+    // The live email policy is read before anything is created; if it cannot
+    // be read, nothing happens and the delivery is retried later.
+    // Use exactly the policy read by prepare() for this delivery, just before
+    // its intent was recorded; there is no second read and no stale fallback.
+    // Without one, nothing is created.
+    const withoutEmail = this.prepared;
+    this.prepared = undefined;
+    if (!withoutEmail)
+      throw new DestinationUnavailableError("unavailable", 30_000);
+    // A preview saved before #388 has no post and keeps its original behaviour.
+    const send = !(preview.post && withoutEmail.has(preview.post));
     const created = await this.draft.deliver(preview, key);
     const id = created.externalId!;
     try {
-      await this.client.publishDraft(id, { send: true });
+      await this.client.publishDraft(id, { send });
     } catch {
       // The draft exists. Whether the publish was rejected or its outcome is
       // unknown, nothing is retried automatically: an operator decides.
@@ -512,13 +545,17 @@ export class SubstackPublishDestination implements DestinationAdapter {
       throw new UncertainDeliveryError();
     }
     if (stored.is_published !== true) throw new UncertainDeliveryError();
+    // A suppressed send must read back with no email timestamp.
+    if (!send && stored.email_sent_at) throw new UncertainDeliveryError();
     return {
       simulated: false,
       externalId: id,
       deliveredAt: new Date().toISOString(),
       publicationSafety: {
         published: true as const,
-        subscriberEmail: "requested" as const,
+        subscriberEmail: send
+          ? ("requested" as const)
+          : ("suppressed" as const),
       },
     };
   }

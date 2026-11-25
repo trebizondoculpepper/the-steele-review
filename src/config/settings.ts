@@ -50,7 +50,8 @@ export interface SettingSpec<T = unknown> {
   required?: boolean;
 }
 
-const int = (min: number, max: number) => z.coerce.number().int().min(min).max(max);
+const int = (min: number, max: number) =>
+  z.coerce.number().int().min(min).max(max);
 /** `new URL`, or undefined for a value that is not a URL at all. */
 const parseUrl = (v: string) => {
   try {
@@ -63,6 +64,19 @@ const modelId = z
   .string()
   .trim()
   .regex(/^[a-z0-9._-]+\/[A-Za-z0-9._:-]+$/, "provider/model");
+
+export const PUBLISH_WITHOUT_EMAIL = "STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL";
+const PostKey = /^[a-z0-9][a-z0-9-]{0,199}\/[a-z0-9][a-z0-9-]{0,199}$/;
+/** Blank, or up to 20 `publicationId/postId` pairs; parsed to the list of pairs. */
+export const PublishWithoutEmailSchema = z
+  .string()
+  .transform((v) =>
+    v
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean),
+  )
+  .pipe(z.array(z.string().regex(PostKey)).max(20));
 
 /**
  * The registry. Defaults mirror the values the current entry points apply,
@@ -88,7 +102,9 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "STEELE_WRITER_TURN_LIMIT",
     domain: "models",
     description: "Total mechanical writer turns, including the initial output.",
-    schema: z.coerce.number().pipe(MechanicalPolicySchema.shape.maxTurns.unwrap()),
+    schema: z.coerce
+      .number()
+      .pipe(MechanicalPolicySchema.shape.maxTurns.unwrap()),
     default: String(MechanicalPolicySchema.parse({}).maxTurns),
     sensitivity: "public",
     activation: "restart",
@@ -96,8 +112,11 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_WRITER_DEADLINE_MS",
     domain: "models",
-    description: "One shared durable deadline for mechanical writer repair, in milliseconds.",
-    schema: z.coerce.number().pipe(MechanicalPolicySchema.shape.deadlineMs.unwrap()),
+    description:
+      "One shared durable deadline for mechanical writer repair, in milliseconds.",
+    schema: z.coerce
+      .number()
+      .pipe(MechanicalPolicySchema.shape.deadlineMs.unwrap()),
     default: String(MechanicalPolicySchema.parse({}).deadlineMs),
     sensitivity: "public",
     activation: "restart",
@@ -105,7 +124,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_SUBSTACK_ORIGIN",
     domain: "providers",
-    description: "Private target publication origin for capability-limited draft delivery.",
+    description:
+      "Private target publication origin for capability-limited draft delivery.",
     schema: z.union([z.literal(""), z.url({ protocol: /^https$/ })]),
     default: "",
     sensitivity: "private",
@@ -114,16 +134,28 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_SUBSTACK_BYLINE_ID",
     domain: "providers",
-    description: "Private draft byline identity; blank uses the destination default.",
+    description:
+      "Private draft byline identity; blank uses the destination default.",
     schema: z.string().regex(/^[0-9]*$/),
     default: "",
     sensitivity: "private",
     activation: "live",
   },
   {
+    key: PUBLISH_WITHOUT_EMAIL,
+    domain: "providers",
+    description:
+      "Comma-separated publicationId/postId pairs that the live Substack publisher publishes without subscriber email (owner-authorized validation runs, #388). Blank emails every published post as before.",
+    schema: PublishWithoutEmailSchema,
+    default: "",
+    sensitivity: "public",
+    activation: "live",
+  },
+  {
     key: "STEELE_DRAFT_SUBSTACK_DESTINATION",
     domain: "providers",
-    description: "Logical destination for the one capability-limited Substack draft.",
+    description:
+      "Logical destination for the one capability-limited Substack draft.",
     schema: z.string().regex(/^(?!dummy-a$|dummy-b$)[a-z0-9][a-z0-9-]{0,62}$/),
     default: "substack",
     sensitivity: "public",
@@ -162,7 +194,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_DASHBOARD_RESEARCH_REQUEST_LIMIT",
     domain: "research",
-    description: "Research requests a console-started article run may commission.",
+    description:
+      "Research requests a console-started article run may commission.",
     schema: int(0, 100),
     default: "5",
     sensitivity: "public",
@@ -171,7 +204,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_DASHBOARD_RESEARCH_DEADLINE_MS",
     domain: "research",
-    description: "Deadline for a console-started run's research batch, in milliseconds.",
+    description:
+      "Deadline for a console-started run's research batch, in milliseconds.",
     schema: int(1_000, 86_400_000),
     default: "1800000",
     sensitivity: "public",
@@ -180,7 +214,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_RESEARCH_REQUEST_LIMIT",
     domain: "research",
-    description: "Research requests a bridge-started article run may commission.",
+    description:
+      "Research requests a bridge-started article run may commission.",
     schema: int(0, 100),
     sensitivity: "public",
     activation: "restart",
@@ -188,7 +223,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_RESEARCH_DEADLINE_MS",
     domain: "research",
-    description: "Deadline for a bridge-started run's research batch, in milliseconds.",
+    description:
+      "Deadline for a bridge-started run's research batch, in milliseconds.",
     schema: int(1_000, 86_400_000),
     default: "1800000",
     sensitivity: "public",
@@ -215,7 +251,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   {
     key: "STEELE_ARTICLE_SOURCES",
     domain: "sources",
-    description: "Logical source namespaces allowed to start article runs (comma-separated).",
+    description:
+      "Logical source namespaces allowed to start article runs (comma-separated).",
     schema: z
       .string()
       .transform((s) =>
@@ -258,7 +295,11 @@ export const SETTINGS: readonly SettingSpec[] = [
     // Same as the dashboard entry point: an exact HTTP(S) origin, nothing more.
     schema: z.url().refine((v) => {
       const u = parseUrl(v);
-      return !!u && (u.protocol === "http:" || u.protocol === "https:") && v === u.origin;
+      return (
+        !!u &&
+        (u.protocol === "http:" || u.protocol === "https:") &&
+        v === u.origin
+      );
     }),
     sensitivity: "private",
     activation: "restart",
@@ -323,7 +364,10 @@ export function inspectSettings(
 ): InspectedSetting[] {
   const byKey = new Map(resolved.map((r) => [r.key, r]));
   return registry.map((spec) => {
-    const r = byKey.get(spec.key) ?? { key: spec.key, source: "missing" as const };
+    const r = byKey.get(spec.key) ?? {
+      key: spec.key,
+      source: "missing" as const,
+    };
     const state = r.error
       ? r.error === "invalid"
         ? "invalid"
@@ -341,7 +385,9 @@ export function inspectSettings(
       activation: spec.activation,
       source: r.source,
       state,
-      ...(spec.sensitivity === "public" && r.value !== undefined ? { value: r.value } : {}),
+      ...(spec.sensitivity === "public" && r.value !== undefined
+        ? { value: r.value }
+        : {}),
     };
   });
 }
@@ -401,7 +447,10 @@ export function savedFileVersion(
       // Unknown keys are hashed salted as well: the registry decides what may
       // be shown, and an unknown key is never public.
       if (spec?.sensitivity === "public") return [key, value];
-      return [key, createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex")];
+      return [
+        key,
+        createHash("sha256").update(`${salt}\0${key}\0${value}`).digest("hex"),
+      ];
     });
   return `config-file-sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32)}`;
 }
@@ -460,8 +509,11 @@ export function planSettingsSave(
   const byKey = new Map(registry.map((s) => [s.key, s]));
   const keys = Object.keys(input.changes);
   const unknown = keys.filter((k) => !byKey.has(k));
-  if (unknown.length > 0) return { status: "rejected", reason: "unknown-key", keys: unknown };
-  const notEditable = keys.filter((k) => byKey.get(k)!.sensitivity !== "public");
+  if (unknown.length > 0)
+    return { status: "rejected", reason: "unknown-key", keys: unknown };
+  const notEditable = keys.filter(
+    (k) => byKey.get(k)!.sensitivity !== "public",
+  );
   if (notEditable.length > 0)
     return { status: "rejected", reason: "not-editable", keys: notEditable };
 
@@ -489,9 +541,15 @@ export function planSettingsSave(
   // Whole-configuration validation: a save may not smuggle in a broken value
   // anywhere, including keys it did not touch.
   const resolved = resolveSettings(input.env, candidate, registry);
-  const invalid = resolved.filter((r) => r.error !== undefined).map((r) => r.key);
+  const invalid = resolved
+    .filter((r) => r.error !== undefined)
+    .map((r) => r.key);
   if (invalid.length > 0)
-    return { status: "rejected", reason: "invalid-configuration", keys: invalid };
+    return {
+      status: "rejected",
+      reason: "invalid-configuration",
+      keys: invalid,
+    };
 
   // Concurrency token covers the saved file, not the resolved effective value:
   // an environment override would otherwise hide a change to the file.
