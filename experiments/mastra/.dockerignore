@@ -1,0 +1,6 @@
+node_modules
+.mastra
+.data
+*.token
+.env*
+deploy
