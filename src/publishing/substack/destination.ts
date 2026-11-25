@@ -20,7 +20,11 @@ import {
   type SubstackClient,
   type SubstackDraft,
 } from "./client.js";
-import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
+import {
+  bodyFingerprint,
+  markdownToProseMirror,
+  withNativeFootnotes,
+} from "./prosemirror.js";
 
 /**
  * Live Substack destination, draft-only (#385; design in doc/architecture/06).
@@ -224,7 +228,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
   }): DestinationPreview {
     // A top-level heading becomes the title rather than body text.
     const bodyMarkdown = markdown.replace(/^# .+\n+/m, "");
-    const body = markdownToProseMirror(bodyMarkdown);
+    const body = withNativeFootnotes(markdownToProseMirror(bodyMarkdown));
     // Structured approvals carry the exact verified title and subtitle. A
     // legacy body-only approval keeps the documented fallback: the draft
     // heading, with no subtitle, because none was ever verified.
