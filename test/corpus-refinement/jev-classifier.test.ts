@@ -95,6 +95,9 @@ describe("Jev classifier (#860)", () => {
       },
     ]);
     expect(jev.version).toContain("typesafe/jev-1.14");
+    // The prompt files' content hashes are part of the recorded identity.
+    expect(jev.version).toMatch(/mapping-jev-choice-sha256:[0-9a-f]{64}/);
+    expect(jev.version).toMatch(/mapping-jev-no-match-sha256:[0-9a-f]{64}/);
   });
 
   it("routes no-match, refusal and answers outside the shortlist to unmapped", async () => {

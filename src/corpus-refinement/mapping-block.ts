@@ -222,11 +222,18 @@ export async function runMappingBlock(
     for (const [i, record] of batch.records.entries()) {
       if (seen.has(record.id)) continue;
       seen.add(record.id);
-      decisions.push(
-        await ctx.run(`mapping:classify:${i}`, () =>
-          one(record, catalogue, settings),
-        ),
-      );
+      // Each step journals the identity of the classifier that made its
+      // decision; a replay that finishes the batch under a different
+      // classifier is refused rather than mixing versions in one output.
+      const step = await ctx.run(`mapping:classify:${i}`, async () => ({
+        decision: await one(record, catalogue, settings),
+        version: deps.classifier.version,
+      }));
+      if (step.version !== classifierVersion)
+        throw new restate.TerminalError(
+          "corpus-refinement: the classifier changed during this mapping run",
+        );
+      decisions.push(step.decision);
     }
   } else {
     ({ decisions, classifierVersion } = await ctx.run(

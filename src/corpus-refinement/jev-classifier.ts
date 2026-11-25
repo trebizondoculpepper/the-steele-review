@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadPromptFile } from "../prompt-files.js";
 import {
   credentialForRequest,
   type CredentialProvider,
@@ -31,6 +32,10 @@ export const JEV_MODEL = "typesafe/jev-1.14";
 export const JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
 /** The no-match label; catalogue IDs never contain an underscore. */
 export const NO_MATCH = "no_match";
+
+/** Model-facing wording, versioned by content (AGENTS.md prompt files). */
+export const JEV_CHOICE_PROMPT = loadPromptFile("mapping", "jev-choice");
+export const JEV_NO_MATCH_PROMPT = loadPromptFile("mapping", "jev-no-match");
 
 export interface JevThresholds {
   /** Confidence at or above which a match is "high". */
@@ -125,8 +130,7 @@ export function jevRequest(
       { definition: e.definition, examples: e.examples.map((x) => x.text) },
     ]),
   );
-  criteria[NO_MATCH] =
-    "None of the other options expresses the same underlying idea as this claim. Choose this when unsure.";
+  criteria[NO_MATCH] = JEV_NO_MATCH_PROMPT.instructions;
   return {
     model,
     state: [
@@ -138,8 +142,7 @@ export function jevRequest(
     questions: {
       idea: {
         type: "choice",
-        instructions:
-          "Which underlying idea does this claim assert? An underlying idea is an allegation that can recur across objects, technologies or events. Match on the idea itself, not on shared topic words. The labels describe allegations, not facts.",
+        instructions: JEV_CHOICE_PROMPT.instructions,
         criteria,
       },
     },
@@ -153,7 +156,7 @@ export class JevClassifier implements MappingClassifier {
   constructor(private readonly config: JevClassifierConfig) {
     this.thresholds = config.thresholds ?? DEFAULT_JEV_THRESHOLDS;
     const t = this.thresholds;
-    this.version = `openrouter/${config.model ?? JEV_MODEL}#choice-v1;high=${t.high};medium=${t.medium};max=${config.shortlistMax ?? 20}`;
+    this.version = `openrouter/${config.model ?? JEV_MODEL}#${JEV_CHOICE_PROMPT.version};${JEV_NO_MATCH_PROMPT.version};high=${t.high};medium=${t.medium};max=${config.shortlistMax ?? 20}`;
   }
 
   async classify(
