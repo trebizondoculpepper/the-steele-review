@@ -1,3 +1,4 @@
+import { ArtifactStoreError } from "../../src/controllers/artifact-store.js";
 import { createHash } from "node:crypto";
 import { OpenRouterProvider } from "../../src/controllers/openrouter.js";
 import {
@@ -771,6 +772,57 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       sha256: hash,
     } as never);
     expect(Buffer.compare(copied, bytes)).toBe(0);
+  });
+
+  it("keeps the manifest stable: only a missing image means none; other read failures retry (#907 review)", async () => {
+    const { metadata } = await drafted();
+    const base = JSON.parse(await archive.read({} as never));
+    const hash = "e".repeat(64);
+    const withFailure = (error: Error) =>
+      ({
+        read: async () =>
+          JSON.stringify({
+            ...base,
+            previewImage: {
+              url: "https://cdn.example/cover.png",
+              source: "cover_image",
+              kind: "uploaded",
+              retained: {
+                artifact: {
+                  repository: "archive",
+                  commit: "c".repeat(40),
+                  path: `substack/pub/p1/images/${hash}.png`,
+                  hash: `sha256:${hash}`,
+                },
+                contentType: "image/png",
+                bytes: 7,
+              },
+            },
+          }),
+        readBinary: async () => {
+          throw error;
+        },
+      }) as unknown as GitArtifactStore;
+    const missing = await verifyPackageDraft({
+      content,
+      archive: withFailure(new ArtifactStoreError("not-found")),
+      metadata,
+      verifier: model("fake/verifier", APPROVE),
+    });
+    if (missing.status !== "verified" || missing.report.schemaVersion !== 2)
+      throw new Error("expected");
+    expect(
+      (await readPublicationPayload(content, missing.report.publication))
+        .payload.previewImage,
+    ).toBeUndefined();
+    await expect(
+      verifyPackageDraft({
+        content,
+        archive: withFailure(new Error("transient storage outage")),
+        metadata,
+        verifier: model("fake/verifier", APPROVE),
+      }),
+    ).rejects.toThrow("transient storage outage");
   });
 
   it("asks for a redraft when the evidence is overstated", async () => {

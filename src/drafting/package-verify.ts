@@ -1,3 +1,4 @@
+import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import { isCanonicalArticlePath } from "./article-identity.js";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { createHash } from "node:crypto";
@@ -266,8 +267,8 @@ async function sourcePreviewImage(
     : undefined;
   if (!retained) return undefined;
   // Copy the exact bytes into the content repository the publisher reads
-  // (#894), so the publisher never needs the archive. A missing or unreadable
-  // image means no featured image, never a failed verification.
+  // (#894), so the publisher never needs the archive. A definitively missing
+  // image means no featured image; any other read failure is retried.
   if (content && archive.readBinary) {
     const hash = retained.artifact.hash.slice("sha256:".length);
     let bytes: Buffer;
@@ -278,8 +279,13 @@ async function sourcePreviewImage(
         path: retained.artifact.path,
         sha256: hash,
       });
-    } catch {
-      return undefined;
+    } catch (error) {
+      // Only a definitively absent image means "no image", which is stable.
+      // A transient read failure propagates and is retried, so one article
+      // never gets two different manifests (#907 review).
+      if (error instanceof ArtifactStoreError && error.code === "not-found")
+        return undefined;
+      throw error;
     }
     const ext = retained.artifact.path.split(".").pop();
     const copy = await content.writeBinary(
