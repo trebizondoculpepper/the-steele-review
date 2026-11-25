@@ -81,7 +81,7 @@ The source version hash is computed over one canonical representation, the same 
   - For an article, it is the plain text of `body_html`.
   - In both cases the text is then Unicode NFC with `\r\n` replaced by `\n`, and trailing whitespace removed.
 - **Serialisation:** [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) JSON Canonicalization Scheme: keys sorted, no insignificant whitespace, UTF-8.
-- **Not hashed:** capture time, fetch provenance, warnings and the signed transcript URL. These are stored next to the bundle as capture metadata, never inside it.
+- **Not hashed:** capture time, sanitized fetch provenance and warnings. These non-secret values are stored next to the bundle as capture metadata, never inside it. The signed transcript URL is request-scoped only: never retain it in the bundle, capture metadata, exports, execution data or logs. Omit signed URLs and authentication-bearing fields when retaining any raw provider response.
 - **Shared fixture:** [`experiments/shared/fixtures/source-bundle-v1.example.json`](../../experiments/shared/fixtures/source-bundle-v1.example.json) and its expected hash in [`source-bundle-v1.example.sha256`](../../experiments/shared/fixtures/source-bundle-v1.example.sha256). The fixture file is stored already canonical, so its SHA-256 equals the expected hash. Each platform's test parses it, re-canonicalises it with its own code, and must reproduce that hash.
 
 ## Retained versions: required operations
