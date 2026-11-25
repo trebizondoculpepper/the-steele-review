@@ -747,8 +747,15 @@ async function priorMappings(
     ]);
     for (const m of r.mappings)
       if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    // Coverage whose dossier update failed is not reusable as-is: the claim
+    // goes through normal assessment again, so the dossier write is retried.
+    const unsaved = new Set(r.unsavedDossiers ?? []);
     for (const c of r.claims)
-      if (c.status === "evidence-found" && !coveredClaims?.has(c.claimRecordId))
+      if (
+        c.status === "evidence-found" &&
+        !(c.dossierId && unsaved.has(c.dossierId)) &&
+        !coveredClaims?.has(c.claimRecordId)
+      )
         coveredClaims?.set(c.claimRecordId, c);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
