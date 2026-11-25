@@ -198,4 +198,22 @@ Closing."
     p2!.content.unshift(anchor);
     expect(bodyFingerprint(moved)).not.toBe(bodyFingerprint(doc));
   });
+
+  it("recognises archived sources, first or later (#897 review)", () => {
+    for (const order of [0, 1]) {
+      const items = [
+        'https://a.example/one: "Live source."',
+        'https://b.example/two (archived abc123:archive/b.md): "Archived source."',
+      ];
+      if (order) items.reverse();
+      const md = `First [1] and second [2].\n\n## Sources\n\n${items.map((x, i) => `${i + 1}. ${x}`).join("\n")}\n`;
+      const footnotes = convert(md).content.filter(
+        (n) => n.type === "footnote",
+      );
+      expect(footnotes).toHaveLength(2);
+      expect(JSON.stringify(footnotes)).toContain(
+        "(archived abc123:archive/b.md)",
+      );
+    }
+  });
 });

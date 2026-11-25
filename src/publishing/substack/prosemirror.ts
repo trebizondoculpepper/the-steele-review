@@ -385,7 +385,7 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
   // follows an item to that item, so a passage is never cut short.
   const definitions = new Map<number, PmNode[]>();
   // A source item is recognised by content, not by list structure: it is the
-  // next expected number and opens with its linked URL followed by `: "`, as
+  // next expected number and opens with its linked URL followed by `: "` (or an archive note), as
   // the writer renders it. Anything else (a passage's own numbered list, or a
   // later paragraph of a passage) continues the current source.
   const opensSource = (item: PmNode): boolean => {
@@ -396,7 +396,8 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
     return (
       !!link?.marks?.some((m) => m.type === "link") &&
       typeof rest?.text === "string" &&
-      rest.text.startsWith(': "')
+      // `: "passage"`, or ` (archived <commit:path>): "passage"` for archived evidence.
+      /^(?: \(archived [^)\n]+\))?: "/.test(rest.text)
     );
   };
   let last: number | undefined;
@@ -410,13 +411,11 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
             ...(item as Extract<PmNode, { type: "list_item" }>).content,
           ]);
         } else if (last !== undefined) {
-          definitions
-            .get(last)!
-            .push({
-              type: "ordered_list",
-              attrs: { order: number },
-              content: [item],
-            });
+          definitions.get(last)!.push({
+            type: "ordered_list",
+            attrs: { order: number },
+            content: [item],
+          });
         }
       });
     } else if (last !== undefined) definitions.get(last)!.push(n);
