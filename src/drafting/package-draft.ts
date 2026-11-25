@@ -1,8 +1,12 @@
 import {
   markdownToProseMirror,
+  withNativeFootnotes,
   UnsupportedMarkdownError,
 } from "../publishing/substack/prosemirror.js";
-import { editorialLineageRefs, type EditorialLineage } from "../content/editorial-lineage.js";
+import {
+  editorialLineageRefs,
+  type EditorialLineage,
+} from "../content/editorial-lineage.js";
 import {
   MARKDOWN_ARTICLE_FORMAT,
   MarkdownArticleError,
@@ -26,7 +30,10 @@ import {
   type DraftValidationKind,
   type SafeDraftIssue,
 } from "./draft-diagnostics.js";
-import { MechanicalPolicySchema, type MechanicalPolicy } from "./mechanical-policy.js";
+import {
+  MechanicalPolicySchema,
+  type MechanicalPolicy,
+} from "./mechanical-policy.js";
 import {
   metadataFieldRepair,
   fieldRepairRequest,
@@ -42,7 +49,10 @@ import {
 } from "./mechanical-record.js";
 import { PublicationFieldsSchema } from "../content/publication-fields.js";
 export { FIELD_LIMITS } from "../content/publication-fields.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "../analysis/extraction.js";
 import {
   ArtifactStoreError,
   type ArtifactRef,
@@ -53,7 +63,11 @@ import { writeOnce } from "../research/job.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { promptIdentity } from "./prompt-identity.js";
 
-import { contextSources, WriterPackageSchema, type WriterPackage } from "./writer-package.js";
+import {
+  contextSources,
+  WriterPackageSchema,
+  type WriterPackage,
+} from "./writer-package.js";
 
 /**
  * Draft one article from a saved writer package (#149).
@@ -91,18 +105,25 @@ export const PACKAGE_OUTPUT_REPAIR_ID = promptIdentity(
   OUTPUT_REPAIR_PROMPT.version,
   OUTPUT_REPAIR_PROMPT.instructions,
 );
-export const PACKAGE_REVISION_INSTRUCTIONS = PACKAGE_REVISION_PROMPT.instructions;
+export const PACKAGE_REVISION_INSTRUCTIONS =
+  PACKAGE_REVISION_PROMPT.instructions;
 /** Identity of the revision instructions; part of a redraft's identity. */
 export const PACKAGE_REVISION_PROMPT_VERSION = PACKAGE_REVISION_PROMPT.version;
 
 /** The writer prompt for package drafts, loaded from its editable Markdown file. */
-export const DEFAULT_PACKAGE_DRAFT_PROMPT = loadPromptFile("writer", "package-explainer");
+export const DEFAULT_PACKAGE_DRAFT_PROMPT = loadPromptFile(
+  "writer",
+  "package-explainer",
+);
 /** The writer prompt for the Markdown article contract (#535). */
 export const DEFAULT_PACKAGE_MARKDOWN_PROMPT = loadPromptFile(
   "writer",
   "package-explainer-markdown",
 );
-const MARKDOWN_OUTPUT_REPAIR_PROMPT = loadPromptFile("writer", "package-output-repair-markdown");
+const MARKDOWN_OUTPUT_REPAIR_PROMPT = loadPromptFile(
+  "writer",
+  "package-output-repair-markdown",
+);
 export const PACKAGE_MARKDOWN_OUTPUT_REPAIR_ID = promptIdentity(
   MARKDOWN_OUTPUT_REPAIR_PROMPT.version,
   MARKDOWN_OUTPUT_REPAIR_PROMPT.instructions,
@@ -136,7 +157,12 @@ export const ModelDraftSchema = z
         z
           .object({
             claimRecordId: z.string().min(1),
-            verdict: z.enum(["supported", "contradicted", "unsupported", "unresolved"]),
+            verdict: z.enum([
+              "supported",
+              "contradicted",
+              "unsupported",
+              "unresolved",
+            ]),
             text: z.string().trim().min(1).max(3000),
             evidence: z.array(z.number().int().min(0)).max(20),
           })
@@ -157,7 +183,10 @@ export const ModelDraftSchema = z
         })
         .strict(),
       z
-        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .object({
+          status: z.literal("limited"),
+          limitation: z.string().trim().min(1).max(1000),
+        })
         .strict(),
     ]),
     /** Significance within the wider movement (#176): "supported" only with cited background. */
@@ -170,7 +199,10 @@ export const ModelDraftSchema = z
         })
         .strict(),
       z
-        .object({ status: z.literal("limited"), limitation: z.string().trim().min(1).max(1000) })
+        .object({
+          status: z.literal("limited"),
+          limitation: z.string().trim().min(1).max(1000),
+        })
         .strict(),
     ]),
   })
@@ -178,7 +210,12 @@ export const ModelDraftSchema = z
 export type PackageModelDraft = z.infer<typeof ModelDraftSchema>;
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    hash: z.string(),
+  })
   .strict();
 
 export const PackageDraftMetadataSchema = z
@@ -226,11 +263,16 @@ export class InvalidDraftError extends Error {
 /** The evidence-bearing parts of any draft, legacy JSON or Markdown (#535). */
 export interface DraftEvidenceView {
   responses: { claimRecordId: string; verdict: string; evidence: number[] }[];
-  narrative?: { status: "supported"; history: number[] } | { status: "limited" };
-  widerContext?: { status: "supported"; background: number[] } | { status: "limited" };
+  narrative?:
+    { status: "supported"; history: number[] } | { status: "limited" };
+  widerContext?:
+    { status: "supported"; background: number[] } | { status: "limited" };
 }
 
-export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): string[] {
+export function draftProblems(
+  pkg: WriterPackage,
+  draft: DraftEvidenceView,
+): string[] {
   const problems: string[] = [];
   // Narrative and wider context may be asserted only from the package's own
   // cited context; without it they must be stated as limitations (#176).
@@ -239,16 +281,20 @@ export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): str
   const background = contextSources(pkg);
   if (draft.narrative?.status === "supported") {
     if (history.length === 0)
-      problems.push("narrative development asserted without historical evidence");
+      problems.push(
+        "narrative development asserted without historical evidence",
+      );
     for (const i of draft.narrative.history) {
-      if (i >= history.length) problems.push(`narrative cites unknown comparison ${i}`);
+      if (i >= history.length)
+        problems.push(`narrative cites unknown comparison ${i}`);
     }
   }
   if (draft.widerContext?.status === "supported") {
     if (background.length === 0)
       problems.push("wider context asserted without independent background");
     for (const i of draft.widerContext.background) {
-      if (i >= background.length) problems.push(`wider context cites unknown background ${i}`);
+      if (i >= background.length)
+        problems.push(`wider context cites unknown background ${i}`);
     }
   }
   const claims = new Map(pkg.claims.map((c) => [c.claimRecordId, c]));
@@ -259,13 +305,17 @@ export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): str
       problems.push(`unknown claim ${r.claimRecordId}`);
       continue;
     }
-    if (seen.has(r.claimRecordId)) problems.push(`claim ${r.claimRecordId} answered twice`);
+    if (seen.has(r.claimRecordId))
+      problems.push(`claim ${r.claimRecordId} answered twice`);
     seen.add(r.claimRecordId);
     if (claim.status === "gap") {
       // A gap is a limitation, never a correction or confirmation.
       if (r.verdict !== "unresolved")
-        problems.push(`gap claim ${r.claimRecordId} given verdict ${r.verdict}`);
-      if (r.evidence.length > 0) problems.push(`gap claim ${r.claimRecordId} cites evidence`);
+        problems.push(
+          `gap claim ${r.claimRecordId} given verdict ${r.verdict}`,
+        );
+      if (r.evidence.length > 0)
+        problems.push(`gap claim ${r.claimRecordId} cites evidence`);
       continue;
     }
     for (const i of r.evidence) {
@@ -273,7 +323,9 @@ export function draftProblems(pkg: WriterPackage, draft: DraftEvidenceView): str
         problems.push(`claim ${r.claimRecordId} cites unknown evidence ${i}`);
     }
     if (r.verdict !== "unresolved" && r.evidence.length === 0) {
-      problems.push(`claim ${r.claimRecordId} has verdict ${r.verdict} without evidence`);
+      problems.push(
+        `claim ${r.claimRecordId} has verdict ${r.verdict} without evidence`,
+      );
     }
   }
   return problems;
@@ -297,10 +349,13 @@ const MODEL_CITATION = /\[(\d+(?:\s*[,;\u2013-]\s*\d+)*)\](?!\()/g;
  * model-written marker. Paths name only schema fields and array positions:
  * never claim IDs, raw marker text or other model-controlled strings.
  */
-export function modelCitationIssues(draft: PackageModelDraft): SafeDraftIssue[] {
+export function modelCitationIssues(
+  draft: PackageModelDraft,
+): SafeDraftIssue[] {
   const issues: SafeDraftIssue[] = [];
   const scan = (path: SafeDraftIssue["path"], text: string | undefined) => {
-    if (text && text.search(MODEL_CITATION) >= 0) issues.push({ code: "custom", path });
+    if (text && text.search(MODEL_CITATION) >= 0)
+      issues.push({ code: "custom", path });
     MODEL_CITATION.lastIndex = 0;
   };
   scan(["title"], draft.title);
@@ -336,10 +391,20 @@ export function markdownEvidenceView(c: MarkdownCandidate): DraftEvidenceView {
   return {
     responses: c.provenance.responses,
     ...(narrativeHistory?.length
-      ? { narrative: { status: "supported" as const, history: narrativeHistory } }
+      ? {
+          narrative: {
+            status: "supported" as const,
+            history: narrativeHistory,
+          },
+        }
       : {}),
     ...(widerContextBackground?.length
-      ? { widerContext: { status: "supported" as const, background: widerContextBackground } }
+      ? {
+          widerContext: {
+            status: "supported" as const,
+            background: widerContextBackground,
+          },
+        }
       : {}),
   };
 }
@@ -353,7 +418,8 @@ export function markdownCitationIssues(c: MarkdownCandidate): SafeDraftIssue[] {
     ["excerpt", c.excerpt],
     ["body", c.body],
   ] as const) {
-    if (text.search(MODEL_CITATION) >= 0) issues.push({ code: "custom", path: [name] });
+    if (text.search(MODEL_CITATION) >= 0)
+      issues.push({ code: "custom", path: [name] });
     MODEL_CITATION.lastIndex = 0;
   }
   return issues;
@@ -385,8 +451,13 @@ export function renderMarkdownDraft(
   c: MarkdownCandidate,
   sourceUrl: string,
 ): string {
-  const linkText = (pkg.source.title ?? sourceUrl).replace(/[\\[\]]/g, (ch) => `\\${ch}`);
-  const claims = new Map(pkg.claims.map((claim) => [claim.claimRecordId, claim]));
+  const linkText = (pkg.source.title ?? sourceUrl).replace(
+    /[\\[\]]/g,
+    (ch) => `\\${ch}`,
+  );
+  const claims = new Map(
+    pkg.claims.map((claim) => [claim.claimRecordId, claim]),
+  );
   const sources: { url: string; passage: string; archived?: string }[] = [];
   const seen = new Set<string>();
   const cite = (url: string, passage: string, archived?: string) => {
@@ -406,26 +477,33 @@ export function renderMarkdownDraft(
       cite(
         e.url,
         e.passage,
-        e.archived ? `${e.archived.commit.slice(0, 12)}:${e.archived.path}` : undefined,
+        e.archived
+          ? `${e.archived.commit.slice(0, 12)}:${e.archived.path}`
+          : undefined,
       );
     }
   }
   if (lines.length > 0) lines.push("");
   lines.push(c.body.trimEnd(), "");
   const omitNarrative =
-    pkg.context?.history.status === "gap" && pkg.context.history.omitWhenAbsent === true;
+    pkg.context?.history.status === "gap" &&
+    pkg.context.history.omitWhenAbsent === true;
   const comparisons = pkg.context?.history.comparisons ?? [];
   if (!omitNarrative && c.provenance.narrativeHistory?.length) {
     for (const i of c.provenance.narrativeHistory) {
       const cmp = comparisons[i]!;
       for (const e of cmp.earlier) {
-        lines.push(`> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`, "");
+        lines.push(
+          `> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`,
+          "",
+        );
       }
       lines.push(
         `_Comparison (${cmp.kind}, ${cmp.uncertainty} uncertainty; analysis, not evidence): ${cmp.comparison.text}_`,
         "",
       );
-      if (cmp.conflictRationale) lines.push(`_Qualification: ${cmp.conflictRationale}_`, "");
+      if (cmp.conflictRationale)
+        lines.push(`_Qualification: ${cmp.conflictRationale}_`, "");
       if (cmp.changedCircumstances)
         lines.push(`_Changed circumstances: ${cmp.changedCircumstances}_`, "");
     }
@@ -434,7 +512,12 @@ export function renderMarkdownDraft(
   for (const i of c.provenance.widerContextBackground ?? []) {
     cite(passages[i]!.url, passages[i]!.passage);
   }
-  lines.push("## Sources", "", `Original post: [${linkText}](<${sourceUrl}>)`, "");
+  lines.push(
+    "## Sources",
+    "",
+    `Original post: [${linkText}](<${sourceUrl}>)`,
+    "",
+  );
   if (sources.length > 0) {
     lines.push(
       ...sources.map(
@@ -452,7 +535,9 @@ const METADATA_PATHS = new Set(["title", "subtitle", "excerpt"]);
 export function metadataOnlyMarkers(issues: SafeDraftIssue[]): boolean {
   return (
     issues.length > 0 &&
-    issues.every((i) => i.path.length === 1 && METADATA_PATHS.has(String(i.path[0])))
+    issues.every(
+      (i) => i.path.length === 1 && METADATA_PATHS.has(String(i.path[0])),
+    )
   );
 }
 
@@ -462,7 +547,10 @@ export function renderPackageDraft(
   draft: PackageModelDraft,
   sourceUrl: string,
 ): string {
-  const linkText = (pkg.source.title ?? sourceUrl).replace(/[\\[\]]/g, (c) => `\\${c}`);
+  const linkText = (pkg.source.title ?? sourceUrl).replace(
+    /[\\[\]]/g,
+    (c) => `\\${c}`,
+  );
   const claims = new Map(pkg.claims.map((c) => [c.claimRecordId, c]));
   const sources: { url: string; passage: string; archived?: string }[] = [];
   const index = new Map<string, number>();
@@ -482,7 +570,9 @@ export function renderPackageDraft(
       return cite(
         e.url,
         e.passage,
-        e.archived ? `${e.archived.commit.slice(0, 12)}:${e.archived.path}` : undefined,
+        e.archived
+          ? `${e.archived.commit.slice(0, 12)}:${e.archived.path}`
+          : undefined,
       );
     });
     lines.push(
@@ -496,7 +586,8 @@ export function renderPackageDraft(
   // linked); the comparison text is generated analysis, labelled as such.
   // An unattended run leaves absent history out of the article entirely (#370).
   const omitNarrative =
-    pkg.context?.history.status === "gap" && pkg.context.history.omitWhenAbsent === true;
+    pkg.context?.history.status === "gap" &&
+    pkg.context.history.omitWhenAbsent === true;
   if (draft.narrative && !omitNarrative) {
     if (draft.narrative.status === "limited") {
       lines.push(draft.narrative.limitation, "");
@@ -506,13 +597,17 @@ export function renderPackageDraft(
       for (const i of draft.narrative.history) {
         const c = comparisons[i];
         for (const e of c.earlier) {
-          lines.push(`> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`, "");
+          lines.push(
+            `> "${e.quote}" (${e.publishedAt}${e.url ? `, ${e.url}` : ""})`,
+            "",
+          );
         }
         lines.push(
           `_Comparison (${c.kind}, ${c.uncertainty} uncertainty; analysis, not evidence): ${c.comparison.text}_`,
           "",
         );
-        if (c.conflictRationale) lines.push(`_Qualification: ${c.conflictRationale}_`, "");
+        if (c.conflictRationale)
+          lines.push(`_Qualification: ${c.conflictRationale}_`, "");
         if (c.changedCircumstances)
           lines.push(`_Changed circumstances: ${c.changedCircumstances}_`, "");
       }
@@ -526,11 +621,19 @@ export function renderPackageDraft(
       const refs = draft.widerContext.background.map((i) =>
         cite(passages[i].url, passages[i].passage),
       );
-      lines.push(`${draft.widerContext.text} ${refs.map((n) => `[${n}]`).join("")}`, "");
+      lines.push(
+        `${draft.widerContext.text} ${refs.map((n) => `[${n}]`).join("")}`,
+        "",
+      );
     }
   }
   for (const limitation of draft.limitations) lines.push(limitation, "");
-  lines.push("## Sources", "", `Original post: [${linkText}](<${sourceUrl}>)`, "");
+  lines.push(
+    "## Sources",
+    "",
+    `Original post: [${linkText}](<${sourceUrl}>)`,
+    "",
+  );
   if (sources.length > 0) {
     lines.push(
       ...sources.map(
@@ -681,13 +784,18 @@ export async function draftFromPackage(input: {
 }): Promise<PackageDraftOutcome> {
   const markdown = (input.format ?? writerFormatFromEnv()) === "markdown";
   const prompt =
-    input.prompt ?? (markdown ? DEFAULT_PACKAGE_MARKDOWN_PROMPT : DEFAULT_PACKAGE_DRAFT_PROMPT);
+    input.prompt ??
+    (markdown ? DEFAULT_PACKAGE_MARKDOWN_PROMPT : DEFAULT_PACKAGE_DRAFT_PROMPT);
   // The repair instructions follow the output contract (#535).
-  const outputRepairId = markdown ? PACKAGE_MARKDOWN_OUTPUT_REPAIR_ID : PACKAGE_OUTPUT_REPAIR_ID;
+  const outputRepairId = markdown
+    ? PACKAGE_MARKDOWN_OUTPUT_REPAIR_ID
+    : PACKAGE_OUTPUT_REPAIR_ID;
   const outputRepairInstructions = markdown
     ? MARKDOWN_OUTPUT_REPAIR_PROMPT.instructions
     : OUTPUT_REPAIR_PROMPT.instructions;
-  const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(input.package)));
+  const pkg = WriterPackageSchema.parse(
+    JSON.parse(await input.content.read(input.package)),
+  );
   // Coverage is information for the writer, not a veto (#747): a valid
   // package with zero, partial or full claim support is drafted. Its
   // uncovered claims keep their own statuses and cannot be cited.
@@ -711,13 +819,17 @@ export async function draftFromPackage(input: {
       },
     },
     themes: toArtifactRef(pkg.themeResult),
-    ...(pkg.source.context ? { sourceContext: toArtifactRef(pkg.source.context) } : {}),
+    ...(pkg.source.context
+      ? { sourceContext: toArtifactRef(pkg.source.context) }
+      : {}),
   });
-  if (loaded.kind !== "loaded") return { status: "context-unavailable", reason: loaded.kind };
+  if (loaded.kind !== "loaded")
+    return { status: "context-unavailable", reason: loaded.kind };
 
   // Bound to the exact wording, not only the semantic version (#430).
   const promptId = promptIdentity(prompt.version, prompt.instructions);
-  const revisionInstructions = input.revisionInstructions ?? PACKAGE_REVISION_INSTRUCTIONS;
+  const revisionInstructions =
+    input.revisionInstructions ?? PACKAGE_REVISION_INSTRUCTIONS;
   const key = createHash("sha256")
     .update(
       JSON.stringify([
@@ -729,12 +841,19 @@ export async function draftFromPackage(input: {
         ...(input.revision
           ? [
               input.revision,
-              promptIdentity(PACKAGE_REVISION_PROMPT_VERSION, revisionInstructions),
+              promptIdentity(
+                PACKAGE_REVISION_PROMPT_VERSION,
+                revisionInstructions,
+              ),
               ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
-              ...(input.previousDraft?.metadataRef ? [toRef(input.previousDraft.metadataRef)] : []),
+              ...(input.previousDraft?.metadataRef
+                ? [toRef(input.previousDraft.metadataRef)]
+                : []),
             ]
           : []),
-        ...(input.lineage ? [editorialLineageRefs(input.lineage).map(toRef)] : []),
+        ...(input.lineage
+          ? [editorialLineageRefs(input.lineage).map(toRef)]
+          : []),
         // A package without a pinned URL takes it from the caller: part of the identity.
         ...(pinnedUrl ? [] : [sourceUrl]),
         // The output contract is part of identity; legacy keys are unchanged.
@@ -745,7 +864,14 @@ export async function draftFromPackage(input: {
     .slice(0, 32);
   const base = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${key}`;
   const repairedKey = createHash("sha256")
-    .update(JSON.stringify([key, outputRepairId, PACKAGE_FIELD_REPAIR_ID, "mechanical-v1"]))
+    .update(
+      JSON.stringify([
+        key,
+        outputRepairId,
+        PACKAGE_FIELD_REPAIR_ID,
+        "mechanical-v1",
+      ]),
+    )
     .digest("hex")
     .slice(0, 32);
   const repairedBase = `articles/${pkg.post.publicationId}/${pkg.post.postId}/${repairedKey}`;
@@ -759,18 +885,26 @@ export async function draftFromPackage(input: {
     draft: ArtifactRef,
     metadata: ArtifactRef,
   ): Promise<PackageDraftOutcome> => {
-    const stored = PackageDraftMetadataSchema.parse(JSON.parse(await input.content.read(metadata)));
+    const stored = PackageDraftMetadataSchema.parse(
+      JSON.parse(await input.content.read(metadata)),
+    );
     return {
       status: "drafted",
       draft,
       metadata,
       reused: true,
-      ...(stored.diagnostics ? { diagnostics: stored.diagnostics.map(toArtifactRef) } : {}),
-      ...(stored.mechanicalRun ? { mechanicalRun: toArtifactRef(stored.mechanicalRun) } : {}),
+      ...(stored.diagnostics
+        ? { diagnostics: stored.diagnostics.map(toArtifactRef) }
+        : {}),
+      ...(stored.mechanicalRun
+        ? { mechanicalRun: toArtifactRef(stored.mechanicalRun) }
+        : {}),
       ...(stored.writerAttempts
         ? { writerAttempts: stored.writerAttempts.map(toArtifactRef) }
         : {}),
-      retention: stored.writerAttempts?.length ? "recorded" : "legacy-unavailable",
+      retention: stored.writerAttempts?.length
+        ? "recorded"
+        : "legacy-unavailable",
     };
   };
   const savedDraft = await input.content.lookup(`${base}.md`);
@@ -794,7 +928,9 @@ export async function draftFromPackage(input: {
         ? { sourceContextRef: toRef(loaded.context.source.provenanceRef) }
         : {}),
     },
-    ...(pkg.researchWarnings?.length ? { researchWarnings: pkg.researchWarnings } : {}),
+    ...(pkg.researchWarnings?.length
+      ? { researchWarnings: pkg.researchWarnings }
+      : {}),
     themes: loaded.context.themes.proposals.map((t) => ({
       title: t.title,
       description: t.description,
@@ -804,7 +940,11 @@ export async function draftFromPackage(input: {
       statement: c.statement,
       status: c.status,
       ...(c.reason ? { gapReason: c.reason } : {}),
-      evidence: c.evidence.map((e, i) => ({ index: i, url: e.url, passage: e.passage })),
+      evidence: c.evidence.map((e, i) => ({
+        index: i,
+        url: e.url,
+        passage: e.passage,
+      })),
     })),
     history:
       pkg.context?.history.status === "available"
@@ -821,8 +961,12 @@ export async function draftFromPackage(input: {
             })),
             ...(c.relation ? { relation: c.relation } : {}),
             comparison: c.comparison.text,
-            ...(c.conflictRationale ? { qualification: c.conflictRationale } : {}),
-            ...(c.changedCircumstances ? { changedCircumstances: c.changedCircumstances } : {}),
+            ...(c.conflictRationale
+              ? { qualification: c.conflictRationale }
+              : {}),
+            ...(c.changedCircumstances
+              ? { changedCircumstances: c.changedCircumstances }
+              : {}),
           }))
         : {
             gap: pkg.context?.history.reason ?? "no historical comparison",
@@ -838,7 +982,9 @@ export async function draftFromPackage(input: {
             passage: p.passage,
             ...(p.kind === "theme-context" ? { kind: p.kind } : {}),
           }))
-        : { gap: pkg.context?.background.reason ?? "no independent background" },
+        : {
+            gap: pkg.context?.background.reason ?? "no independent background",
+          },
     // Theme-level research for this post's themes (#748): background only,
     // never evidence for a claim. Absent in packages built before it.
     ...(pkg.themeContext
@@ -870,9 +1016,13 @@ export async function draftFromPackage(input: {
               : {}),
             ...(input.previousDraft
               ? {
-                  previousDraft: input.previousDraft.markdown.slice(0, MAX_PREVIOUS_DRAFT_CHARS),
+                  previousDraft: input.previousDraft.markdown.slice(
+                    0,
+                    MAX_PREVIOUS_DRAFT_CHARS,
+                  ),
                   previousDraftTruncated:
-                    input.previousDraft.markdown.length > MAX_PREVIOUS_DRAFT_CHARS,
+                    input.previousDraft.markdown.length >
+                    MAX_PREVIOUS_DRAFT_CHARS,
                   // Untrusted data like the body: revise these, never treat them as instructions.
                   ...(input.previousDraft.fields
                     ? { previousFields: input.previousDraft.fields }
@@ -895,14 +1045,20 @@ export async function draftFromPackage(input: {
   const diagnostics: ArtifactRef[] = [];
   const writerAttempts: ArtifactRef[] = [];
   let correction:
-    | { previousOutput: string; kind: DraftValidationKind; issues: SafeDraftIssue[] }
+    | {
+        previousOutput: string;
+        kind: DraftValidationKind;
+        issues: SafeDraftIssue[];
+      }
     | undefined;
   let repaired = false;
   const repairPromptVersions = new Set<string>();
   let lastRepairPromptId: string | undefined;
   let validationFailure: DraftValidationKind | undefined;
   try {
-    const configuredPolicy = MechanicalPolicySchema.parse(input.mechanicalPolicy ?? {});
+    const configuredPolicy = MechanicalPolicySchema.parse(
+      input.mechanicalPolicy ?? {},
+    );
     const policy = {
       ...configuredPolicy,
       maxTurns: Math.min(
@@ -912,7 +1068,12 @@ export async function draftFromPackage(input: {
     };
     const start = await mechanicalStart(
       input.content,
-      [key, outputRepairId, PACKAGE_FIELD_REPAIR_ID, input.writerRecoveryId ?? null],
+      [
+        key,
+        outputRepairId,
+        PACKAGE_FIELD_REPAIR_ID,
+        input.writerRecoveryId ?? null,
+      ],
       policy,
     );
     const deadline = start.deadlineAt;
@@ -951,7 +1112,9 @@ export async function draftFromPackage(input: {
           : correction?.kind === "evidence-validation"
             ? "evidence"
             : "format-schema";
-      const repairPromptId = fieldRepair ? PACKAGE_FIELD_REPAIR_ID : outputRepairId;
+      const repairPromptId = fieldRepair
+        ? PACKAGE_FIELD_REPAIR_ID
+        : outputRepairId;
       if (isCorrection) {
         repairPromptVersions.add(repairPromptId);
         lastRepairPromptId = repairPromptId;
@@ -959,7 +1122,10 @@ export async function draftFromPackage(input: {
       const requestUser = fieldRepair
         ? JSON.stringify(fieldRepairRequest(fieldRepair))
         : correction
-          ? JSON.stringify({ ...JSON.parse(user), outputCorrection: correction })
+          ? JSON.stringify({
+              ...JSON.parse(user),
+              outputCorrection: correction,
+            })
           : user;
       if (input.beforeNewGeneration) {
         try {
@@ -967,7 +1133,12 @@ export async function draftFromPackage(input: {
         } catch (error) {
           throw new DraftGuardStop(error, {
             ...(mechanical.turns.length
-              ? { mechanicalRun: await saveMechanicalRecord(input.content, mechanical) }
+              ? {
+                  mechanicalRun: await saveMechanicalRecord(
+                    input.content,
+                    mechanical,
+                  ),
+                }
               : {}),
             retainedAttempts: writerAttempts,
             diagnostics,
@@ -999,15 +1170,23 @@ export async function draftFromPackage(input: {
             ...(input.previousDraft ? [toRef(input.previousDraft.ref)] : []),
             ...(input.revisionInputs ?? []).map(toRef),
           ],
-          kind: isCorrection ? "correction" : input.revision ? "revision" : "initial",
+          kind: isCorrection
+            ? "correction"
+            : input.revision
+              ? "revision"
+              : "initial",
           number: attempt + 1,
           ...(input.revision ? { revision: input.revision.number } : {}),
           promptVersion: promptId,
           ...(isCorrection ? { repairPromptVersion: repairPromptId } : {}),
-          ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+          ...(input.requestedModel
+            ? { requestedModel: input.requestedModel }
+            : {}),
           signal,
           leaseMs: Math.max(10 * 60_000, policy.deadlineMs + 60_000),
-          ...(input.writerRecoveryId ? { recoveryId: input.writerRecoveryId } : {}),
+          ...(input.writerRecoveryId
+            ? { recoveryId: input.writerRecoveryId }
+            : {}),
         });
       } catch (error) {
         if (error instanceof WriterAttemptError)
@@ -1050,7 +1229,8 @@ export async function draftFromPackage(input: {
       completion = captured.manifest.completion.stopReason;
       if (
         captured.text === undefined ||
-        (captured.manifest.failure && captured.manifest.failure !== "bad-response")
+        (captured.manifest.failure &&
+          captured.manifest.failure !== "bad-response")
       ) {
         writerAttempts.push(
           await finishWriterValidation({
@@ -1084,7 +1264,9 @@ export async function draftFromPackage(input: {
           // Structural split only; the candidate schema validates the fields.
           const split = splitMarkdownArticle(raw);
           json = {
-            ...(split.header && typeof split.header === "object" && !Array.isArray(split.header)
+            ...(split.header &&
+            typeof split.header === "object" &&
+            !Array.isArray(split.header)
               ? (split.header as Record<string, unknown>)
               : {}),
             body: split.body,
@@ -1095,13 +1277,18 @@ export async function draftFromPackage(input: {
           } catch {
             // Retain the existing tolerance for a JSON object wrapped in prose or
             // a code fence, without misclassifying valid JSON scalars as syntax errors.
-            json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+            json = JSON.parse(
+              raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1),
+            );
           }
         if (fieldRepair) {
           const merged = mergeFieldPatch(fieldRepair, json);
           if (!merged) {
             kind = "schema-validation";
-            issues = fieldRepair.fields.map((name) => ({ code: "custom", path: [name] }));
+            issues = fieldRepair.fields.map((name) => ({
+              code: "custom",
+              path: [name],
+            }));
           } else {
             candidateRef = await commitMergedCandidate(input.content, merged, [
               previousCandidateRef!,
@@ -1113,7 +1300,9 @@ export async function draftFromPackage(input: {
         }
         candidate = json;
         if (markdown) {
-          const checked = kind ? undefined : MarkdownCandidateSchema.safeParse(json);
+          const checked = kind
+            ? undefined
+            : MarkdownCandidateSchema.safeParse(json);
           if (checked?.success) parsedMd = checked.data;
           else if (checked) {
             kind = "schema-validation";
@@ -1129,14 +1318,22 @@ export async function draftFromPackage(input: {
         }
       } catch (error) {
         // A malformed Markdown header is the Markdown contract's syntax error.
-        if (error instanceof SyntaxError || error instanceof MarkdownArticleError)
+        if (
+          error instanceof SyntaxError ||
+          error instanceof MarkdownArticleError
+        )
           kind = "json-syntax";
         else throw error;
       }
       if ((completion as string) === "length-limit") kind = "truncated-output";
       if (!kind && (parsed || parsedMd)) {
-        const structural = draftProblems(pkg, parsed ?? markdownEvidenceView(parsedMd!));
-        const markers = parsed ? modelCitationIssues(parsed) : markdownCitationIssues(parsedMd!);
+        const structural = draftProblems(
+          pkg,
+          parsed ?? markdownEvidenceView(parsedMd!),
+        );
+        const markers = parsed
+          ? modelCitationIssues(parsed)
+          : markdownCitationIssues(parsedMd!);
         if (structural.length === 0 && metadataOnlyMarkers(markers)) {
           // Markers only in isolated metadata fields: repair just those fields
           // (#549's field-only path), preserving body and citation data.
@@ -1167,16 +1364,24 @@ export async function draftFromPackage(input: {
           undeliverableBody = true;
           kind = "schema-validation";
           issues = [{ code: "custom", path: ["body"] }];
-          lastProblems = [`body uses Markdown the publisher cannot render (${error.reason})`];
+          lastProblems = [
+            `body uses Markdown the publisher cannot render (${error.reason})`,
+          ];
         }
         if (!kind) {
           try {
-            markdownToProseMirror(renderMarkdownDraft(pkg, parsedMd, sourceUrl));
+            withNativeFootnotes(
+              markdownToProseMirror(
+                renderMarkdownDraft(pkg, parsedMd, sourceUrl),
+              ),
+            );
           } catch (error) {
             if (!(error instanceof UnsupportedMarkdownError)) throw error;
             kind = "application-format";
             issues = [{ code: "custom", path: [] }];
-            lastProblems = ["application-owned article framing cannot be rendered"];
+            lastProblems = [
+              "application-owned article framing cannot be rendered",
+            ];
           }
         }
       }
@@ -1223,13 +1428,18 @@ export async function draftFromPackage(input: {
           kind === "schema-validation" && (!fieldRepair || candidateRef)
             ? metadataFieldRepair(candidate, issues)
             : undefined;
-        if (fieldRepair && kind !== "evidence-validation" && !undeliverableBody) {
+        if (
+          fieldRepair &&
+          kind !== "evidence-validation" &&
+          !undeliverableBody
+        ) {
           // A malformed, truncated or overbroad patch cannot replace preserved fields.
           fieldRepair = nextFieldRepair ?? {
             ...fieldRepair,
             issues: issues.length ? issues : fieldRepair.issues,
           };
-          if (nextFieldRepair && candidateRef) previousCandidateRef = candidateRef;
+          if (nextFieldRepair && candidateRef)
+            previousCandidateRef = candidateRef;
         } else {
           fieldRepair = nextFieldRepair;
           previousCandidateRef = candidateRef ?? captured.ref;
@@ -1247,7 +1457,11 @@ export async function draftFromPackage(input: {
         continue;
       }
       writerAttempts.push(
-        await finishWriterValidation({ content: input.content, attempt: captured, accepted: true }),
+        await finishWriterValidation({
+          content: input.content,
+          attempt: captured,
+          accepted: true,
+        }),
       );
       mechanical.outcome = "valid";
       mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
@@ -1256,7 +1470,8 @@ export async function draftFromPackage(input: {
       repaired = isCorrection;
     }
     if (!draft && !draftMd) {
-      if (mechanical.outcome === "in-progress") mechanical.outcome = "turns-exhausted";
+      if (mechanical.outcome === "in-progress")
+        mechanical.outcome = "turns-exhausted";
       mechanicalRun = await saveMechanicalRecord(input.content, mechanical);
       return {
         mechanicalRun,
@@ -1273,8 +1488,12 @@ export async function draftFromPackage(input: {
               ],
             }
           : {}),
-        ...(lastFailure === "provider-failed" && providerError ? { providerError } : {}),
-        ...(lastFailure !== "provider-failed" && validationFailure ? { validationFailure } : {}),
+        ...(lastFailure === "provider-failed" && providerError
+          ? { providerError }
+          : {}),
+        ...(lastFailure !== "provider-failed" && validationFailure
+          ? { validationFailure }
+          : {}),
         ...(diagnostics.length ? { diagnostics } : {}),
         ...(writerAttempts.length ? { writerAttempts } : {}),
       };
@@ -1284,7 +1503,11 @@ export async function draftFromPackage(input: {
       : renderPackageDraft(pkg, draft!, sourceUrl);
     const fields = draftMd ?? draft!;
     const outputBase = repaired ? repairedBase : base;
-    const draftRef = await writeOnce(input.content, `${outputBase}.md`, rendered);
+    const draftRef = await writeOnce(
+      input.content,
+      `${outputBase}.md`,
+      rendered,
+    );
     const metadata = PackageDraftMetadataSchema.parse({
       schemaVersion: PACKAGE_DRAFT_SCHEMA_VERSION,
       package: toRef(input.package),
@@ -1313,13 +1536,23 @@ export async function draftFromPackage(input: {
         : {}),
       modelVersion: input.provider.modelVersion,
       ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
-      ...(input.resolvedModel?.() ? { resolvedModel: input.resolvedModel()! } : {}),
+      ...(input.resolvedModel?.()
+        ? { resolvedModel: input.resolvedModel()! }
+        : {}),
       draft: `${draftRef.commit}:${draftRef.path}`,
-      fields: { title: fields.title, subtitle: fields.subtitle, excerpt: fields.excerpt },
+      fields: {
+        title: fields.title,
+        subtitle: fields.subtitle,
+        excerpt: fields.excerpt,
+      },
       ...(draftMd ? { format: MARKDOWN_ARTICLE_FORMAT } : {}),
       draftedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
-    const metaRef = await writeOnce(input.content, `${outputBase}.json`, metadata);
+    const metaRef = await writeOnce(
+      input.content,
+      `${outputBase}.json`,
+      metadata,
+    );
     return {
       status: "drafted",
       draft: draftRef,
@@ -1331,7 +1564,10 @@ export async function draftFromPackage(input: {
       ...(mechanicalRun ? { mechanicalRun } : {}),
     };
   } catch (error) {
-    if (error instanceof ArtifactStoreError || error instanceof WriterAttemptError)
+    if (
+      error instanceof ArtifactStoreError ||
+      error instanceof WriterAttemptError
+    )
       return {
         status: "failed",
         reason: "writer-archive-failed",

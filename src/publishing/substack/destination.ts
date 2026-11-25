@@ -19,7 +19,11 @@ import {
   type SubstackClient,
   type SubstackDraft,
 } from "./client.js";
-import { bodyFingerprint, markdownToProseMirror } from "./prosemirror.js";
+import {
+  bodyFingerprint,
+  markdownToProseMirror,
+  withNativeFootnotes,
+} from "./prosemirror.js";
 
 /**
  * Live Substack destination, draft-only (#385; design in doc/architecture/06).
@@ -69,7 +73,10 @@ export interface SubstackDestinationOptions {
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
   const heading = /^# (.+)$/m.exec(markdown)?.[1]?.trim();
-  return (heading ?? `A response: ${data.postId.replace(/-/g, " ")}`).slice(0, 280);
+  return (heading ?? `A response: ${data.postId.replace(/-/g, " ")}`).slice(
+    0,
+    280,
+  );
 };
 
 function receiptFor(
@@ -81,7 +88,12 @@ function receiptFor(
     externalId: draft.id,
     deliveredAt: new Date().toISOString(),
     ...(ownerDraft
-      ? { draftSafety: { unpublished: true as const, emailTimestampAbsent: true as const } }
+      ? {
+          draftSafety: {
+            unpublished: true as const,
+            emailTimestampAbsent: true as const,
+          },
+        }
       : {}),
   };
 }
@@ -92,7 +104,10 @@ export function substackDraftTarget(input: {
   name: string;
   bylineId?: string;
 }): DraftTarget {
-  if (input.bylineId !== undefined && !BylineId.safeParse(input.bylineId).success)
+  if (
+    input.bylineId !== undefined &&
+    !BylineId.safeParse(input.bylineId).success
+  )
     throw new Error("substack: invalid draft target");
   return {
     name: input.name,
@@ -122,12 +137,18 @@ export class SubstackDraftDestination implements DestinationAdapter {
   private readonly deliveryControl: DraftDeliveryControl | undefined;
 
   constructor(
-    private readonly client: Pick<SubstackClient, "createDraft" | "getDraft" | "listDrafts"> &
+    private readonly client: Pick<
+      SubstackClient,
+      "createDraft" | "getDraft" | "listDrafts"
+    > &
       Partial<Pick<SubstackClient, "draftTargetIdentity">>,
     options: SubstackDestinationOptions = {},
   ) {
     this.name = options.name ?? "substack";
-    if (options.bylineId !== undefined && !BylineId.safeParse(options.bylineId).success) {
+    if (
+      options.bylineId !== undefined &&
+      !BylineId.safeParse(options.bylineId).success
+    ) {
       throw new Error("substack: invalid byline id");
     }
     this.bylineId = options.bylineId;
@@ -164,7 +185,8 @@ export class SubstackDraftDestination implements DestinationAdapter {
   private validScope(preview: DestinationPreview) {
     return (
       preview.draftAuthorization === undefined ||
-      JSON.stringify(preview.draftAuthorization) === JSON.stringify(this.draftTarget)
+      JSON.stringify(preview.draftAuthorization) ===
+        JSON.stringify(this.draftTarget)
     );
   }
   private safeState(draft: SubstackDraft, preview: DestinationPreview) {
@@ -182,9 +204,16 @@ export class SubstackDraftDestination implements DestinationAdapter {
     try {
       allowed = await this.deliveryControl?.allow(preview.draftAuthorization);
     } catch {
-      throw new DestinationUnavailableError("unavailable", this.options.unavailableRetryMs);
+      throw new DestinationUnavailableError(
+        "unavailable",
+        this.options.unavailableRetryMs,
+      );
     }
-    if (!allowed) throw new DestinationUnavailableError("paused", this.options.unavailableRetryMs);
+    if (!allowed)
+      throw new DestinationUnavailableError(
+        "paused",
+        this.options.unavailableRetryMs,
+      );
   }
 
   render({
@@ -198,11 +227,12 @@ export class SubstackDraftDestination implements DestinationAdapter {
   }): DestinationPreview {
     // A top-level heading becomes the title rather than body text.
     const bodyMarkdown = markdown.replace(/^# .+\n+/m, "");
-    const body = markdownToProseMirror(bodyMarkdown);
+    const body = withNativeFootnotes(markdownToProseMirror(bodyMarkdown));
     // Structured approvals carry the exact verified title and subtitle. A
     // legacy body-only approval keeps the documented fallback: the draft
     // heading, with no subtitle, because none was ever verified.
-    const structured = publication?.mode === "structured" ? publication.fields : undefined;
+    const structured =
+      publication?.mode === "structured" ? publication.fields : undefined;
     const preview = {
       title: structured?.title ?? titleOf(markdown, data),
       subtitle: structured?.subtitle ?? "",
@@ -226,37 +256,56 @@ export class SubstackDraftDestination implements DestinationAdapter {
    * error, so it spends attempts and ends in an inspectable failure.
    */
   private unavailable(error: SubstackError): Error {
-    if (error.code === "invalid-response") return new Error(`substack: ${error.code}`);
+    if (error.code === "invalid-response")
+      return new Error(`substack: ${error.code}`);
     if (error.code === "auth-expired") {
-      return new DestinationUnavailableError("auth-expired", this.options.authRetryMs);
+      return new DestinationUnavailableError(
+        "auth-expired",
+        this.options.authRetryMs,
+      );
     }
     if (error.code === "rate-limited") {
-      return new DestinationUnavailableError("rate-limited", this.options.rateLimitRetryMs);
+      return new DestinationUnavailableError(
+        "rate-limited",
+        this.options.rateLimitRetryMs,
+      );
     }
-    return new DestinationUnavailableError("unavailable", this.options.unavailableRetryMs);
+    return new DestinationUnavailableError(
+      "unavailable",
+      this.options.unavailableRetryMs,
+    );
   }
 
-  private matches(draft: SubstackDraft, preview: z.infer<typeof PreviewBodySchema>): boolean {
+  private matches(
+    draft: SubstackDraft,
+    preview: z.infer<typeof PreviewBodySchema>,
+  ): boolean {
     if (draft.is_published || draft.email_sent_at != null) return false;
-    if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body) return false;
+    if ((draft.draft_title ?? "") !== preview.title || !draft.draft_body)
+      return false;
     // Title, subtitle and body must all match the approved payload: two
     // approvals can differ only in subtitle while sharing title and body.
     if ((draft.draft_subtitle ?? "") !== preview.subtitle) return false;
     // A requested byline must be evidenced by the read-back. A draft that
     // dropped it is never claimed as delivered with attribution.
     if (preview.bylineId !== undefined) {
-      const ids = (draft.draft_bylines ?? []).map((b) => b.id).filter((id) => id !== undefined);
+      const ids = (draft.draft_bylines ?? [])
+        .map((b) => b.id)
+        .filter((id) => id !== undefined);
       if (!ids.includes(preview.bylineId)) return false;
     }
     try {
-      return bodyFingerprint(JSON.parse(draft.draft_body)) === preview.fingerprint;
+      return (
+        bodyFingerprint(JSON.parse(draft.draft_body)) === preview.fingerprint
+      );
     } catch {
       return false;
     }
   }
 
   async deliver(preview: DestinationPreview, _key: string) {
-    if (!this.validScope(preview)) throw new Error("substack: draft authorization target mismatch");
+    if (!this.validScope(preview))
+      throw new Error("substack: draft authorization target mismatch");
     await this.requireLive(preview);
     const p = PreviewBodySchema.parse(JSON.parse(preview.body));
     // Preflight: a read with no side effects, so an expired session is found
@@ -328,18 +377,28 @@ export class SubstackDraftDestination implements DestinationAdapter {
           offset: page * RECONCILE_PAGE_SIZE,
         });
         found.push(...drafts.filter((d) => this.matches(d, p)));
-        const headline = drafts.filter((d) => (d.draft_title ?? "") === p.title);
+        const headline = drafts.filter(
+          (d) => (d.draft_title ?? "") === p.title,
+        );
         sameHeadline += headline.length;
-        sameSubmission += headline.filter((d) => (d.draft_subtitle ?? "") === p.subtitle).length;
+        sameSubmission += headline.filter(
+          (d) => (d.draft_subtitle ?? "") === p.subtitle,
+        ).length;
         if (drafts.length < RECONCILE_PAGE_SIZE) {
           covered = true; // the complete list
           break;
         }
         const oldest = drafts
-          .map((d) => (d.draft_created_at ? Date.parse(d.draft_created_at) : NaN))
+          .map((d) =>
+            d.draft_created_at ? Date.parse(d.draft_created_at) : NaN,
+          )
           .filter((t) => !Number.isNaN(t))
           .sort((a, b) => a - b)[0];
-        if (!Number.isNaN(intentAt) && oldest !== undefined && oldest < intentAt) {
+        if (
+          !Number.isNaN(intentAt) &&
+          oldest !== undefined &&
+          oldest < intentAt
+        ) {
           covered = true; // reached drafts older than the attempt
           break;
         }
@@ -362,8 +421,14 @@ export class SubstackDraftDestination implements DestinationAdapter {
           return "unknown";
         }
       }
-      return this.safeState(selected, context.preview) && this.matches(selected, p)
-        ? { delivered: receiptFor(selected, !!context.preview.draftAuthorization) }
+      return this.safeState(selected, context.preview) &&
+        this.matches(selected, p)
+        ? {
+            delivered: receiptFor(
+              selected,
+              !!context.preview.draftAuthorization,
+            ),
+          }
         : "unknown";
     }
     if (sameHeadline === 0 && covered) return { delivered: false };
@@ -406,7 +471,8 @@ export class SubstackPublishDestination implements DestinationAdapter {
     },
   ) {
     const from = Date.parse(options.publishFrom);
-    if (!Number.isFinite(from)) throw new Error("substack: invalid publish activation time");
+    if (!Number.isFinite(from))
+      throw new Error("substack: invalid publish activation time");
     this.publishFrom = from;
     this.name = options.name ?? "substack";
     this.draft = new SubstackDraftDestination(client, options);
@@ -419,13 +485,17 @@ export class SubstackPublishDestination implements DestinationAdapter {
     );
   }
 
-  render(article: Parameters<DestinationAdapter["render"]>[0]): DestinationPreview {
-    if (!this.eligible(article.data)) throw new Error("substack: approval not eligible to publish");
+  render(
+    article: Parameters<DestinationAdapter["render"]>[0],
+  ): DestinationPreview {
+    if (!this.eligible(article.data))
+      throw new Error("substack: approval not eligible to publish");
     return this.draft.render(article);
   }
 
   async deliver(preview: DestinationPreview, key: string) {
-    if (preview.draftAuthorization) throw new Error("substack: drafts are never published");
+    if (preview.draftAuthorization)
+      throw new Error("substack: drafts are never published");
     const created = await this.draft.deliver(preview, key);
     const id = created.externalId!;
     try {
@@ -446,7 +516,10 @@ export class SubstackPublishDestination implements DestinationAdapter {
       simulated: false,
       externalId: id,
       deliveredAt: new Date().toISOString(),
-      publicationSafety: { published: true as const, subscriberEmail: "requested" as const },
+      publicationSafety: {
+        published: true as const,
+        subscriberEmail: "requested" as const,
+      },
     };
   }
 

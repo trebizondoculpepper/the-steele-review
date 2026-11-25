@@ -21,7 +21,10 @@ export class UnsupportedMarkdownError extends Error {
   }
 }
 
-type Mark = { type: "em" } | { type: "strong" } | { type: "link"; attrs: { href: string } };
+type Mark =
+  | { type: "em" }
+  | { type: "strong" }
+  | { type: "link"; attrs: { href: string } };
 export type PmText = { type: "text"; text: string; marks?: Mark[] };
 export type PmNode =
   | { type: "doc"; content: PmNode[] }
@@ -30,7 +33,13 @@ export type PmNode =
   | { type: "blockquote"; content: PmNode[] }
   | { type: "ordered_list"; attrs: { order: number }; content: PmNode[] }
   | { type: "bullet_list"; content: PmNode[] }
-  | { type: "list_item"; content: PmNode[] };
+  | { type: "list_item"; content: PmNode[] }
+  | { type: "footnote"; attrs: { number: number }; content: PmNode[] };
+/** An inline footnote reference, as the Substack editor saves it (#811). */
+export type PmFootnoteAnchor = {
+  type: "footnoteAnchor";
+  attrs: { number: number };
+};
 
 const httpsUrl = (raw: string): string => {
   let url: URL;
@@ -39,7 +48,8 @@ const httpsUrl = (raw: string): string => {
   } catch {
     throw new UnsupportedMarkdownError("invalid link");
   }
-  if (url.protocol !== "https:") throw new UnsupportedMarkdownError("non-https link");
+  if (url.protocol !== "https:")
+    throw new UnsupportedMarkdownError("non-https link");
   return url.toString();
 };
 
@@ -55,7 +65,8 @@ function bareUrl(text: string): [string, string] | null {
   for (;;) {
     const last = url.at(-1)!;
     if (".,;:!?]'".includes(last)) url = url.slice(0, -1);
-    else if (last === ")" && url.split("(").length < url.split(")").length) url = url.slice(0, -1);
+    else if (last === ")" && url.split("(").length < url.split(")").length)
+      url = url.slice(0, -1);
     else break;
   }
   return url.length > "https://".length ? [url, url] : null;
@@ -66,13 +77,16 @@ function bareUrl(text: string): [string, string] | null {
  * contain balanced parentheses (`report_(2026)`), as in CommonMark; an
  * unbalanced or whitespace-broken destination is not a link.
  */
-function explicitLink(s: string): { text: string; href: string; length: number } | null {
+function explicitLink(
+  s: string,
+): { text: string; href: string; length: number } | null {
   const label = /^\[((?:\\.|[^\]\\])+)\]\(/.exec(s);
   if (!label) return null;
   let i = label[0].length;
   if (s[i] === "<") {
     const end = s.indexOf(">", i);
-    if (end < 0 || s[end + 1] !== ")" || /\s/.test(s.slice(i + 1, end))) return null;
+    if (end < 0 || s[end + 1] !== ")" || /\s/.test(s.slice(i + 1, end)))
+      return null;
     return { text: label[1]!, href: s.slice(i + 1, end), length: end + 2 };
   }
   let depth = 0;
@@ -92,12 +106,14 @@ function explicitLink(s: string): { text: string; href: string; length: number }
 
 /** Inline Markdown to text nodes with marks. */
 export function inline(source: string): PmText[] {
-  if (/<(?!https:\/\/)[a-z!/]/i.test(source)) throw new UnsupportedMarkdownError("inline html");
+  if (/<(?!https:\/\/)[a-z!/]/i.test(source))
+    throw new UnsupportedMarkdownError("inline html");
   const out: PmText[] = [];
   const push = (text: string, marks: Mark[]) => {
     if (!text) return;
     const last = out.at(-1);
-    if (last && JSON.stringify(last.marks ?? []) === JSON.stringify(marks)) last.text += text;
+    if (last && JSON.stringify(last.marks ?? []) === JSON.stringify(marks))
+      last.text += text;
     else out.push({ type: "text", text, ...(marks.length ? { marks } : {}) });
   };
   const walk = (s: string, marks: Mark[]) => {
@@ -109,7 +125,11 @@ export function inline(source: string): PmText[] {
     };
     while (i < s.length) {
       const rest = s.slice(i);
-      if (rest[0] === "\\" && rest.length > 1 && /[\\`*_[\]()<>#.!-]/.test(rest[1]!)) {
+      if (
+        rest[0] === "\\" &&
+        rest.length > 1 &&
+        /[\\`*_[\]()<>#.!-]/.test(rest[1]!)
+      ) {
         buf += rest[1];
         i += 2;
         continue;
@@ -118,14 +138,20 @@ export function inline(source: string): PmText[] {
       const link = explicitLink(rest);
       if (link) {
         flush();
-        walk(link.text, [...marks, { type: "link", attrs: { href: httpsUrl(link.href) } }]);
+        walk(link.text, [
+          ...marks,
+          { type: "link", attrs: { href: httpsUrl(link.href) } },
+        ]);
         i += link.length;
         continue;
       }
       const auto = /^<(https:\/\/[^>\s]+)>/.exec(rest) ?? bareUrl(rest);
       if (auto) {
         flush();
-        push(auto[1]!, [...marks, { type: "link", attrs: { href: httpsUrl(auto[1]!) } }]);
+        push(auto[1]!, [
+          ...marks,
+          { type: "link", attrs: { href: httpsUrl(auto[1]!) } },
+        ]);
         i += auto[0].length;
         continue;
       }
@@ -154,11 +180,16 @@ export function inline(source: string): PmText[] {
 
 const paragraph = (text: string): PmNode => {
   const content = inline(text);
-  return content.length ? { type: "paragraph", content } : { type: "paragraph" };
+  return content.length
+    ? { type: "paragraph", content }
+    : { type: "paragraph" };
 };
 
 /** Convert the writer's Markdown to a ProseMirror document. */
-export function markdownToProseMirror(markdown: string): { type: "doc"; content: PmNode[] } {
+export function markdownToProseMirror(markdown: string): {
+  type: "doc";
+  content: PmNode[];
+} {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const content: PmNode[] = [];
   let i = 0;
@@ -209,12 +240,17 @@ export function markdownToProseMirror(markdown: string): { type: "doc"; content:
         let text = pattern.exec(lines[i]!)![1]!;
         i++;
         // Continuation lines indented under the item.
-        while (i < lines.length && /^ {2,}\S/.test(lines[i]!)) text += ` ${lines[i++]!.trim()}`;
+        while (i < lines.length && /^ {2,}\S/.test(lines[i]!))
+          text += ` ${lines[i++]!.trim()}`;
         items.push({ type: "list_item", content: [paragraph(text)] });
       }
       content.push(
         ordered
-          ? { type: "ordered_list", attrs: { order: Number(ordered[1]) }, content: items }
+          ? {
+              type: "ordered_list",
+              attrs: { order: Number(ordered[1]) },
+              content: items,
+            }
           : { type: "bullet_list", content: items },
       );
       continue;
@@ -230,7 +266,8 @@ export function markdownToProseMirror(markdown: string): { type: "doc"; content:
     }
     // A line no block parser accepts (for example an empty "# ") must fail,
     // never loop: model output is untrusted.
-    if (para.length === 0) throw new UnsupportedMarkdownError("unrecognised block");
+    if (para.length === 0)
+      throw new UnsupportedMarkdownError("unrecognised block");
     content.push(paragraph(para.join(" ")));
   }
   return { type: "doc", content };
@@ -242,7 +279,10 @@ export function canonicalJson(value: unknown): string {
   if (value && typeof value === "object") {
     return `{${Object.keys(value)
       .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
+      .map(
+        (k) =>
+          `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`,
+      )
       .join(",")}}`;
   }
   return JSON.stringify(value);
@@ -273,9 +313,13 @@ export function bodyFingerprint(doc: unknown): string {
   const links: string[] = [];
   const walk = (n: unknown) => {
     if (!n || typeof n !== "object") return;
-    const o = n as { marks?: { type?: string; attrs?: { href?: unknown } }[]; content?: unknown };
+    const o = n as {
+      marks?: { type?: string; attrs?: { href?: unknown } }[];
+      content?: unknown;
+    };
     for (const m of o.marks ?? []) {
-      if (m.type === "link" && typeof m.attrs?.href === "string") links.push(m.attrs.href);
+      if (m.type === "link" && typeof m.attrs?.href === "string")
+        links.push(m.attrs.href);
     }
     if (Array.isArray(o.content)) for (const c of o.content) walk(c);
   };
@@ -283,4 +327,96 @@ export function bodyFingerprint(doc: unknown): string {
   return `sha256:${createHash("sha256")
     .update(JSON.stringify([documentText(doc), links]))
     .digest("hex")}`;
+}
+
+/**
+ * Native Substack footnotes (#811), shaped like a footnote saved by the
+ * Substack editor: an inline `footnoteAnchor {number}` in the prose and a
+ * top-level `footnote {number}` block holding paragraphs, after the body.
+ *
+ * The writer's citations are `[n]` markers in the prose and a numbered list
+ * under the final `## Sources` heading. Each marker becomes its own
+ * footnote, numbered in reading order. A repeated reference gets its own
+ * footnote, with the same source text, because the editor pairs each anchor
+ * with exactly one footnote. A marker with no definition fails rather than
+ * producing a broken draft. Sources never cited stay listed under Sources,
+ * as does the original-post line. A document without a Sources list is
+ * unchanged.
+ */
+export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
+  type: "doc";
+  content: PmNode[];
+} {
+  const content = doc.content;
+  const sourcesAt = content.findLastIndex(
+    (n) =>
+      n.type === "heading" &&
+      n.attrs.level === 2 &&
+      n.content.map((t) => t.text).join("") === "Sources",
+  );
+  if (sourcesAt < 0) return doc;
+  const listAt = content.findIndex(
+    (n, i) => i > sourcesAt && n.type === "ordered_list",
+  );
+  if (listAt < 0) return doc;
+  const list = content[listAt] as Extract<PmNode, { type: "ordered_list" }>;
+  const definitions = new Map<number, PmNode[]>(
+    list.content.map((item, i) => [
+      list.attrs.order + i,
+      (item as Extract<PmNode, { type: "list_item" }>).content,
+    ]),
+  );
+  const used = new Set<number>();
+  const footnotes: PmNode[] = [];
+  const MARKER = /\s*\[(\d+)\](?!\()/g;
+  const convert = (node: PmNode): PmNode => {
+    if (node.type === "paragraph" || node.type === "heading") {
+      if (!node.content) return node;
+      const out: (PmText | PmFootnoteAnchor)[] = [];
+      for (const t of node.content) {
+        // Link text is never a citation.
+        if (t.marks?.some((m) => m.type === "link")) {
+          out.push(t);
+          continue;
+        }
+        let last = 0;
+        for (const m of t.text.matchAll(MARKER)) {
+          const n = Number(m[1]);
+          const definition = definitions.get(n);
+          if (!definition)
+            throw new UnsupportedMarkdownError("footnote without a source");
+          used.add(n);
+          const before = t.text.slice(last, m.index);
+          if (before) out.push({ ...t, text: before });
+          const number = footnotes.length + 1;
+          out.push({ type: "footnoteAnchor", attrs: { number } });
+          footnotes.push({
+            type: "footnote",
+            attrs: { number },
+            content: structuredClone(definition),
+          });
+          last = m.index! + m[0].length;
+        }
+        const rest = t.text.slice(last);
+        if (rest) out.push(last ? { ...t, text: rest } : t);
+      }
+      return { ...node, content: out as PmText[] };
+    }
+    if ("content" in node && Array.isArray(node.content))
+      return { ...node, content: node.content.map(convert) } as PmNode;
+    return node;
+  };
+  const body = content.slice(0, sourcesAt).map(convert);
+  if (footnotes.length === 0) return doc;
+  const unused = list.content.filter((_, i) => !used.has(list.attrs.order + i));
+  const sources = content
+    .slice(sourcesAt)
+    .flatMap((n, i): PmNode[] =>
+      i + sourcesAt !== listAt
+        ? [n]
+        : unused.length
+          ? [{ type: "bullet_list", content: unused }]
+          : [],
+    );
+  return { type: "doc", content: [...body, ...sources, ...footnotes] };
 }
