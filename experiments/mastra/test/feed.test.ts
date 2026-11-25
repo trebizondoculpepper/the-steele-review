@@ -120,3 +120,27 @@ test("a truncated HTTP-200 feed is a failure and never establishes the baseline"
   h.set(feed(item("one", "One", "1")));
   assert.equal((await pollFeed(h.store, h.config)).baseline, true);
 });
+
+test("an item selected before activation is not reported as changed by the baseline", async () => {
+  const h = harness();
+  await h.store.select({ canonicalUrl: `https://${HOST}/p/one`, slug: "one" }, new Date().toISOString());
+  h.set(feed(item("one", "One", "1")));
+  const first = await pollFeed(h.store, h.config);
+  assert.equal(first.baseline, true);
+  assert.equal(first.changedItems.length, 0);
+  const [one] = await h.store.items(10, "selected");
+  assert.equal(one!.postId, "1", "metadata is filled in, status stays selected");
+});
+
+test("an over-long feed is refused instead of truncated", async () => {
+  const h = harness();
+  h.set(feed(...Array.from({ length: 501 }, (_, i) => item(`p${i}`, `P${i}`))));
+  assert.equal((await pollFeed(h.store, h.config)).error, "invalid-feed");
+  assert.equal(await h.store.activated(), false);
+});
+
+test("store initialisation retries after a failure", async () => {
+  const store = new FeedStore("file:/nonexistent-dir-for-test/feed.db");
+  await assert.rejects(store.activated());
+  await assert.rejects(store.activated(), "a second call retries rather than reusing the rejected promise");
+});

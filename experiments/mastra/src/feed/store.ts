@@ -10,7 +10,10 @@ import type { FeedItem } from "./rss.js";
  *
  * Item status:
  * - baseline: present when the subscription was activated; never submitted automatically.
- * - new: first seen after activation; awaiting capture (#920).
+ * - new: first seen after activation; awaiting capture (#920). This durable
+ *   status, not a poll run's output, is the hand-off to capture: an item
+ *   recorded here survives even if the process stops before Mastra saves
+ *   the poll step's result.
  * - selected: entered manually by an operator.
  */
 
@@ -37,16 +40,24 @@ export interface PollRecord {
 }
 
 export class FeedStore {
-  private readonly db: Client;
+  private readonly url: string;
+  private client: Client | undefined;
   private ready: Promise<void> | undefined;
 
   constructor(url: string) {
-    this.db = createClient({ url });
+    this.url = url;
+  }
+
+  /** The connection, opened lazily so a failure surfaces at use and can be retried. */
+  private get db(): Client {
+    this.client ??= createClient({ url: this.url });
+    return this.client;
   }
 
   private init() {
-    this.ready ??= this.db
-      .batch(
+    this.ready ??= Promise.resolve()
+      .then(() =>
+        this.db.batch(
         [
           `CREATE TABLE IF NOT EXISTS feed_items (
             canonical_url TEXT PRIMARY KEY, slug TEXT NOT NULL, post_id TEXT, source_item TEXT,
@@ -58,9 +69,17 @@ export class FeedStore {
             outcome TEXT NOT NULL, http_status INTEGER, item_count INTEGER NOT NULL,
             new_count INTEGER NOT NULL, changed_count INTEGER NOT NULL, baseline INTEGER NOT NULL, error TEXT)`,
         ],
-        "write",
+          "write",
+        ),
       )
-      .then(() => undefined);
+      .then(() => undefined)
+      .catch((e) => {
+        // Allow a later call to retry after a transient failure.
+        this.ready = undefined;
+        this.client?.close();
+        this.client = undefined;
+        throw e;
+      });
     return this.ready;
   }
 
@@ -90,6 +109,14 @@ export class FeedStore {
             args: [it.canonicalUrl, it.slug, it.postId, it.sourceItem, it.title, it.publishedAt, it.medium, it.fingerprint, baseline ? "baseline" : "new", poll.finishedAt, poll.finishedAt],
           });
           if (!baseline) added.push(it);
+        } else if (prev.fingerprint === "manual" || (baseline && prev.fingerprint !== it.fingerprint)) {
+          // A manually selected placeholder, or any row met during activation:
+          // fill in the observed metadata without reporting an edit.
+          await tx.execute({
+            sql: `UPDATE feed_items SET post_id = COALESCE(?, post_id), source_item = COALESCE(?, source_item), title = ?, published_at = ?, medium = ?,
+                  fingerprint = ?, last_seen_at = ? WHERE canonical_url = ?`,
+            args: [it.postId, it.sourceItem, it.title, it.publishedAt, it.medium, it.fingerprint, poll.finishedAt, it.canonicalUrl],
+          });
         } else if (prev.fingerprint !== it.fingerprint) {
           await tx.execute({
             sql: `UPDATE feed_items SET post_id = COALESCE(?, post_id), source_item = COALESCE(?, source_item), title = ?, published_at = ?, medium = ?,
@@ -186,6 +213,7 @@ export class FeedStore {
   }
 
   close() {
-    this.db.close();
+    this.client?.close();
+    this.client = undefined;
   }
 }
