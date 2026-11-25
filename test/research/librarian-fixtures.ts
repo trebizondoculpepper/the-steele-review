@@ -1,15 +1,25 @@
 import { proposeThemes } from "../../src/analysis/theme-proposals.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
-import type { ArtifactRef, GitArtifactStore } from "../../src/controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../../src/controllers/artifact-store.js";
 import { researchJobId, type ResearchRequest } from "../../src/research/job.js";
 import type { Commission } from "../../src/research/librarian.js";
 
 /** Shared librarian fixtures: a saved analysis and a researcher stand-in over one store. */
-export const TEXT = "A treaty bans weather weapons. They paid 56 million for the attack.";
+export const TEXT =
+  "A treaty bans weather weapons. They paid 56 million for the attack.";
 export const SHARED = "https://treaties.un.org/enmod";
 export const CLAIMS = [
-  { id: "claim-treaty", statement: "A treaty prohibits hostile environmental modification" },
-  { id: "claim-payment", statement: "A payment of 56 million funded an attack" },
+  {
+    id: "claim-treaty",
+    statement: "A treaty prohibits hostile environmental modification",
+  },
+  {
+    id: "claim-payment",
+    statement: "A payment of 56 million funded an attack",
+  },
 ];
 
 export function librarianFixtures(artifacts: GitArtifactStore) {
@@ -34,7 +44,12 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
         modelVersion: "fake/m",
         complete: async () =>
           JSON.stringify({
-            themes: [{ title, description: "Claims of weather modification as a weapon" }],
+            themes: [
+              {
+                title,
+                description: "Claims of weather modification as a weapon",
+              },
+            ],
           }),
       },
       artifacts,
@@ -50,9 +65,13 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
         },
       },
     });
-    const [themePath] = await artifacts.list(`theme-proposals/pub/${postId}`, 10);
+    const [themePath] = await artifacts.list(
+      `theme-proposals/pub/${postId}`,
+      10,
+    );
     const themeResult = (await artifacts.lookup(themePath))!;
-    const proposalId = JSON.parse(await artifacts.read(themeResult)).proposals[0].id as string;
+    const proposalId = JSON.parse(await artifacts.read(themeResult))
+      .proposals[0].id as string;
     const claimResult = await artifacts.write(
       `claim-extractions/pub/${postId}/r.json`,
       JSON.stringify({
@@ -71,7 +90,11 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
         })),
         candidates: [],
         rejected: [],
-        extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+        extraction: {
+          modelVersion: "m",
+          promptVersion: "p",
+          extractedAt: "2026-01-01T00:00:00Z",
+        },
       }),
     );
     return { themeResult, claimResult };
@@ -90,7 +113,11 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
       | "busy"
       | "failed"
       | {
-          passages: { claimRecordId: string; url: string; monitored?: boolean }[];
+          passages: {
+            claimRecordId: string;
+            url: string;
+            monitored?: boolean;
+          }[];
           /** Archived theme-background sources with no claim passage (#748). */
           background?: string[];
           report?: string;
@@ -100,6 +127,12 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
     const commission: Commission = async (request) => {
       requests.push(request);
       const jobId = researchJobId(request);
+      // As in production (research/job.ts), the exact request is saved before the job runs.
+      if (!(await artifacts.lookup(`research-jobs/${jobId}/request.json`)))
+        await put(
+          `research-jobs/${jobId}/request.json`,
+          JSON.stringify(request),
+        );
       const outcome = plan(request);
       if (outcome === "busy") return { jobId, status: "busy" };
       if (outcome === "failed") {
@@ -110,17 +143,34 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
           failure: "provider-error" as const,
           finishedAt: "2026-01-01T00:00:00Z",
         };
-        const resultRef = await put(`research-jobs/${jobId}/result.json`, JSON.stringify(result));
+        const resultRef = await put(
+          `research-jobs/${jobId}/result.json`,
+          JSON.stringify(result),
+        );
         return { jobId, status: "finished", result, resultRef };
       }
-      const report = await put(`research-jobs/${jobId}/report.md`, outcome.report ?? "# report\n");
+      // The production runner's saved report (research/runner.ts).
+      const report = await put(
+        `research-jobs/${jobId}/report.json`,
+        JSON.stringify({
+          schemaVersion: 1,
+          jobId,
+          promptVersion: "fixture",
+          model: "fixture",
+          report: outcome.report ?? "# report",
+          citations: [...new Set(outcome.passages.map((p) => p.url))],
+        }),
+      );
       const background = await Promise.all(
         (outcome.background ?? []).map(async (url, i) => ({
           url,
           retrieval: "archived",
           support: "unverified",
           archivedArtifact: ref(
-            await put(`research-jobs/${jobId}/sources/${i}.txt`, `Snapshot of ${url}`),
+            await put(
+              `research-jobs/${jobId}/sources/${i}.txt`,
+              `Snapshot of ${url}`,
+            ),
           ),
           passages: [],
         })),
@@ -158,7 +208,10 @@ export function librarianFixtures(artifacts: GitArtifactStore) {
         manifest: ref(manifest),
         finishedAt: "2026-01-01T00:00:00Z",
       };
-      const resultRef = await put(`research-jobs/${jobId}/result.json`, JSON.stringify(result));
+      const resultRef = await put(
+        `research-jobs/${jobId}/result.json`,
+        JSON.stringify(result),
+      );
       return { jobId, status: "finished", result, resultRef };
     };
     return { commission, requests };

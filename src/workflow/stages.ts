@@ -238,7 +238,9 @@ export function articleStages(deps: {
       shortlister: deps.shortlister,
       commission: async (request) => {
         requests.push(request);
-        return { jobId: "planning", status: "busy" };
+        // Planning commissions nothing, but each request keeps its own job
+        // identity, so distinct requests are never recorded as one job.
+        return { jobId: researchJobId(request), status: "busy" };
       },
     });
     // Most useful gap first: the workflow commissions the first
@@ -594,7 +596,9 @@ export function articleStages(deps: {
     async package(coverage) {
       let comparisons: ArtifactRef[] = [];
       if (deps.history || deps.crossSpeaker) {
-        const record = CoverageRecordSchema.parse(JSON.parse(await deps.content.read(coverage)));
+        const record = CoverageRecordSchema.parse(
+          JSON.parse(await deps.content.read(coverage)),
+        );
         const claimResult = await deps.content.lookup(record.claimResult.path);
         if (claimResult && deps.history) {
           comparisons = await saveSpeakerComparisons({
