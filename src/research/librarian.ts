@@ -760,7 +760,10 @@ async function priorMappings(
         coveredClaims?.set(c.claimRecordId, c);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
-      if (!recordedJobs?.has(j.jobId)) recordedJobs?.set(j.jobId, j);
+      // Keep the completed version of a job: a pending snapshot from another
+      // record of this analysis must not hide its result and manifest.
+      const kept = recordedJobs?.get(j.jobId);
+      if (!kept || (!kept.result && j.result)) recordedJobs?.set(j.jobId, j);
       if (j.targetedClaims && targetedBatches) {
         const batches = targetedBatches.get(j.dossierId) ?? [];
         const key = JSON.stringify(j.targetedClaims);
