@@ -361,6 +361,9 @@ export class SubstackDraftDestination implements DestinationAdapter {
     // Featured image (#894): uploaded before the draft exists, so a failure
     // leaves nothing half-made; the draft is then created without one.
     const coverImage = await this.uploadCover(p);
+    // The upload is its own network step: recheck live permission before the
+    // draft is created, so a revocation during it pauses instead.
+    await this.requireLive(preview);
     try {
       ({ id } = await this.client.createDraft({
         title: p.title,
