@@ -34,7 +34,10 @@ export function researchTokensFromConfiguration(
       roles: { research: [RESEARCH_MAX_TOKENS] },
       ...(options.read ? { read: options.read } : {}),
     });
-    const selected = await controller.currentSetting("research", RESEARCH_MAX_TOKENS);
+    const selected = await controller.currentSetting(
+      "research",
+      RESEARCH_MAX_TOKENS,
+    );
     return AppliedResearchTokensSchema.parse({
       maxOutputTokens: selected.value,
       source: selected.source,

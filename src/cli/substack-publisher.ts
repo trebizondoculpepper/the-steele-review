@@ -36,6 +36,7 @@ import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configu
  * Never logs the origin, the session or response bodies.
  */
 import { readFile } from "node:fs/promises";
+import { featuredImagePolicyFromConfiguration } from "../config/featured-image-policy.js";
 import { emailPolicyFromConfiguration } from "../config/publish-email-policy.js";
 import { hostname } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -172,6 +173,7 @@ async function main(): Promise<number> {
             emailPolicy: emailPolicyFromConfiguration(),
             // Pinned featured images are read from the content repository (#894).
             images: content,
+            featuredImagePolicy: featuredImagePolicyFromConfiguration(),
             ...(c.STEELE_SUBSTACK_BYLINE_ID
               ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }
               : {}),
@@ -179,6 +181,7 @@ async function main(): Promise<number> {
         : new SubstackDraftDestination(client, {
             deliveryControl,
             images: content,
+            featuredImagePolicy: featuredImagePolicyFromConfiguration(),
             name: c.STEELE_PUBLISHER_DESTINATION,
             ...(c.STEELE_SUBSTACK_BYLINE_ID
               ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }

@@ -880,6 +880,7 @@ describe("featured image from the verified manifest (#894)", () => {
     mode: "legacy-body-only",
     previewImage: image,
   } as never;
+  const optIn = async () => "source-preview" as const;
   const images = (fail = false) => ({
     readBinary: async () => {
       if (fail) throw new Error("missing");
@@ -889,7 +890,10 @@ describe("featured image from the verified manifest (#894)", () => {
 
   it("uploads the pinned image and creates the draft with it as the cover", async () => {
     const s = fakeSubstack();
-    const d = new SubstackDraftDestination(s, { images: images() });
+    const d = new SubstackDraftDestination(s, {
+      images: images(),
+      featuredImagePolicy: optIn,
+    });
     const preview = d.render({ markdown: WRITER_MARKDOWN, data, publication });
     const receipt = await d.deliver(preview, "k");
     expect(s.uploads).toEqual([{ bytes: 4, contentType: "image/png" }]);
@@ -906,7 +910,10 @@ describe("featured image from the verified manifest (#894)", () => {
     ]) {
       const s = fakeSubstack();
       if (setup.fault) s.faults.upload = [setup.fault];
-      const d = new SubstackDraftDestination(s, { images: setup.reader });
+      const d = new SubstackDraftDestination(s, {
+        images: setup.reader,
+        featuredImagePolicy: optIn,
+      });
       const receipt = await d.deliver(
         d.render({ markdown: WRITER_MARKDOWN, data, publication }),
         "k",
@@ -919,13 +926,68 @@ describe("featured image from the verified manifest (#894)", () => {
 
   it("creates the draft as before when the approval pinned no image", async () => {
     const s = fakeSubstack();
-    const d = new SubstackDraftDestination(s, { images: images() });
+    const d = new SubstackDraftDestination(s, {
+      images: images(),
+      featuredImagePolicy: optIn,
+    });
     const receipt = await d.deliver(
       d.render({ markdown: WRITER_MARKDOWN, data }),
       "k",
     );
     expect(s.uploads).toHaveLength(0);
     expect(receipt).not.toHaveProperty("featuredImage");
+  });
+
+  it("shows no source image unless the owner opts in, and fails closed", async () => {
+    for (const featuredImagePolicy of [
+      undefined,
+      async () => "off" as const,
+      async () => {
+        throw new Error("config unreadable");
+      },
+    ]) {
+      const s = fakeSubstack();
+      const d = new SubstackDraftDestination(s, {
+        images: images(),
+        ...(featuredImagePolicy ? { featuredImagePolicy } : {}),
+      });
+      const receipt = await d.deliver(
+        d.render({ markdown: WRITER_MARKDOWN, data, publication }),
+        "k",
+      );
+      expect(s.uploads).toHaveLength(0);
+      expect(s.drafts[0]!.cover_image).toBeUndefined();
+      expect(receipt).toMatchObject({ featuredImage: "off" });
+    }
+  });
+
+  it("keeps the featured-image outcome on the publication receipt", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackPublishDestination(s, {
+      publishFrom: "2000-01-01T00:00:00.000Z",
+      images: images(),
+      featuredImagePolicy: optIn,
+      emailPolicy: async () => ({
+        subscriberEmail: "off",
+        withoutEmail: new Set(),
+      }),
+    });
+    await d.prepare();
+    const receipt = await d.deliver(
+      d.render({
+        markdown: WRITER_MARKDOWN,
+        data: {
+          ...(data as object),
+          approvedAt: "2026-11-25T00:00:00.000Z",
+        } as never,
+        publication,
+      }),
+      "k",
+    );
+    expect(receipt).toMatchObject({
+      featuredImage: "set",
+      publicationSafety: { published: true },
+    });
   });
 });
 

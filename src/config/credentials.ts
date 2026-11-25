@@ -14,7 +14,8 @@ import { parse as parseToml, type TomlTable } from "smol-toml";
  * Connection URLs are treated as sensitive too: they may carry user info.
  */
 
-export type CredentialProblem = "missing" | "unreadable" | "empty" | "conflict" | "invalid";
+export type CredentialProblem =
+  "missing" | "unreadable" | "empty" | "conflict" | "invalid";
 
 /** A setup error that names the variable and the problem, never the value or path. */
 export class CredentialError extends Error {
@@ -60,7 +61,8 @@ export function readCredential(
   const canonical = env[`${name}_CONFIG_FILE`];
   if (canonical !== undefined) {
     // Even an empty legacy input is a conflicting configuration authority.
-    if (direct !== undefined || file !== undefined) throw new CredentialError(name, "conflict");
+    if (direct !== undefined || file !== undefined)
+      throw new CredentialError(name, "conflict");
     if (canonical.trim() === "") throw new CredentialError(name, "empty");
     let raw: string;
     try {
@@ -76,13 +78,20 @@ export function readCredential(
       // Parser diagnostics can include file contents: never retain the cause.
       throw new CredentialError(name, "invalid");
     }
-    if (!Object.hasOwn(parsed, name)) throw new CredentialError(name, "missing");
+    if (!Object.hasOwn(parsed, name))
+      throw new CredentialError(name, "missing");
     const selected = parsed[name];
-    if (typeof selected !== "string") throw new CredentialError(name, "invalid");
+    if (typeof selected !== "string")
+      throw new CredentialError(name, "invalid");
     if (selected.trim() === "") throw new CredentialError(name, "empty");
     return selected;
   }
-  if (direct !== undefined && direct !== "" && file !== undefined && file !== "") {
+  if (
+    direct !== undefined &&
+    direct !== "" &&
+    file !== undefined &&
+    file !== ""
+  ) {
     throw new CredentialError(name, "conflict");
   }
   let value: string | undefined;
@@ -112,7 +121,10 @@ export function readCredential(
 export type CredentialProvider = () => string;
 
 /** A live provider for `name`, checked once now so start-up still fails fast. */
-export function liveCredential(name: string, source: CredentialSource = {}): CredentialProvider {
+export function liveCredential(
+  name: string,
+  source: CredentialSource = {},
+): CredentialProvider {
   const read = () => readCredential(name, { ...source, required: true });
   read();
   return read;
@@ -157,8 +169,13 @@ export function natsConnection(source: CredentialSource = {}): NatsConnection {
 }
 
 /** Search connection settings: URL plus optional API key. */
-export function elasticsearchConnection(source: CredentialSource = {}): ElasticsearchConnection {
-  const url = readCredential("ELASTICSEARCH_URL", { ...source, required: true });
+export function elasticsearchConnection(
+  source: CredentialSource = {},
+): ElasticsearchConnection {
+  const url = readCredential("ELASTICSEARCH_URL", {
+    ...source,
+    required: true,
+  });
   const apiKey = readCredential("ELASTICSEARCH_API_KEY", source);
   return { url, ...(apiKey ? { apiKey } : {}) };
 }
@@ -194,5 +211,7 @@ export function redact(text: string, secrets: string[]): string {
 
 /** A setup failure message safe to print. */
 export function describeSetupError(error: unknown): string {
-  return error instanceof CredentialError ? error.message : "configuration error";
+  return error instanceof CredentialError
+    ? error.message
+    : "configuration error";
 }

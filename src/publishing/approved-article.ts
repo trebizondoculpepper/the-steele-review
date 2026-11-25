@@ -201,7 +201,9 @@ export const DeliveryReceiptSchema = z
      * requested, or suppressed and read back as never sent (#388).
      */
     /** Featured image outcome (#894), when the approval pinned one. */
-    featuredImage: z.enum(["set", "unavailable", "unconfirmed"]).optional(),
+    featuredImage: z
+      .enum(["set", "off", "unavailable", "unconfirmed"])
+      .optional(),
     publicationSafety: z
       .object({
         published: z.literal(true),

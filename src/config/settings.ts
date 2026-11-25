@@ -67,6 +67,7 @@ const modelId = z
 
 export const PUBLISH_WITHOUT_EMAIL = "STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL";
 export const SUBSCRIBER_EMAIL = "STEELE_SUBSTACK_SUBSCRIBER_EMAIL";
+export const FEATURED_IMAGE = "STEELE_SUBSTACK_FEATURED_IMAGE";
 const PostKey = /^[a-z0-9][a-z0-9-]{0,199}\/[a-z0-9][a-z0-9-]{0,199}$/;
 /** Blank, or up to 20 `publicationId/postId` pairs; parsed to the list of pairs. */
 export const PublishWithoutEmailSchema = z
@@ -140,6 +141,16 @@ export const SETTINGS: readonly SettingSpec[] = [
     schema: z.string().regex(/^[0-9]*$/),
     default: "",
     sensitivity: "private",
+    activation: "live",
+  },
+  {
+    key: FEATURED_IMAGE,
+    domain: "providers",
+    description:
+      "Whether Substack drafts get the source's preview image as their featured image (#894): off (default) or source-preview. The image-annotation design (#310) requires annotation before source images are shown; until it exists, source-preview is an explicit owner opt-in to unannotated publisher previews. Read before every delivery.",
+    schema: z.enum(["off", "source-preview"]),
+    default: "off",
+    sensitivity: "public",
     activation: "live",
   },
   {

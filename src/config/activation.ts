@@ -66,14 +66,17 @@ export interface ComponentAssessment {
  * component explicitly recorded as failed stays failed even if it later happens
  * to report the right version, so a failure is never silently overwritten.
  */
-export function assessActivation(record: ActivationRecord): ComponentAssessment[] {
+export function assessActivation(
+  record: ActivationRecord,
+): ComponentAssessment[] {
   return record.components.map((c) => ({
     component: c.component,
     mode: c.mode,
     state:
       c.failure !== undefined
         ? "failed"
-        : c.observedVersion !== undefined && c.observedVersion === record.configVersion
+        : c.observedVersion !== undefined &&
+            c.observedVersion === record.configVersion
           ? "active"
           : "pending",
     ...(c.observedVersion ? { observedVersion: c.observedVersion } : {}),
@@ -91,7 +94,9 @@ export function acknowledgeComponent(
   record: ActivationRecord,
   input: { component: string; observedVersion: string },
 ): ActivationRecord {
-  const index = record.components.findIndex((c) => c.component === input.component);
+  const index = record.components.findIndex(
+    (c) => c.component === input.component,
+  );
   if (index === -1) return record;
   const components = [...record.components];
   // A later successful report clears an earlier failure.
@@ -105,7 +110,9 @@ export function failComponent(
   record: ActivationRecord,
   input: { component: string; reason: string },
 ): ActivationRecord {
-  const index = record.components.findIndex((c) => c.component === input.component);
+  const index = record.components.findIndex(
+    (c) => c.component === input.component,
+  );
   if (index === -1) return record;
   const components = [...record.components];
   // Drop any observation: a failed activation must never read as active.
@@ -117,11 +124,18 @@ export function failComponent(
 /** Plan which components a revision touches and how disruptive that is. */
 export function planActivation(input: {
   configVersion: string;
-  settings: Array<{ key: string; component: string; activation: "live" | "restart" }>;
+  settings: Array<{
+    key: string;
+    component: string;
+    activation: "live" | "restart";
+  }>;
   observed: Record<string, string | undefined>;
   now?: () => Date;
 }): ActivationRecord {
-  const byComponent = new Map<string, { settings: string[]; mode: ActivationMode }>();
+  const byComponent = new Map<
+    string,
+    { settings: string[]; mode: ActivationMode }
+  >();
   for (const setting of input.settings) {
     const mode = ACTIVATION_MODE[setting.activation];
     const entry = byComponent.get(setting.component) ?? { settings: [], mode };
@@ -140,7 +154,9 @@ export function planActivation(input: {
         component,
         settings: entry.settings,
         mode: entry.mode,
-        ...(input.observed[component] ? { observedVersion: input.observed[component] } : {}),
+        ...(input.observed[component]
+          ? { observedVersion: input.observed[component] }
+          : {}),
       })),
   });
 }

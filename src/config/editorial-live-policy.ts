@@ -16,7 +16,9 @@ export const EditorialPolicyObservationSchema = z
     revision: z.string().regex(/^config-sha256:[0-9a-f]{32}$/),
   })
   .strict();
-export type EditorialPolicyObservation = z.infer<typeof EditorialPolicyObservationSchema>;
+export type EditorialPolicyObservation = z.infer<
+  typeof EditorialPolicyObservationSchema
+>;
 
 /** A single file read makes each policy boundary coherent across atomic owner edits. */
 export function editorialPolicyFromConfiguration(
@@ -31,7 +33,9 @@ export function editorialPolicyFromConfiguration(
       env,
       settingsFile: env.STEELE_CONFIG_PATH,
       salt: "public-editorial-policy-v1",
-      registry: SETTINGS.filter((setting) => (keys as readonly string[]).includes(setting.key)),
+      registry: SETTINGS.filter((setting) =>
+        (keys as readonly string[]).includes(setting.key),
+      ),
       roles: { editorial: keys },
       ...(options.read ? { read: options.read } : {}),
     });

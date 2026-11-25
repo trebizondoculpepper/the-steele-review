@@ -25,7 +25,9 @@ export class SettingsFileError extends Error {
 }
 
 /** Read the saved file; a missing file is an empty configuration, not a failure. */
-export async function readSettingsFile(path: string): Promise<Record<string, string>> {
+export async function readSettingsFile(
+  path: string,
+): Promise<Record<string, string>> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -43,7 +45,9 @@ export async function readSettingsFile(path: string): Promise<Record<string, str
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new SettingsFileError("invalid");
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(
+    parsed as Record<string, unknown>,
+  )) {
     // The reader only accepts string values; anything else is a broken file.
     if (typeof value !== "string") throw new SettingsFileError("invalid");
     out[key] = value;
@@ -102,14 +106,19 @@ async function saveNow(
   const previousVersion = savedFileVersion(current, input.salt);
   try {
     await mkdir(`${path}.revisions`, { recursive: true, mode: 0o700 });
-    await writeFile(`${path}.revisions/${previousVersion}.json`, JSON.stringify(current, null, 2) + "\n", {
-      mode: 0o600,
-      flag: "wx",
-    });
+    await writeFile(
+      `${path}.revisions/${previousVersion}.json`,
+      JSON.stringify(current, null, 2) + "\n",
+      {
+        mode: 0o600,
+        flag: "wx",
+      },
+    );
   } catch (error) {
     // An existing revision file is fine (same content); anything else means the
     // previous state could not be retained, so refuse the save.
-    if ((error as { code?: string }).code !== "EEXIST") throw new SettingsFileError("write-failed");
+    if ((error as { code?: string }).code !== "EEXIST")
+      throw new SettingsFileError("write-failed");
   }
 
   // Unique per call: a shared PID-based name lets two saves collide.
@@ -127,7 +136,10 @@ async function saveNow(
     .map((a) => `${a.at}\t${a.action}\t${a.key}`)
     .join("\n");
   try {
-    await writeFile(`${path}.audit.log`, `${auditLine}\n`, { flag: "a", mode: 0o600 });
+    await writeFile(`${path}.audit.log`, `${auditLine}\n`, {
+      flag: "a",
+      mode: 0o600,
+    });
   } catch {
     // The save already landed; a missing audit line is reported, not undone.
     throw new SettingsFileError("write-failed");
@@ -135,12 +147,14 @@ async function saveNow(
   return { decision, version: decision.version };
 }
 
-
 /** Saved revisions of a configuration file, newest version name first. */
 export async function listSettingsRevisions(path: string): Promise<string[]> {
   try {
     const names = await readdir(`${path}.revisions`);
-    return names.filter((n) => n.endsWith(".json")).sort().reverse();
+    return names
+      .filter((n) => n.endsWith(".json"))
+      .sort()
+      .reverse();
   } catch (error) {
     if ((error as { code?: string }).code === "ENOENT") return [];
     throw new SettingsFileError("unreadable");
@@ -149,7 +163,11 @@ export async function listSettingsRevisions(path: string): Promise<string[]> {
 
 export type RestoreResult =
   | { status: "restored"; version: string; previousVersion: string }
-  | { status: "rejected"; reason: "stale-version" | "unknown-revision"; version: string };
+  | {
+      status: "rejected";
+      reason: "stale-version" | "unknown-revision";
+      version: string;
+    };
 
 /**
  * Restore a retained revision.
@@ -159,19 +177,35 @@ export type RestoreResult =
  */
 export async function restoreSettingsRevision(
   path: string,
-  input: { version: string; expectedVersion: string; salt: string; now?: () => Date },
+  input: {
+    version: string;
+    expectedVersion: string;
+    salt: string;
+    now?: () => Date;
+  },
 ): Promise<RestoreResult> {
   return serialize(path, async () => {
     const current = await readSettingsFile(path);
     const currentVersion = savedFileVersion(current, input.salt);
     if (currentVersion !== input.expectedVersion)
-      return { status: "rejected", reason: "stale-version", version: currentVersion };
+      return {
+        status: "rejected",
+        reason: "stale-version",
+        version: currentVersion,
+      };
 
     let content: Record<string, string>;
     try {
-      const raw = await readFile(`${path}.revisions/${input.version}.json`, "utf8");
+      const raw = await readFile(
+        `${path}.revisions/${input.version}.json`,
+        "utf8",
+      );
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      )
         throw new Error("invalid");
       content = {};
       for (const [k, v] of Object.entries(parsed)) {
@@ -179,7 +213,11 @@ export async function restoreSettingsRevision(
         content[k] = v;
       }
     } catch {
-      return { status: "rejected", reason: "unknown-revision", version: currentVersion };
+      return {
+        status: "rejected",
+        reason: "unknown-revision",
+        version: currentVersion,
+      };
     }
 
     // Keep the state being replaced, then swap atomically.
@@ -190,11 +228,14 @@ export async function restoreSettingsRevision(
         { mode: 0o600, flag: "wx" },
       );
     } catch (error) {
-      if ((error as { code?: string }).code !== "EEXIST") throw new SettingsFileError("write-failed");
+      if ((error as { code?: string }).code !== "EEXIST")
+        throw new SettingsFileError("write-failed");
     }
     const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
     try {
-      await writeFile(temporary, JSON.stringify(content, null, 2) + "\n", { mode: 0o600 });
+      await writeFile(temporary, JSON.stringify(content, null, 2) + "\n", {
+        mode: 0o600,
+      });
       await rename(temporary, path);
     } catch {
       throw new SettingsFileError("write-failed");

@@ -38,15 +38,20 @@ export async function configuredTranscription(
   const provider = env.STEELE_TRANSCRIPTION_PROVIDER;
   if (!provider || provider === "disabled") return undefined;
   if (provider === "openrouter") return openRouterTranscription(env);
-  if (provider !== "whisper.cpp") throw new Error("invalid STEELE_TRANSCRIPTION_PROVIDER");
+  if (provider !== "whisper.cpp")
+    throw new Error("invalid STEELE_TRANSCRIPTION_PROVIDER");
   const parsed = Config.safeParse(env);
   if (!parsed.success) {
-    const fields = [...new Set(parsed.error.issues.map((i) => i.path.join(".")))];
-    throw new Error(`invalid transcription configuration: ${fields.join(", ")}`);
+    const fields = [
+      ...new Set(parsed.error.issues.map((i) => i.path.join("."))),
+    ];
+    throw new Error(
+      `invalid transcription configuration: ${fields.join(", ")}`,
+    );
   }
   const c = parsed.data;
-  const allowedHosts = c.STEELE_TRANSCRIPTION_ALLOWED_HOSTS.split(",").map((h) =>
-    h.trim().toLowerCase(),
+  const allowedHosts = c.STEELE_TRANSCRIPTION_ALLOWED_HOSTS.split(",").map(
+    (h) => h.trim().toLowerCase(),
   );
   if (allowedHosts.some((h) => !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(h))) {
     throw new Error("invalid STEELE_TRANSCRIPTION_ALLOWED_HOSTS");
@@ -60,10 +65,18 @@ export async function configuredTranscription(
     ]) {
       await access(binary, constants.X_OK);
     }
-    await mkdir(c.STEELE_TRANSCRIPTION_WORKSPACE, { recursive: true, mode: 0o700 });
-    await access(c.STEELE_TRANSCRIPTION_WORKSPACE, constants.W_OK | constants.X_OK);
+    await mkdir(c.STEELE_TRANSCRIPTION_WORKSPACE, {
+      recursive: true,
+      mode: 0o700,
+    });
+    await access(
+      c.STEELE_TRANSCRIPTION_WORKSPACE,
+      constants.W_OK | constants.X_OK,
+    );
   } catch {
-    throw new Error("local transcription model, executables or workspace unavailable");
+    throw new Error(
+      "local transcription model, executables or workspace unavailable",
+    );
   }
   const adapter = new TranscriptionAdapter({
     provider: new WhisperProvider({
@@ -116,30 +129,44 @@ const OpenRouterConfig = z.object({
 });
 
 /** English transcription through OpenRouter (#234); the key comes from OPENROUTER_API_KEY[_FILE]. */
-async function openRouterTranscription(env: NodeJS.ProcessEnv): Promise<TranscriptionAdapter> {
+async function openRouterTranscription(
+  env: NodeJS.ProcessEnv,
+): Promise<TranscriptionAdapter> {
   const parsed = OpenRouterConfig.safeParse(env);
   if (!parsed.success) {
-    const fields = [...new Set(parsed.error.issues.map((i) => i.path.join(".")))];
-    throw new Error(`invalid transcription configuration: ${fields.join(", ")}`);
+    const fields = [
+      ...new Set(parsed.error.issues.map((i) => i.path.join("."))),
+    ];
+    throw new Error(
+      `invalid transcription configuration: ${fields.join(", ")}`,
+    );
   }
   const c = parsed.data;
-  const allowedHosts = c.STEELE_TRANSCRIPTION_ALLOWED_HOSTS.split(",").map((h) =>
-    h.trim().toLowerCase(),
+  const allowedHosts = c.STEELE_TRANSCRIPTION_ALLOWED_HOSTS.split(",").map(
+    (h) => h.trim().toLowerCase(),
   );
   if (allowedHosts.some((h) => !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(h))) {
     throw new Error("invalid STEELE_TRANSCRIPTION_ALLOWED_HOSTS");
   }
   const apiKey = readCredential("OPENROUTER_API_KEY", { env, required: true });
   try {
-    await mkdir(c.STEELE_TRANSCRIPTION_WORKSPACE, { recursive: true, mode: 0o700 });
-    await access(c.STEELE_TRANSCRIPTION_WORKSPACE, constants.W_OK | constants.X_OK);
+    await mkdir(c.STEELE_TRANSCRIPTION_WORKSPACE, {
+      recursive: true,
+      mode: 0o700,
+    });
+    await access(
+      c.STEELE_TRANSCRIPTION_WORKSPACE,
+      constants.W_OK | constants.X_OK,
+    );
   } catch {
     throw new Error("transcription workspace unavailable");
   }
   const adapter = new TranscriptionAdapter({
     provider: new OpenRouterTranscriptionProvider({
       apiKey,
-      ...(c.STEELE_TRANSCRIPTION_MODEL ? { model: c.STEELE_TRANSCRIPTION_MODEL } : {}),
+      ...(c.STEELE_TRANSCRIPTION_MODEL
+        ? { model: c.STEELE_TRANSCRIPTION_MODEL }
+        : {}),
       ...(c.OPENROUTER_BASE_URL ? { baseUrl: c.OPENROUTER_BASE_URL } : {}),
       maxBytes: c.STEELE_TRANSCRIPTION_MAX_BYTES,
       timeoutMs: c.STEELE_TRANSCRIPTION_TIMEOUT_MS,

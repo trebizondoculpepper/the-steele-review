@@ -96,6 +96,12 @@ export interface SubstackDestinationOptions {
    * Without it, drafts are created without a featured image.
    */
   images?: Pick<GitArtifactStore, "readBinary">;
+  /**
+   * Live featured-image policy (#894), read before each upload. Absent or
+   * unreadable means off: no source image is shown without the owner's
+   * opt-in, as the image-annotation design (#310) requires.
+   */
+  featuredImagePolicy?: () => Promise<"off" | "source-preview">;
 }
 
 const titleOf = (markdown: string, data: ArticleApprovedData): string => {
@@ -160,10 +166,13 @@ export class SubstackDraftDestination implements DestinationAdapter {
   private readonly options: Required<
     Omit<
       SubstackDestinationOptions,
-      "name" | "bylineId" | "deliveryControl" | "images"
+      "name" | "bylineId" | "deliveryControl" | "images" | "featuredImagePolicy"
     >
   >;
   private readonly images: SubstackDestinationOptions["images"];
+  private readonly featuredImagePolicy: SubstackDestinationOptions["featuredImagePolicy"];
+  /** Why the last delivery's cover was skipped, when by policy. */
+  private coverSkipped: "off" | undefined;
   private readonly bylineId: string | undefined;
   private readonly deliveryControl: DraftDeliveryControl | undefined;
 
@@ -185,6 +194,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
     this.bylineId = options.bylineId;
     this.deliveryControl = options.deliveryControl;
     this.images = options.images;
+    this.featuredImagePolicy = options.featuredImagePolicy;
     this.options = {
       authRetryMs: options.authRetryMs ?? 15 * 60_000,
       rateLimitRetryMs: options.rateLimitRetryMs ?? 5 * 60_000,
@@ -360,6 +370,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
     await this.requireLive(preview);
     // Featured image (#894): uploaded before the draft exists, so a failure
     // leaves nothing half-made; the draft is then created without one.
+    this.coverSkipped = undefined;
     const coverImage = await this.uploadCover(p);
     // The upload is its own network step: recheck live permission before the
     // draft is created, so a revocation during it pauses instead.
@@ -398,7 +409,7 @@ export class SubstackDraftDestination implements DestinationAdapter {
       ...(p.coverImage
         ? {
             featuredImage: !coverImage
-              ? ("unavailable" as const)
+              ? (this.coverSkipped ?? ("unavailable" as const))
               : stored.cover_image === coverImage
                 ? ("set" as const)
                 : ("unconfirmed" as const),
@@ -413,6 +424,16 @@ export class SubstackDraftDestination implements DestinationAdapter {
   ): Promise<string | undefined> {
     if (!p.coverImage || !this.images || !this.client.uploadImage)
       return undefined;
+    let policy: "off" | "source-preview" = "off";
+    try {
+      policy = (await this.featuredImagePolicy?.()) ?? "off";
+    } catch {
+      policy = "off";
+    }
+    if (policy !== "source-preview") {
+      this.coverSkipped = "off";
+      return undefined;
+    }
     const a = p.coverImage.artifact;
     try {
       const bytes = await this.images.readBinary({
@@ -638,6 +659,10 @@ export class SubstackPublishDestination implements DestinationAdapter {
       simulated: false,
       externalId: id,
       deliveredAt: new Date().toISOString(),
+      // The draft step's featured-image outcome (#894) stays on the receipt.
+      ...("featuredImage" in created && created.featuredImage
+        ? { featuredImage: created.featuredImage }
+        : {}),
       publicationSafety: {
         published: true as const,
         subscriberEmail: send
