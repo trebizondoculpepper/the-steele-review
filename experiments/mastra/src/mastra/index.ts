@@ -5,6 +5,7 @@ import { LibSQLStore } from "@mastra/libsql";
 import { PinoLogger } from "@mastra/loggers";
 import { MastraStorageExporter, Observability } from "@mastra/observability";
 import { helloWorkflow } from "./workflows/hello.js";
+import { feedStatusWorkflow, pollFeedWorkflow, selectFeedItemWorkflow } from "./workflows/feed.js";
 
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
@@ -62,7 +63,12 @@ if (tokenFile && currentToken() === undefined) throw new Error("access token fil
 const auth = tokenFile ? new RotatingTokenAuth() : undefined;
 
 export const mastra = new Mastra({
-  workflows: { hello: helloWorkflow },
+  workflows: {
+    hello: helloWorkflow,
+    "poll-feed": pollFeedWorkflow,
+    "select-feed-item": selectFeedItemWorkflow,
+    "feed-status": feedStatusWorkflow,
+  },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
     url: process.env.STEELE_EXP_MASTRA_DB ?? "file:./.data/mastra.db",

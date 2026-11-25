@@ -11,6 +11,7 @@ services:
       - "${STEELE_EXP_MASTRA_BIND:?set a private bind address}:4111"
     environment:
       STEELE_EXP_MASTRA_DB: file:/data/mastra.db
+      STEELE_EXP_MASTRA_FEED_DB: file:/data/feed.db
       STEELE_EXP_MASTRA_TOKEN_FILE: /run/steele-exp-mastra/access.token
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
