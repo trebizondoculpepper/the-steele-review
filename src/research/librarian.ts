@@ -1514,18 +1514,6 @@ export async function assessPostCoverage(input: {
             dossier?.metadata.researchNeeds?.filter(
               (p) => canonicalNeedId(p.need) === canonicalNeedId(themeNeed),
             ) ?? [];
-          if (
-            !proofs.length &&
-            dossier?.metadata.claims.some((c) => c.status === "covered")
-          ) {
-            const legacy = await legacyNeedLookup(themeNeed);
-            if (legacy.status === "found") proofs.push(legacy.proof);
-            else
-              reuseLimitations.push({
-                claimRecordId: claim.claimRecordId,
-                reason: legacy.reason,
-              });
-          }
           if (!dossier) continue;
           // Use the first saved proof that still has validated support.
           let checked:
@@ -1540,6 +1528,26 @@ export async function assessPostCoverage(input: {
               checked = candidate;
               break;
             }
+          }
+          // No saved proof supports it: try the bounded legacy fallback, which
+          // may find a legacy full-report job completed since.
+          if (
+            !checked &&
+            dossier.metadata.claims.some((c) => c.status === "covered")
+          ) {
+            const legacy = await legacyNeedLookup(themeNeed);
+            if (legacy.status === "found") {
+              const candidate = await readResearchNeedEvidence(
+                evidenceArtifacts,
+                legacy.proof,
+                input.discoveryAcceptance,
+              );
+              if (candidate.citations.length) checked = candidate;
+            } else
+              reuseLimitations.push({
+                claimRecordId: claim.claimRecordId,
+                reason: legacy.reason,
+              });
           }
           if (!checked) continue;
           retainJob(
