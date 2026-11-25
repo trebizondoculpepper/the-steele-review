@@ -22,12 +22,11 @@ export const CORPUS_REFINEMENT_REJECTED = [
   "map-claims-to-ideas-rejected",
   "map-ideas-to-underlying-rejected",
 ] as const;
-export type CorpusRefinementRejected = (typeof CORPUS_REFINEMENT_REJECTED)[number];
+export type CorpusRefinementRejected =
+  (typeof CORPUS_REFINEMENT_REJECTED)[number];
 /** Any saved, named output of a run, including the reject handler's batch (#855). */
 export type CorpusRefinementOutput =
-  | CorpusRefinementStage
-  | CorpusRefinementRejected
-  | "rejected-claims";
+  CorpusRefinementStage | CorpusRefinementRejected | "rejected-claims";
 
 /** What a mapper did not carry forward (#857). */
 export interface RejectedOutput {
@@ -38,7 +37,22 @@ export interface RejectedOutput {
   unplaced: string[];
   /** Candidates the mapper returned that failed validation. */
   issues: ItemIssue[];
+  /**
+   * Set when the mapper returned candidates but every one failed validation
+   * (#901): the stage produced nothing usable, so the run says so plainly.
+   */
+  allRejected?: true;
 }
+
+/**
+ * True when a stage produced nothing usable (#901): no accepted record, and
+ * at least one problem (every candidate rejected, malformed output, or no
+ * candidate list). An empty input with nothing to place is not flagged.
+ */
+export const allCandidatesRejected = (outcome: {
+  accepted: unknown[];
+  issues: ItemIssue[];
+}) => outcome.accepted.length === 0 && outcome.issues.length > 0;
 
 const RunId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/);
 
@@ -131,7 +145,9 @@ export interface GroupingReport {
 }
 
 /** Group sizes for accepted ideas (#849). */
-export function groupingReport(ideas: { claimIds: string[] }[]): GroupingReport {
+export function groupingReport(
+  ideas: { claimIds: string[] }[],
+): GroupingReport {
   const sizes: Record<string, number> = {};
   for (const idea of ideas) {
     const n = String(new Set(idea.claimIds).size);
@@ -139,8 +155,14 @@ export function groupingReport(ideas: { claimIds: string[] }[]): GroupingReport 
   }
   const claims = new Set(ideas.flatMap((i) => i.claimIds)).size;
   // Near one-to-one: at least five claims, and nine in ten ideas are singletons.
-  const near = claims >= 5 && ideas.length > 0 && (sizes["1"] ?? 0) / ideas.length >= 0.9;
-  return { claims, ideas: ideas.length, sizes, ...(near ? { review: "near-one-to-one" } : {}) };
+  const near =
+    claims >= 5 && ideas.length > 0 && (sizes["1"] ?? 0) / ideas.length >= 0.9;
+  return {
+    claims,
+    ideas: ideas.length,
+    sizes,
+    ...(near ? { review: "near-one-to-one" } : {}),
+  };
 }
 
 /** How a group relates to the reviewed catalogue (#852). */
@@ -176,8 +198,10 @@ export interface StageArtifact<T> {
 }
 
 /** Where one stage's artifact lives, derived only from the run ID and stage name. */
-export const corpusRefinementPath = (runId: string, stage: CorpusRefinementOutput) =>
-  `corpus-refinement/${runId}/${stage}.json`;
+export const corpusRefinementPath = (
+  runId: string,
+  stage: CorpusRefinementOutput,
+) => `corpus-refinement/${runId}/${stage}.json`;
 
 export interface CorpusRefinementResult {
   runId: string;
@@ -186,17 +210,25 @@ export interface CorpusRefinementResult {
   rejected?: { stage: CorpusRefinementRejected; artifact: StageRef }[];
   /** Archive mode (#855): the run's rejected-claims batch. */
   rejectedClaims?: StageRef;
+  /** Stages whose candidates were all rejected (#901): the run is not usable as-is. */
+  allRejected?: ("map-claims-to-ideas" | "map-ideas-to-underlying")[];
 }
 
 /** A bounded synthetic batch for the prototype CLI and tests. */
-export function syntheticBatch(runId: string, size: number): CorpusRefinementInput {
+export function syntheticBatch(
+  runId: string,
+  size: number,
+): CorpusRefinementInput {
   const words = ["masts", "towers", "vaccines", "satellites", "meters"];
   return {
     runId,
-    claims: Array.from({ length: Math.max(1, Math.min(200, size)) }, (_, i) => ({
-      id: `claim-${String(i).padStart(3, "0")}`,
-      statement: `${words[i % words.length]} synthetic claim ${i}`,
-    })),
+    claims: Array.from(
+      { length: Math.max(1, Math.min(200, size)) },
+      (_, i) => ({
+        id: `claim-${String(i).padStart(3, "0")}`,
+        statement: `${words[i % words.length]} synthetic claim ${i}`,
+      }),
+    ),
   };
 }
 
