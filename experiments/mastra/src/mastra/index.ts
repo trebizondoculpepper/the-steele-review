@@ -20,21 +20,46 @@ import { helloWorkflow } from "./workflows/hello.js";
 
 const insecureDev = process.env.STEELE_EXP_MASTRA_INSECURE_DEV === "1";
 const tokenFile = process.env.STEELE_EXP_MASTRA_TOKEN_FILE;
+if (!tokenFile && !insecureDev)
+  throw new Error("STEELE_EXP_MASTRA_TOKEN_FILE is required (set STEELE_EXP_MASTRA_INSECURE_DEV=1 only for local development)");
 
-function accessToken(): string | undefined {
-  if (!tokenFile) {
-    if (insecureDev) return undefined;
-    throw new Error("STEELE_EXP_MASTRA_TOKEN_FILE is required (set STEELE_EXP_MASTRA_INSECURE_DEV=1 only for local development)");
+const OWNER = { id: "owner", name: "Owner" };
+
+/** The current token, read from the mounted file at every check; undefined (deny) if unreadable or too short. */
+function currentToken(): string | undefined {
+  try {
+    const token = readFileSync(tokenFile!, "utf8").trim();
+    return token.length >= 32 ? token : undefined;
+  } catch {
+    return undefined;
   }
-  const token = readFileSync(tokenFile, "utf8").trim();
-  if (token.length < 32) throw new Error("access token is too short (minimum 32 characters)");
-  return token;
 }
 
-const token = accessToken();
-const auth = token
-  ? new SimpleAuth({ tokens: { [token]: { id: "owner", name: "Owner" } } })
-  : undefined;
+/**
+ * SimpleAuth whose token map is read from the mounted file on every lookup,
+ * so rotating or removing the token applies to the next request, including
+ * existing Studio session cookies, without a restart.
+ */
+class RotatingTokenAuth extends SimpleAuth<typeof OWNER> {
+  constructor() {
+    const tokens = new Proxy({} as Record<string, typeof OWNER>, {
+      get: (_t, key) => {
+        const token = currentToken();
+        return token !== undefined && key === token ? OWNER : undefined;
+      },
+    });
+    super({ tokens });
+  }
+  override async authorizeUser(user: typeof OWNER) {
+    return currentToken() !== undefined && user?.id === OWNER.id;
+  }
+  override async getUser(userId: string) {
+    return userId === OWNER.id ? OWNER : null;
+  }
+}
+
+if (tokenFile && currentToken() === undefined) throw new Error("access token file is unreadable or too short (minimum 32 characters)");
+const auth = tokenFile ? new RotatingTokenAuth() : undefined;
 
 export const mastra = new Mastra({
   workflows: { hello: helloWorkflow },
