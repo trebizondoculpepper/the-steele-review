@@ -1,8 +1,14 @@
 import * as restate from "@restatedev/restate-sdk";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { BatchError, readBatch, type CorpusRefinementBatch } from "./batch.js";
-import { UnderlyingCatalogueSchema, type UnderlyingCatalogue } from "./catalogue.js";
+import {
+  UnderlyingCatalogueSchema,
+  type UnderlyingCatalogue,
+} from "./catalogue.js";
 import type { StageRef } from "./contracts.js";
 
 /**
@@ -42,6 +48,16 @@ export interface MappingClassifier {
     catalogue: UnderlyingCatalogue,
     settings: MappingSettings,
   ): Promise<ClassifierDecision[]>;
+  /**
+   * Optional: decide one record with one outbound request (#860). When
+   * present, the block runs each record as its own named Restate step, so
+   * every provider request is visible and journaled separately.
+   */
+  classifyOne?(
+    record: CorpusRefinementBatch["records"][number],
+    catalogue: UnderlyingCatalogue,
+    settings: MappingSettings,
+  ): Promise<ClassifierDecision>;
 }
 
 /** Where a record came from: the exact saved batch and its own fields. */
@@ -77,7 +93,9 @@ export const mappingPath = (runId: string, output: "mapped" | "unmapped") =>
   `corpus-refinement/${runId}/mapping/${output}.json`;
 
 const RANK = { low: 0, medium: 1, high: 2 } as const;
-const SettingsSchema = z.object({ minConfidence: z.enum(["low", "medium", "high"]) }).strict();
+const SettingsSchema = z
+  .object({ minConfidence: z.enum(["low", "medium", "high"]) })
+  .strict();
 
 /** One disposition per unique input record, in input order. Pure. */
 export function dispose(
@@ -93,7 +111,8 @@ export function dispose(
   const entries = new Set(catalogue.entries.map((e) => e.id));
   // The first decision for a record counts; later ones for the same record are ignored.
   const first = new Map<string, ClassifierDecision>();
-  for (const d of decisions) if (!first.has(d.recordId)) first.set(d.recordId, d);
+  for (const d of decisions)
+    if (!first.has(d.recordId)) first.set(d.recordId, d);
   const mapped: (Omit<MappedRecord, "source"> & { id: string })[] = [];
   const unmapped: (Omit<UnmappedRecord, "source"> & { id: string })[] = [];
   const seen = new Set<string>();
@@ -102,11 +121,18 @@ export function dispose(
     seen.add(record.id);
     const d = first.get(record.id);
     if (!d) unmapped.push({ id: record.id, reason: "no-decision" });
-    else if (d.decision === "unmapped") unmapped.push({ id: record.id, reason: d.reason });
+    else if (d.decision === "unmapped")
+      unmapped.push({ id: record.id, reason: d.reason });
     else if (!entries.has(d.catalogueId))
-      unmapped.push({ id: record.id, reason: `unknown-catalogue-id:${d.catalogueId}` });
+      unmapped.push({
+        id: record.id,
+        reason: `unknown-catalogue-id:${d.catalogueId}`,
+      });
     else if (RANK[d.confidence] < RANK[settings.minConfidence])
-      unmapped.push({ id: record.id, reason: `below-confidence:${d.confidence}` });
+      unmapped.push({
+        id: record.id,
+        reason: `below-confidence:${d.confidence}`,
+      });
     else
       mapped.push({
         id: record.id,
@@ -115,7 +141,10 @@ export function dispose(
         ...(d.rationale ? { rationale: d.rationale } : {}),
       });
   }
-  const order = [...seen].map((id) => ({ id, mapped: mapped.some((m) => m.id === id) }));
+  const order = [...seen].map((id) => ({
+    id,
+    mapped: mapped.some((m) => m.id === id),
+  }));
   return { mapped, unmapped, order };
 }
 
@@ -136,7 +165,12 @@ export async function runMappingBlock(
     artifacts: Pick<GitArtifactStore, "read" | "write" | "lookup">;
     classifier: MappingClassifier;
   },
-  input: { runId: string; batch: StageRef; catalogue: StageRef; settings: MappingSettings },
+  input: {
+    runId: string;
+    batch: StageRef;
+    catalogue: StageRef;
+    settings: MappingSettings;
+  },
 ): Promise<{ mapped: StageRef; unmapped: StageRef }> {
   const settings = SettingsSchema.parse(input.settings);
   const terminal = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -144,12 +178,16 @@ export async function runMappingBlock(
       return await fn();
     } catch (error) {
       if (error instanceof BatchError || error instanceof z.ZodError)
-        throw new restate.TerminalError(`corpus-refinement: mapping input is not usable`);
+        throw new restate.TerminalError(
+          `corpus-refinement: mapping input is not usable`,
+        );
       throw error;
     }
   };
   const batch = await ctx.run("mapping:read-batch", () =>
-    terminal(() => readBatch(deps.artifacts, input.batch as ArtifactRef, input.runId)),
+    terminal(() =>
+      readBatch(deps.artifacts, input.batch as ArtifactRef, input.runId),
+    ),
   );
   const catalogue = await ctx.run("mapping:read-catalogue", async () => {
     // A storage failure is retried; a pinned version never changes, so
@@ -163,17 +201,59 @@ export async function runMappingBlock(
     }
     const parsed = UnderlyingCatalogueSchema.safeParse(raw);
     if (!parsed.success)
-      throw new restate.TerminalError("corpus-refinement: the pinned catalogue is not usable");
+      throw new restate.TerminalError(
+        "corpus-refinement: the pinned catalogue is not usable",
+      );
     return parsed.data;
   });
   // Provider failures throw here and are retried by Restate: never "unmapped".
   // The decisions and the identity of what made them are journaled together,
   // so a replay after a redeploy never credits old decisions to a new classifier.
-  const { decisions, classifierVersion } = await ctx.run("mapping:classify", async () => ({
-    decisions: await deps.classifier.classify(batch.records, catalogue, settings),
-    classifierVersion: deps.classifier.version,
-  }));
-  const { mapped, unmapped } = dispose(batch.records, decisions, catalogue, settings);
+  const one = deps.classifier.classifyOne?.bind(deps.classifier);
+  let decisions: ClassifierDecision[];
+  let classifierVersion: string;
+  if (one) {
+    classifierVersion = await ctx.run(
+      "mapping:classifier",
+      async () => deps.classifier.version,
+    );
+    decisions = [];
+    const seen = new Set<string>();
+    for (const [i, record] of batch.records.entries()) {
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      // Each step journals the identity of the classifier that made its
+      // decision; a replay that finishes the batch under a different
+      // classifier is refused rather than mixing versions in one output.
+      const step = await ctx.run(`mapping:classify:${i}`, async () => ({
+        decision: await one(record, catalogue, settings),
+        version: deps.classifier.version,
+      }));
+      if (step.version !== classifierVersion)
+        throw new restate.TerminalError(
+          "corpus-refinement: the classifier changed during this mapping run",
+        );
+      decisions.push(step.decision);
+    }
+  } else {
+    ({ decisions, classifierVersion } = await ctx.run(
+      "mapping:classify",
+      async () => ({
+        decisions: await deps.classifier.classify(
+          batch.records,
+          catalogue,
+          settings,
+        ),
+        classifierVersion: deps.classifier.version,
+      }),
+    ));
+  }
+  const { mapped, unmapped } = dispose(
+    batch.records,
+    decisions,
+    catalogue,
+    settings,
+  );
   const post = new Map(batch.records.map((r) => [r.id, r.post]));
   const source = (id: string): RecordReference => ({
     batch: input.batch,
@@ -207,14 +287,20 @@ export async function runMappingBlock(
     save("mapped", {
       ...header,
       kind: "corpus-mapping-mapped",
-      records: mapped.map(({ id, ...rest }) => ({ source: source(id), ...rest })),
+      records: mapped.map(({ id, ...rest }) => ({
+        source: source(id),
+        ...rest,
+      })),
     } satisfies MappingOutput<MappedRecord>),
   );
   const unmappedRef = await ctx.run("mapping:save-unmapped", () =>
     save("unmapped", {
       ...header,
       kind: "corpus-mapping-unmapped",
-      records: unmapped.map(({ id, ...rest }) => ({ source: source(id), ...rest })),
+      records: unmapped.map(({ id, ...rest }) => ({
+        source: source(id),
+        ...rest,
+      })),
     } satisfies MappingOutput<UnmappedRecord>),
   );
   return { mapped: mappedRef, unmapped: unmappedRef };
