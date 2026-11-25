@@ -39,6 +39,8 @@ Out of scope: research, assessor or judge stages, correction loops, multi-agent 
 | Cost cap | Each call is pre-checked against an estimated maximum of USD 0.01 (about USD 0.0006 at current prices) |
 | Live budget | One live writing call per platform for #923, two in total. Every other run uses the fake model. The experiment as a whole stops before it would spend more than USD 0.10 on model calls. |
 
+**Prompt layout.** Per the rebuild principles, the new prompt layout is chosen alongside the replacement implementation. For this experiment, shared model-facing prompts and schemas live under `experiments/shared/`. Both platforms load them from there: the n8n track through its version-controlled workflow build, and the Mastra track by importing the files. A platform must not keep its own copy of the prompt text. If a platform is selected, its permanent location is decided then.
+
 The article is rendered to Markdown with this layout, in this order:
 1. the summary;
 2. "Problems with the argument", one bullet per critique point, each labelled with its category;
