@@ -57,20 +57,34 @@ let delivered: { id: string; path: string; hash: string; payload: string }[];
 let publishFailures: number;
 let operations: OperationStore;
 const publisher = {
-  async publish(_subject: string, payload: Uint8Array, { msgId }: { msgId: string }) {
+  async publish(
+    _subject: string,
+    payload: Uint8Array,
+    { msgId }: { msgId: string },
+  ) {
     if (publishFailures > 0) {
       publishFailures--;
       throw new Error("synthetic broker outage");
     }
     const text = new TextDecoder().decode(payload);
-    const artifact = JSON.parse(text).data.artifact as { path: string; hash: string };
+    const artifact = JSON.parse(text).data.artifact as {
+      path: string;
+      hash: string;
+    };
     if (!delivered.some((d) => d.id === msgId))
-      delivered.push({ id: msgId, path: artifact.path, hash: artifact.hash, payload: text });
+      delivered.push({
+        id: msgId,
+        path: artifact.path,
+        hash: artifact.hash,
+        payload: text,
+      });
   },
 };
 const commitsTouching = (path: string) =>
   Number(
-    execFileSync("git", ["-C", dir, "rev-list", "--count", "HEAD", "--", path]).toString().trim(),
+    execFileSync("git", ["-C", dir, "rev-list", "--count", "HEAD", "--", path])
+      .toString()
+      .trim(),
   );
 
 beforeEach(async () => {
@@ -92,7 +106,14 @@ const deps = (result: () => CollectionResult, images = true) => ({
   publisher,
   retryDelayMs: 0,
   ...(images
-    ? { images: { fetch: async () => ({ bytes: PNG, contentType: "image/png" as const }) } }
+    ? {
+        images: {
+          fetch: async () => ({
+            bytes: PNG,
+            contentType: "image/png" as const,
+          }),
+        },
+      }
     : {}),
 });
 
@@ -112,11 +133,21 @@ describe("source capture as one block (#865)", () => {
       /^substack\/example-pub\/a-post\/images\//,
     );
     // Only how the text was obtained; no collector details or retry state.
-    expect(Object.keys(saved.provenance).sort()).toEqual(["acquiredAt", "method", "sourceUrl"]);
-    expect(saved.reingestion).toBeUndefined();
-    expect(delivered.map(({ id, path, hash }) => ({ id, path, hash }))).toEqual([
-      { id: out.eventId, path: out.ref.path, hash: `sha256:${out.ref.sha256}` },
+    expect(Object.keys(saved.provenance).sort()).toEqual([
+      "acquiredAt",
+      "method",
+      "sourceUrl",
     ]);
+    expect(saved.reingestion).toBeUndefined();
+    expect(delivered.map(({ id, path, hash }) => ({ id, path, hash }))).toEqual(
+      [
+        {
+          id: out.eventId,
+          path: out.ref.path,
+          hash: `sha256:${out.ref.sha256}`,
+        },
+      ],
+    );
   });
 
   it("makes no content change for a refetch, retry or later capture time", async () => {
@@ -127,10 +158,13 @@ describe("source capture as one block (#865)", () => {
     );
     const again = await captureSource(
       item,
-      deps(() => fetched("Same text.", { acquiredAt: "2026-12-01T00:00:00.000Z" })),
+      deps(() =>
+        fetched("Same text.", { acquiredAt: "2026-12-01T00:00:00.000Z" }),
+      ),
       { reason: "backfill" },
     );
-    if (first.status === "not-captured" || again.status === "not-captured") throw new Error();
+    if (first.status === "not-captured" || again.status === "not-captured")
+      throw new Error();
     expect(again.status).toBe("unchanged");
     expect(again.ref.sha256).toBe(first.ref.sha256);
     expect(commitsTouching(sourcePath(item))).toBe(1);
@@ -150,15 +184,60 @@ describe("source capture as one block (#865)", () => {
       deps(() => fetched("After the edit.")),
       { reason: "live" },
     );
-    if (first.status === "not-captured" || edited.status === "not-captured") throw new Error();
+    if (first.status === "not-captured" || edited.status === "not-captured")
+      throw new Error();
     expect(edited.status).toBe("saved");
     expect(edited.ref.path).toBe(first.ref.path);
     expect(edited.ref.sha256).not.toBe(first.ref.sha256);
     expect(commitsTouching(sourcePath(item))).toBe(2);
     // Both versions stay readable by their pinned references.
-    expect(JSON.parse(await artifacts.read(first.ref)).text).toBe("Before the edit.");
-    expect(JSON.parse(await artifacts.read(edited.ref)).text).toBe("After the edit.");
+    expect(JSON.parse(await artifacts.read(first.ref)).text).toBe(
+      "Before the edit.",
+    );
+    expect(JSON.parse(await artifacts.read(edited.ref)).text).toBe(
+      "After the edit.",
+    );
     expect(delivered.map((d) => d.id)).toEqual([first.eventId, edited.eventId]);
+  });
+
+  it("announces a saved version whose announcement was lost to a crash before replacing it (#902)", async () => {
+    // Crash after the save, before the announcement is recorded.
+    const crashing = {
+      ...deps(() => fetched("Before the edit.")),
+      operations: Object.assign(Object.create(operations), {
+        reconcileCompleted: () => {
+          throw new Error("synthetic crash");
+        },
+      }),
+    };
+    await expect(
+      captureSource(item, crashing as never, { reason: "live" }),
+    ).rejects.toThrow("synthetic crash");
+    expect(delivered).toHaveLength(0);
+    const saved = (await artifacts.lookup(sourcePath(item)))!;
+    // The retry finds changed content: the earlier saved version is announced too.
+    const edited = await captureSource(
+      item,
+      deps(() => fetched("After the edit.")),
+      {
+        reason: "live",
+      },
+    );
+    if (edited.status === "not-captured") throw new Error();
+    expect(delivered.map((d) => d.hash)).toEqual([
+      `sha256:${saved.sha256}`,
+      `sha256:${edited.ref.sha256}`,
+    ]);
+    // Already-announced versions are not announced twice.
+    const again = await captureSource(
+      item,
+      deps(() => fetched("Third version.")),
+      {
+        reason: "live",
+      },
+    );
+    if (again.status === "not-captured") throw new Error();
+    expect(delivered).toHaveLength(3);
   });
 
   it("saves the source when its image cannot be fetched, and when it has none", async () => {
@@ -175,7 +254,12 @@ describe("source capture as one block (#865)", () => {
     const other = { ...item, postId: "no-image" };
     const none = await captureSource(
       other,
-      { ...deps(() => ({ ...fetched("No image.", { preview: false }), item: other })) },
+      {
+        ...deps(() => ({
+          ...fetched("No image.", { preview: false }),
+          item: other,
+        })),
+      },
       { reason: "live" },
     );
     if (none.status === "not-captured") throw new Error(none.reason);
@@ -209,7 +293,9 @@ describe("source capture as one block (#865)", () => {
     expect(delivered.map((d) => d.id)).toEqual([first.eventId, second.eventId]);
     expect(delivered[0]!.hash).toBe(`sha256:${first.ref.sha256}`);
     // Both versions stay readable by the references their events carry.
-    expect(JSON.parse(await artifacts.read(first.ref)).text).toBe("Saved, then the broker failed.");
+    expect(JSON.parse(await artifacts.read(first.ref)).text).toBe(
+      "Saved, then the broker failed.",
+    );
   });
 
   it("sends pending announcements on their own, without fetching", async () => {
@@ -220,11 +306,15 @@ describe("source capture as one block (#865)", () => {
       { reason: "live" },
     );
     if (out.status === "not-captured") throw new Error();
-    expect(await dispatchPendingSources({ operations, publisher }, item)).toEqual({
+    expect(
+      await dispatchPendingSources({ operations, publisher }, item),
+    ).toEqual({
       sent: [out.eventId],
       failed: [],
     });
-    expect(await dispatchPendingSources({ operations, publisher }, item)).toEqual({
+    expect(
+      await dispatchPendingSources({ operations, publisher }, item),
+    ).toEqual({
       sent: [],
       failed: [],
     });
@@ -241,12 +331,24 @@ describe("source capture as one block (#865)", () => {
     );
     if (out.status === "not-captured") throw new Error();
     // The saved file is a valid capture record.
-    const saved = CollectionRecordSchema.parse(JSON.parse(await artifacts.read(out.ref)));
-    expect(saved).toMatchObject({ text: "Readable downstream.", ingestionReason: "live" });
+    const saved = CollectionRecordSchema.parse(
+      JSON.parse(await artifacts.read(out.ref)),
+    );
+    expect(saved).toMatchObject({
+      text: "Readable downstream.",
+      ingestionReason: "live",
+    });
     // The bridge admits the announced source, and the workflow input points at it.
     const submitted: {
       key: string;
-      source: { artifact: { repository: string; commit: string; path: string; sha256: string } };
+      source: {
+        artifact: {
+          repository: string;
+          commit: string;
+          path: string;
+          sha256: string;
+        };
+      };
     }[] = [];
     const decision = await handleCapturedContent(delivered[0]!.payload, {
       enabledSources: new Set(["substack/example-pub"]),
@@ -264,7 +366,9 @@ describe("source capture as one block (#865)", () => {
     });
     // What the workflow reads back through that reference parses as a capture.
     const read = await artifacts.read(submitted[0]!.source.artifact);
-    expect(CollectionRecordSchema.safeParse(JSON.parse(read)).success).toBe(true);
+    expect(CollectionRecordSchema.safeParse(JSON.parse(read)).success).toBe(
+      true,
+    );
   });
 
   it("resends the saved references with the same event identity, without fetching", async () => {
@@ -278,17 +382,30 @@ describe("source capture as one block (#865)", () => {
     expect(resent).toMatchObject({ status: "resent", eventId: out.eventId });
     expect(delivered).toHaveLength(1);
     expect(
-      await resendSource({ ...item, postId: "never-captured" }, { artifacts, publisher }),
+      await resendSource(
+        { ...item, postId: "never-captured" },
+        { artifacts, publisher },
+      ),
     ).toEqual({ status: "not-saved" });
   });
 
   it("captures nothing when the source has no text yet", async () => {
     const out = await captureSource(
       item,
-      deps(() => ({ kind: "transient-failure", item, reason: "timeout" }) as CollectionResult),
+      deps(
+        () =>
+          ({
+            kind: "transient-failure",
+            item,
+            reason: "timeout",
+          }) as CollectionResult,
+      ),
       { reason: "live" },
     );
-    expect(out).toEqual({ status: "not-captured", reason: "transient-failure" });
+    expect(out).toEqual({
+      status: "not-captured",
+      reason: "transient-failure",
+    });
     expect(await artifacts.lookup(sourcePath(item))).toBeUndefined();
     expect(delivered).toHaveLength(0);
   });
