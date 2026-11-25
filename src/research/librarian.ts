@@ -42,6 +42,8 @@ import {
   ResearchResultSchema,
   ResearchWarningsSchema,
   researchJobId,
+  researchJobPath,
+  ResearchRequestSchema,
   type ResearchManifest,
   type ResearchRequest,
   type ResearchResult,
@@ -1749,10 +1751,27 @@ export async function assessPostCoverage(input: {
         JSON.parse(await input.artifacts.read(manifestRef)),
       );
     }
+    // An accepted recovery can answer with an earlier job (runner.ts): record
+    // that job under the pass its own saved request has, not the caller's.
+    let jobPass = pass;
+    if (
+      job.jobId !== researchJobId(request) &&
+      /^research-[0-9a-f]{32}$/.test(job.jobId)
+    ) {
+      const saved = await input.artifacts.lookup(
+        researchJobPath(job.jobId, "request"),
+      );
+      if (saved) {
+        const parsed = ResearchRequestSchema.safeParse(
+          JSON.parse(await input.artifacts.read(saved)),
+        );
+        if (parsed.success) jobPass = parsed.data.pass;
+      }
+    }
     retainJob({
       jobId: job.jobId,
       dossierId,
-      pass,
+      pass: jobPass,
       outcome:
         job.status === "finished"
           ? (job.result?.outcome ?? "unknown")
