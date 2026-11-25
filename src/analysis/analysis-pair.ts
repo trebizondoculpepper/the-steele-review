@@ -11,8 +11,14 @@ import {
   type ArtifactRef,
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
-import { ClaimExtractionRecordSchema, type ClaimExtractionRecord } from "./grounded-claims.js";
-import { parseThemeProposalResult, type ThemeProposalResult } from "./theme-proposals.js";
+import {
+  ClaimExtractionRecordSchema,
+  type ClaimExtractionRecord,
+} from "./grounded-claims.js";
+import {
+  parseThemeProposalResult,
+  type ThemeProposalResult,
+} from "./theme-proposals.js";
 
 export type AnalysisRefusal =
   | "unreadable-theme-result"
@@ -29,7 +35,8 @@ export type AnalysisPair =
   | { status: "unavailable" };
 
 /** `commit:path`, the exact reference recorded inside a saved result. */
-export const shortRef = (ref: ArtifactRef): string => `${ref.commit}:${ref.path}`;
+export const shortRef = (ref: ArtifactRef): string =>
+  `${ref.commit}:${ref.path}`;
 
 /** One artifact read, distinguishing a missing result from a repository fault. */
 async function readText(
@@ -81,7 +88,8 @@ export async function readAnalysisPair(
   // Only results under the accepted/candidate contract complete a post. Version
   // 2 and later share that contract; version 3 only adds a candidate reason,
   // so saved version 2 runs stay readable and announceable.
-  if (claims.schemaVersion < 2) return { status: "refused", reason: "legacy-claim-result" };
+  if (claims.schemaVersion < 2)
+    return { status: "refused", reason: "legacy-claim-result" };
   const samePost = (p: { publicationId: string; postId: string }) =>
     p.publicationId === post.publicationId && p.postId === post.postId;
   if (!samePost(theme.post) || !samePost(claims.post)) {

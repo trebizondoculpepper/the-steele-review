@@ -272,3 +272,34 @@ it("shares fully specified dates and bare years across posts", () => {
     expect(canonicalNeedId(a)).toBe(canonicalNeedId(b));
   }
 });
+
+it("never shares research across different stated reporting periods (#889)", () => {
+  const text = "Acme reported revenue of 10 million on 10 December 1976.";
+  const withPeriod = (postId: string, period: string) => {
+    const fx = fixture(postId, text);
+    return canonicalNeed({
+      ...fx,
+      claim: {
+        ...fx.claim,
+        reportingPeriod: { dependsOnPeriod: true, text: period },
+      },
+    });
+  };
+  expect(canonicalNeedId(withPeriod("first", "Q3 2026"))).toBe(
+    canonicalNeedId(withPeriod("second", "Q3 2026")),
+  );
+  expect(canonicalNeedId(withPeriod("first", "Q3 2026"))).not.toBe(
+    canonicalNeedId(withPeriod("second", "Q4 2026")),
+  );
+  expect(withPeriod("first", "Q3 2026").proposition.reportingPeriod).toBe(
+    "Q3 2026",
+  );
+  // An older claim (no period field) stating a figure without a resolved
+  // date is researched only for its own occurrence.
+  const older = (postId: string) =>
+    canonicalNeed(fixture(postId, "Acme reported revenue of 10 million.", []));
+  expect(older("first").occurrenceScope).toBeDefined();
+  expect(canonicalNeedId(older("first"))).not.toBe(
+    canonicalNeedId(older("second")),
+  );
+});

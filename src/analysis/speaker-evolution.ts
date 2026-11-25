@@ -3,8 +3,14 @@ import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { ClaimOccurrence } from "./claim-occurrence.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
-import type { SameSpeakerHistory, SameSpeakerMatch } from "./same-speaker-history.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "./extraction.js";
+import type {
+  SameSpeakerHistory,
+  SameSpeakerMatch,
+} from "./same-speaker-history.js";
 
 /**
  * How a speaker's claim repeats or evolves (#369).
@@ -97,7 +103,10 @@ export interface SpeakerEvolution {
   speaker?: SameSpeakerHistory["speaker"];
   /** Oldest first: the dated quotations the findings rest on. */
   timeline: Array<
-    Pick<SameSpeakerMatch, "occurrenceId" | "postId" | "url" | "publishedAt" | "quote">
+    Pick<
+      SameSpeakerMatch,
+      "occurrenceId" | "postId" | "url" | "publishedAt" | "quote"
+    >
   >;
   pattern: EvolutionPattern;
   findings: EvolutionFinding[];
@@ -133,7 +142,9 @@ function parseFindings(raw: string): unknown[] | undefined {
 export function patternOf(findings: EvolutionFinding[]): EvolutionPattern {
   const posts = new Set(
     findings
-      .filter((f) => f.kind !== "insufficient-context" && f.uncertainty !== "high")
+      .filter(
+        (f) => f.kind !== "insufficient-context" && f.uncertainty !== "high",
+      )
       .map((f) => f.earlier.postId),
   );
   if (posts.size >= MIN_PATTERN_POSTS) return "recurring";
@@ -154,19 +165,27 @@ export async function explainSpeakerEvolution(input: {
   const matches = [...input.history.matches].sort(
     (a, b) => Date.parse(a.publishedAt) - Date.parse(b.publishedAt),
   );
-  const timeline = matches.map(({ occurrenceId, postId, url, publishedAt, quote }) => ({
-    occurrenceId,
-    postId,
-    url,
-    publishedAt,
-    quote,
-  }));
+  const timeline = matches.map(
+    ({ occurrenceId, postId, url, publishedAt, quote }) => ({
+      occurrenceId,
+      postId,
+      url,
+      publishedAt,
+      quote,
+    }),
+  );
   const base = {
     ...(input.history.speaker ? { speaker: input.history.speaker } : {}),
     timeline,
   };
   if (matches.length === 0) {
-    return { status: "no-history", ...base, pattern: "none", findings: [], rejected: [] };
+    return {
+      status: "no-history",
+      ...base,
+      pattern: "none",
+      findings: [],
+      rejected: [],
+    };
   }
 
   const ids = new Map(matches.map((m, i) => [`e${i + 1}`, m]));
@@ -191,7 +210,10 @@ export async function explainSpeakerEvolution(input: {
     boundary,
   ].join("\n");
 
-  const versions = { modelVersion: input.provider.modelVersion, promptVersion: prompt.version };
+  const versions = {
+    modelVersion: input.provider.modelVersion,
+    promptVersion: prompt.version,
+  };
   let items: unknown[] | undefined;
   let failure: SpeakerEvolution["failure"] = "provider-failed";
   const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
@@ -235,7 +257,10 @@ export async function explainSpeakerEvolution(input: {
     ) {
       return rejected.push({ index, reason: "invalid-citation" });
     }
-    if (f.kind === "possible-reversal" && (!f.currentQuote || !f.circumstancesChecked)) {
+    if (
+      f.kind === "possible-reversal" &&
+      (!f.currentQuote || !f.circumstancesChecked)
+    ) {
       // Difference alone is not reversal: both sides and the checks are required.
       return rejected.push({ index, reason: "unsupported-reversal" });
     }
@@ -248,7 +273,9 @@ export async function explainSpeakerEvolution(input: {
         isEvidence: false,
       },
       uncertainty: f.uncertainty,
-      ...(f.circumstancesChecked ? { circumstancesChecked: f.circumstancesChecked } : {}),
+      ...(f.circumstancesChecked
+        ? { circumstancesChecked: f.circumstancesChecked }
+        : {}),
       current: {
         occurrenceId: current.occurrenceId,
         quote: collapse(currentQuote),
@@ -264,7 +291,10 @@ export async function explainSpeakerEvolution(input: {
       },
     });
   });
-  findings.sort((a, b) => Date.parse(a.earlier.publishedAt) - Date.parse(b.earlier.publishedAt));
+  findings.sort(
+    (a, b) =>
+      Date.parse(a.earlier.publishedAt) - Date.parse(b.earlier.publishedAt),
+  );
   return {
     status: rejected.length ? "incomplete" : "complete",
     ...base,

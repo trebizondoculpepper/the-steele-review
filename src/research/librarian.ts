@@ -15,6 +15,11 @@ import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  reportingPeriodExclusion,
+  reportingPeriodIdentity,
+  researchStatement,
+} from "./reporting-period.js";
+import {
   parseThemeProposalResult,
   type ThemeProposalResult,
 } from "../analysis/theme-proposals.js";
@@ -533,6 +538,14 @@ interface AcceptedClaim {
    */
   extracted: { claimRecordId: string; statement: string }[];
   need?: z.infer<typeof CanonicalNeedSchema>;
+  /** Why the claim is left out of the eligible research set (#889), if it is. */
+  excluded?: string;
+  /**
+   * The claim's reporting period bears on its identity (#889): saved evidence
+   * found under the same statement may be for another period, so it is never
+   * reused here and the claim is researched for itself.
+   */
+  periodScoped?: boolean;
 }
 
 function acceptedClaims(
@@ -548,11 +561,28 @@ function acceptedClaims(
     const proposalIds = [
       ...new Set([...(prior?.proposalIds ?? []), ...c.themeIds]),
     ];
+    // Excluded only when every occurrence is excluded (#889).
+    const own = reportingPeriodExclusion(c.claim);
+    const excluded = prior
+      ? prior.excluded && own
+        ? prior.excluded
+        : undefined
+      : own;
+    const periodScoped =
+      prior?.periodScoped || reportingPeriodIdentity(c.claim) !== undefined;
+    // What research is asked: a new claim's stated reporting period is part
+    // of it, so the researcher, the support judge and the job identity all
+    // see the period (#889). Older claims keep their exact statement so saved
+    // plans and job IDs are unchanged.
+    const researched =
+      prior && !prior.excluded
+        ? prior.extracted[0]!.statement
+        : researchStatement(parsed.data.statement, c.claim, record.post);
     seen.set(c.claimRecordId, {
+      ...(excluded ? { excluded } : {}),
+      ...(periodScoped ? { periodScoped } : {}),
       key: c.claimRecordId,
-      extracted: [
-        { claimRecordId: c.claimRecordId, statement: parsed.data.statement },
-      ],
+      extracted: [{ claimRecordId: c.claimRecordId, statement: researched }],
       claimRecordId: c.claimRecordId,
       statement: parsed.data.statement,
       proposalIds,
@@ -879,6 +909,8 @@ async function priorMappings(
   jobIds?: Set<string>,
   targetedBatches?: Map<string, string[][]>,
   commissioningOrders?: string[][],
+  coveredClaims?: Map<string, CoverageRecord["claims"][number]>,
+  recordedJobs?: Map<string, CoverageRecord["jobs"][number]>,
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -907,8 +939,22 @@ async function priorMappings(
     ]);
     for (const m of r.mappings)
       if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    // Coverage whose dossier update failed is not reusable as-is: the claim
+    // goes through normal assessment again, so the dossier write is retried.
+    const unsaved = new Set(r.unsavedDossiers ?? []);
+    for (const c of r.claims)
+      if (
+        c.status === "evidence-found" &&
+        !(c.dossierId && unsaved.has(c.dossierId)) &&
+        !coveredClaims?.has(c.claimRecordId)
+      )
+        coveredClaims?.set(c.claimRecordId, c);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
+      // Keep the completed version of a job: a pending snapshot from another
+      // record of this analysis must not hide its result and manifest.
+      const kept = recordedJobs?.get(j.jobId);
+      if (!kept || (!kept.result && j.result)) recordedJobs?.set(j.jobId, j);
       if (j.targetedClaims && targetedBatches) {
         const batches = targetedBatches.get(j.dossierId) ?? [];
         const key = JSON.stringify(j.targetedClaims);
@@ -1128,6 +1174,11 @@ export async function assessPostCoverage(input: {
   const priorJobIds = new Set<string>(input.pinnedJobIds ?? []);
   const priorTargeted = new Map<string, string[][]>();
   const priorOrders: string[][] = [];
+  /** Claims this exact analysis's earlier coverage records found evidence for (#889). */
+  const coveredBefore = new Map<string, CoverageRecord["claims"][number]>();
+  /** Jobs those records pinned, so reused coverage keeps its provenance. */
+  const recordedBefore = new Map<string, CoverageRecord["jobs"][number]>();
+  const reusedJobIds = new Set<string>();
   const savedMapping = await priorMappings(
     input.artifacts,
     post,
@@ -1136,6 +1187,8 @@ export async function assessPostCoverage(input: {
     priorJobIds,
     priorTargeted,
     priorOrders,
+    coveredBefore,
+    recordedBefore,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -1445,6 +1498,20 @@ export async function assessPostCoverage(input: {
   for (const claim of claims) {
     const home =
       claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
+    // Not eligible for research (#889): recorded with its reason, never commissioned.
+    if (claim.excluded) {
+      outcomes.set(claim.key, {
+        claimRecordId: claim.claimRecordId,
+        statement: claim.statement,
+        dossierId: home,
+        status: "not-commissioned",
+        reused: false,
+        jobIds: [],
+        citations: [],
+        reason: claim.excluded,
+      });
+      continue;
+    }
     if (!home) {
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
@@ -1588,7 +1655,21 @@ export async function assessPostCoverage(input: {
     }
     let homeDossier: StoredDossier | undefined;
     let prior: DossierMetadata["claims"][number] | undefined;
-    for (const id of mapped) {
+    // A period-scoped claim reuses saved coverage only when reassessing this
+    // same analysis (its own earlier coverage), never another post's.
+    // A period-scoped claim never reuses statement-keyed dossier evidence,
+    // which may be another post's, another period's. Reassessing this same
+    // analysis reuses only the coverage its own earlier record holds.
+    const ownCoverage = claim.periodScoped
+      ? coveredBefore.get(claim.key)
+      : undefined;
+    if (ownCoverage) {
+      outcomes.set(claim.key, { ...ownCoverage, reused: true });
+      for (const id of ownCoverage.jobIds) reusedJobIds.add(id);
+      groups.set(home, [...(groups.get(home) ?? []), claim]);
+      continue;
+    }
+    for (const id of claim.periodScoped ? [] : mapped) {
       const d = existing.get(id);
       // Coverage may be stored under the canonical ID or the extracted (merged-away) one.
       const c = d?.metadata.claims.find(
@@ -1625,6 +1706,12 @@ export async function assessPostCoverage(input: {
   }
 
   // 3. Commission one request per dossier, then assess from exact saved results.
+  // Reused coverage carries its pinned jobs (result, manifest, warnings), so
+  // the writer still resolves archived evidence and research context.
+  for (const id of reusedJobIds) {
+    const j = recordedBefore.get(id);
+    if (j) retainJob(j, "reuse");
+  }
   const postRefs = {
     publicationId: post.publicationId,
     postId: post.postId,

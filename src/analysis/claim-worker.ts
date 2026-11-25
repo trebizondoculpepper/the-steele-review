@@ -3,7 +3,10 @@ import { CloudEvent } from "cloudevents";
 import { z } from "zod";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { toArchiveRef } from "../collection/fulltext-projection.js";
-import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  ArtifactReferenceSchema,
+  type ArtifactReference,
+} from "../content/artifact-reference.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import {
   ArtifactStoreError,
@@ -11,7 +14,10 @@ import {
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
-import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
+import type {
+  OperationStore,
+  PendingEventInput,
+} from "../controllers/operation-store.js";
 import { IngestionReasonSchema } from "../events/discovery-event.js";
 import { parseTextReadyEvent } from "../events/text-ready-event.js";
 import type { ClaimExtractor } from "./extraction.js";
@@ -63,7 +69,11 @@ export type ClaimWorkerOutcome =
   | "invalid-event";
 
 export interface HandoffPublisher {
-  publish(subject: string, payload: Uint8Array, options: { msgId: string }): Promise<unknown>;
+  publish(
+    subject: string,
+    payload: Uint8Array,
+    options: { msgId: string },
+  ): Promise<unknown>;
 }
 
 export interface ClaimWorkerConfig {
@@ -89,7 +99,8 @@ interface StoredClaimSet {
   promptVersion: string;
 }
 
-const short = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16);
+const short = (value: string) =>
+  createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 const toReference = (ref: ArtifactRef): ArtifactReference => ({
   repository: ref.repository,
@@ -101,7 +112,10 @@ const toReference = (ref: ArtifactRef): ArtifactReference => ({
 export class ClaimExtractionWorker {
   constructor(private readonly config: ClaimWorkerConfig) {}
 
-  async handle(message: DeliveredMessage, signal?: AbortSignal): Promise<ClaimWorkerOutcome> {
+  async handle(
+    message: DeliveredMessage,
+    signal?: AbortSignal,
+  ): Promise<ClaimWorkerOutcome> {
     let event;
     try {
       event = parseTextReadyEvent(new TextDecoder().decode(message.data));
@@ -116,7 +130,9 @@ export class ClaimExtractionWorker {
     let record;
     try {
       record = CollectionRecordSchema.parse(
-        JSON.parse(await this.config.artifacts.read(toArchiveRef(data.artifact))),
+        JSON.parse(
+          await this.config.artifacts.read(toArchiveRef(data.artifact)),
+        ),
       );
     } catch (error) {
       if (error instanceof ArtifactStoreError && error.code === "git-failed") {
@@ -130,7 +146,10 @@ export class ClaimExtractionWorker {
       await message.ack();
       return "failed";
     }
-    if (record.item.publicationId !== data.publicationId || record.item.postId !== data.postId) {
+    if (
+      record.item.publicationId !== data.publicationId ||
+      record.item.postId !== data.postId
+    ) {
       this.config.operations.recordPermanentFailure(
         `claims:invalid:${event.id}`,
         "identity-mismatch",
@@ -176,10 +195,14 @@ export class ClaimExtractionWorker {
         return "retry";
       }
       if (committed) {
-        const stored = JSON.parse(await this.config.artifacts.read(committed)) as StoredClaimSet;
-        this.config.operations.reconcileCompleted(key, { claimsArtifact: toReference(committed) }, [
-          this.handoffFor(event.id, data, committed, stored),
-        ]);
+        const stored = JSON.parse(
+          await this.config.artifacts.read(committed),
+        ) as StoredClaimSet;
+        this.config.operations.reconcileCompleted(
+          key,
+          { claimsArtifact: toReference(committed) },
+          [this.handoffFor(event.id, data, committed, stored)],
+        );
         await message.ack();
         await this.dispatchPending();
         return "already-extracted";
@@ -195,7 +218,11 @@ export class ClaimExtractionWorker {
     );
     if (result.status === "failed") {
       const permanent = result.reason === "source-too-large";
-      this.config.operations.fail(claim, `extract:${result.reason}`, !permanent);
+      this.config.operations.fail(
+        claim,
+        `extract:${result.reason}`,
+        !permanent,
+      );
       if (permanent) {
         await message.ack();
         return "failed";
@@ -216,11 +243,15 @@ export class ClaimExtractionWorker {
     let artifact: ArtifactRef;
     let stored = claimSet;
     try {
-      artifact = await this.config.artifacts.write(path, `${JSON.stringify(claimSet, null, 2)}\n`);
+      artifact = await this.config.artifacts.write(
+        path,
+        `${JSON.stringify(claimSet, null, 2)}\n`,
+      );
     } catch (error) {
       // A concurrent or earlier crashed attempt committed this path: keep its version.
       const existing =
-        error instanceof ArtifactStoreError && error.code === "immutable-conflict"
+        error instanceof ArtifactStoreError &&
+        error.code === "immutable-conflict"
           ? await this.config.artifacts.lookup(path)
           : undefined;
       if (!existing) {
@@ -229,11 +260,17 @@ export class ClaimExtractionWorker {
         return "retry";
       }
       artifact = existing;
-      stored = JSON.parse(await this.config.artifacts.read(existing)) as typeof claimSet;
+      stored = JSON.parse(
+        await this.config.artifacts.read(existing),
+      ) as typeof claimSet;
     }
 
     const pending = this.handoffFor(event.id, data, artifact, stored);
-    this.config.operations.complete(claim, { claimsArtifact: toReference(artifact) }, [pending]);
+    this.config.operations.complete(
+      claim,
+      { claimsArtifact: toReference(artifact) },
+      [pending],
+    );
     await message.ack();
     await this.dispatchPending();
     return "extracted";
@@ -284,15 +321,25 @@ export class ClaimExtractionWorker {
   /** Publish pending handoff events; failures stay pending with the same ID. */
   async dispatchPending(limit = 100): Promise<number> {
     let sent = 0;
-    for (const p of this.config.operations.duePendingEvents(limit, CLAIMS_EXTRACTED_SUBJECT)) {
+    for (const p of this.config.operations.duePendingEvents(
+      limit,
+      CLAIMS_EXTRACTED_SUBJECT,
+    )) {
       try {
-        await this.config.publisher.publish(p.subject, new TextEncoder().encode(p.payload), {
-          msgId: p.eventId,
-        });
+        await this.config.publisher.publish(
+          p.subject,
+          new TextEncoder().encode(p.payload),
+          {
+            msgId: p.eventId,
+          },
+        );
         this.config.operations.markEventSent(p.eventId);
         sent++;
       } catch {
-        this.config.operations.markEventRetry(p.eventId, this.config.retryDelayMs ?? 60_000);
+        this.config.operations.markEventRetry(
+          p.eventId,
+          this.config.retryDelayMs ?? 60_000,
+        );
       }
     }
     return sent;

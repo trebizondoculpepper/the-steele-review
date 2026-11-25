@@ -79,7 +79,9 @@ export function assertArtifactPath(path: string): string {
   const valid =
     path.length > 0 &&
     path.length <= 1024 &&
-    segments.every((s) => SEGMENT.test(s) && s !== ".." && s.toLowerCase() !== ".git");
+    segments.every(
+      (s) => SEGMENT.test(s) && s !== ".." && s.toLowerCase() !== ".git",
+    );
   if (!valid) throw new ArtifactStoreError("invalid-path");
   return path;
 }
@@ -125,9 +127,21 @@ const REVISABLE_CAPTURE =
 const REVISABLE_SOURCE =
   /^substack\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/[a-z0-9][a-z0-9-]{0,254}\/source\.json$/;
 
+/**
+ * The optional source-screenshot block's record (#892): one stable file per
+ * source naming its current content-addressed screenshot, or why none is
+ * available. Revised in place on refresh; Git keeps the history.
+ */
+const REVISABLE_SCREENSHOT =
+  /^substack\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/[a-z0-9][a-z0-9-]{0,254}\/screenshot\.json$/;
+
 /** Revisable paths that may also be created write-once through `write()`. */
 function isWritableAndRevisable(path: string): boolean {
-  return REVISABLE_CAPTURE.test(path) || REVISABLE_SOURCE.test(path);
+  return (
+    REVISABLE_CAPTURE.test(path) ||
+    REVISABLE_SOURCE.test(path) ||
+    REVISABLE_SCREENSHOT.test(path)
+  );
 }
 
 export function isRevisablePath(path: string): boolean {
@@ -136,7 +150,8 @@ export function isRevisablePath(path: string): boolean {
     REVISABLE_CLAIM_RECORD.test(path) ||
     REVISABLE_ARTICLE.test(path) ||
     REVISABLE_CAPTURE.test(path) ||
-    REVISABLE_SOURCE.test(path)
+    REVISABLE_SOURCE.test(path) ||
+    REVISABLE_SCREENSHOT.test(path)
   );
 }
 
@@ -185,13 +200,17 @@ export class GitArtifactStore {
 
   constructor(private readonly config: ArtifactStoreConfig) {
     this.branch = config.branch ?? "main";
-    if (!/^[A-Za-z0-9._-]+$/.test(this.branch)) throw new Error("invalid branch name");
+    if (!/^[A-Za-z0-9._-]+$/.test(this.branch))
+      throw new Error("invalid branch name");
     this.ref = `refs/heads/${this.branch}`;
     this.maxBytes = config.maxBytes ?? 20 * 1024 * 1024;
     this.git = config.gitBinary ?? "git";
   }
 
-  private run(args: string[], options: { input?: string | Buffer; env?: NodeJS.ProcessEnv } = {}) {
+  private run(
+    args: string[],
+    options: { input?: string | Buffer; env?: NodeJS.ProcessEnv } = {},
+  ) {
     return new Promise<GitResult>((resolve, reject) => {
       const child = execFile(
         this.git,
@@ -218,8 +237,11 @@ export class GitArtifactStore {
       );
       // Git may exit before reading all input (e.g. repository unavailable);
       // route the resulting EPIPE into the promise instead of crashing.
-      child.stdin?.on("error", (error) => reject(Object.assign(error, { stderr: "" })));
-      if (typeof options.input === "string") child.stdin?.end(options.input, "utf8");
+      child.stdin?.on("error", (error) =>
+        reject(Object.assign(error, { stderr: "" })),
+      );
+      if (typeof options.input === "string")
+        child.stdin?.end(options.input, "utf8");
       else if (options.input !== undefined) child.stdin?.end(options.input);
       else child.stdin?.end();
     });
@@ -227,11 +249,15 @@ export class GitArtifactStore {
 
   /** Create the bare artifact repository if it does not already exist. Explicit, not implicit. */
   async initialise(): Promise<void> {
-    await this.run(["init", "--quiet", "--bare", `--initial-branch=${this.branch}`, "."]).catch(
-      () => {
-        throw new ArtifactStoreError("git-failed");
-      },
-    );
+    await this.run([
+      "init",
+      "--quiet",
+      "--bare",
+      `--initial-branch=${this.branch}`,
+      ".",
+    ]).catch(() => {
+      throw new ArtifactStoreError("git-failed");
+    });
   }
 
   private async head(): Promise<string | undefined> {
@@ -252,17 +278,28 @@ export class GitArtifactStore {
    * Blob ID stored at commit:path, or undefined only when Git confirms the
    * path is absent. Any read failure throws, so callers fail closed.
    */
-  private async entryAt(commit: string, path: string): Promise<string | undefined> {
+  private async entryAt(
+    commit: string,
+    path: string,
+  ): Promise<string | undefined> {
     let stdout: string;
     try {
-      ({ stdout } = await this.run(["ls-tree", "-z", "--full-tree", commit, "--", path]));
+      ({ stdout } = await this.run([
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        path,
+      ]));
     } catch {
       throw new ArtifactStoreError("git-failed");
     }
     for (const line of stdout.split("\0")) {
       const match = /^\d+ (\w+) ([0-9a-f]+)\t(.*)$/s.exec(line);
       if (match && match[3] === path) {
-        if (match[1] !== "blob") throw new ArtifactStoreError("immutable-conflict");
+        if (match[1] !== "blob")
+          throw new ArtifactStoreError("immutable-conflict");
         return match[2];
       }
     }
@@ -276,11 +313,18 @@ export class GitArtifactStore {
         this.git,
         ["-C", this.config.repoPath, "cat-file", "blob", blob],
         {
-          env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1" },
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            GIT_CONFIG_NOSYSTEM: "1",
+          },
           maxBuffer: this.maxBytes + 1024 * 1024,
           encoding: "buffer",
         },
-        (error, stdout) => (error ? reject(new ArtifactStoreError("git-failed")) : resolve(stdout)),
+        (error, stdout) =>
+          error
+            ? reject(new ArtifactStoreError("git-failed"))
+            : resolve(stdout),
       );
     });
   }
@@ -297,8 +341,14 @@ export class GitArtifactStore {
    * Write one artifact. Serialised with other writes from this instance.
    * Returns the existing reference when identical content is already stored.
    */
-  write(path: string, content: string, expectedSha256?: string): Promise<ArtifactRef> {
-    const task = this.queue.then(() => this.writeRetrying(path, content, expectedSha256));
+  write(
+    path: string,
+    content: string,
+    expectedSha256?: string,
+  ): Promise<ArtifactRef> {
+    const task = this.queue.then(() =>
+      this.writeRetrying(path, content, expectedSha256),
+    );
     this.queue = task.catch(() => undefined);
     return task;
   }
@@ -311,10 +361,21 @@ export class GitArtifactStore {
    * reserves for raw files (for example images); indexers select their own
    * document paths and never decode these.
    */
-  writeBinary(path: string, bytes: Uint8Array, expectedSha256?: string): Promise<ArtifactRef> {
-    if (isRevisablePath(path)) return Promise.reject(new ArtifactStoreError("invalid-path"));
-    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const task = this.queue.then(() => this.writeRetrying(path, buffer, expectedSha256));
+  writeBinary(
+    path: string,
+    bytes: Uint8Array,
+    expectedSha256?: string,
+  ): Promise<ArtifactRef> {
+    if (isRevisablePath(path))
+      return Promise.reject(new ArtifactStoreError("invalid-path"));
+    const buffer = Buffer.from(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength,
+    );
+    const task = this.queue.then(() =>
+      this.writeRetrying(path, buffer, expectedSha256),
+    );
     this.queue = task.catch(() => undefined);
     return task;
   }
@@ -339,13 +400,16 @@ export class GitArtifactStore {
           !(error instanceof ArtifactStoreError) ||
           // A held ref lock may be another live writer, not a stale lock:
           // retry it too, and report it only once the budget is spent.
-          (error.code !== "concurrent-update" && error.code !== "interrupted-commit") ||
+          (error.code !== "concurrent-update" &&
+            error.code !== "interrupted-commit") ||
           attempt >= MAX_WRITE_ATTEMPTS
         )
           throw error;
         // Bounded backoff: enough for a competing writer to finish without
         // making a genuinely stuck lock wait for seconds.
-        await new Promise((r) => setTimeout(r, Math.min(100, 20 * attempt) + Math.random() * 40));
+        await new Promise((r) =>
+          setTimeout(r, Math.min(100, 20 * attempt) + Math.random() * 40),
+        );
       }
     }
   }
@@ -381,9 +445,15 @@ export class GitArtifactStore {
         } catch {
           throw new ArtifactStoreError("git-failed");
         }
-        if (candidate !== existing) throw new ArtifactStoreError("immutable-conflict");
+        if (candidate !== existing)
+          throw new ArtifactStoreError("immutable-conflict");
         const commit = await this.introducingCommit(parent, path);
-        return { repository: this.config.repository, commit, path, sha256: digest };
+        return {
+          repository: this.config.repository,
+          commit,
+          path,
+          sha256: digest,
+        };
       }
     }
 
@@ -417,11 +487,21 @@ export class GitArtifactStore {
       else await this.run(["read-tree", "--empty"], { env });
       for (const entry of entries) {
         const blob = (
-          await this.run(["hash-object", "-w", "--stdin"], { input: entry.content })
+          await this.run(["hash-object", "-w", "--stdin"], {
+            input: entry.content,
+          })
         ).stdout.trim();
-        await this.run(["update-index", "--add", "--cacheinfo", `100644,${blob},${entry.path}`], {
-          env,
-        });
+        await this.run(
+          [
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            `100644,${blob},${entry.path}`,
+          ],
+          {
+            env,
+          },
+        );
       }
       const tree = (await this.run(["write-tree"], { env })).stdout.trim();
       const commitArgs = ["commit-tree", tree, "-m", message];
@@ -434,12 +514,20 @@ export class GitArtifactStore {
       } catch {
         throw new ArtifactStoreError("mutation-not-authorized");
       }
-      await this.run(["update-ref", "-m", `artifact ${path}`, this.ref, commit, expectedOld]);
+      await this.run([
+        "update-ref",
+        "-m",
+        `artifact ${path}`,
+        this.ref,
+        commit,
+        expectedOld,
+      ]);
       return commit;
     } catch (error) {
       if (error instanceof ArtifactStoreError) throw error;
       const stderr = String((error as { stderr?: string }).stderr ?? "");
-      if (/\.lock/.test(stderr)) throw new ArtifactStoreError("interrupted-commit");
+      if (/\.lock/.test(stderr))
+        throw new ArtifactStoreError("interrupted-commit");
       if (/cannot lock ref|but expected|is at/.test(stderr)) {
         throw new ArtifactStoreError("concurrent-update");
       }
@@ -492,7 +580,8 @@ export class GitArtifactStore {
     const digest = sha256(content);
     const parent = await this.head();
     const blob = parent ? await this.entryAt(parent, path) : undefined;
-    const current = blob === undefined ? null : sha256(await this.blobContent(blob));
+    const current =
+      blob === undefined ? null : sha256(await this.blobContent(blob));
     if (current !== expectedSha256) {
       // Retrying an identical write that already landed is not a conflict.
       if (current === digest && parent) {
@@ -541,12 +630,16 @@ export class GitArtifactStore {
   private async reviseAllNow(
     entries: { path: string; content: string; expectedSha256: string | null }[],
   ): Promise<ArtifactRef[]> {
-    if (entries.length === 0 || new Set(entries.map((e) => e.path)).size !== entries.length) {
+    if (
+      entries.length === 0 ||
+      new Set(entries.map((e) => e.path)).size !== entries.length
+    ) {
       throw new ArtifactStoreError("invalid-path");
     }
     for (const e of entries) {
       assertArtifactPath(e.path);
-      if (!isRevisablePath(e.path)) throw new ArtifactStoreError("invalid-path");
+      if (!isRevisablePath(e.path))
+        throw new ArtifactStoreError("invalid-path");
       if (Buffer.byteLength(e.content, "utf8") > this.maxBytes) {
         throw new ArtifactStoreError("too-large");
       }
@@ -555,7 +648,8 @@ export class GitArtifactStore {
     const checked = [];
     for (const e of entries) {
       const blob = parent ? await this.entryAt(parent, e.path) : undefined;
-      const current = blob === undefined ? null : sha256(await this.blobContent(blob));
+      const current =
+        blob === undefined ? null : sha256(await this.blobContent(blob));
       const digest = sha256(e.content);
       if (current !== e.expectedSha256 && current !== digest) {
         throw new ArtifactStoreError("stale-revision");
@@ -574,7 +668,10 @@ export class GitArtifactStore {
     for (const e of checked) {
       refs.push({
         repository: this.config.repository,
-        commit: !e.applied && commit ? commit : await this.latestCommit(commit ?? parent!, e.path),
+        commit:
+          !e.applied && commit
+            ? commit
+            : await this.latestCommit(commit ?? parent!, e.path),
         path: e.path,
         sha256: e.digest,
       });
@@ -585,7 +682,14 @@ export class GitArtifactStore {
   /** Newest commit on the branch that changed the path. */
   private async latestCommit(head: string, path: string): Promise<string> {
     try {
-      const { stdout } = await this.run(["log", "-1", "--format=%H", head, "--", path]);
+      const { stdout } = await this.run([
+        "log",
+        "-1",
+        "--format=%H",
+        head,
+        "--",
+        path,
+      ]);
       return stdout.trim() || head;
     } catch {
       throw new ArtifactStoreError("git-failed");
@@ -596,7 +700,14 @@ export class GitArtifactStore {
   private async introducingCommit(head: string, path: string): Promise<string> {
     let stdout: string;
     try {
-      ({ stdout } = await this.run(["log", "--format=%H", "--diff-filter=A", head, "--", path]));
+      ({ stdout } = await this.run([
+        "log",
+        "--format=%H",
+        "--diff-filter=A",
+        head,
+        "--",
+        path,
+      ]));
     } catch {
       throw new ArtifactStoreError("git-failed");
     }
@@ -621,7 +732,12 @@ export class GitArtifactStore {
     const commit = isRevisablePath(path)
       ? await this.latestCommit(head, path)
       : await this.introducingCommit(head, path);
-    return { repository: this.config.repository, commit, path, sha256: sha256(content) };
+    return {
+      repository: this.config.repository,
+      commit,
+      path,
+      sha256: sha256(content),
+    };
   }
 
   /**
@@ -643,7 +759,11 @@ export class GitArtifactStore {
     const head = await this.head();
     if (!head) return { full: true, changes: [] };
     let incremental = false;
-    if (from && /^[0-9a-f]{40,64}$/.test(from) && (await this.commitExists(from))) {
+    if (
+      from &&
+      /^[0-9a-f]{40,64}$/.test(from) &&
+      (await this.commitExists(from))
+    ) {
       try {
         await this.run(["merge-base", "--is-ancestor", from, head]);
         incremental = true;
@@ -652,18 +772,34 @@ export class GitArtifactStore {
       }
     }
     if (!incremental) {
-      const { stdout } = await this.run(["ls-tree", "-r", "-z", "--name-only", head]);
+      const { stdout } = await this.run([
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        head,
+      ]);
       const changes = stdout
         .split("\0")
         .filter(Boolean)
         .map((path) => ({ path, change: "upsert" as const }));
       return { head, full: true, changes };
     }
-    const { stdout } = await this.run(["diff", "--name-status", "-z", "--no-renames", from!, head]);
+    const { stdout } = await this.run([
+      "diff",
+      "--name-status",
+      "-z",
+      "--no-renames",
+      from!,
+      head,
+    ]);
     const parts = stdout.split("\0").filter(Boolean);
     const changes: { path: string; change: "upsert" | "delete" }[] = [];
     for (let i = 0; i + 1 < parts.length; i += 2) {
-      changes.push({ path: parts[i + 1], change: parts[i].startsWith("D") ? "delete" : "upsert" });
+      changes.push({
+        path: parts[i + 1],
+        change: parts[i].startsWith("D") ? "delete" : "upsert",
+      });
     }
     return { head, full: false, changes };
   }
@@ -690,7 +826,12 @@ export class GitArtifactStore {
       : await this.introducingCommit(at, path);
     return {
       // The reference hashes the stored bytes (#277); content is the text view.
-      ref: { repository: this.config.repository, commit, path, sha256: sha256(bytes) },
+      ref: {
+        repository: this.config.repository,
+        commit,
+        path,
+        sha256: sha256(bytes),
+      },
       content,
     };
   }
@@ -701,7 +842,9 @@ export class GitArtifactStore {
    * storage, wherever Git keeps it for this layout. `active` is false when
    * notifications are unavailable, in which case callers rely on polling.
    */
-  async watchBranch(onChange: () => void): Promise<{ active: boolean; close(): void }> {
+  async watchBranch(
+    onChange: () => void,
+  ): Promise<{ active: boolean; close(): void }> {
     let gitDir: string;
     try {
       gitDir = (await this.run(["rev-parse", "--git-dir"])).stdout.trim();
@@ -711,7 +854,9 @@ export class GitArtifactStore {
     if (!isAbsolute(gitDir)) gitDir = joinPath(this.config.repoPath, gitDir);
     const watchers: FSWatcher[] = [];
     try {
-      watchers.push(watchPath(joinPath(gitDir, "refs", "heads"), () => onChange()));
+      watchers.push(
+        watchPath(joinPath(gitDir, "refs", "heads"), () => onChange()),
+      );
     } catch {
       // No loose refs directory: packed refs below, or polling.
     }
@@ -721,7 +866,8 @@ export class GitArtifactStore {
       watchers.push(
         watchPath(
           gitDir,
-          (_event, name) => (name === "packed-refs" || name === WAKE_SIGNAL) && onChange(),
+          (_event, name) =>
+            (name === "packed-refs" || name === WAKE_SIGNAL) && onChange(),
         ),
       );
     } catch {
@@ -746,9 +892,14 @@ export class GitArtifactStore {
     const { stdout } = await this.run(["rev-parse", "--git-dir"]);
     let gitDir = stdout.trim();
     if (!isAbsolute(gitDir)) gitDir = joinPath(this.config.repoPath, gitDir);
-    const { stdout: hooksOut } = await this.run(["rev-parse", "--git-path", "hooks"]);
+    const { stdout: hooksOut } = await this.run([
+      "rev-parse",
+      "--git-path",
+      "hooks",
+    ]);
     let hooksDir = hooksOut.trim();
-    if (!isAbsolute(hooksDir)) hooksDir = joinPath(this.config.repoPath, hooksDir);
+    if (!isAbsolute(hooksDir))
+      hooksDir = joinPath(this.config.repoPath, hooksDir);
     const path = joinPath(hooksDir, "reference-transaction");
     const script = wakeHookScript();
     let existing: string | undefined;
@@ -758,7 +909,8 @@ export class GitArtifactStore {
       existing = undefined;
     }
     if (existing === script) return "unchanged";
-    if (existing !== undefined && !existing.includes("steele-wake-hook")) return "foreign-hook";
+    if (existing !== undefined && !existing.includes("steele-wake-hook"))
+      return "foreign-hook";
     await writeFile(path, script, "utf8");
     await chmod(path, 0o755);
     return "installed";
@@ -795,7 +947,12 @@ export class GitArtifactStore {
    * `limit`. Enumerating the current tree would let a pinned load see paths
    * that did not exist at that revision, or miss ones removed since (#249).
    */
-  async listAt(at: string, prefix: string, limit: number, after?: string): Promise<string[]> {
+  async listAt(
+    at: string,
+    prefix: string,
+    limit: number,
+    after?: string,
+  ): Promise<string[]> {
     assertArtifactPath(prefix);
     if (!/^[0-9a-f]{40,64}$/.test(at) || !(await this.commitExists(at))) {
       throw new ArtifactStoreError("git-failed");
@@ -831,7 +988,11 @@ export class GitArtifactStore {
           `${prefix}/`,
         ],
         {
-          env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1" },
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            GIT_CONFIG_NOSYSTEM: "1",
+          },
           stdio: ["ignore", "pipe", "ignore"],
         },
       );
@@ -868,34 +1029,44 @@ export class GitArtifactStore {
   /** Read the exact referenced version and verify its hash. */
   async read(ref: ArtifactRef): Promise<string> {
     const valid = ArtifactRefSchema.parse(ref);
-    if (valid.repository !== this.config.repository) throw new ArtifactStoreError("not-found");
+    if (valid.repository !== this.config.repository)
+      throw new ArtifactStoreError("not-found");
     assertArtifactPath(valid.path);
-    const blob = await this.entryAt(valid.commit, valid.path).catch((error: unknown) => {
-      // An unknown commit is a missing artifact; other failures stay failures.
-      if (error instanceof ArtifactStoreError && error.code === "git-failed") {
-        return this.commitExists(valid.commit).then((exists) => {
-          if (exists) throw error;
-          return undefined;
-        });
-      }
-      throw error;
-    });
+    const blob = await this.entryAt(valid.commit, valid.path).catch(
+      (error: unknown) => {
+        // An unknown commit is a missing artifact; other failures stay failures.
+        if (
+          error instanceof ArtifactStoreError &&
+          error.code === "git-failed"
+        ) {
+          return this.commitExists(valid.commit).then((exists) => {
+            if (exists) throw error;
+            return undefined;
+          });
+        }
+        throw error;
+      },
+    );
     if (blob === undefined) throw new ArtifactStoreError("not-found");
     const content = await this.blobContent(blob);
-    if (sha256(content) !== valid.sha256) throw new ArtifactStoreError("hash-mismatch");
+    if (sha256(content) !== valid.sha256)
+      throw new ArtifactStoreError("hash-mismatch");
     return content;
   }
 
   /** Read the exact referenced binary artifact as bytes and verify their hash (#277). */
   async readBinary(ref: ArtifactRef): Promise<Buffer> {
     const valid = ArtifactRefSchema.parse(ref);
-    if (valid.repository !== this.config.repository) throw new ArtifactStoreError("not-found");
+    if (valid.repository !== this.config.repository)
+      throw new ArtifactStoreError("not-found");
     assertArtifactPath(valid.path);
-    if (!(await this.commitExists(valid.commit))) throw new ArtifactStoreError("not-found");
+    if (!(await this.commitExists(valid.commit)))
+      throw new ArtifactStoreError("not-found");
     const blob = await this.entryAt(valid.commit, valid.path);
     if (blob === undefined) throw new ArtifactStoreError("not-found");
     const bytes = await this.blobBytes(blob);
-    if (sha256(bytes) !== valid.sha256) throw new ArtifactStoreError("hash-mismatch");
+    if (sha256(bytes) !== valid.sha256)
+      throw new ArtifactStoreError("hash-mismatch");
     return bytes;
   }
 }

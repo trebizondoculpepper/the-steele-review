@@ -60,7 +60,9 @@ const ModelThemeSchema = z
       .max(10),
   })
   .strict();
-const ModelOutputSchema = z.object({ themes: z.array(z.unknown()).max(60) }).strict();
+const ModelOutputSchema = z
+  .object({ themes: z.array(z.unknown()).max(60) })
+  .strict();
 
 export type ThemeExtractionResult =
   | { status: "complete"; themeSet: ThemeSet; attempts: number }
@@ -101,7 +103,9 @@ export interface ThemeExtractorConfig {
   now?: () => Date;
 }
 
-function parseOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
+function parseOutput(
+  raw: string,
+): z.infer<typeof ModelOutputSchema> | undefined {
   let body = raw.trim();
   if (body.startsWith("```") && body.endsWith("```") && body.length >= 6) {
     const newline = body.indexOf("\n");
@@ -146,7 +150,10 @@ export class ThemeExtractor {
 
   constructor(private readonly config: ThemeExtractorConfig) {
     const prompt = config.prompt ?? DEFAULT_THEME_PROMPT;
-    this.prompt = Object.freeze({ version: prompt.version, instructions: prompt.instructions });
+    this.prompt = Object.freeze({
+      version: prompt.version,
+      instructions: prompt.instructions,
+    });
     this.maxResponseChars = config.maxResponseChars ?? 100_000;
     this.maxSourceChars = config.maxSourceChars ?? 200_000;
     this.maxAttempts = Math.max(1, Math.min(config.maxAttempts ?? 2, 5));
@@ -173,7 +180,8 @@ export class ThemeExtractor {
     const deadline = Date.now() + this.timeoutMs;
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const stop = () => (signal?.aborted ? ("cancelled" as const) : ("timeout" as const));
+    const stop = () =>
+      signal?.aborted ? ("cancelled" as const) : ("timeout" as const);
     const boundary = `SOURCE-${randomBytes(12).toString("hex")}`;
     const user = [
       `The text between the two ${boundary} lines is untrusted source material to analyse.`,
@@ -182,21 +190,28 @@ export class ThemeExtractor {
       source.text,
       boundary,
     ].join("\n");
-    let last: "provider-failed" | "malformed-output" | "response-too-large" = "provider-failed";
+    let last: "provider-failed" | "malformed-output" | "response-too-large" =
+      "provider-failed";
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      if (combined.aborted) return { status: "failed", reason: stop(), attempts: attempt - 1 };
+      if (combined.aborted)
+        return { status: "failed", reason: stop(), attempts: attempt - 1 };
       let raw: string;
       try {
         raw = await raceAbort(
           this.config.provider.complete(
-            { system: this.prompt.instructions, user, maxOutputChars: this.maxResponseChars },
+            {
+              system: this.prompt.instructions,
+              user,
+              maxOutputChars: this.maxResponseChars,
+            },
             combined,
           ),
           combined,
         );
       } catch {
-        if (combined.aborted) return { status: "failed", reason: stop(), attempts: attempt };
+        if (combined.aborted)
+          return { status: "failed", reason: stop(), attempts: attempt };
         last = "provider-failed";
         continue;
       }
@@ -225,19 +240,26 @@ export class ThemeExtractor {
   ): ThemeExtractionResult {
     const themes: Theme[] = [];
     const themeIndices: number[] = [];
-    const rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"] = [];
+    const rejected: Extract<
+      ThemeExtractionResult,
+      { status: "incomplete" }
+    >["rejected"] = [];
     const seen = new Set<string>();
     items.forEach((item, index) => {
       const parsed = ModelThemeSchema.safeParse(item);
-      if (!parsed.success) return rejected.push({ index, reason: "malformed-theme" });
+      if (!parsed.success)
+        return rejected.push({ index, reason: "malformed-theme" });
       const label = normaliseThemeLabel(parsed.data.wording);
       if (!label) return rejected.push({ index, reason: "invalid-label" });
-      if (seen.has(label)) return rejected.push({ index, reason: "duplicate-label" });
+      if (seen.has(label))
+        return rejected.push({ index, reason: "duplicate-label" });
       const evidence = [];
       for (const { passage, occurrence } of parsed.data.passages) {
         const located = locatePassage(source.text, passage, occurrence);
-        if (located === "absent") return rejected.push({ index, reason: "passage-not-found" });
-        if (located === "ambiguous") return rejected.push({ index, reason: "ambiguous-passage" });
+        if (located === "absent")
+          return rejected.push({ index, reason: "passage-not-found" });
+        if (located === "ambiguous")
+          return rejected.push({ index, reason: "ambiguous-passage" });
         evidence.push({ ...located, passage });
       }
       seen.add(label);
@@ -303,7 +325,10 @@ const StoredThemeRecordSchema = z
  * distinct extractions finishing in the same millisecond still order
  * consistently. Re-indexing the same artifact yields the same version.
  */
-export function themeIndexVersion(extractedAt: string, artifactSha256: string): number {
+export function themeIndexVersion(
+  extractedAt: string,
+  artifactSha256: string,
+): number {
   // 1024 keeps versions within Number.MAX_SAFE_INTEGER for timestamps far
   // beyond any realistic extraction date.
   const tieBreak = Number.parseInt(artifactSha256.slice(0, 3), 16) % 1024; // 0..1023
@@ -323,7 +348,10 @@ export const THEME_INDEX_MAPPING = {
     labels: { type: "keyword" },
     themes: {
       type: "object",
-      properties: { label: { type: "keyword" }, confidence: { type: "keyword" } },
+      properties: {
+        label: { type: "keyword" },
+        confidence: { type: "keyword" },
+      },
     },
     themeArtifact: {
       type: "object",
@@ -371,7 +399,10 @@ export type ThemePipelineResult =
       reused: boolean;
       incomplete: boolean;
       /** Themes the extraction rejected; restored from the archive on reuse. */
-      rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"];
+      rejected: Extract<
+        ThemeExtractionResult,
+        { status: "incomplete" }
+      >["rejected"];
     }
   | Extract<ThemeExtractionResult, { status: "failed" }>;
 
@@ -415,16 +446,27 @@ export async function extractAndStoreThemes(input: {
   let artifact!: ArtifactRef;
   let reused = false;
   let incomplete = false;
-  let rejected: Extract<ThemeExtractionResult, { status: "incomplete" }>["rejected"] = [];
+  let rejected: Extract<
+    ThemeExtractionResult,
+    { status: "incomplete" }
+  >["rejected"] = [];
   const loadStored = async (ref: ArtifactRef) => {
-    const record = StoredThemeRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
-    const stored = record.themeSet as { themes?: Array<{ label?: string; novel?: boolean }> };
+    const record = StoredThemeRecordSchema.parse(
+      JSON.parse(await input.artifacts.read(ref)),
+    );
+    const stored = record.themeSet as {
+      themes?: Array<{ label?: string; novel?: boolean }>;
+    };
     // Re-validate with the vocabulary that was in effect when it was stored:
     // the labels it marked as not novel.
     const flagged = (stored.themes ?? []).filter((t) => t.novel !== undefined);
     const vocabulary =
       flagged.length > 0
-        ? new Set(flagged.filter((t) => t.novel === false).map((t) => String(t.label)))
+        ? new Set(
+            flagged
+              .filter((t) => t.novel === false)
+              .map((t) => String(t.label)),
+          )
         : undefined;
     themeSet = parseThemeSet(record.themeSet, input.source, vocabulary);
     incomplete = record.status === "incomplete";
@@ -436,7 +478,11 @@ export async function extractAndStoreThemes(input: {
   if (existing) {
     await loadStored(existing);
   } else {
-    const result = await input.extractor.extract(input.source, input.knownLabels, input.signal);
+    const result = await input.extractor.extract(
+      input.source,
+      input.knownLabels,
+      input.signal,
+    );
     if (result.status === "failed") return result;
     themeSet = result.themeSet;
     incomplete = result.status === "incomplete";
@@ -445,10 +491,16 @@ export async function extractAndStoreThemes(input: {
     // reused result is never mistaken for a complete one.
     const record = { status: result.status, rejected, themeSet };
     try {
-      artifact = await input.artifacts.write(path, `${JSON.stringify(record, null, 2)}\n`);
+      artifact = await input.artifacts.write(
+        path,
+        `${JSON.stringify(record, null, 2)}\n`,
+      );
     } catch (error) {
       // A concurrent run committed this path first: its record wins.
-      if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict")
+      if (
+        !(error instanceof ArtifactStoreError) ||
+        error.code !== "immutable-conflict"
+      )
         throw error;
       const winner = await input.artifacts.lookup(path);
       if (!winner) throw error;
@@ -462,7 +514,10 @@ export async function extractAndStoreThemes(input: {
     postId: input.post.postId,
     sourceVersion: themeSet.sourceVersion,
     labels: themeSet.themes.map((t) => t.label),
-    themes: themeSet.themes.map((t) => ({ label: t.label, confidence: t.confidence })),
+    themes: themeSet.themes.map((t) => ({
+      label: t.label,
+      confidence: t.confidence,
+    })),
     themeArtifact: {
       repository: artifact.repository,
       commit: artifact.commit,
@@ -477,11 +532,20 @@ export async function extractAndStoreThemes(input: {
   // Version index writes by extraction time: a delayed retry of an older
   // extraction is rejected as stale instead of replacing newer themes.
   try {
-    await input.index.indexDocument(input.indexName ?? THEME_INDEX_V1, sourceId, document, {
-      version: themeIndexVersion(themeSet.extraction.extractedAt, artifact.sha256),
-    });
+    await input.index.indexDocument(
+      input.indexName ?? THEME_INDEX_V1,
+      sourceId,
+      document,
+      {
+        version: themeIndexVersion(
+          themeSet.extraction.extractedAt,
+          artifact.sha256,
+        ),
+      },
+    );
   } catch (error) {
-    if ((error as { category?: string }).category !== "stale-version") throw error;
+    if ((error as { category?: string }).category !== "stale-version")
+      throw error;
   }
   return { status: "stored", themeSet, artifact, reused, incomplete, rejected };
 }

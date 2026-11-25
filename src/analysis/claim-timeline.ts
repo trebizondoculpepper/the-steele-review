@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { MAX_SEARCH_RESULTS, type SearchHit } from "../controllers/elasticsearch.js";
+import {
+  MAX_SEARCH_RESULTS,
+  type SearchHit,
+} from "../controllers/elasticsearch.js";
 import {
   CLAIM_OCCURRENCE_INDEX_V1,
   ClaimOccurrenceSchema,
@@ -37,16 +40,26 @@ export const TimelineFilterSchema = z
     theme: z.string().min(1).max(60).optional(),
     publicationId: z.string().min(1).max(200).optional(),
     speakerName: z.string().trim().min(1).max(200).optional(),
-    speakerKind: z.enum(["author-voice", "quoted", "unknown", "uncertain"]).optional(),
+    speakerKind: z
+      .enum(["author-voice", "quoted", "unknown", "uncertain"])
+      .optional(),
     from: z.iso.datetime({ offset: true }).optional(),
     to: z.iso.datetime({ offset: true }).optional(),
     bucket: z.enum(["month", "year"]).default("month"),
-    limit: z.number().int().min(1).max(MAX_SEARCH_RESULTS).default(MAX_SEARCH_RESULTS),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SEARCH_RESULTS)
+      .default(MAX_SEARCH_RESULTS),
   })
   .strict()
-  .refine((f) => [f.groupingKey, f.claimId, f.statement, f.theme].some(Boolean), {
-    message: "a claim, grouping, statement or theme is required",
-  })
+  .refine(
+    (f) => [f.groupingKey, f.claimId, f.statement, f.theme].some(Boolean),
+    {
+      message: "a claim, grouping, statement or theme is required",
+    },
+  )
   .refine((f) => !f.from || !f.to || Date.parse(f.from) <= Date.parse(f.to), {
     message: "from must not be after to",
   });
@@ -80,9 +93,18 @@ export interface ClaimTimeline {
   earliestObserved?: TimelineOccurrence;
   latestObserved?: TimelineOccurrence;
   /** Dated occurrences grouped by bucket (UTC), oldest first. */
-  buckets: Array<{ bucket: string; occurrences: number; distinctPosts: number }>;
+  buckets: Array<{
+    bucket: string;
+    occurrences: number;
+    distinctPosts: number;
+  }>;
   undatedOccurrences: number;
-  speakers: Array<{ kind: string; name?: string; occurrences: number; distinctPosts: number }>;
+  speakers: Array<{
+    kind: string;
+    name?: string;
+    occurrences: number;
+    distinctPosts: number;
+  }>;
   occurrences: TimelineOccurrence[];
   invalidDocuments: number;
   truncated: boolean;
@@ -103,19 +125,28 @@ export async function queryClaimTimeline(
   // Match both grouping versions: v1 (loose text key) and v2 (strict key).
   if (f.statement) {
     filter.push({
-      terms: { "grouping.key": [normalisedClaimKey(f.statement), claimIdentityKey(f.statement)] },
+      terms: {
+        "grouping.key": [
+          normalisedClaimKey(f.statement),
+          claimIdentityKey(f.statement),
+        ],
+      },
     });
   }
   if (f.claimId) filter.push({ term: { claimId: f.claimId } });
   if (f.theme) filter.push({ term: { themes: f.theme } });
-  if (f.publicationId) filter.push({ term: { publicationId: f.publicationId } });
+  if (f.publicationId)
+    filter.push({ term: { publicationId: f.publicationId } });
   if (f.speakerName) filter.push({ term: { "speaker.name": f.speakerName } });
   if (f.speakerKind) filter.push({ term: { "speaker.kind": f.speakerKind } });
   // A date range excludes undated posts by definition; without one they stay in.
   if (f.from || f.to) {
     filter.push({
       range: {
-        sourcePublishedAt: { ...(f.from ? { gte: f.from } : {}), ...(f.to ? { lte: f.to } : {}) },
+        sourcePublishedAt: {
+          ...(f.from ? { gte: f.from } : {}),
+          ...(f.to ? { lte: f.to } : {}),
+        },
       },
     });
   }
@@ -124,7 +155,10 @@ export async function queryClaimTimeline(
     { bool: { filter } },
     {
       size: f.limit,
-      sort: [{ sourcePublishedAt: { order: "asc", missing: "_last" } }, { occurrenceId: "asc" }],
+      sort: [
+        { sourcePublishedAt: { order: "asc", missing: "_last" } },
+        { occurrenceId: "asc" },
+      ],
     },
   );
 
@@ -138,13 +172,20 @@ export async function queryClaimTimeline(
     }
     byId.set(parsed.data.occurrenceId, parsed.data);
   }
-  const occurrences = [...byId.values()].map(toTimelineOccurrence).sort(compareObserved);
+  const occurrences = [...byId.values()]
+    .map(toTimelineOccurrence)
+    .sort(compareObserved);
   const dated = occurrences.filter((o) => o.sourcePublishedAt);
 
-  const buckets = new Map<string, { occurrences: number; posts: Set<string> }>();
+  const buckets = new Map<
+    string,
+    { occurrences: number; posts: Set<string> }
+  >();
   for (const o of dated) {
     // Buckets are UTC regardless of the stored offset.
-    const key = new Date(o.sourcePublishedAt!).toISOString().slice(0, f.bucket === "year" ? 4 : 7);
+    const key = new Date(o.sourcePublishedAt!)
+      .toISOString()
+      .slice(0, f.bucket === "year" ? 4 : 7);
     const b = buckets.get(key) ?? { occurrences: 0, posts: new Set<string>() };
     b.occurrences++;
     b.posts.add(postKey(o));
@@ -174,10 +215,16 @@ export async function queryClaimTimeline(
     ...(dated.length ? { latestObserved: dated[dated.length - 1] } : {}),
     buckets: [...buckets.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([bucket, b]) => ({ bucket, occurrences: b.occurrences, distinctPosts: b.posts.size })),
+      .map(([bucket, b]) => ({
+        bucket,
+        occurrences: b.occurrences,
+        distinctPosts: b.posts.size,
+      })),
     undatedOccurrences: occurrences.length - dated.length,
     speakers: [...speakers.values()]
-      .sort((a, b) => b.occurrences - a.occurrences || a.kind.localeCompare(b.kind))
+      .sort(
+        (a, b) => b.occurrences - a.occurrences || a.kind.localeCompare(b.kind),
+      )
       .map(({ posts, ...s }) => ({ ...s, distinctPosts: posts.size })),
     occurrences,
     invalidDocuments,
@@ -233,13 +280,15 @@ export function renderTimelineReport(t: ClaimTimeline): string {
     "By period:",
     ...(t.buckets.length
       ? t.buckets.map(
-          (b) => `  ${b.bucket}  ${b.occurrences} occurrence(s), ${b.distinctPosts} post(s)`,
+          (b) =>
+            `  ${b.bucket}  ${b.occurrences} occurrence(s), ${b.distinctPosts} post(s)`,
         )
       : ["  (none dated)"]),
     "",
     "By speaker:",
     ...t.speakers.map(
-      (s) => `  ${speakerLabel(s)}  ${s.occurrences} occurrence(s), ${s.distinctPosts} post(s)`,
+      (s) =>
+        `  ${speakerLabel(s)}  ${s.occurrences} occurrence(s), ${s.distinctPosts} post(s)`,
     ),
     "",
     "Occurrences:",

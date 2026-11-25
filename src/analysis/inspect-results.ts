@@ -1,7 +1,16 @@
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { ClaimExtractionRecordSchema, type ClaimExtractionRecord } from "./grounded-claims.js";
-import { parseThemeProposalResult, type ThemeProposalResult } from "./theme-proposals.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import {
+  ClaimExtractionRecordSchema,
+  type ClaimExtractionRecord,
+} from "./grounded-claims.js";
+import {
+  parseThemeProposalResult,
+  type ThemeProposalResult,
+} from "./theme-proposals.js";
 
 /**
  * True when some saved result could not be read, parsed or resolved, or more
@@ -41,7 +50,11 @@ export interface InspectedClaim {
   kind: string;
   themes: Array<{ id: string; title?: string }>;
   quotation: string;
-  location: { start: number; end: number; transcriptSeconds?: [number, number] };
+  location: {
+    start: number;
+    end: number;
+    transcriptSeconds?: [number, number];
+  };
   sourcePublishedAt?: string;
   speaker: { kind: string; name?: string };
 }
@@ -87,7 +100,12 @@ export interface InspectionReport {
     legacy?: InspectedClaim[];
     candidates?: Array<InspectedClaim & { reasons: string[] }>;
     rejected?: Array<{ reason: string; stage?: string; statement?: string }>;
-    counts?: { accepted: number; candidates: number; rejected: number; legacy?: number };
+    counts?: {
+      accepted: number;
+      candidates: number;
+      rejected: number;
+      legacy?: number;
+    };
     truncated?: boolean;
   }>;
   /** True when nothing has been saved for this post (distinct from an empty result). */
@@ -128,19 +146,31 @@ const OccurrenceView = z.object({
     .refine((v) => v.endSeconds >= v.startSeconds)
     .optional()
     .catch(undefined),
-  sourcePublishedAt: z.iso.datetime({ offset: true }).optional().catch(undefined),
+  sourcePublishedAt: z.iso
+    .datetime({ offset: true })
+    .optional()
+    .catch(undefined),
   speaker: z
     .object({
-      kind: z.enum(["author-voice", "quoted", "unknown", "uncertain"]).optional().catch(undefined),
+      kind: z
+        .enum(["author-voice", "quoted", "unknown", "uncertain"])
+        .optional()
+        .catch(undefined),
       name: z.string().trim().min(1).max(200).optional().catch(undefined),
     })
     .optional()
     .catch(undefined),
 });
-const asObject = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+const asObject = (v: unknown) =>
+  v && typeof v === "object" && !Array.isArray(v) ? v : {};
 
 function claimView(
-  item: { claim: unknown; occurrence: unknown; kind: string; themeIds: string[] },
+  item: {
+    claim: unknown;
+    occurrence: unknown;
+    kind: string;
+    themeIds: string[];
+  },
   titles: ReadonlyMap<string, string>,
 ): InspectedClaim {
   const claim = ClaimView.parse(asObject(item.claim));
@@ -159,14 +189,16 @@ function claimView(
       end: span.end,
       ...(occ.transcriptTime
         ? {
-            transcriptSeconds: [occ.transcriptTime.startSeconds, occ.transcriptTime.endSeconds] as [
-              number,
-              number,
-            ],
+            transcriptSeconds: [
+              occ.transcriptTime.startSeconds,
+              occ.transcriptTime.endSeconds,
+            ] as [number, number],
           }
         : {}),
     },
-    ...(occ.sourcePublishedAt ? { sourcePublishedAt: occ.sourcePublishedAt } : {}),
+    ...(occ.sourcePublishedAt
+      ? { sourcePublishedAt: occ.sourcePublishedAt }
+      : {}),
     speaker: {
       kind: occ.speaker?.kind ?? "unknown",
       ...(occ.speaker?.name ? { name: occ.speaker.name } : {}),
@@ -182,7 +214,10 @@ const PAGE = 200;
 async function readAll(
   store: Pick<GitArtifactStore, "list" | "lookup" | "read">,
   prefix: string,
-): Promise<{ items: Array<{ ref: ArtifactRef; text?: string }>; truncated: boolean }> {
+): Promise<{
+  items: Array<{ ref: ArtifactRef; text?: string }>;
+  truncated: boolean;
+}> {
   const items: Array<{ ref: ArtifactRef; text?: string }> = [];
   let after: string | undefined;
   for (;;) {
@@ -228,7 +263,10 @@ export async function inspectPost(
     resultsTruncated: false,
   };
 
-  const themeFiles = await readAll(content, `theme-proposals/${post.publicationId}/${post.postId}`);
+  const themeFiles = await readAll(
+    content,
+    `theme-proposals/${post.publicationId}/${post.postId}`,
+  );
   const claimFiles = await readAll(
     content,
     `claim-extractions/${post.publicationId}/${post.postId}`,
@@ -273,10 +311,16 @@ export async function inspectPost(
       rejected: result.rejected.slice(0, limit).map((r) => ({
         reason: r.reason,
         stage: r.stage,
-        ...(r.candidate.fields.title ? { title: r.candidate.fields.title } : {}),
+        ...(r.candidate.fields.title
+          ? { title: r.candidate.fields.title }
+          : {}),
       })),
-      counts: { proposals: result.proposals.length, rejected: result.rejected.length },
-      truncated: result.proposals.length > limit || result.rejected.length > limit,
+      counts: {
+        proposals: result.proposals.length,
+        rejected: result.rejected.length,
+      },
+      truncated:
+        result.proposals.length > limit || result.rejected.length > limit,
     });
   }
 
@@ -296,7 +340,8 @@ export async function inspectPost(
     // show those as legacy, never as accepted under the current contract.
     const isLegacy = record.schemaVersion === 1;
     const titles =
-      (record.themeResult && titlesByResult.get(record.themeResult)) || new Map<string, string>();
+      (record.themeResult && titlesByResult.get(record.themeResult)) ||
+      new Map<string, string>();
     const viewed = record.claims.map((c) => claimView(c, titles));
     const accepted = isLegacy ? [] : viewed;
     const legacy = isLegacy ? viewed : [];
@@ -307,21 +352,33 @@ export async function inspectPost(
     const rejected = record.rejected.map((r) => ({
       reason: r.reason,
       ...(r.stage ? { stage: r.stage } : {}),
-      ...(r.candidate?.fields.statement ? { statement: r.candidate.fields.statement } : {}),
+      ...(r.candidate?.fields.statement
+        ? { statement: r.candidate.fields.statement }
+        : {}),
     }));
-    const truncated = [accepted, legacy, candidates, rejected].some((l) => l.length > limit);
+    const truncated = [accepted, legacy, candidates, rejected].some(
+      (l) => l.length > limit,
+    );
     report.claimResults.push({
       ref: logical(ref),
       status: "ok",
       schemaVersion: record.schemaVersion,
       sourceVersion: record.sourceVersion,
       ...(record.themeResult
-        ? { themeResult: record.themeResult.replace(/^([0-9a-f]{12})[0-9a-f]*:/, "$1:") }
+        ? {
+            themeResult: record.themeResult.replace(
+              /^([0-9a-f]{12})[0-9a-f]*:/,
+              "$1:",
+            ),
+          }
         : {}),
       ...(linkedVersion !== undefined && linkedVersion !== record.sourceVersion
         ? { sourceVersionMismatch: true }
         : {}),
-      versions: { model: record.extraction.modelVersion, prompt: record.extraction.promptVersion },
+      versions: {
+        model: record.extraction.modelVersion,
+        prompt: record.extraction.promptVersion,
+      },
       // Why this extraction attributed the post author (#462); never the raw configuration.
       // Legacy records extracted without source configuration say so explicitly.
       attribution: record.extraction.attribution
@@ -341,7 +398,8 @@ export async function inspectPost(
     });
   }
 
-  report.notFound = report.themeResults.length === 0 && report.claimResults.length === 0;
+  report.notFound =
+    report.themeResults.length === 0 && report.claimResults.length === 0;
   return report;
 }
 
@@ -355,9 +413,13 @@ export function renderInspection(r: InspectionReport): string {
     lines.push(`  ${t.versions!.prompt} · ${t.versions!.model}`);
     if (t.proposals!.length === 0) lines.push("  (no themes proposed)");
     for (const p of t.proposals!)
-      lines.push(`  - ${p.title}${p.description ? ` — ${p.description}` : ""}  [${p.id}]`);
+      lines.push(
+        `  - ${p.title}${p.description ? ` — ${p.description}` : ""}  [${p.id}]`,
+      );
     for (const x of t.rejected!)
-      lines.push(`  ✗ ${x.reason} (${x.stage})${x.title ? `: ${x.title}` : ""}`);
+      lines.push(
+        `  ✗ ${x.reason} (${x.stage})${x.title ? `: ${x.title}` : ""}`,
+      );
     if (t.truncated) {
       lines.push(
         `  … showing ${t.proposals!.length} of ${t.counts!.proposals} themes and ${t.rejected!.length} of ${t.counts!.rejected} rejections; rerun with a larger --limit`,
@@ -371,11 +433,18 @@ export function renderInspection(r: InspectionReport): string {
       `  schema v${c.schemaVersion} · ${c.versions!.prompt} · ${c.versions!.model} · accepted ${c.counts!.accepted}, candidates ${c.counts!.candidates}, rejected ${c.counts!.rejected}`,
     );
     if (c.sourceVersionMismatch)
-      lines.push("  ! linked theme result describes a different source version");
+      lines.push(
+        "  ! linked theme result describes a different source version",
+      );
     const show = (x: InspectedClaim) => {
-      const themes = x.themes.map((t) => t.title ?? t.id).join("; ") || "no theme";
-      const when = x.sourcePublishedAt ? x.sourcePublishedAt.slice(0, 10) : "date unknown";
-      const who = x.speaker.name ? `${x.speaker.kind}: ${x.speaker.name}` : x.speaker.kind;
+      const themes =
+        x.themes.map((t) => t.title ?? t.id).join("; ") || "no theme";
+      const when = x.sourcePublishedAt
+        ? x.sourcePublishedAt.slice(0, 10)
+        : "date unknown";
+      const who = x.speaker.name
+        ? `${x.speaker.kind}: ${x.speaker.name}`
+        : x.speaker.kind;
       return [
         `    ${x.statement}`,
         `      themes: ${themes}`,
@@ -389,10 +458,13 @@ export function renderInspection(r: InspectionReport): string {
     if (c.accepted!.length) lines.push("  Accepted:");
     for (const x of c.accepted!) lines.push(...show(x));
     if (c.legacy?.length)
-      lines.push("  Legacy v1 claims (not certified under the current contract):");
+      lines.push(
+        "  Legacy v1 claims (not certified under the current contract):",
+      );
     for (const x of c.legacy ?? []) lines.push(...show(x));
     if (c.candidates!.length) lines.push("  Candidates (need refinement):");
-    for (const x of c.candidates!) lines.push(...show(x), `      reasons: ${x.reasons.join(", ")}`);
+    for (const x of c.candidates!)
+      lines.push(...show(x), `      reasons: ${x.reasons.join(", ")}`);
     if (c.rejected!.length) lines.push("  Rejected:");
     for (const x of c.rejected!)
       lines.push(
@@ -400,6 +472,7 @@ export function renderInspection(r: InspectionReport): string {
       );
     if (c.truncated) lines.push(`  … truncated; rerun with a larger --limit`);
   }
-  if (r.resultsTruncated) lines.push("", "More saved results exist than were read.");
+  if (r.resultsTruncated)
+    lines.push("", "More saved results exist than were read.");
   return lines.join("\n");
 }

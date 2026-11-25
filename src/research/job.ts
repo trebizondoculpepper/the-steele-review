@@ -80,7 +80,8 @@ export const ResearchRequestSchema = z
         z
           .object({
             claimRecordId: z.string().min(1).max(200),
-            statement: z.string().min(1).max(2000),
+            // A 2,000-character claim plus its reporting-period note (#889).
+            statement: z.string().min(1).max(3000),
             themeIds: z.array(z.string().min(1)).max(30),
           })
           .strict(),

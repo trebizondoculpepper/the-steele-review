@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { reportingPeriodIdentity } from "./reporting-period.js";
 import {
   ClaimSchema,
   ClaimTypeSchema,
@@ -44,6 +45,8 @@ export const CanonicalNeedSchema = z
         qualifiers: z.array(z.string().min(1).max(200)).max(20).optional(),
         entities: z.array(z.string().min(1).max(200)).max(50).optional(),
         dates: z.array(DateMentionSchema).max(20).optional(),
+        /** The source's own reporting-period wording, when the figure depends on one (#889). */
+        reportingPeriod: Text.optional(),
         /** A quoted claim's actual attributed speaker, never the post author/byline. */
         attribution: z
           .object({
@@ -169,6 +172,10 @@ export function canonicalNeed(input: {
     (fullClaim.data.entities.length > 0 ||
       fullClaim.data.dates.some((date) => !!date.value) ||
       !!attributed);
+  // Reporting period (#889): a stated period is part of the identity; an
+  // older claim whose figure has no established period is never shared.
+  // Like the semantic-scope rule, this is derivation 2.
+  const period = reportingPeriodIdentity(input.claim);
   const baseContextual =
     !accepted ||
     speaker?.kind === "unknown" ||
@@ -179,7 +186,9 @@ export function canonicalNeed(input: {
   // Only version 2 adds the semantic-scope rule, and only a need it changes
   // carries the v2 label.
   const scopedByV2 =
-    (input.derivation ?? 2) === 2 && !baseContextual && !semanticScope;
+    (input.derivation ?? 2) === 2 &&
+    !baseContextual &&
+    (!semanticScope || period === "occurrence-only");
   const contextual = baseContextual || scopedByV2;
   return CanonicalNeedSchema.parse({
     version: scopedByV2 ? "canonical-theme-need-v2" : "canonical-theme-need-v1",
@@ -199,6 +208,9 @@ export function canonicalNeed(input: {
               text: normalisePropositionText(d.text),
             })),
           }
+        : {}),
+      ...(period && period !== "occurrence-only"
+        ? { reportingPeriod: normalisePropositionText(period.period) }
         : {}),
       ...(attributed
         ? {

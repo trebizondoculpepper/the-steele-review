@@ -41,7 +41,10 @@ const LONG_RUN = /[A-Za-z0-9+/]{48,}={0,2}/g;
 const isKeyLike = (run: string) => /\d/.test(run) && /[A-Za-z]/.test(run);
 
 /** Make untrusted text safe to keep: no control characters, secrets redacted, bounded. */
-export function safeText(value: string, max: number): { text: string; truncated: boolean } {
+export function safeText(
+  value: string,
+  max: number,
+): { text: string; truncated: boolean } {
   // Strip C0/C1 control characters except newline and tab.
   // Bound the work first: only a little more than the kept length is scanned,
   // with slack so a secret straddling the cut is still recognised.
@@ -56,7 +59,10 @@ export function safeText(value: string, max: number): { text: string; truncated:
 }
 
 /** Copy only allowlisted string fields of an untrusted candidate. */
-export function candidateSnapshot(item: unknown, allow: readonly string[]): CandidateSnapshot {
+export function candidateSnapshot(
+  item: unknown,
+  allow: readonly string[],
+): CandidateSnapshot {
   const fields: Record<string, string> = {};
   let truncated = false;
   if (item && typeof item === "object" && !Array.isArray(item)) {
@@ -125,7 +131,10 @@ export async function saveFailureDiagnostics(
 ): Promise<void> {
   const path = basePath.replace(/\.json$/, `-${Date.now()}.json`);
   try {
-    await artifacts.write(path, `${JSON.stringify({ schemaVersion: 1, ...details }, null, 2)}\n`);
+    await artifacts.write(
+      path,
+      `${JSON.stringify({ schemaVersion: 1, ...details }, null, 2)}\n`,
+    );
   } catch {
     // Diagnostics only.
   }

@@ -358,6 +358,7 @@ describe("JSON Schema and examples", () => {
         "id",
         "passage",
         "qualifiers",
+        "reportingPeriod",
         "schemaVersion",
         "sourceVersion",
         "span",

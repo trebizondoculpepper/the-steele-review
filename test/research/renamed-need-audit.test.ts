@@ -1085,7 +1085,7 @@ it(
       const assertions = Array.from(
         { length: 101 },
         (_, i) =>
-          `The ENMOD Convention synthetic assertion ${i} was recorded on 10 December 1976.`,
+          `The ENMOD Convention synthetic assertion ${"x".repeat(i + 1)} was recorded on 10 December 1976.`,
       );
       const one = await analysis(artifacts, "batches-first", "unused", {
         statements: assertions,

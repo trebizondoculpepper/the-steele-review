@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-export const AssertionKindSchema = z.enum(["assertion", "quotation", "question", "speculation"]);
+export const AssertionKindSchema = z.enum([
+  "assertion",
+  "quotation",
+  "question",
+  "speculation",
+]);
 
 /** Why a grounded assertion is a refinement candidate, not an accepted claim. */
 export const CandidateReasonSchema = z.enum([

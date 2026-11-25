@@ -67,7 +67,9 @@ export async function assessPinnedCorpusPeriods(
   input: PinnedFrequencyInput,
 ): Promise<PinnedFrequencyAssessment> {
   const raw = await input.artifacts.read(input.result);
-  const result: CorpusPeriodResult = CorpusPeriodResultSchema.parse(JSON.parse(raw));
+  const result: CorpusPeriodResult = CorpusPeriodResultSchema.parse(
+    JSON.parse(raw),
+  );
 
   const periods = result.periods.map((p) => ({
     month: p.month,
@@ -88,27 +90,45 @@ export async function assessPinnedCorpusPeriods(
   // Per-period extraction gaps plus sources the projector could not read or
   // validate: all of them mean part of the archive contributed no counts.
   const missingCoverage =
-    result.periods.reduce((n, p) => n + p.missingExtractions + p.invalidExtractions, 0) +
+    result.periods.reduce(
+      (n, p) => n + p.missingExtractions + p.invalidExtractions,
+      0,
+    ) +
     result.diagnostics.unavailableSources +
     result.diagnostics.invalidSources;
 
   if (result.scope.complete)
-    exclusions.push("the declared publication sample is complete for this scope");
-  else limitations.push("the declared publication sample is not exhaustive of the scope");
+    exclusions.push(
+      "the declared publication sample is complete for this scope",
+    );
+  else
+    limitations.push(
+      "the declared publication sample is not exhaustive of the scope",
+    );
   if (result.exactCopies === "exclude-identical-source")
     exclusions.push("identical-source copies were excluded from matched posts");
-  const excludedCopies = result.periods.reduce((n, p) => n + p.excludedCopies, 0);
-  if (excludedCopies > 0) exclusions.push(`${excludedCopies} identical-source copies excluded`);
+  const excludedCopies = result.periods.reduce(
+    (n, p) => n + p.excludedCopies,
+    0,
+  );
+  if (excludedCopies > 0)
+    exclusions.push(`${excludedCopies} identical-source copies excluded`);
   if (result.diagnostics.unknownDates > 0)
     limitations.push(
       `${result.diagnostics.unknownDates} posts have unknown dates and are outside the period counts`,
     );
   if (missingCoverage > 0)
-    limitations.push(`${missingCoverage} archived posts have no usable extraction`);
+    limitations.push(
+      `${missingCoverage} archived posts have no usable extraction`,
+    );
   if (result.diagnostics.incompleteCaptures > 0)
-    limitations.push(`${result.diagnostics.incompleteCaptures} captures are incomplete`);
+    limitations.push(
+      `${result.diagnostics.incompleteCaptures} captures are incomplete`,
+    );
   if (result.diagnostics.outsideWindow > 0)
-    limitations.push(`${result.diagnostics.outsideWindow} posts fall outside the declared window`);
+    limitations.push(
+      `${result.diagnostics.outsideWindow} posts fall outside the declared window`,
+    );
   if (result.truncated) limitations.push("the period result was truncated");
   for (const caveat of result.caveats) limitations.push(caveat);
   limitations.push(STANDING);
@@ -155,7 +175,9 @@ export async function assessPinnedCorpusPeriods(
 }
 
 /** Readable report: exact input reference, periods, verdict, exclusions, limitations. */
-export function renderPinnedFrequencyReport(a: PinnedFrequencyAssessment): string {
+export function renderPinnedFrequencyReport(
+  a: PinnedFrequencyAssessment,
+): string {
   const lines = [
     `Claim-family frequency: ${a.family}`,
     `Scope: ${a.scope.description}`,
@@ -180,7 +202,8 @@ export function renderPinnedFrequencyReport(a: PinnedFrequencyAssessment): strin
       `Thresholds: at least ${a.assessment.thresholds.minimumAnalysedPosts} analysed posts per period; rate change of ${a.assessment.thresholds.minimumRateDelta}.`,
     );
   }
-  if (a.exclusions.length > 0) lines.push("", "Exclusions:", ...a.exclusions.map((e) => `- ${e}`));
+  if (a.exclusions.length > 0)
+    lines.push("", "Exclusions:", ...a.exclusions.map((e) => `- ${e}`));
   lines.push("", "Limitations:", ...a.limitations.map((l) => `- ${l}`));
   return `${lines.join("\n")}\n`;
 }
