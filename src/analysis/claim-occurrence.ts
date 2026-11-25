@@ -42,7 +42,9 @@ export const CLAIM_OCCURRENCE_SCHEMA_VERSION = 1;
 export const CLAIM_OCCURRENCE_INDEX_V1 = "steele-claim-occurrences-v1";
 
 const Hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-const Span = z.object({ start: z.number().int().min(0), end: z.number().int().min(1) }).strict();
+const Span = z
+  .object({ start: z.number().int().min(0), end: z.number().int().min(1) })
+  .strict();
 
 export const SpeakerSchema = z
   .object({
@@ -58,7 +60,9 @@ export type Speaker = z.infer<typeof SpeakerSchema>;
 export const ClaimOccurrenceSchema = z
   .object({
     schemaVersion: z.literal(CLAIM_OCCURRENCE_SCHEMA_VERSION),
-    occurrenceId: Hash.describe("Stable ID of this claim in this passage of this source version."),
+    occurrenceId: Hash.describe(
+      "Stable ID of this claim in this passage of this source version.",
+    ),
     grouping: z
       .object({
         key: Hash,
@@ -66,7 +70,9 @@ export const ClaimOccurrenceSchema = z
         version: z.string().min(1).max(100),
       })
       .strict()
-      .describe("Revisable grouping of equivalent claims; not proof of equivalence or truth."),
+      .describe(
+        "Revisable grouping of equivalent claims; not proof of equivalence or truth.",
+      ),
     publicationId: z.string().min(1),
     postId: z.string().min(1),
     url: z.url({ protocol: /^https$/ }),
@@ -77,22 +83,31 @@ export const ClaimOccurrenceSchema = z
     passage: z.string().min(1),
     span: Span,
     transcriptTime: z
-      .object({ startSeconds: z.number().nonnegative(), endSeconds: z.number().nonnegative() })
+      .object({
+        startSeconds: z.number().nonnegative(),
+        endSeconds: z.number().nonnegative(),
+      })
       .strict()
       .optional()
-      .describe("Media time of the passage, only when supplied transcript timings cover it."),
+      .describe(
+        "Media time of the passage, only when supplied transcript timings cover it.",
+      ),
     sourceVersion: Hash,
     artifact: ArtifactReferenceSchema,
     sourcePublishedAt: z.iso
       .datetime({ offset: true })
       .optional()
-      .describe("Observed publication time of the post; not the date the claim was first made."),
+      .describe(
+        "Observed publication time of the post; not the date the claim was first made.",
+      ),
     assertionDates: z.array(DateMentionSchema).max(20),
     themes: z.array(z.string().min(1).max(60)).max(30),
     assertionKind: z
       .enum(["assertion", "quotation", "question", "speculation"])
       .optional()
-      .describe("How the passage puts the claim; questions and speculation are not assertions."),
+      .describe(
+        "How the passage puts the claim; questions and speculation are not assertions.",
+      ),
     publisher: z
       .object({
         publicationId: z.string().min(1),
@@ -104,7 +119,9 @@ export const ClaimOccurrenceSchema = z
          * extraction's attribution, with its basis and configuration version.
          */
         attributedAuthor: z.string().trim().min(1).max(200).optional(),
-        attributionBasis: z.enum(["post-byline", "source-configured"]).optional(),
+        attributionBasis: z
+          .enum(["post-byline", "source-configured"])
+          .optional(),
         sourceMetadataVersion: z.string().min(1).max(300).optional(),
       })
       .strict(),
@@ -143,7 +160,11 @@ const sha = (value: unknown) =>
  * {@link normalisedClaimKey}.
  */
 export function claimIdentityKey(statement: string): string {
-  const text = statement.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  const text = statement
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
@@ -155,7 +176,13 @@ export function occurrenceIdFor(input: {
   start: number;
   end: number;
 }): string {
-  return sha([input.publicationId, input.postId, input.sourceVersion, input.start, input.end]);
+  return sha([
+    input.publicationId,
+    input.postId,
+    input.sourceVersion,
+    input.start,
+    input.end,
+  ]);
 }
 
 /** Default grouping key: normalised statement text (lower case, collapsed whitespace, no punctuation). */
@@ -189,8 +216,13 @@ export interface OccurrenceSource extends ClaimSource {
 
 /** True when `name` occurs in `text` not embedded in a longer word or number. */
 function containsWholeMention(text: string, name: string): boolean {
-  const isWord = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
-  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+  const isWord = (c: string | undefined) =>
+    c !== undefined && /[\p{L}\p{N}]/u.test(c);
+  for (
+    let at = text.indexOf(name);
+    at !== -1;
+    at = text.indexOf(name, at + 1)
+  ) {
     if (!isWord(text[at - 1]) && !isWord(text[at + name.length])) return true;
   }
   return false;
@@ -199,18 +231,36 @@ function containsWholeMention(text: string, name: string): boolean {
 function assertSpeakerEvidence(speaker: Speaker, text: string): void {
   if (speaker.name === undefined) return;
   if (speaker.kind === "author-voice" || speaker.kind === "unknown") {
-    throw new InvalidClaimOccurrenceError("a speaker name needs a quoted or uncertain attribution");
+    throw new InvalidClaimOccurrenceError(
+      "a speaker name needs a quoted or uncertain attribution",
+    );
   }
   const evidence = speaker.evidence;
-  if (!evidence || evidence.end <= evidence.start || evidence.end > text.length) {
-    throw new InvalidClaimOccurrenceError("a speaker name needs an attribution span in the source");
+  if (
+    !evidence ||
+    evidence.end <= evidence.start ||
+    evidence.end > text.length
+  ) {
+    throw new InvalidClaimOccurrenceError(
+      "a speaker name needs an attribution span in the source",
+    );
   }
-  if (!containsWholeMention(text.slice(evidence.start, evidence.end), speaker.name)) {
-    throw new InvalidClaimOccurrenceError("speaker name does not occur in the attribution span");
+  if (
+    !containsWholeMention(
+      text.slice(evidence.start, evidence.end),
+      speaker.name,
+    )
+  ) {
+    throw new InvalidClaimOccurrenceError(
+      "speaker name does not occur in the attribution span",
+    );
   }
 }
 
-function transcriptTimeFor(source: OccurrenceSource, span: { start: number; end: number }) {
+function transcriptTimeFor(
+  source: OccurrenceSource,
+  span: { start: number; end: number },
+) {
   const covering = (source.transcriptTimings ?? []).filter(
     (t) => t.end > span.start && t.start < span.end,
   );
@@ -260,12 +310,21 @@ export function createClaimOccurrence(input: {
       : {}),
     sourceVersion: claim.sourceVersion,
     artifact: claim.artifact,
-    ...(input.source.publishedAt ? { sourcePublishedAt: input.source.publishedAt } : {}),
+    ...(input.source.publishedAt
+      ? { sourcePublishedAt: input.source.publishedAt }
+      : {}),
     assertionDates: claim.dates,
     themes: [
       ...new Set(
         (input.themes ?? [])
-          .map((t) => t.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 60))
+          .map((t) =>
+            t
+              .normalize("NFKC")
+              .toLowerCase()
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 60),
+          )
           .filter(Boolean),
       ),
     ],
@@ -282,15 +341,21 @@ export function createClaimOccurrence(input: {
 }
 
 /** Validate a stored or received occurrence against its source text. */
-export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): ClaimOccurrence {
+export function parseClaimOccurrence(
+  input: unknown,
+  source: OccurrenceSource,
+): ClaimOccurrence {
   const parsed = ClaimOccurrenceSchema.safeParse(input);
-  if (!parsed.success) throw new InvalidClaimOccurrenceError("structure failed validation");
+  if (!parsed.success)
+    throw new InvalidClaimOccurrenceError("structure failed validation");
   const o = parsed.data;
   if (
     o.sourceVersion !== source.sourceVersion ||
     sourceVersionFor(source.text) !== o.sourceVersion
   ) {
-    throw new InvalidClaimOccurrenceError("source version does not match the supplied source");
+    throw new InvalidClaimOccurrenceError(
+      "source version does not match the supplied source",
+    );
   }
   if (o.publicationId !== source.publicationId || o.postId !== source.postId) {
     throw new InvalidClaimOccurrenceError("occurrence belongs to another post");
@@ -299,9 +364,14 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
     throw new InvalidClaimOccurrenceError("span lies outside the source text");
   }
   if (source.text.slice(o.span.start, o.span.end) !== o.passage) {
-    throw new InvalidClaimOccurrenceError("passage does not match the source text at that span");
+    throw new InvalidClaimOccurrenceError(
+      "passage does not match the source text at that span",
+    );
   }
-  if (o.occurrenceId !== occurrenceIdFor({ ...o, start: o.span.start, end: o.span.end })) {
+  if (
+    o.occurrenceId !==
+    occurrenceIdFor({ ...o, start: o.span.start, end: o.span.end })
+  ) {
     throw new InvalidClaimOccurrenceError(
       "occurrence ID does not match its post, version and span",
     );
@@ -315,7 +385,9 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
     promptVersion: o.extraction.promptVersion,
   });
   if (o.claimId !== expectedClaimId) {
-    throw new InvalidClaimOccurrenceError("claim ID does not match the claim fields");
+    throw new InvalidClaimOccurrenceError(
+      "claim ID does not match the claim fields",
+    );
   }
   // A text-derived grouping key must be the one its statement produces;
   // model-assisted keys are revisable and validated where they are assigned.
@@ -324,29 +396,47 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
     o.grouping.version === "1" &&
     o.grouping.key !== normalisedClaimKey(o.statement)
   ) {
-    throw new InvalidClaimOccurrenceError("grouping key does not match the statement");
+    throw new InvalidClaimOccurrenceError(
+      "grouping key does not match the statement",
+    );
   }
   // Transcript time is derived from the supplied timings, never stored freely.
   const expectedTime = transcriptTimeFor(source, o.span);
-  if (JSON.stringify(o.transcriptTime ?? null) !== JSON.stringify(expectedTime ?? null)) {
-    throw new InvalidClaimOccurrenceError("transcript time does not match the supplied timings");
+  if (
+    JSON.stringify(o.transcriptTime ?? null) !==
+    JSON.stringify(expectedTime ?? null)
+  ) {
+    throw new InvalidClaimOccurrenceError(
+      "transcript time does not match the supplied timings",
+    );
   }
   for (const date of o.assertionDates) {
     if (!o.passage.includes(date.text)) {
-      throw new InvalidClaimOccurrenceError("assertion date wording does not occur in the passage");
+      throw new InvalidClaimOccurrenceError(
+        "assertion date wording does not occur in the passage",
+      );
     }
     // A normalised value is only allowed when the wording itself states it.
-    if (date.value !== undefined && canonicalDateValue(date.text) !== date.value) {
-      throw new InvalidClaimOccurrenceError("assertion date value does not match its wording");
+    if (
+      date.value !== undefined &&
+      canonicalDateValue(date.text) !== date.value
+    ) {
+      throw new InvalidClaimOccurrenceError(
+        "assertion date value does not match its wording",
+      );
     }
   }
   for (const field of ["repository", "commit", "path", "hash"] as const) {
     if (o.artifact[field] !== source.artifact[field]) {
-      throw new InvalidClaimOccurrenceError("artifact does not match the supplied source artifact");
+      throw new InvalidClaimOccurrenceError(
+        "artifact does not match the supplied source artifact",
+      );
     }
   }
   if (o.publisher.publicationId !== o.publicationId) {
-    throw new InvalidClaimOccurrenceError("publisher does not match the occurrence publication");
+    throw new InvalidClaimOccurrenceError(
+      "publisher does not match the occurrence publication",
+    );
   }
   // Post metadata comes from the trusted source, never from the stored record.
   if (
@@ -354,12 +444,16 @@ export function parseClaimOccurrence(input: unknown, source: OccurrenceSource): 
     o.sourcePublishedAt !== source.publishedAt ||
     o.publisher.author !== source.author
   ) {
-    throw new InvalidClaimOccurrenceError("post metadata does not match the supplied source");
+    throw new InvalidClaimOccurrenceError(
+      "post metadata does not match the supplied source",
+    );
   }
   // Qualifiers are verbatim wording, so they must occur in the passage.
   for (const qualifier of o.qualifiers) {
     if (!o.passage.includes(qualifier)) {
-      throw new InvalidClaimOccurrenceError("qualifier does not occur in the passage");
+      throw new InvalidClaimOccurrenceError(
+        "qualifier does not occur in the passage",
+      );
     }
   }
   assertSpeakerEvidence(o.speaker, source.text);
@@ -403,14 +497,23 @@ export const CLAIM_OCCURRENCE_INDEX_MAPPING = {
     postId: { type: "keyword" },
     url: { type: "keyword" },
     claimId: { type: "keyword" },
-    statement: { type: "text", fields: { keyword: { type: "keyword", ignore_above: 512 } } },
+    statement: {
+      type: "text",
+      fields: { keyword: { type: "keyword", ignore_above: 512 } },
+    },
     claimType: { type: "keyword" },
     qualifiers: { type: "keyword" },
     passage: { type: "text" },
-    span: { type: "object", properties: { start: { type: "integer" }, end: { type: "integer" } } },
+    span: {
+      type: "object",
+      properties: { start: { type: "integer" }, end: { type: "integer" } },
+    },
     transcriptTime: {
       type: "object",
-      properties: { startSeconds: { type: "float" }, endSeconds: { type: "float" } },
+      properties: {
+        startSeconds: { type: "float" },
+        endSeconds: { type: "float" },
+      },
     },
     sourceVersion: { type: "keyword" },
     artifact: {

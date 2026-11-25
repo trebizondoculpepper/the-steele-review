@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import {
   POST_ANALYSED_SUBJECT,
@@ -21,7 +24,11 @@ import { readAnalysisPair } from "./analysis-pair.js";
  */
 
 export interface EventPublisher {
-  publish(subject: string, payload: Uint8Array, options: { msgId: string }): Promise<unknown>;
+  publish(
+    subject: string,
+    payload: Uint8Array,
+    options: { msgId: string },
+  ): Promise<unknown>;
 }
 
 export type AnnounceOutcome =
@@ -60,7 +67,10 @@ const asReference = (r: ArtifactRef) => ({
 });
 
 /** Stable event ID for one (theme result, claim result) pair. */
-export function postAnalysedEventId(themeRef: ArtifactRef, claimRef: ArtifactRef): string {
+export function postAnalysedEventId(
+  themeRef: ArtifactRef,
+  claimRef: ArtifactRef,
+): string {
   const digest = createHash("sha256")
     .update(JSON.stringify(["post-analysed", short(themeRef), short(claimRef)]))
     .digest("hex");
@@ -76,9 +86,16 @@ export async function announcePost(input: {
   owner: string;
   now?: () => Date;
 }): Promise<AnnounceOutcome> {
-  const pair = await readAnalysisPair(input.content, input.post, input.themeRef, input.claimRef);
-  if (pair.status === "unavailable") return { status: "refused", reason: "results-unavailable" };
-  if (pair.status === "refused") return { status: "refused", reason: pair.reason };
+  const pair = await readAnalysisPair(
+    input.content,
+    input.post,
+    input.themeRef,
+    input.claimRef,
+  );
+  if (pair.status === "unavailable")
+    return { status: "refused", reason: "results-unavailable" };
+  if (pair.status === "refused")
+    return { status: "refused", reason: pair.reason };
   const { theme, claims } = pair;
 
   const data: PostAnalysedData = {
@@ -113,21 +130,32 @@ export async function announcePost(input: {
   let newlyRecorded = false;
   if (claim.kind === "busy") return { status: "busy" };
   const event = () =>
-    createPostAnalysedEvent(data, { id: eventId, now: input.now ?? (() => new Date()) });
+    createPostAnalysedEvent(data, {
+      id: eventId,
+      now: input.now ?? (() => new Date()),
+    });
   if (claim.kind === "exhausted") {
     // Interrupted attempts left no completion record, but both results are
     // still valid: record the handoff with the state controller's atomic,
     // claim-free reconciliation so the saved analysis is never stranded.
     if (input.operations.pendingEventStatus(eventId) === undefined) {
       input.operations.reconcileCompleted(key, { eventId }, [
-        { eventId, subject: POST_ANALYSED_SUBJECT, payload: JSON.stringify(event().toJSON()) },
+        {
+          eventId,
+          subject: POST_ANALYSED_SUBJECT,
+          payload: JSON.stringify(event().toJSON()),
+        },
       ]);
       newlyRecorded = true;
     }
   }
   if (claim.kind === "claimed") {
     input.operations.complete(claim.claim, { eventId }, [
-      { eventId, subject: POST_ANALYSED_SUBJECT, payload: JSON.stringify(event().toJSON()) },
+      {
+        eventId,
+        subject: POST_ANALYSED_SUBJECT,
+        payload: JSON.stringify(event().toJSON()),
+      },
     ]);
     newlyRecorded = true;
   }
@@ -136,7 +164,10 @@ export async function announcePost(input: {
     status: "recorded",
     eventId,
     newlyRecorded,
-    delivery: input.operations.pendingEventStatus(eventId) === "sent" ? "sent" : "pending",
+    delivery:
+      input.operations.pendingEventStatus(eventId) === "sent"
+        ? "sent"
+        : "pending",
     data,
   };
 }
@@ -158,9 +189,13 @@ export async function publishRecordedEvent(
   const pending = operations.pendingEvent(eventId);
   if (!pending) return "missing";
   try {
-    await publisher.publish(pending.subject, new TextEncoder().encode(pending.payload), {
-      msgId: pending.eventId,
-    });
+    await publisher.publish(
+      pending.subject,
+      new TextEncoder().encode(pending.payload),
+      {
+        msgId: pending.eventId,
+      },
+    );
     operations.markEventSent(pending.eventId);
     return "sent";
   } catch {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { reportingPeriodIdentity } from "./reporting-period.js";
 import {
   ClaimSchema,
   ClaimTypeSchema,
@@ -44,6 +45,8 @@ export const CanonicalNeedSchema = z
         qualifiers: z.array(z.string().min(1).max(200)).max(20).optional(),
         entities: z.array(z.string().min(1).max(200)).max(50).optional(),
         dates: z.array(DateMentionSchema).max(20).optional(),
+        /** The source's own reporting-period wording, when the figure depends on one (#889). */
+        reportingPeriod: Text.optional(),
         /** A quoted claim's actual attributed speaker, never the post author/byline. */
         attribution: z
           .object({
@@ -156,7 +159,11 @@ export function canonicalNeed(input: {
     equal(fullOccurrence.data.qualifiers, fullClaim.data.qualifiers) &&
     equal(fullOccurrence.data.assertionDates, fullClaim.data.dates) &&
     equal(fullOccurrence.data.extraction, fullClaim.data.extraction);
+  // Reporting period (#889): a stated period is part of the identity; an
+  // older claim whose figure has no established period is never shared.
+  const period = reportingPeriodIdentity(input.claim);
   const contextual =
+    period === "occurrence-only" ||
     !accepted ||
     speaker?.kind === "unknown" ||
     speaker?.kind === "uncertain" ||
@@ -181,6 +188,9 @@ export function canonicalNeed(input: {
               text: normalisePropositionText(d.text),
             })),
           }
+        : {}),
+      ...(period && period !== "occurrence-only"
+        ? { reportingPeriod: normalisePropositionText(period.period) }
         : {}),
       ...(attributed
         ? {
