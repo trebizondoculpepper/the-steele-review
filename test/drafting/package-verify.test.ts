@@ -1,5 +1,8 @@
 import { OpenRouterProvider } from "../../src/controllers/openrouter.js";
-import { parseSourceMetadata, postAttribution } from "../../src/content/source-metadata.js";
+import {
+  parseSourceMetadata,
+  postAttribution,
+} from "../../src/content/source-metadata.js";
 import { OperationStore } from "../../src/controllers/operation-store.js";
 import {
   readPublicationPayload,
@@ -16,7 +19,10 @@ import {
   draftFromPackage,
 } from "../../src/drafting/package-draft.js";
 import { readFileSync } from "node:fs";
-import { assessArticle, classifyFindings } from "../../src/drafting/article-assessment.js";
+import {
+  assessArticle,
+  classifyFindings,
+} from "../../src/drafting/article-assessment.js";
 import {
   judgeAssessment,
   readDecision,
@@ -39,9 +45,20 @@ import {
   verifyPackageDraft,
   verifyWithRevisions,
 } from "../../src/drafting/package-verify.js";
-import { saveWriterPackage, WriterPackageSchema } from "../../src/drafting/writer-package.js";
-import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
-import { CLAIMS, SHARED, TEXT, librarianFixtures } from "../research/librarian-fixtures.js";
+import {
+  saveWriterPackage,
+  WriterPackageSchema,
+} from "../../src/drafting/writer-package.js";
+import {
+  LexicalShortlister,
+  assessPostCoverage,
+} from "../../src/research/librarian.js";
+import {
+  CLAIMS,
+  SHARED,
+  TEXT,
+  librarianFixtures,
+} from "../research/librarian-fixtures.js";
 
 let operations: OperationStore;
 let dir: string;
@@ -62,7 +79,12 @@ afterEach(async () => {
 const archive = {
   read: async () =>
     JSON.stringify({
-      item: { publicationId: "pub", postId: "p1", url: "https://pub.example.com/p/p1", title: "T" },
+      item: {
+        publicationId: "pub",
+        postId: "p1",
+        url: "https://pub.example.com/p/p1",
+        title: "T",
+      },
       ingestionReason: "backfill",
       text: TEXT,
       complete: true,
@@ -83,10 +105,16 @@ const writerResponse = (
     subtitle: "What the post claims, and what the evidence shows",
     excerpt:
       "The post says a treaty bans weather weapons; it does, but the payment claim is unsupported.",
-    summary: "The post says a treaty bans weather weapons and that a payment funded an attack.",
+    summary:
+      "The post says a treaty bans weather weapons and that a payment funded an attack.",
     themes: ["Weather warfare"],
     responses: [
-      { claimRecordId: "claim-treaty", verdict: "supported", text, evidence: [0] },
+      {
+        claimRecordId: "claim-treaty",
+        verdict: "supported",
+        text,
+        evidence: [0],
+      },
       {
         claimRecordId: "claim-payment",
         verdict: "unresolved",
@@ -95,7 +123,10 @@ const writerResponse = (
       },
     ],
     limitations: [],
-    narrative: { status: "limited", limitation: "No earlier posts were compared." },
+    narrative: {
+      status: "limited",
+      limitation: "No earlier posts were compared.",
+    },
     widerContext: { status: "limited", limitation: "No background used." },
   });
 const model = (version: string, ...responses: string[]) => {
@@ -108,18 +139,22 @@ const model = (version: string, ...responses: string[]) => {
     complete: async () => responses[Math.min(calls++, responses.length - 1)],
   };
 };
-const loadRevision = (user: string) => JSON.parse(user) as { revision?: unknown };
+const loadRevision = (user: string) =>
+  JSON.parse(user) as { revision?: unknown };
 
 const APPROVE = JSON.stringify({
   verdict: "approved",
-  issues: [{ passage: "fairly", reason: "slightly informal", severity: "minor" }],
+  issues: [
+    { passage: "fairly", reason: "slightly informal", severity: "minor" },
+  ],
 });
 const OVERSTATED = JSON.stringify({
   verdict: "redraft",
   issues: [
     {
       passage: "proves",
-      reason: "the passage does not prove this; it only states the treaty's scope",
+      reason:
+        "the passage does not prove this; it only states the treaty's scope",
       severity: "substantive",
     },
   ],
@@ -151,16 +186,36 @@ async function drafted(writer = model("fake/writer", writerResponse())) {
 describe("package draft verification (#150)", { timeout: 60_000 }, () => {
   it.each([
     ["written", "article-html", {}, "article-text"],
-    ["video", "supplied-transcript", { transcriptDocument: "Spoken source" }, "transcript"],
-    ["audio", "supplied-transcript", { transcriptDocument: "Spoken source" }, "transcript"],
-    ["image", "article-html", { articleHtml: "<p>Caption</p>" }, "article-text"],
+    [
+      "video",
+      "supplied-transcript",
+      { transcriptDocument: "Spoken source" },
+      "transcript",
+    ],
+    [
+      "audio",
+      "supplied-transcript",
+      { transcriptDocument: "Spoken source" },
+      "transcript",
+    ],
+    [
+      "image",
+      "article-html",
+      { articleHtml: "<p>Caption</p>" },
+      "article-text",
+    ],
     [
       "mixed",
       "supplied-transcript+article-html",
       { transcriptDocument: "Spoken source", articleHtml: "<p>Intro</p>" },
       "article-and-transcript",
     ],
-    ["unknown", "supplied-transcript", { transcriptDocument: "Legacy source" }, "transcript"],
+    [
+      "unknown",
+      "supplied-transcript",
+      { transcriptDocument: "Legacy source" },
+      "transcript",
+    ],
   ] as const)(
     "pins %s provenance into actual writer, revision and verifier requests",
     async (medium, method, supplied, representation) => {
@@ -180,7 +235,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       record.provenance.method = method;
       if (medium !== "unknown") record.provenance.originalMedium = medium;
       else record.provenance.postType = "podcast";
-      const captured = { read: async () => JSON.stringify(record) } as unknown as GitArtifactStore;
+      const captured = {
+        read: async () => JSON.stringify(record),
+      } as unknown as GitArtifactStore;
       const analysis = await fx.analysis("p1", CLAIMS);
       const coverage = await assessPostCoverage({
         artifacts: content,
@@ -224,7 +281,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
           markdown: await content.read(initial.draft),
           fields: metadata.fields,
         },
-        revision: { number: 1, feedback: [{ passage: "test", reason: "make clearer" }] },
+        revision: {
+          number: 1,
+          feedback: [{ passage: "test", reason: "make clearer" }],
+        },
       });
       if (revision.status !== "drafted") throw new Error(revision.status);
       let verification: any;
@@ -269,24 +329,39 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
           },
           inspected: { video: false, audio: false, images: false },
         });
-        expect(actual.capturedAt.original).not.toBe(actual.publishedAt.original);
+        expect(actual.capturedAt.original).not.toBe(
+          actual.publishedAt.original,
+        );
       }
       expect(users[1].revision.previousFields).toEqual(metadata.fields);
-      expect(users[0].post.sourceContextRef).toEqual(users[1].post.sourceContextRef);
-      expect(verification.sourceContextRef).toEqual(users[0].post.sourceContextRef);
+      expect(users[0].post.sourceContextRef).toEqual(
+        users[1].post.sourceContextRef,
+      );
+      expect(verification.sourceContextRef).toEqual(
+        users[0].post.sourceContextRef,
+      );
     },
   );
 
   it("binds draft, redraft and verification reuse to the exact prompt wording (#430)", async () => {
     const { pkg, metadata, draft } = await drafted();
-    const base = { content, archive, package: pkg.ref, sourceUrl: "https://pub.example.com/p/p1" };
+    const base = {
+      content,
+      archive,
+      package: pkg.ref,
+      sourceUrl: "https://pub.example.com/p/p1",
+    };
     const reworded = {
       version: DEFAULT_PACKAGE_DRAFT_PROMPT.version, // same semantic version
       instructions: `${DEFAULT_PACKAGE_DRAFT_PROMPT.instructions}\nOne more sentence of guidance.`,
     };
     // First draft: unchanged wording reuses; changed wording calls the provider again.
     const same = model("fake/writer", writerResponse());
-    const again = await draftFromPackage({ operations, ...base, provider: same });
+    const again = await draftFromPackage({
+      operations,
+      ...base,
+      provider: same,
+    });
     if (again.status !== "drafted") throw new Error(again.status);
     expect(same.calls).toBe(0);
     expect(again.draft.path).toBe(draft.path);
@@ -306,9 +381,17 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     );
 
     // Redraft: the revision instructions' wording is part of its identity.
-    const revision = { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] };
+    const revision = {
+      number: 1,
+      feedback: [{ passage: "proves", reason: "overstated" }],
+    };
     const r1 = model("fake/writer", writerResponse());
-    const firstRedraft = await draftFromPackage({ operations, ...base, provider: r1, revision });
+    const firstRedraft = await draftFromPackage({
+      operations,
+      ...base,
+      provider: r1,
+      revision,
+    });
     const r2 = model("fake/writer", writerResponse());
     const rewordedRedraft = await draftFromPackage({
       operations,
@@ -317,7 +400,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       revision,
       revisionInstructions: "Revise carefully, quoting the evidence exactly.",
     });
-    if (firstRedraft.status !== "drafted" || rewordedRedraft.status !== "drafted") {
+    if (
+      firstRedraft.status !== "drafted" ||
+      rewordedRedraft.status !== "drafted"
+    ) {
       throw new Error("redraft failed");
     }
     expect(r2.calls).toBe(1);
@@ -338,7 +424,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
         return writerResponse();
       },
     };
-    const previous = { ref: draft, markdown: "# Previous article\n\nThe treaty bans weapons." };
+    const previous = {
+      ref: draft,
+      markdown: "# Previous article\n\nThe treaty bans weapons.",
+    };
     const withPrevious = await draftFromPackage({
       operations,
       ...base,
@@ -361,15 +450,27 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       provider: model("fake/writer", writerResponse()),
       revision,
     });
-    if (withoutPrevious.status !== "drafted") throw new Error(withoutPrevious.status);
+    if (withoutPrevious.status !== "drafted")
+      throw new Error(withoutPrevious.status);
     expect(withPrevious.draft.path).not.toBe(withoutPrevious.draft.path);
 
     // Verification: unchanged wording reuses; changed wording calls the verifier again.
     const v1 = model("fake/verifier", APPROVE);
-    const first = await verifyPackageDraft({ content, archive, metadata, verifier: v1 });
+    const first = await verifyPackageDraft({
+      content,
+      archive,
+      metadata,
+      verifier: v1,
+    });
     const v2 = model("fake/verifier", APPROVE);
-    const reused = await verifyPackageDraft({ content, archive, metadata, verifier: v2 });
-    if (first.status !== "verified" || reused.status !== "verified") throw new Error("verify");
+    const reused = await verifyPackageDraft({
+      content,
+      archive,
+      metadata,
+      verifier: v2,
+    });
+    if (first.status !== "verified" || reused.status !== "verified")
+      throw new Error("verify");
     expect(v2.calls).toBe(0);
     expect(reused.ref.path).toBe(first.ref.path);
     const v3 = model("fake/verifier", APPROVE);
@@ -401,7 +502,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       });
       if (first.status !== "verified" || first.report.schemaVersion !== 2)
         throw new Error("expected report");
-      const original = await readPublicationPayload(content, first.report.publication);
+      const original = await readPublicationPayload(
+        content,
+        first.report.publication,
+      );
       const changed = JSON.parse(await content.read(metadata));
       let body = draft;
       if (field === "body") {
@@ -475,13 +579,16 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
           expect(input.publication.subtitle).toBe(changed.fields.subtitle);
           expect(input.publication.excerpt).toBe(changed.fields.excerpt);
           expect(request.system).toContain("title, subtitle and excerpt");
-          expect(request.system).toContain("same distinction between fact and opinion");
+          expect(request.system).toContain(
+            "same distinction between fact and opinion",
+          );
           return JSON.stringify({
             verdict: "redraft",
             issues: [
               {
                 passage: input.publication.title,
-                reason: "The supplied treaty passage does not establish harmlessness.",
+                reason:
+                  "The supplied treaty passage does not establish harmlessness.",
                 severity: "substantive",
               },
             ],
@@ -489,7 +596,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
         },
       },
     });
-    expect(out).toMatchObject({ status: "verified", report: { outcome: "redraft" } });
+    expect(out).toMatchObject({
+      status: "verified",
+      report: { outcome: "redraft" },
+    });
   });
 
   it("never extends a legacy body-only report to unseen publication fields", async () => {
@@ -502,7 +612,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
     });
     if (verified.status !== "verified" || verified.report.schemaVersion !== 2)
       throw new Error("expected report");
-    const candidate = { ...verified.report, schemaVersion: 1 } as Record<string, unknown>;
+    const candidate = { ...verified.report, schemaVersion: 1 } as Record<
+      string,
+      unknown
+    >;
     delete candidate.publication;
     const legacy = PackageVerificationReportSchema.parse(candidate);
     const publication = {
@@ -523,9 +636,13 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
       verifier: model("fake/verifier", APPROVE),
     });
     if (out.status !== "verified") throw new Error(out.status);
-    expect(out.report).toMatchObject({ outcome: "approved", issues: [{ severity: "minor" }] });
+    expect(out.report).toMatchObject({
+      outcome: "approved",
+      issues: [{ severity: "minor" }],
+    });
     const md = await content.read(draft);
-    if (out.report.schemaVersion !== 2) throw new Error("expected payload-aware report");
+    if (out.report.schemaVersion !== 2)
+      throw new Error("expected payload-aware report");
     const publication = {
       ref: out.report.publication,
       ...(await readPublicationPayload(content, out.report.publication)),
@@ -538,13 +655,72 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
           ...publication,
           payload: {
             ...publication.payload,
-            fields: { ...publication.payload.fields, title: "A substituted title" },
+            fields: {
+              ...publication.payload.fields,
+              title: "A substituted title",
+            },
           },
         }),
       ).toBe(false);
     }
-    expect(approvalValidFor(out.report, `${md}\nEdited.`, publication)).toBe(false);
+    expect(approvalValidFor(out.report, `${md}\nEdited.`, publication)).toBe(
+      false,
+    );
     expect(out.ref.path).toMatch(/^verifications\/pub\/p1\//);
+  });
+
+  it("pins the source's retained preview image in the publication manifest (#893)", async () => {
+    const { metadata } = await drafted();
+    const retained = {
+      artifact: {
+        repository: "archive",
+        commit: "c".repeat(40),
+        path: `substack/pub/p1/images/${"d".repeat(64)}.jpg`,
+        hash: `sha256:${"d".repeat(64)}`,
+      },
+      contentType: "image/jpeg" as const,
+      bytes: 1234,
+    };
+    const base = JSON.parse(await archive.read({} as never));
+    const withImage = {
+      read: async () =>
+        JSON.stringify({
+          ...base,
+          previewImage: {
+            url: "https://cdn.example/cover.jpg",
+            source: "cover_image",
+            kind: "uploaded",
+            retained,
+          },
+        }),
+    } as unknown as GitArtifactStore;
+    const out = await verifyPackageDraft({
+      content,
+      archive: withImage,
+      metadata,
+      verifier: model("fake/verifier", APPROVE),
+    });
+    if (out.status !== "verified" || out.report.schemaVersion !== 2)
+      throw new Error("expected");
+    const { payload } = await readPublicationPayload(
+      content,
+      out.report.publication,
+    );
+    expect(payload.previewImage).toEqual(retained);
+
+    // A source without a retained preview has no image in its manifest.
+    const plain = await verifyPackageDraft({
+      content,
+      archive,
+      metadata,
+      verifier: model("fake/verifier", APPROVE),
+    });
+    if (plain.status !== "verified" || plain.report.schemaVersion !== 2)
+      throw new Error("expected");
+    expect(
+      (await readPublicationPayload(content, plain.report.publication)).payload
+        .previewImage,
+    ).toBeUndefined();
   });
 
   it("asks for a redraft when the evidence is overstated", async () => {
@@ -560,7 +736,9 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
 
   it("catches an invented reference and a gap presented as settled, whatever the model says", async () => {
     const { pkg, draft } = await drafted();
-    const p = WriterPackageSchema.parse(JSON.parse(await content.read(pkg.ref)));
+    const p = WriterPackageSchema.parse(
+      JSON.parse(await content.read(pkg.ref)),
+    );
     const md = await content.read(draft);
     const tampered = md
       .replace(SHARED, "https://invented.example/report")
@@ -598,7 +776,10 @@ describe("package draft verification (#150)", { timeout: 60_000 }, () => {
   });
 
   it("saves an unresolved result after the bounded revisions, never overriding the verifier", async () => {
-    const writer = model("fake/writer", writerResponse("The treaty proves the claim."));
+    const writer = model(
+      "fake/writer",
+      writerResponse("The treaty proves the claim."),
+    );
     const { pkg, metadata } = await drafted(writer);
     const out = await verifyWithRevisions({
       operations,
@@ -638,7 +819,12 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       status: "covered",
       coverage: "covered",
       reason: undefined,
-      evidence: [{ url: `https://example.org/claim-${i}`, passage: `Claim ${i} passage.` }],
+      evidence: [
+        {
+          url: `https://example.org/claim-${i}`,
+          passage: `Claim ${i} passage.`,
+        },
+      ],
     }));
     raw.context = {
       ...(raw.context ?? {}),
@@ -652,7 +838,10 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       },
     };
     const render = (order: number[]) => {
-      const p = WriterPackageSchema.parse({ ...raw, claims: order.map((i) => raw.claims[i]) });
+      const p = WriterPackageSchema.parse({
+        ...raw,
+        claims: order.map((i) => raw.claims[i]),
+      });
       return renderPackageDraft(
         p,
         {
@@ -669,7 +858,11 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
           })),
           limitations: [],
           narrative: { status: "limited", limitation: "none" },
-          widerContext: { status: "supported", text: "Wider context.", background: [1, 0] },
+          widerContext: {
+            status: "supported",
+            text: "Wider context.",
+            background: [1, 0],
+          },
         } as never,
         "https://pub.example.com/p/p1",
       );
@@ -683,7 +876,8 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
         .split("## Sources")[1]!
         .split("\n")
         .filter((l) => /^\d+\./.test(l));
-      const numberOf = (url: string) => sources.findIndex((l) => l.includes(url)) + 1;
+      const numberOf = (url: string) =>
+        sources.findIndex((l) => l.includes(url)) + 1;
       // Background index 1 is the same passage as claim 1's evidence: one shared source.
       const wider = /Wider context\. ((?:\[\d+\])+)/.exec(markdown)![1];
       expect(wider).toBe(
@@ -702,14 +896,24 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       status: "covered",
       coverage: "covered",
       reason: undefined,
-      evidence: [{ url: "https://example.org/treaty", passage: "The treaty bans weapons." }],
+      evidence: [
+        {
+          url: "https://example.org/treaty",
+          passage: "The treaty bans weapons.",
+        },
+      ],
     };
     raw.claims[1] = {
       ...raw.claims[1],
       status: "covered",
       coverage: "covered",
       reason: undefined,
-      evidence: [{ url: "https://example.org/payment", passage: "The payment was recorded." }],
+      evidence: [
+        {
+          url: "https://example.org/payment",
+          passage: "The payment was recorded.",
+        },
+      ],
     };
     const parsedPkg = WriterPackageSchema.parse(raw);
     const markdown = renderPackageDraft(
@@ -736,7 +940,10 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
           },
         ],
         limitations: [],
-        narrative: { status: "limited", limitation: "No earlier posts were compared." },
+        narrative: {
+          status: "limited",
+          limitation: "No earlier posts were compared.",
+        },
         widerContext: { status: "limited", limitation: "No background used." },
       } as never,
       "https://pub.example.com/p/p1",
@@ -762,7 +969,12 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       summary: "Summary.",
       themes: ["t"],
       responses: [
-        { claimRecordId: "claim-x", verdict: "supported" as const, text: "Fine.", evidence: [0] },
+        {
+          claimRecordId: "claim-x",
+          verdict: "supported" as const,
+          text: "Fine.",
+          evidence: [0],
+        },
         {
           claimRecordId: "claim-y",
           verdict: "supported" as const,
@@ -820,7 +1032,9 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       expect(Object.keys(correction.invalidFields)).toEqual(["title"]);
       expect(correction.constraints.title.noNumberedCitations).toBe(true);
       const metadata = JSON.parse(await content.read(out.metadata));
-      expect(metadata.fields.title).toBe("A treaty already bans weather weapons");
+      expect(metadata.fields.title).toBe(
+        "A treaty already bans weather weapons",
+      );
       // Body and other metadata are byte-for-byte the first output's.
       expect(metadata.fields.subtitle).toBe(first.subtitle);
       expect(await content.read(out.draft)).toContain(first.summary);
@@ -833,8 +1047,12 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     async () => {
       // Markers in every reader-visible field the schema allows (27 with two claims).
       const many = JSON.parse(writerResponse());
-      many.limitations = Array.from({ length: 20 }, (_, i) => `Limitation ${i} [${i}].`);
-      for (const f of ["title", "subtitle", "excerpt", "summary"]) many[f] = `${many[f]} [9]`;
+      many.limitations = Array.from(
+        { length: 20 },
+        (_, i) => `Limitation ${i} [${i}].`,
+      );
+      for (const f of ["title", "subtitle", "excerpt", "summary"])
+        many[f] = `${many[f]} [9]`;
       many.responses = many.responses.map((r: { text: string }) => ({
         ...r,
         text: `${r.text} [8]`,
@@ -852,7 +1070,11 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
         })),
       };
       expect(modelCitationIssues(wide as never).length).toBeGreaterThan(30);
-      const writer = model("fake/writer-many-markers", JSON.stringify(many), JSON.stringify(many));
+      const writer = model(
+        "fake/writer-many-markers",
+        JSON.stringify(many),
+        JSON.stringify(many),
+      );
       const out = await draftFromPackage({
         operations,
         content,
@@ -899,7 +1121,12 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       summary: "Summary.",
       themes: ["t"],
       responses: [
-        { claimRecordId: "c", verdict: "supported" as const, text: "Fine.", evidence: [0] },
+        {
+          claimRecordId: "c",
+          verdict: "supported" as const,
+          text: "Fine.",
+          evidence: [0],
+        },
       ],
       limitations: [],
       narrative: { status: "limited" as const, limitation: "none" },
@@ -919,7 +1146,10 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       modelCitationProblems({
         ...base,
         responses: [
-          { ...base.responses[0]!, text: "See [the treaty](https://example.org/treaty)." },
+          {
+            ...base.responses[0]!,
+            text: "See [the treaty](https://example.org/treaty).",
+          },
         ],
       } as never),
     ).toEqual([]);
@@ -953,27 +1183,34 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     },
   );
 
-  it("rejects a model-written citation in a revision too", { timeout: 60_000 }, async () => {
-    const { pkg, draft } = await drafted();
-    const writer = model(
-      "fake/writer-citation-revision",
-      writerResponse("Revised with a fake reference [1]."),
-      writerResponse("Revised without a reference."),
-    );
-    const out = await draftFromPackage({
-      operations,
-      content,
-      archive,
-      package: pkg.ref,
-      provider: writer,
-      sourceUrl: "https://pub.example.com/p/p1",
-      revision: { number: 1, feedback: [{ passage: "proves", reason: "overstated" }] },
-      previousDraft: { ref: draft, markdown: "# Previous article\n\nBody." },
-    });
-    if (out.status !== "drafted") throw new Error(out.status);
-    expect(writer.calls).toBe(2);
-    expect(await content.read(out.draft)).not.toContain("fake reference [1]");
-  });
+  it(
+    "rejects a model-written citation in a revision too",
+    { timeout: 60_000 },
+    async () => {
+      const { pkg, draft } = await drafted();
+      const writer = model(
+        "fake/writer-citation-revision",
+        writerResponse("Revised with a fake reference [1]."),
+        writerResponse("Revised without a reference."),
+      );
+      const out = await draftFromPackage({
+        operations,
+        content,
+        archive,
+        package: pkg.ref,
+        provider: writer,
+        sourceUrl: "https://pub.example.com/p/p1",
+        revision: {
+          number: 1,
+          feedback: [{ passage: "proves", reason: "overstated" }],
+        },
+        previousDraft: { ref: draft, markdown: "# Previous article\n\nBody." },
+      });
+      if (out.status !== "drafted") throw new Error(out.status);
+      expect(writer.calls).toBe(2);
+      expect(await content.read(out.draft)).not.toContain("fake reference [1]");
+    },
+  );
   it("revises the exact previous article and fields, and a second revision builds on the first (#489)", async () => {
     const { pkg, metadata, draft } = await drafted();
     const initial = await content.read(draft);
@@ -997,16 +1234,25 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       metadata,
       writer: writer as never,
       // Two redraft verdicts, then approval: two revisions.
-      verifier: model("fake/independent-verifier", OVERSTATED, OVERSTATED, APPROVE),
+      verifier: model(
+        "fake/independent-verifier",
+        OVERSTATED,
+        OVERSTATED,
+        APPROVE,
+      ),
       sourceUrl: "https://pub.example.com/p/p1",
       maxRevisions: 2,
     });
     if (out.outcome !== "approved") throw new Error(out.outcome);
     expect(out.revisions).toBe(2);
     // The initial draft and both revisions are versions of one logical article (#579).
-    expect(out.article?.body.path).toMatch(/\/article-[0-9a-f]{24}\/article\.md$/);
+    expect(out.article?.body.path).toMatch(
+      /\/article-[0-9a-f]{24}\/article\.md$/,
+    );
     expect(await content.read(out.article!.body)).toContain("(revision 2)");
-    expect(await content.read(out.article!.body)).toBe(await content.read(out.draft));
+    expect(await content.read(out.article!.body)).toBe(
+      await content.read(out.draft),
+    );
     const first = loadRevision(users[0]!).revision as {
       number: number;
       previousDraft: string;
@@ -1016,10 +1262,15 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     // Revision 1 sees the exact initial article, its generated fields and the verifier feedback.
     expect(first.number).toBe(1);
     expect(first.previousDraft).toBe(initial);
-    expect(first.previousFields.title).toBe("A treaty already bans weather weapons");
+    expect(first.previousFields.title).toBe(
+      "A treaty already bans weather weapons",
+    );
     expect(first.feedback[0]).toMatchObject({ passage: "proves" });
     // Revision 2 sees the first revised article, not the original.
-    const second = loadRevision(users[1]!).revision as { number: number; previousDraft: string };
+    const second = loadRevision(users[1]!).revision as {
+      number: number;
+      previousDraft: string;
+    };
     expect(second.number).toBe(2);
     expect(second.previousDraft).toContain("(revision 1)");
     expect(second.previousDraft).not.toBe(initial);
@@ -1041,7 +1292,11 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       verdict: "redraft",
       issues: [
         { passage: "proves", reason: "overstated", severity: "substantive" },
-        { passage: "Florida filing", reason: "date imprecise", severity: "minor" },
+        {
+          passage: "Florida filing",
+          reason: "date imprecise",
+          severity: "minor",
+        },
       ],
     });
     const out = await verifyWithRevisions({
@@ -1062,16 +1317,24 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     };
     // Only substantive issues are required feedback; the minor one is context.
     expect(revision.feedback.map((f) => f.passage)).toEqual(["proves"]);
-    expect(revision.nonBlockingObservations.map((i) => i.passage)).toEqual(["Florida filing"]);
+    expect(revision.nonBlockingObservations.map((i) => i.passage)).toEqual([
+      "Florida filing",
+    ]);
     // The guidance is in the content-hashed prompt file, not hard-coded.
     expect(DEFAULT_REVISION_TEXT).toMatch(/not required for approval/);
-    expect(Object.keys(revision.previousFields).sort()).toEqual(["excerpt", "subtitle", "title"]);
+    expect(Object.keys(revision.previousFields).sort()).toEqual([
+      "excerpt",
+      "subtitle",
+      "title",
+    ]);
     // The saved writer attempt pins the exact prior body, metadata and verifier report.
     const manifests: { kind: string; context: { path: string }[] }[] = [];
     for (let after: string | undefined; ;) {
       const page = await content.list("writer-attempts", 1000, after);
       for (const p of page.filter((p) => p.endsWith("/manifest.json"))) {
-        manifests.push(JSON.parse(await content.read((await content.lookup(p))!)));
+        manifests.push(
+          JSON.parse(await content.read((await content.lookup(p))!)),
+        );
       }
       if (page.length < 1000) break;
       after = page.at(-1);
@@ -1094,7 +1357,8 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
           // The verifier reads the draft first; the revision loop's own read
           // of the previous article is the one that fails.
           return async (ref: { path: string }) => {
-            if (ref.path.endsWith(".md") && ++draftReads > 1) throw new Error("unreadable");
+            if (ref.path.endsWith(".md") && ++draftReads > 1)
+              throw new Error("unreadable");
             return target.read(ref as never);
           };
         }
@@ -1111,7 +1375,10 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
       verifier: model("fake/independent-verifier", OVERSTATED),
       sourceUrl: "https://pub.example.com/p/p1",
     });
-    expect(out).toMatchObject({ outcome: "failed", reason: "draft-unavailable" });
+    expect(out).toMatchObject({
+      outcome: "failed",
+      reason: "draft-unavailable",
+    });
     expect(writer.calls).toBe(0);
   });
 
@@ -1137,7 +1404,9 @@ describe("deterministic citation contract (#491)", { timeout: 60_000 }, () => {
     if (out.outcome !== "failed" || !out.report || !out.mechanicalRun)
       throw new Error("missing retained refs");
     expect(JSON.parse(await content.read(out.report)).outcome).toBe("redraft");
-    expect(JSON.parse(await content.read(out.mechanicalRun)).outcome).toBe("turns-exhausted");
+    expect(JSON.parse(await content.read(out.mechanicalRun)).outcome).toBe(
+      "turns-exhausted",
+    );
   });
 });
 
@@ -1152,14 +1421,21 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
   ].join("\n");
 
   it("classifies complete, empty, cut-off and malformed documents distinctly", () => {
-    expect(classifyFindings(FINDINGS)).toEqual({ state: "findings", findings: 1 });
+    expect(classifyFindings(FINDINGS)).toEqual({
+      state: "findings",
+      findings: 1,
+    });
     expect(classifyFindings("No faults found.\n\nEND OF ASSESSMENT")).toEqual({
       state: "no-faults",
       findings: 0,
     });
     // Cut off before the terminator: never "no faults".
-    expect(classifyFindings("## Finding: x\n- Where: body")).toEqual({ state: "incomplete" });
-    expect(classifyFindings("No faults found.")).toEqual({ state: "incomplete" });
+    expect(classifyFindings("## Finding: x\n- Where: body")).toEqual({
+      state: "incomplete",
+    });
+    expect(classifyFindings("No faults found.")).toEqual({
+      state: "incomplete",
+    });
     // Complete but neither findings nor an explicit "no faults" statement.
     expect(classifyFindings("Looks fine to me.\nEND OF ASSESSMENT")).toEqual({
       state: "malformed",
@@ -1173,9 +1449,13 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
       expect(classifyFindings(doc)).toEqual({ state: "malformed" });
     }
     // A heading with no location, problem or reason is not a finding.
-    expect(classifyFindings("## Finding 1\nEND OF ASSESSMENT")).toEqual({ state: "malformed" });
+    expect(classifyFindings("## Finding 1\nEND OF ASSESSMENT")).toEqual({
+      state: "malformed",
+    });
     expect(
-      classifyFindings("## Finding: x\n- Where: body\n- What is wrong: wrong.\nEND OF ASSESSMENT"),
+      classifyFindings(
+        "## Finding: x\n- Where: body\n- What is wrong: wrong.\nEND OF ASSESSMENT",
+      ),
     ).toEqual({ state: "malformed" });
     // A qualified or incidental phrase is not a clean assessment.
     expect(
@@ -1210,7 +1490,12 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
 
     // Reassessing the same exact input reuses it, without another model call.
     const again = model("fake/assessor", FINDINGS);
-    const reused = await assessArticle({ content, archive, metadata, assessor: again });
+    const reused = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: again,
+    });
     expect(reused).toMatchObject({ status: "assessed", reused: true });
     expect(again.calls).toBe(0);
   });
@@ -1223,18 +1508,33 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
         throw new Error("provider unavailable");
       },
     };
-    const failed = await assessArticle({ content, archive, metadata, assessor: failing as never });
-    expect(failed).toMatchObject({ status: "assessed", record: { state: "provider-failed" } });
+    const failed = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: failing as never,
+    });
+    expect(failed).toMatchObject({
+      status: "assessed",
+      record: { state: "provider-failed" },
+    });
     expect(failed.status === "assessed" && failed.record.document).toBeFalsy();
     // The failed attempt is saved and its reference returned; the input stays retryable.
     if (failed.status !== "assessed") throw new Error("expected a record");
-    expect(failed.ref.path).toMatch(/^assessments\/.+\.failed\/[0-9a-f]{16}\.json$/);
-    expect(JSON.parse(await content.read(failed.ref))).toMatchObject({ state: "provider-failed" });
+    expect(failed.ref.path).toMatch(
+      /^assessments\/.+\.failed\/[0-9a-f]{16}\.json$/,
+    );
+    expect(JSON.parse(await content.read(failed.ref))).toMatchObject({
+      state: "provider-failed",
+    });
     const retried = await assessArticle({
       content,
       archive,
       metadata,
-      assessor: model("fake/assessor-down", "No faults found.\nEND OF ASSESSMENT"),
+      assessor: model(
+        "fake/assessor-down",
+        "No faults found.\nEND OF ASSESSMENT",
+      ),
     });
     expect(retried).toMatchObject({
       status: "assessed",
@@ -1247,13 +1547,21 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
       metadata,
       assessor: model("fake/assessor-cut", "## Finding: x\n- Where: body"),
     });
-    expect(cut).toMatchObject({ status: "assessed", record: { state: "incomplete" } });
+    expect(cut).toMatchObject({
+      status: "assessed",
+      record: { state: "incomplete" },
+    });
   });
 
   it("classifies the retained document, not a competing concurrent response", async () => {
     const { metadata } = await drafted();
     const [a, b] = await Promise.all([
-      assessArticle({ content, archive, metadata, assessor: model("fake/race", FINDINGS) }),
+      assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: model("fake/race", FINDINGS),
+      }),
       assessArticle({
         content,
         archive,
@@ -1261,7 +1569,8 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
         assessor: model("fake/race", "No faults found.\nEND OF ASSESSMENT"),
       }),
     ]);
-    if (a.status !== "assessed" || b.status !== "assessed") throw new Error("not assessed");
+    if (a.status !== "assessed" || b.status !== "assessed")
+      throw new Error("not assessed");
     // Both report the one persisted record, consistent with the saved document.
     expect(a.ref.path).toBe(b.ref.path);
     expect(a.record).toEqual(b.record);
@@ -1274,13 +1583,17 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
 
   it("reuses a response retained before a crash instead of calling the model again", async () => {
     const { metadata } = await drafted();
-    const first = model("fake/assessor-crash", "No faults found.\n\nEND OF ASSESSMENT");
+    const first = model(
+      "fake/assessor-crash",
+      "No faults found.\n\nEND OF ASSESSMENT",
+    );
     // Crash after the document is retained but before the record is written.
     const crashing = new Proxy(content, {
       get(target, prop, receiver) {
         if (prop === "write") {
           return async (path: string, body: string) => {
-            if (path.startsWith("assessments/") && path.endsWith(".json")) throw new Error("crash");
+            if (path.startsWith("assessments/") && path.endsWith(".json"))
+              throw new Error("crash");
             return target.write(path, body);
           };
         }
@@ -1290,256 +1603,347 @@ describe("findings-only article assessment (#598)", { timeout: 60_000 }, () => {
     await expect(
       assessArticle({ content: crashing, archive, metadata, assessor: first }),
     ).rejects.toThrow("crash");
-    const second = model("fake/assessor-crash", "## Finding: different\nEND OF ASSESSMENT");
-    const out = await assessArticle({ content, archive, metadata, assessor: second });
+    const second = model(
+      "fake/assessor-crash",
+      "## Finding: different\nEND OF ASSESSMENT",
+    );
+    const out = await assessArticle({
+      content,
+      archive,
+      metadata,
+      assessor: second,
+    });
     expect(second.calls).toBe(0);
-    expect(out).toMatchObject({ status: "assessed", record: { state: "no-faults" } });
-  });
-});
-
-describe("separately recorded editorial judgment (#599)", { timeout: 60_000 }, () => {
-  const FOUND =
-    "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
-  const judgeDoc = (decision: "APPROVE" | "REVISE", corrections = "None.") =>
-    `## Reasons\nConsidered.\n\n## Required corrections\n${corrections}\n\n## Accepted minor observations\nNone.\n\nDECISION: ${decision}`;
-  const assessed = async (doc = FOUND) => {
-    const { metadata } = await drafted();
-    const out = await assessArticle({
-      content,
-      archive,
-      metadata,
-      assessor: model("fake/assessor", doc),
-    });
-    if (out.status !== "assessed") throw new Error(out.status);
-    return out;
-  };
-
-  it("requests a revision for a material fault, with persisted recommendations", async () => {
-    const a = await assessed();
-    const out = await judgeAssessment({
-      content,
-      assessment: a.ref,
-      judge: model("fake/judge", judgeDoc("REVISE", "- Quote the source exactly.")),
-    });
-    if (out.status !== "judged") throw new Error(out.status);
-    expect(out.record).toMatchObject({ decision: "revise", state: "decided" });
-    const doc = await content.read({
-      ...out.record.document!,
-      sha256: out.record.document!.hash.slice(7),
-    } as never);
-    expect(doc).toContain("Quote the source exactly.");
-  });
-
-  it("approves only the exact reviewed version, and a policy change is a new judgment", async () => {
-    const a = await assessed("No faults found.\nEND OF ASSESSMENT");
-    const out = await judgeAssessment({
-      content,
-      assessment: a.ref,
-      judge: model("fake/judge", judgeDoc("APPROVE")),
-    });
-    if (out.status !== "judged") throw new Error(out.status);
-    expect(out.record).toMatchObject({
-      decision: "approve",
-      body: a.record.body,
-      publication: a.record.publication,
-    });
-    // Same inputs reuse; changed policy wording never reuses the older approval.
-    const again = model("fake/judge", judgeDoc("APPROVE"));
-    expect(await judgeAssessment({ content, assessment: a.ref, judge: again })).toMatchObject({
-      reused: true,
-    });
-    expect(again.calls).toBe(0);
-    const stricter = model("fake/judge", judgeDoc("REVISE", "- Tighten."));
-    const changed = await judgeAssessment({
-      content,
-      assessment: a.ref,
-      judge: stricter,
-      prompt: {
-        version: DEFAULT_JUDGE_PROMPT.version,
-        instructions: `${DEFAULT_JUDGE_PROMPT.instructions}\nBe stricter.`,
-      },
-    });
-    expect(stricter.calls).toBe(1);
-    expect(changed).toMatchObject({ reused: false, record: { decision: "revise" } });
-  });
-
-  it("shows the judge the actual publication fields, and gates an unreadable payload", async () => {
-    const a = await assessed();
-    const users: string[] = [];
-    const judge = {
-      modelVersion: "fake/judge-fields",
-      async complete(request: { user: string }) {
-        users.push(request.user);
-        return judgeDoc("REVISE", "- Fix.");
-      },
-    };
-    await judgeAssessment({ content, assessment: a.ref, judge: judge as never });
-    const sent = JSON.parse(users[0]!).publication;
-    expect(sent.mode).toBe("structured");
-    expect(sent.title).toBe("A treaty already bans weather weapons");
-    // An assessment pointing at a payload that cannot be read is gated.
-    const broken = {
-      ...a.record,
-      publication: { ...a.record.publication, hash: `sha256:${"0".repeat(64)}` },
-    };
-    const ref = await content.write(
-      "assessments/pub/p1/synthetic-broken.json",
-      JSON.stringify(broken),
-    );
-    const blocked = model("fake/judge-fields", judgeDoc("APPROVE"));
-    expect(await judgeAssessment({ content, assessment: ref, judge: blocked })).toMatchObject({
-      status: "judged",
-      record: { decision: "none", state: "gated" },
-    });
-    expect(blocked.calls).toBe(0);
-  });
-
-  it("never approves from an incomplete assessment, and does not ask the model", async () => {
-    const a = await assessed("## Finding: x\n- Where: body");
-    const judge = model("fake/judge", judgeDoc("APPROVE"));
-    const out = await judgeAssessment({ content, assessment: a.ref, judge });
-    expect(out).toMatchObject({ status: "judged", record: { decision: "none", state: "gated" } });
-    expect(judge.calls).toBe(0);
-  });
-
-  it("lets a deterministic fault override a model approval", async () => {
-    const a = await assessed("No faults found.\nEND OF ASSESSMENT");
-    // The same exact assessment, but with a deterministic citation fault recorded.
-    const withFault = {
-      ...a.record,
-      deterministicFindings: [{ passage: "[9]", reason: "unknown citation" }],
-    };
-    const ref = await content.write(
-      "assessments/pub/p1/synthetic-fault.json",
-      JSON.stringify(withFault),
-    );
-    const out = await judgeAssessment({
-      content,
-      assessment: ref,
-      judge: model("fake/judge", judgeDoc("APPROVE")),
-    });
     expect(out).toMatchObject({
-      status: "judged",
-      record: { decision: "revise", gates: ["deterministic-fault-blocks-approval"] },
-    });
-  });
-
-  it("requires a complete judgment: reasons, sections and actual corrections for a revision", () => {
-    expect(readDecision("DECISION: APPROVE")).toBeUndefined();
-    expect(readDecision("DECISION: REVISE")).toBeUndefined();
-    expect(
-      readDecision(
-        "## Reasons\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: APPROVE",
-      ),
-    ).toBeUndefined();
-    // A revision with no actual correction is not a judgement.
-    expect(
-      readDecision(
-        "## Reasons\nMaterial.\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: REVISE",
-      ),
-    ).toBeUndefined();
-    expect(readDecision(judgeDoc("APPROVE"))).toBe("approve");
-    expect(readDecision(judgeDoc("REVISE", "- Quote exactly."))).toBe("revise");
-  });
-
-  it("treats a missing or invalid decision line as no decision", async () => {
-    const a = await assessed();
-    const out = await judgeAssessment({
-      content,
-      assessment: a.ref,
-      judge: model("fake/judge", "## Reasons\nLooks good, approve it."),
-    });
-    expect(out).toMatchObject({
-      status: "judged",
-      record: { decision: "none", state: "malformed" },
+      status: "assessed",
+      record: { state: "no-faults" },
     });
   });
 });
 
-describe("bounded editorial queries and safe 402 diagnostics (#800)", { timeout: 60_000 }, () => {
-  const counting = (version: string, respond: () => string | Promise<string>) => {
-    const calls: { system: string; user: string; maxOutputChars: number }[] = [];
-    return {
-      calls,
-      modelVersion: version,
-      async complete(request: { system: string; user: string; maxOutputChars: number }) {
-        calls.push(request);
-        return respond();
-      },
+describe(
+  "separately recorded editorial judgment (#599)",
+  { timeout: 60_000 },
+  () => {
+    const FOUND =
+      "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
+    const judgeDoc = (decision: "APPROVE" | "REVISE", corrections = "None.") =>
+      `## Reasons\nConsidered.\n\n## Required corrections\n${corrections}\n\n## Accepted minor observations\nNone.\n\nDECISION: ${decision}`;
+    const assessed = async (doc = FOUND) => {
+      const { metadata } = await drafted();
+      const out = await assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: model("fake/assessor", doc),
+      });
+      if (out.status !== "assessed") throw new Error(out.status);
+      return out;
     };
-  };
-  const FOUND =
-    "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
 
-  it("assesses and judges each exact revision with one query each, with no retry on malformed output", async () => {
-    const { metadata, pkg } = await drafted();
-    const evidence = JSON.parse(await content.read(pkg.ref)).claims.flatMap(
-      (c: { evidence: unknown[] }) => c.evidence,
-    );
-    expect(evidence.length).toBeGreaterThan(0);
-    const assessor = counting("fake/assessor", () => "garbled text\nEND OF ASSESSMENT");
-    const a = await assessArticle({ content, archive, metadata, assessor: assessor as never });
-    expect(a).toMatchObject({ status: "assessed", record: { state: "malformed" } });
-    expect(assessor.calls).toHaveLength(1);
-    // Every attached evidence passage travels in that one bounded request.
-    for (const e of evidence as { passage: string }[])
-      expect(assessor.calls[0]!.user).toContain(JSON.stringify(e.passage).slice(1, -1));
-    // The same revision is never re-queried.
-    await assessArticle({ content, archive, metadata, assessor: assessor as never });
-    expect(assessor.calls).toHaveLength(1);
-
-    const good = await assessArticle({
-      content,
-      archive,
-      metadata,
-      assessor: counting("fake/assessor-2", () => FOUND) as never,
+    it("requests a revision for a material fault, with persisted recommendations", async () => {
+      const a = await assessed();
+      const out = await judgeAssessment({
+        content,
+        assessment: a.ref,
+        judge: model(
+          "fake/judge",
+          judgeDoc("REVISE", "- Quote the source exactly."),
+        ),
+      });
+      if (out.status !== "judged") throw new Error(out.status);
+      expect(out.record).toMatchObject({
+        decision: "revise",
+        state: "decided",
+      });
+      const doc = await content.read({
+        ...out.record.document!,
+        sha256: out.record.document!.hash.slice(7),
+      } as never);
+      expect(doc).toContain("Quote the source exactly.");
     });
-    if (good.status !== "assessed") throw new Error(good.status);
-    const judge = counting("fake/judge", () => "no decision line at all");
-    const j = await judgeAssessment({ content, assessment: good.ref, judge: judge as never });
-    expect(j).toMatchObject({ status: "judged", record: { state: "malformed" } });
-    expect(judge.calls).toHaveLength(1);
-    await judgeAssessment({ content, assessment: good.ref, judge: judge as never });
-    expect(judge.calls).toHaveLength(1);
-  });
 
-  it("records a synthetic 402 as safe, allowlisted facts without provider text", async () => {
-    const { metadata } = await drafted();
-    const SECRET_TEXT =
-      "This request requires more credits, or fewer max_tokens. You requested up to 20000 tokens, but can only afford 3120. PRIVATE-DETAIL";
-    const provider = new OpenRouterProvider({
-      apiKey: "sk-or-SYNTHETIC",
-      model: "vendor/assessor",
-      fetch: (async () =>
-        new Response(JSON.stringify({ error: { code: 402, message: SECRET_TEXT } }), {
-          status: 402,
-        })) as typeof fetch,
+    it("approves only the exact reviewed version, and a policy change is a new judgment", async () => {
+      const a = await assessed("No faults found.\nEND OF ASSESSMENT");
+      const out = await judgeAssessment({
+        content,
+        assessment: a.ref,
+        judge: model("fake/judge", judgeDoc("APPROVE")),
+      });
+      if (out.status !== "judged") throw new Error(out.status);
+      expect(out.record).toMatchObject({
+        decision: "approve",
+        body: a.record.body,
+        publication: a.record.publication,
+      });
+      // Same inputs reuse; changed policy wording never reuses the older approval.
+      const again = model("fake/judge", judgeDoc("APPROVE"));
+      expect(
+        await judgeAssessment({ content, assessment: a.ref, judge: again }),
+      ).toMatchObject({
+        reused: true,
+      });
+      expect(again.calls).toBe(0);
+      const stricter = model("fake/judge", judgeDoc("REVISE", "- Tighten."));
+      const changed = await judgeAssessment({
+        content,
+        assessment: a.ref,
+        judge: stricter,
+        prompt: {
+          version: DEFAULT_JUDGE_PROMPT.version,
+          instructions: `${DEFAULT_JUDGE_PROMPT.instructions}\nBe stricter.`,
+        },
+      });
+      expect(stricter.calls).toBe(1);
+      expect(changed).toMatchObject({
+        reused: false,
+        record: { decision: "revise" },
+      });
     });
-    const out = await assessArticle({
-      content,
-      archive,
-      metadata,
-      assessor: provider,
-      retainOperationalFailure: true,
-    } as never);
-    if (out.status !== "assessed") throw new Error(out.status);
-    const saved = await content.read(out.ref);
-    expect(JSON.parse(saved)).toMatchObject({
-      state: "provider-failed",
-      operationalFailure: "credit-exhausted",
-      providerFailure: {
-        role: "assessment",
-        code: "credit-exhausted",
-        status: 402,
-        limitCategory: "max-tokens-unaffordable",
-        affordableTokens: 3120,
+
+    it("shows the judge the actual publication fields, and gates an unreadable payload", async () => {
+      const a = await assessed();
+      const users: string[] = [];
+      const judge = {
+        modelVersion: "fake/judge-fields",
+        async complete(request: { user: string }) {
+          users.push(request.user);
+          return judgeDoc("REVISE", "- Fix.");
+        },
+      };
+      await judgeAssessment({
+        content,
+        assessment: a.ref,
+        judge: judge as never,
+      });
+      const sent = JSON.parse(users[0]!).publication;
+      expect(sent.mode).toBe("structured");
+      expect(sent.title).toBe("A treaty already bans weather weapons");
+      // An assessment pointing at a payload that cannot be read is gated.
+      const broken = {
+        ...a.record,
+        publication: {
+          ...a.record.publication,
+          hash: `sha256:${"0".repeat(64)}`,
+        },
+      };
+      const ref = await content.write(
+        "assessments/pub/p1/synthetic-broken.json",
+        JSON.stringify(broken),
+      );
+      const blocked = model("fake/judge-fields", judgeDoc("APPROVE"));
+      expect(
+        await judgeAssessment({ content, assessment: ref, judge: blocked }),
+      ).toMatchObject({
+        status: "judged",
+        record: { decision: "none", state: "gated" },
+      });
+      expect(blocked.calls).toBe(0);
+    });
+
+    it("never approves from an incomplete assessment, and does not ask the model", async () => {
+      const a = await assessed("## Finding: x\n- Where: body");
+      const judge = model("fake/judge", judgeDoc("APPROVE"));
+      const out = await judgeAssessment({ content, assessment: a.ref, judge });
+      expect(out).toMatchObject({
+        status: "judged",
+        record: { decision: "none", state: "gated" },
+      });
+      expect(judge.calls).toBe(0);
+    });
+
+    it("lets a deterministic fault override a model approval", async () => {
+      const a = await assessed("No faults found.\nEND OF ASSESSMENT");
+      // The same exact assessment, but with a deterministic citation fault recorded.
+      const withFault = {
+        ...a.record,
+        deterministicFindings: [{ passage: "[9]", reason: "unknown citation" }],
+      };
+      const ref = await content.write(
+        "assessments/pub/p1/synthetic-fault.json",
+        JSON.stringify(withFault),
+      );
+      const out = await judgeAssessment({
+        content,
+        assessment: ref,
+        judge: model("fake/judge", judgeDoc("APPROVE")),
+      });
+      expect(out).toMatchObject({
+        status: "judged",
+        record: {
+          decision: "revise",
+          gates: ["deterministic-fault-blocks-approval"],
+        },
+      });
+    });
+
+    it("requires a complete judgment: reasons, sections and actual corrections for a revision", () => {
+      expect(readDecision("DECISION: APPROVE")).toBeUndefined();
+      expect(readDecision("DECISION: REVISE")).toBeUndefined();
+      expect(
+        readDecision(
+          "## Reasons\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: APPROVE",
+        ),
+      ).toBeUndefined();
+      // A revision with no actual correction is not a judgement.
+      expect(
+        readDecision(
+          "## Reasons\nMaterial.\n\n## Required corrections\nNone.\n\n## Accepted minor observations\nNone.\n\nDECISION: REVISE",
+        ),
+      ).toBeUndefined();
+      expect(readDecision(judgeDoc("APPROVE"))).toBe("approve");
+      expect(readDecision(judgeDoc("REVISE", "- Quote exactly."))).toBe(
+        "revise",
+      );
+    });
+
+    it("treats a missing or invalid decision line as no decision", async () => {
+      const a = await assessed();
+      const out = await judgeAssessment({
+        content,
+        assessment: a.ref,
+        judge: model("fake/judge", "## Reasons\nLooks good, approve it."),
+      });
+      expect(out).toMatchObject({
+        status: "judged",
+        record: { decision: "none", state: "malformed" },
+      });
+    });
+  },
+);
+
+describe(
+  "bounded editorial queries and safe 402 diagnostics (#800)",
+  { timeout: 60_000 },
+  () => {
+    const counting = (
+      version: string,
+      respond: () => string | Promise<string>,
+    ) => {
+      const calls: { system: string; user: string; maxOutputChars: number }[] =
+        [];
+      return {
+        calls,
+        modelVersion: version,
+        async complete(request: {
+          system: string;
+          user: string;
+          maxOutputChars: number;
+        }) {
+          calls.push(request);
+          return respond();
+        },
+      };
+    };
+    const FOUND =
+      "## Finding: misquote\n- Where: body\n- What is wrong: misquoted.\n- Why: source says otherwise.\n\nEND OF ASSESSMENT";
+
+    it("assesses and judges each exact revision with one query each, with no retry on malformed output", async () => {
+      const { metadata, pkg } = await drafted();
+      const evidence = JSON.parse(await content.read(pkg.ref)).claims.flatMap(
+        (c: { evidence: unknown[] }) => c.evidence,
+      );
+      expect(evidence.length).toBeGreaterThan(0);
+      const assessor = counting(
+        "fake/assessor",
+        () => "garbled text\nEND OF ASSESSMENT",
+      );
+      const a = await assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: assessor as never,
+      });
+      expect(a).toMatchObject({
+        status: "assessed",
+        record: { state: "malformed" },
+      });
+      expect(assessor.calls).toHaveLength(1);
+      // Every attached evidence passage travels in that one bounded request.
+      for (const e of evidence as { passage: string }[])
+        expect(assessor.calls[0]!.user).toContain(
+          JSON.stringify(e.passage).slice(1, -1),
+        );
+      // The same revision is never re-queried.
+      await assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: assessor as never,
+      });
+      expect(assessor.calls).toHaveLength(1);
+
+      const good = await assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: counting("fake/assessor-2", () => FOUND) as never,
+      });
+      if (good.status !== "assessed") throw new Error(good.status);
+      const judge = counting("fake/judge", () => "no decision line at all");
+      const j = await judgeAssessment({
+        content,
+        assessment: good.ref,
+        judge: judge as never,
+      });
+      expect(j).toMatchObject({
+        status: "judged",
+        record: { state: "malformed" },
+      });
+      expect(judge.calls).toHaveLength(1);
+      await judgeAssessment({
+        content,
+        assessment: good.ref,
+        judge: judge as never,
+      });
+      expect(judge.calls).toHaveLength(1);
+    });
+
+    it("records a synthetic 402 as safe, allowlisted facts without provider text", async () => {
+      const { metadata } = await drafted();
+      const SECRET_TEXT =
+        "This request requires more credits, or fewer max_tokens. You requested up to 20000 tokens, but can only afford 3120. PRIVATE-DETAIL";
+      const provider = new OpenRouterProvider({
+        apiKey: "sk-or-SYNTHETIC",
         model: "vendor/assessor",
-      },
+        fetch: (async () =>
+          new Response(
+            JSON.stringify({ error: { code: 402, message: SECRET_TEXT } }),
+            {
+              status: 402,
+            },
+          )) as typeof fetch,
+      });
+      const out = await assessArticle({
+        content,
+        archive,
+        metadata,
+        assessor: provider,
+        retainOperationalFailure: true,
+      } as never);
+      if (out.status !== "assessed") throw new Error(out.status);
+      const saved = await content.read(out.ref);
+      expect(JSON.parse(saved)).toMatchObject({
+        state: "provider-failed",
+        operationalFailure: "credit-exhausted",
+        providerFailure: {
+          role: "assessment",
+          code: "credit-exhausted",
+          status: 402,
+          limitCategory: "max-tokens-unaffordable",
+          affordableTokens: 3120,
+          model: "vendor/assessor",
+        },
+      });
+      const failure = JSON.parse(saved).providerFailure;
+      expect(failure.requestedMaxTokens).toBeGreaterThan(0);
+      expect(failure.inputChars).toBeGreaterThan(0);
+      for (const leak of [
+        "PRIVATE-DETAIL",
+        "requires more credits",
+        "sk-or-SYNTHETIC",
+      ])
+        expect(saved).not.toContain(leak);
     });
-    const failure = JSON.parse(saved).providerFailure;
-    expect(failure.requestedMaxTokens).toBeGreaterThan(0);
-    expect(failure.inputChars).toBeGreaterThan(0);
-    for (const leak of ["PRIVATE-DETAIL", "requires more credits", "sk-or-SYNTHETIC"])
-      expect(saved).not.toContain(leak);
-  });
-});
+  },
+);
