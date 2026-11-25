@@ -69,11 +69,13 @@ export function reportingPeriodIdentity(
   return figure && !resolved ? "occurrence-only" : undefined;
 }
 
-const RELATIVE =
-  /\b(last|this|next|previous|prior|current|coming|past|recent|ago|year-to-date|ytd|to date|so far)\b/i;
-/** A period wording that names an explicit year and no relative reference. */
+/**
+ * A period wording anchored to an explicit year ("Q3 2026", "FY2026", "the
+ * last quarter of 2025"). Relative wording is fine once a year anchors it;
+ * without one ("last year", "Q3") the period is not established.
+ */
 function fullySpecified(text: string): boolean {
-  return /\b(1[5-9]|20)\d{2}\b/.test(text) && !RELATIVE.test(text);
+  return /(?<!\d)(1[5-9]|20)\d{2}(?!\d)/.test(text);
 }
 
 /**

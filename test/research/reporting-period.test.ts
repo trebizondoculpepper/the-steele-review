@@ -6,6 +6,7 @@ import {
 } from "../../src/analysis/claim.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import {
+  PERIOD_NOT_ANCHORED,
   PERIOD_NOT_STATED,
   reportingPeriodExclusion,
   reportingPeriodIdentity,
@@ -135,5 +136,28 @@ describe("reporting periods (#889)", () => {
     ).toEqual({
       dependsOnPeriod: false,
     });
+  });
+
+  it("accepts explicitly anchored periods, including fiscal years (#903 review)", () => {
+    for (const text of [
+      "FY2026",
+      "the last quarter of 2025",
+      "the past 12 months ending 31 December 2025",
+    ])
+      expect(
+        reportingPeriodExclusion({
+          statement: "x",
+          reportingPeriod: { dependsOnPeriod: true, text },
+        }),
+        text,
+      ).toBeUndefined();
+    for (const text of ["last year", "Q3", "this quarter"])
+      expect(
+        reportingPeriodExclusion({
+          statement: "x",
+          reportingPeriod: { dependsOnPeriod: true, text },
+        }),
+        text,
+      ).toBe(PERIOD_NOT_ANCHORED);
   });
 });
