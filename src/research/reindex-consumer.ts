@@ -38,7 +38,10 @@ export async function handleReindexRequest(
   reconcile: (route: string) => Promise<true | false | "busy">,
   retryDelayMs = 30_000,
   busyDelayMs = 5_000,
-  delivery: { count: number; max: number } = { count: 1, max: Number.POSITIVE_INFINITY },
+  delivery: { count: number; max: number } = {
+    count: 1,
+    max: Number.POSITIVE_INFINITY,
+  },
 ): Promise<ReindexDecision> {
   let request;
   try {
@@ -57,7 +60,8 @@ export async function handleReindexRequest(
     };
   }
   const result = await reconcile(request.route);
-  if (result === true) return { action: "ack", route: request.route, outcome: "reconciled" };
+  if (result === true)
+    return { action: "ack", route: request.route, outcome: "reconciled" };
   if (delivery.count >= delivery.max) {
     return {
       action: "term",
@@ -67,6 +71,16 @@ export async function handleReindexRequest(
     };
   }
   if (result === "busy")
-    return { action: "nak", route: request.route, delayMs: busyDelayMs, why: "busy" };
-  return { action: "nak", route: request.route, delayMs: retryDelayMs, why: "failed" };
+    return {
+      action: "nak",
+      route: request.route,
+      delayMs: busyDelayMs,
+      why: "busy",
+    };
+  return {
+    action: "nak",
+    route: request.route,
+    delayMs: retryDelayMs,
+    why: "failed",
+  };
 }

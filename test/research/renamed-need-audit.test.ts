@@ -1,3 +1,4 @@
+import { MAX_CLAIMS_PER_REQUEST } from "../../src/research/librarian.js";
 import {
   sourceContextFor,
   saveSourceContext,
@@ -961,6 +962,183 @@ it(
 );
 
 it(
+  "reconnects pending full research across current analyses, bylines, context and proposal aliases using one actual request",
+  { timeout: 30000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-pending-canonical-"));
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
+    await artifacts.initialise();
+    const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+    try {
+      let claimed = 0;
+      let providerCalls = 0;
+      const requests: ResearchRequest[] = [];
+      const commission = async (request: ResearchRequest) => {
+        requests.push(request);
+        const opened = await openResearchJob({
+          artifacts,
+          operations,
+          request,
+          owner: `synthetic-${requests.length}`,
+        });
+        if (opened.status === "run") claimed++;
+        return { status: "busy" as const, jobId: opened.jobId };
+      };
+      const first = await analysis(
+        artifacts,
+        "pending-first",
+        `claim-${"b".repeat(32)}`,
+      );
+      const pendingFirst = await assessPostCoverage({
+        artifacts,
+        ...first,
+        shortlister: new LexicalShortlister(),
+        commission,
+      });
+      const themeId = pendingFirst.record.mappings[0]!.dossierId;
+      const { ThemeMappingCatalogue } =
+        await import("../../src/research/theme-mappings.js");
+      await new ThemeMappingCatalogue(artifacts).recordPinned({
+        schemaVersion: 1,
+        proposal: "Treaty obligations",
+        description: "History and scope of the ENMOD Convention",
+        canonicalThemeId: themeId,
+        decidedAt: meta.extractedAt,
+        decidedBy: { publicationId: "pub", postId: "synthetic-alias" },
+        rationale: "synthetic verified canonical alias",
+      });
+      const second = await analysis(
+        artifacts,
+        "pending-second",
+        `claim-${"c".repeat(32)}`,
+        {
+          title: "Treaty obligations",
+          reverse: true,
+        },
+      );
+      const pendingSecond = await assessPostCoverage({
+        artifacts,
+        ...second,
+        shortlister: new LexicalShortlister(),
+        commission,
+      });
+      expect(requests).toHaveLength(2);
+      expect(requests[0]).toEqual(requests[1]);
+      expect(requests[0]!.origin).toBe("theme");
+      expect(requests[0]!.post).toBeUndefined();
+      expect(requests[0]!.question).toContain(themeId);
+      expect(requests[0]!.question).not.toContain("Treaty obligations");
+      expect(researchJobId(requests[0]!)).toBe(researchJobId(requests[1]!));
+      expect(claimed).toBe(1);
+      expect(pendingFirst.record.needBindings).not.toEqual(
+        pendingSecond.record.needBindings,
+      );
+      const reconnect = await runResearchJob({
+        artifacts,
+        operations,
+        request: requests[1]!,
+        owner: "reconnect",
+        sonar: {
+          model: "synthetic",
+          research: async () => {
+            providerCalls++;
+            throw new Error("must reconnect active job");
+          },
+        },
+        fetcher: {
+          fetch: async () => {
+            throw new Error("no fetch");
+          },
+        },
+        judge: {
+          judge: async () => {
+            throw new Error("no support call");
+          },
+        },
+      });
+      expect(reconnect).toMatchObject({
+        status: "busy",
+        jobId: researchJobId(requests[0]!),
+      });
+      expect(providerCalls).toBe(0);
+    } finally {
+      operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
+  "keeps canonical full-request batch boundaries stable when more than 100 extraction IDs are renamed",
+  { timeout: 30000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-canonical-batches-"));
+    try {
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
+      await artifacts.initialise();
+      const assertions = Array.from(
+        { length: 101 },
+        (_, i) =>
+          `The ENMOD Convention synthetic assertion ${"x".repeat(i + 1)} was recorded on 10 December 1976.`,
+      );
+      const one = await analysis(artifacts, "batches-first", "unused", {
+        statements: assertions,
+        claimIds: assertions.map(
+          (_, i) => `claim-${i.toString(16).padStart(32, "0")}`,
+        ),
+      });
+      const first = librarianFixtures(artifacts).researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...one,
+        shortlister: new LexicalShortlister(),
+        commission: first.commission,
+      });
+      const two = await analysis(artifacts, "batches-second", "unused", {
+        statements: assertions,
+        reverse: true,
+        claimIds: assertions.map(
+          (_, i) => `claim-${(300 - i).toString(16).padStart(32, "0")}`,
+        ),
+      });
+      const second = librarianFixtures(artifacts).researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...two,
+        shortlister: new LexicalShortlister(),
+        commission: second.commission,
+      });
+      // One initial request per theme (#891): the effective cap is
+      // MAX_CLAIMS_PER_REQUEST, and every other claim is an explicit gap.
+      expect(first.requests.map((r) => r.claims.length)).toEqual([
+        MAX_CLAIMS_PER_REQUEST,
+      ]);
+      expect(first.requests[0]!.omittedClaimRecordIds).toHaveLength(
+        101 - MAX_CLAIMS_PER_REQUEST,
+      );
+      expect(
+        new Set([
+          ...first.requests[0]!.claims.map((c) => c.claimRecordId),
+          ...first.requests[0]!.omittedClaimRecordIds!,
+        ]).size,
+      ).toBe(101);
+      expect(second.requests).toEqual(first.requests);
+      expect(second.requests.map(researchJobId)).toEqual(
+        first.requests.map(researchJobId),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
   "validates actual staged research through coverage and writer archives while retaining semantic scope in discovery and support",
   { timeout: 60000 },
   async () => {
@@ -1139,6 +1317,97 @@ it(
       expect(supportCalls).toBe(1);
     } finally {
       operations.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it(
+  "replays a version-3 plan with its original request format, so the job ID reconnects (#828 review)",
+  { timeout: 60000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-v3-replay-"));
+    try {
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
+      await artifacts.initialise();
+      const planPath = async (
+        postId: string,
+        a: {
+          themeResult: {
+            repository: string;
+            commit: string;
+            path: string;
+            sha256: string;
+          };
+          claimResult: {
+            repository: string;
+            commit: string;
+            path: string;
+            sha256: string;
+          };
+        },
+      ) => {
+        const ref = (r: typeof a.themeResult) => ({
+          repository: r.repository,
+          commit: r.commit,
+          path: r.path,
+          hash: `sha256:${r.sha256}`,
+        });
+        const key = createHash("sha256")
+          .update(JSON.stringify([ref(a.themeResult), ref(a.claimResult)]))
+          .digest("hex")
+          .slice(0, 32);
+        return `librarian/request-plans/pub/${postId}/${key}.json`;
+      };
+      // A new plan uses the theme-only execution format (version 4).
+      const fresh = await analysis(
+        artifacts,
+        "fresh",
+        `claim-${"7".repeat(32)}`,
+      );
+      const freshRequests: ResearchRequest[] = [];
+      await assessPostCoverage({
+        artifacts,
+        ...fresh,
+        shortlister: new LexicalShortlister(),
+        commission: async (request) => {
+          freshRequests.push(request);
+          return { jobId: researchJobId(request), status: "busy" };
+        },
+      });
+      const freshPlan = JSON.parse(
+        await artifacts.read(
+          (await artifacts.lookup(await planPath("fresh", fresh)))!,
+        ),
+      );
+      expect(freshPlan.schemaVersion).toBe(4);
+      expect(freshRequests[0]!.origin).toBe("theme");
+      expect(freshRequests[0]!.post).toBeUndefined();
+
+      // A version-3 plan saved by the earlier implementation keeps its request format.
+      const old = await analysis(artifacts, "old", `claim-${"8".repeat(32)}`);
+      await artifacts.write(
+        await planPath("old", old),
+        JSON.stringify({ ...freshPlan, schemaVersion: 3 }),
+      );
+      const oldRequests: ResearchRequest[] = [];
+      await assessPostCoverage({
+        artifacts,
+        ...old,
+        shortlister: new LexicalShortlister(),
+        commission: async (request) => {
+          oldRequests.push(request);
+          return { jobId: researchJobId(request), status: "busy" };
+        },
+      });
+      expect(oldRequests).toHaveLength(1);
+      expect(oldRequests[0]!.origin).toBe("extraction");
+      expect(oldRequests[0]!.post).toBeDefined();
+      expect(oldRequests[0]!.canonicalNeeds).toBeDefined();
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   },

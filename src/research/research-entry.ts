@@ -52,7 +52,12 @@ export const EvidenceSourceSchema = z
       .url({ protocol: /^https$/ })
       .regex(/^https:\/\//)
       .describe("Public HTTPS URL of the evidence source."),
-    title: z.string().trim().min(1).max(500).describe("Title of the evidence source."),
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe("Title of the evidence source."),
     publisher: z
       .string()
       .trim()
@@ -63,13 +68,17 @@ export const EvidenceSourceSchema = z
     publishedAt: z.iso
       .datetime({ offset: true })
       .optional()
-      .describe("Publication time of the source, when it states one. Omitted if unknown."),
+      .describe(
+        "Publication time of the source, when it states one. Omitted if unknown.",
+      ),
     retrievedAt: z.iso
       .datetime({ offset: true })
       .describe("When the source was first retrieved for this research entry."),
     lastCheckedAt: z.iso
       .datetime({ offset: true })
-      .describe("When the source was last checked to still contain the quoted passage."),
+      .describe(
+        "When the source was last checked to still contain the quoted passage.",
+      ),
     passage: z
       .string()
       .min(1)
@@ -94,13 +103,17 @@ export const AddressedClaimSchema = z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
       .optional()
-      .describe("ID of the extracted claim this addresses, when it came from extraction."),
+      .describe(
+        "ID of the extracted claim this addresses, when it came from extraction.",
+      ),
     statement: z
       .string()
       .trim()
       .min(1)
       .max(2000)
-      .describe("The claim or question being addressed, restated for a reader."),
+      .describe(
+        "The claim or question being addressed, restated for a reader.",
+      ),
     finding: FindingSchema,
     evidence: z
       .array(EvidenceSourceSchema)
@@ -114,25 +127,35 @@ export const AddressedClaimSchema = z
       .min(1)
       .max(1000)
       .optional()
-      .describe("Why the claim is unresolved. Required when the finding is `unresolved`."),
+      .describe(
+        "Why the claim is unresolved. Required when the finding is `unresolved`.",
+      ),
   })
   .strict()
   .meta({
     title: "AddressedClaim",
-    description: "One claim, its finding, and the evidence behind that finding.",
+    description:
+      "One claim, its finding, and the evidence behind that finding.",
   });
 
 export type AddressedClaim = z.infer<typeof AddressedClaimSchema>;
 
 export const GeneratedExplanationSchema = z
   .object({
-    text: z.string().trim().min(1).max(8000).describe("Generated explanation prose."),
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(8000)
+      .describe("Generated explanation prose."),
     generatedBy: z
       .string()
       .trim()
       .min(1)
       .max(200)
-      .describe("Provider and model identifier that generated the explanation."),
+      .describe(
+        "Provider and model identifier that generated the explanation.",
+      ),
   })
   .strict()
   .meta({
@@ -145,14 +168,27 @@ export type GeneratedExplanation = z.infer<typeof GeneratedExplanationSchema>;
 
 export const ResearchProvenanceSchema = z
   .object({
-    modelVersion: z.string().trim().min(1).max(200).describe("Model that produced this entry."),
-    promptVersion: z.string().trim().min(1).max(200).describe("Version of the research prompt."),
+    modelVersion: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .describe("Model that produced this entry."),
+    promptVersion: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .describe("Version of the research prompt."),
     createdAt: z.iso
       .datetime({ offset: true })
       .describe("When the entry was created, in ISO 8601 with offset."),
   })
   .strict()
-  .meta({ title: "ResearchProvenance", description: "How and when this entry was produced." });
+  .meta({
+    title: "ResearchProvenance",
+    description: "How and when this entry was produced.",
+  });
 
 export type ResearchProvenance = z.infer<typeof ResearchProvenanceSchema>;
 
@@ -161,7 +197,12 @@ export const ResearchEntrySchema = z
     schemaVersion: z
       .literal(RESEARCH_ENTRY_SCHEMA_VERSION)
       .describe("Version of this research-entry contract."),
-    question: z.string().trim().min(1).max(2000).describe("The question this entry answers."),
+    question: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2000)
+      .describe("The question this entry answers."),
     addressedClaims: z
       .array(AddressedClaimSchema)
       .min(1)
@@ -171,7 +212,9 @@ export const ResearchEntrySchema = z
     limitations: z
       .array(z.string().trim().min(1).max(1000))
       .max(20)
-      .describe("What this entry does not establish, stated explicitly. May be empty."),
+      .describe(
+        "What this entry does not establish, stated explicitly. May be empty.",
+      ),
     unresolvedGaps: z
       .array(z.string().trim().min(1).max(1000))
       .max(20)
@@ -206,7 +249,10 @@ function checkEvidence(source: EvidenceSource): void {
   if (checked < retrieved) {
     throw new InvalidResearchEntryError("lastCheckedAt precedes retrievedAt");
   }
-  if (source.publishedAt !== undefined && Date.parse(source.publishedAt) > checked) {
+  if (
+    source.publishedAt !== undefined &&
+    Date.parse(source.publishedAt) > checked
+  ) {
     throw new InvalidResearchEntryError("publishedAt is after lastCheckedAt");
   }
 }
@@ -222,7 +268,9 @@ function checkClaim(claim: AddressedClaim): void {
     }
   }
   if (claim.finding === "unresolved" && claim.unresolvedReason === undefined) {
-    throw new InvalidResearchEntryError("unresolved finding needs an explicit unresolvedReason");
+    throw new InvalidResearchEntryError(
+      "unresolved finding needs an explicit unresolvedReason",
+    );
   }
 }
 

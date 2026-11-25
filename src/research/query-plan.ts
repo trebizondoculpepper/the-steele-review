@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "../analysis/extraction.js";
 
 /**
  * Bounded alternative-query planning for unproductive research gaps (#163).
@@ -30,7 +33,10 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extr
 export const HARD_MAX_QUERIES = 20;
 export const DEFAULT_QUERY_ALLOWANCE = 5;
 
-export const DEFAULT_QUERY_PLAN_PROMPT = loadPromptFile("research", "query-plan-v1");
+export const DEFAULT_QUERY_PLAN_PROMPT = loadPromptFile(
+  "research",
+  "query-plan-v1",
+);
 
 const GapId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/);
 
@@ -70,7 +76,8 @@ export type QueryPlanOutcome =
     }
   | {
       status: "empty";
-      reason: "sufficient-evidence" | "no-gaps" | "no-allowance" | "no-new-queries";
+      reason:
+        "sufficient-evidence" | "no-gaps" | "no-allowance" | "no-new-queries";
     }
   | {
       status: "failed";
@@ -111,7 +118,9 @@ export interface QueryPlannerOptions {
   maxAttempts?: number;
 }
 
-function parseOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
+function parseOutput(
+  raw: string,
+): z.infer<typeof ModelOutputSchema> | undefined {
   let body = raw.trim();
   if (body.startsWith("```") && body.endsWith("```") && body.length >= 6) {
     const newline = body.indexOf("\n");
@@ -137,7 +146,9 @@ async function withDeadline<T>(
     run(combined),
     new Promise<never>((_, reject) => {
       if (combined.aborted) reject(new Error("deadline"));
-      combined.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
+      combined.addEventListener("abort", () => reject(new Error("deadline")), {
+        once: true,
+      });
     }),
   ]);
 }
@@ -150,10 +161,15 @@ export class QueryPlanner {
     private readonly provider: ExtractionModelProvider,
     private readonly options: QueryPlannerOptions = {},
   ) {
-    this.prompt = Object.freeze({ ...(options.prompt ?? DEFAULT_QUERY_PLAN_PROMPT) });
+    this.prompt = Object.freeze({
+      ...(options.prompt ?? DEFAULT_QUERY_PLAN_PROMPT),
+    });
   }
 
-  async plan(input: QueryPlanInput, signal?: AbortSignal): Promise<QueryPlanOutcome> {
+  async plan(
+    input: QueryPlanInput,
+    signal?: AbortSignal,
+  ): Promise<QueryPlanOutcome> {
     const topic = input.topic?.trim() ?? "";
     if (!topic || topic.length > 2000) {
       throw new InvalidQueryPlanInputError("topic must be 1-2000 characters");
@@ -161,10 +177,14 @@ export class QueryPlanner {
     const seenGapIds = new Set<string>();
     for (const gap of input.gaps) {
       if (!GapId.safeParse(gap.gapId).success) {
-        throw new InvalidQueryPlanInputError("gapId must be a stable identifier");
+        throw new InvalidQueryPlanInputError(
+          "gapId must be a stable identifier",
+        );
       }
       if (seenGapIds.has(gap.gapId)) {
-        throw new InvalidQueryPlanInputError(`gap ${gap.gapId} is supplied twice`);
+        throw new InvalidQueryPlanInputError(
+          `gap ${gap.gapId} is supplied twice`,
+        );
       }
       seenGapIds.add(gap.gapId);
       if (!gap.requirement.trim() || gap.requirement.length > 1000) {
@@ -174,13 +194,18 @@ export class QueryPlanner {
       }
     }
     const allowance = input.allowance ?? DEFAULT_QUERY_ALLOWANCE;
-    if (!Number.isInteger(allowance) || allowance < 0 || allowance > HARD_MAX_QUERIES) {
+    if (
+      !Number.isInteger(allowance) ||
+      allowance < 0 ||
+      allowance > HARD_MAX_QUERIES
+    ) {
       throw new InvalidQueryPlanInputError(
         `allowance must be an integer from 0 to ${HARD_MAX_QUERIES}`,
       );
     }
 
-    if (input.sufficientEvidence) return { status: "empty", reason: "sufficient-evidence" };
+    if (input.sufficientEvidence)
+      return { status: "empty", reason: "sufficient-evidence" };
     if (input.gaps.length === 0) return { status: "empty", reason: "no-gaps" };
     if (allowance === 0) return { status: "empty", reason: "no-allowance" };
 
@@ -190,7 +215,10 @@ export class QueryPlanner {
       boundary,
       JSON.stringify({
         topic,
-        gaps: input.gaps.map((gap) => ({ gapId: gap.gapId, requirement: gap.requirement })),
+        gaps: input.gaps.map((gap) => ({
+          gapId: gap.gapId,
+          requirement: gap.requirement,
+        })),
         priorQueries: input.priorQueries ?? [],
         remainingAllowance: allowance,
       }),
@@ -202,11 +230,18 @@ export class QueryPlanner {
     const attempts = Math.max(1, Math.min(this.options.maxAttempts ?? 2, 5));
     for (let attempt = 1; attempt <= attempts && !output; attempt++) {
       try {
-        const raw = await withDeadline(this.options.timeoutMs ?? 60_000, signal, (s) =>
-          this.provider.complete(
-            { system: this.prompt.instructions, user, maxOutputChars: 20_000 },
-            s,
-          ),
+        const raw = await withDeadline(
+          this.options.timeoutMs ?? 60_000,
+          signal,
+          (s) =>
+            this.provider.complete(
+              {
+                system: this.prompt.instructions,
+                user,
+                maxOutputChars: 20_000,
+              },
+              s,
+            ),
         );
         output = parseOutput(raw);
         if (!output) last = "malformed-output";
@@ -244,7 +279,8 @@ export class QueryPlanner {
       queries.push({ query: entry.query.trim(), gapId: entry.gapId });
     }
 
-    if (queries.length === 0) return { status: "empty", reason: "no-new-queries" };
+    if (queries.length === 0)
+      return { status: "empty", reason: "no-new-queries" };
     return {
       status: "planned",
       queries,

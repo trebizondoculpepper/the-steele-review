@@ -20,7 +20,9 @@ import {
 
 export const DOSSIER_SCHEMA_VERSION = 1;
 
-const ThemeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/, "theme ID must be a lower-case slug");
+const ThemeId = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,99}$/, "theme ID must be a lower-case slug");
 const IsoDate = z.iso.datetime({ offset: true }).or(z.iso.date());
 
 export const DossierCitationSchema = z
@@ -67,18 +69,23 @@ export const DossierMetadataSchema = z
   .superRefine((m, ctx) => {
     const ids = new Set<string>();
     for (const c of m.citations) {
-      if (ids.has(c.id)) ctx.addIssue({ code: "custom", message: `duplicate citation ${c.id}` });
+      if (ids.has(c.id))
+        ctx.addIssue({ code: "custom", message: `duplicate citation ${c.id}` });
       ids.add(c.id);
     }
     const claims = new Set<string>();
     for (const c of m.claims) {
       if (claims.has(c.claimId)) {
-        ctx.addIssue({ code: "custom", message: `duplicate claim ${c.claimId}` });
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate claim ${c.claimId}`,
+        });
       }
       claims.add(c.claimId);
       if (c.status === "covered") {
         for (const id of c.citations) {
-          if (!ids.has(id)) ctx.addIssue({ code: "custom", message: `unknown citation ${id}` });
+          if (!ids.has(id))
+            ctx.addIssue({ code: "custom", message: `unknown citation ${id}` });
         }
       }
     }
@@ -131,7 +138,10 @@ export function parseDossier(text: string): Dossier {
     throw new InvalidDossierError("metadata is not JSON");
   }
   const parsed = DossierMetadataSchema.safeParse(raw);
-  if (!parsed.success) throw new InvalidDossierError(parsed.error.issues[0]?.message ?? "metadata");
+  if (!parsed.success)
+    throw new InvalidDossierError(
+      parsed.error.issues[0]?.message ?? "metadata",
+    );
   return { metadata: parsed.data, body: match[2].trim() };
 }
 
@@ -153,16 +163,26 @@ export class DossierStore {
    * Save a new version. `expected` is the version the caller read (undefined
    * when creating). An unchanged dossier returns the current reference.
    */
-  async save(dossier: Dossier, expected: ArtifactRef | undefined): Promise<StoredDossier> {
+  async save(
+    dossier: Dossier,
+    expected: ArtifactRef | undefined,
+  ): Promise<StoredDossier> {
     const path = dossierPath(dossier.metadata.themeId);
     if (expected && expected.path !== path)
       throw new InvalidDossierError("reference for another theme");
     const content = renderDossier(dossier);
     try {
-      const ref = await this.artifacts.revise(path, content, expected?.sha256 ?? null);
+      const ref = await this.artifacts.revise(
+        path,
+        content,
+        expected?.sha256 ?? null,
+      );
       return { ...parseDossier(content), ref };
     } catch (error) {
-      if (error instanceof ArtifactStoreError && error.code === "stale-revision") {
+      if (
+        error instanceof ArtifactStoreError &&
+        error.code === "stale-revision"
+      ) {
         throw new StaleDossierError();
       }
       throw error;

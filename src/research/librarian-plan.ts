@@ -34,7 +34,11 @@ export const PlanRefSchema = z
   .strict();
 export type PlanRef = z.infer<typeof PlanRefSchema>;
 
-export const DossierActionSchema = z.enum(["reuse-existing", "create-dossier", "enhance-existing"]);
+export const DossierActionSchema = z.enum([
+  "reuse-existing",
+  "create-dossier",
+  "enhance-existing",
+]);
 export type DossierAction = z.infer<typeof DossierActionSchema>;
 
 const Author = z
@@ -94,7 +98,12 @@ export const LegacyLibrarianPlanSchema = z
     mappings: z.array(z.object(mappingFields).strict()).max(200),
     dossiers: z
       .array(
-        z.object({ ...dossierFields, dossierRef: z.string().min(1).max(400).optional() }).strict(),
+        z
+          .object({
+            ...dossierFields,
+            dossierRef: z.string().min(1).max(400).optional(),
+          })
+          .strict(),
       )
       .max(200),
     claims: Claims,
@@ -132,9 +141,13 @@ export const LibrarianPlanSchema = z
             mappingRef: PlanRefSchema.optional(),
           })
           .strict()
-          .refine((m) => (m.source === "catalogue") === (m.mappingRef !== undefined), {
-            message: "a catalogue mapping names its exact saved version; a new one names none",
-          }),
+          .refine(
+            (m) => (m.source === "catalogue") === (m.mappingRef !== undefined),
+            {
+              message:
+                "a catalogue mapping names its exact saved version; a new one names none",
+            },
+          ),
       )
       .max(200),
     dossiers: z
@@ -231,11 +244,14 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
     const decision = input.mappings.get(proposal.id);
     const saved = decision?.mapping;
     const canonicalThemeId =
-      saved?.canonicalThemeId ?? proposedThemeId(proposal.title, proposal.description);
+      saved?.canonicalThemeId ??
+      proposedThemeId(proposal.title, proposal.description);
     mappings.push({
       proposalId: proposal.id,
       proposalTitle: proposal.title,
-      ...(proposal.description ? { proposalDescription: proposal.description } : {}),
+      ...(proposal.description
+        ? { proposalDescription: proposal.description }
+        : {}),
       canonicalThemeId,
       source: saved ? "catalogue" : "new",
       ...(decision ? { mappingRef: decision.ref } : {}),
@@ -279,7 +295,10 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
         uncovered > 0
           ? `existing dossier leaves ${uncovered} claim(s) without covering evidence`
           : "existing dossier covers the recorded claims",
-      gaps: uncovered > 0 ? [`${uncovered} claim(s) recorded as gaps in the dossier`] : [],
+      gaps:
+        uncovered > 0
+          ? [`${uncovered} claim(s) recorded as gaps in the dossier`]
+          : [],
     });
   }
 
@@ -297,14 +316,19 @@ export function planLibrarianAssessment(input: PlanInputs): LibrarianPlan {
       };
     }
     const dossier = input.dossiers.get(claim.canonicalThemeId);
-    const coverage = dossier?.coverage.get(claim.claimRecordId) ?? (dossier ? "gap" : "none");
+    const coverage =
+      dossier?.coverage.get(claim.claimRecordId) ?? (dossier ? "gap" : "none");
     return {
       claimRecordId: claim.claimRecordId,
       ...(claim.statement ? { statement: claim.statement } : {}),
       canonicalThemeId: claim.canonicalThemeId,
       coverage,
       action:
-        coverage === "covered" ? "reuse" : coverage === "gap" ? "targeted-enhancement" : "research",
+        coverage === "covered"
+          ? "reuse"
+          : coverage === "gap"
+            ? "targeted-enhancement"
+            : "research",
     };
   });
 
@@ -347,14 +371,30 @@ export function librarianPlanPath(
     pin(plan.inputs.configuration),
     pin(plan.inputs.themeResult),
     pin(plan.inputs.claimResult),
-    plan.inputs.author ? [plan.inputs.author.name, plan.inputs.author.basis] : null,
-    plan.dossiers.map((d) => [d.canonicalThemeId, d.action, d.gaps, pin(d.dossierRef)]),
+    plan.inputs.author
+      ? [plan.inputs.author.name, plan.inputs.author.basis]
+      : null,
+    plan.dossiers.map((d) => [
+      d.canonicalThemeId,
+      d.action,
+      d.gaps,
+      pin(d.dossierRef),
+    ]),
     plan.mappings
-      .map((m) => JSON.stringify([m.proposalId, m.canonicalThemeId, m.source, pin(m.mappingRef)]))
+      .map((m) =>
+        JSON.stringify([
+          m.proposalId,
+          m.canonicalThemeId,
+          m.source,
+          pin(m.mappingRef),
+        ]),
+      )
       .sort(),
     // The theme a claim belongs to is material even when its coverage and
     // action are unchanged by the reassignment.
-    plan.claims.map((c) => [c.claimRecordId, c.canonicalThemeId, c.coverage, c.action]).sort(),
+    plan.claims
+      .map((c) => [c.claimRecordId, c.canonicalThemeId, c.coverage, c.action])
+      .sort(),
   ]);
   const key = createHash("sha256").update(identity).digest("hex").slice(0, 32);
   return `librarian/plans/${post.publicationId}/${post.postId}/${key}.json`;
@@ -368,7 +408,12 @@ export function librarianPlanPath(
 export async function saveLibrarianPlan(
   artifacts: Pick<GitArtifactStore, "write" | "lookup" | "read">,
   plan: LibrarianPlan,
-): Promise<{ path: string; reused: boolean; ref: ArtifactRef; plan: LibrarianPlan }> {
+): Promise<{
+  path: string;
+  reused: boolean;
+  ref: ArtifactRef;
+  plan: LibrarianPlan;
+}> {
   const valid = LibrarianPlanSchema.parse(plan);
   const path = librarianPlanPath(
     { publicationId: valid.inputs.publicationId, postId: valid.inputs.postId },
@@ -377,18 +422,26 @@ export async function saveLibrarianPlan(
   const stored = async () => {
     const ref = await artifacts.lookup(path);
     if (!ref) return undefined;
-    const saved = LibrarianPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
+    const saved = LibrarianPlanSchema.parse(
+      JSON.parse(await artifacts.read(ref)),
+    );
     return { path, reused: true, ref, plan: saved };
   };
   const existing = await stored();
   if (existing) return existing;
   try {
-    const ref = await artifacts.write(path, `${JSON.stringify(valid, null, 2)}\n`);
+    const ref = await artifacts.write(
+      path,
+      `${JSON.stringify(valid, null, 2)}\n`,
+    );
     return { path, reused: false, ref, plan: valid };
   } catch (error) {
     // A concurrent assessment of the same inputs may have written first; that
     // stored plan is the authoritative one.
-    if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+    if (
+      error instanceof ArtifactStoreError &&
+      error.code === "immutable-conflict"
+    ) {
       const raced = await stored();
       if (raced) return raced;
     }

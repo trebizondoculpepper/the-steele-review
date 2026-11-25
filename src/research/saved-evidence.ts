@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { writeOnce } from "./job.js";
 import { CoverageRecordSchema, type CoverageRecord } from "./librarian.js";
 
@@ -40,9 +43,15 @@ const Ref = z.object({
 });
 const ManifestSchema = z.object({
   jobId: z.string(),
-  citations: z.array(z.object({ url: z.string(), archivedArtifact: Ref.optional() }).passthrough()),
+  citations: z.array(
+    z
+      .object({ url: z.string(), archivedArtifact: Ref.optional() })
+      .passthrough(),
+  ),
 });
-const SnapshotSchema = z.object({ url: z.string(), text: z.string() }).passthrough();
+const SnapshotSchema = z
+  .object({ url: z.string(), text: z.string() })
+  .passthrough();
 
 const fromRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
   repository: r.repository,
@@ -63,25 +72,35 @@ export async function selectSavedEvidence(input: {
   /** Who selected it and why, kept with the claim. */
   note: string;
 }): Promise<{ record: CoverageRecord; ref: ArtifactRef }> {
-  const original = CoverageRecordSchema.parse(JSON.parse(await input.content.read(input.coverage)));
-  const claim = original.claims.find((c) => c.claimRecordId === input.claimRecordId);
+  const original = CoverageRecordSchema.parse(
+    JSON.parse(await input.content.read(input.coverage)),
+  );
+  const claim = original.claims.find(
+    (c) => c.claimRecordId === input.claimRecordId,
+  );
   if (!claim) throw new SavedEvidenceError("unknown-claim");
   const job = original.jobs.find((j) => j.jobId === input.jobId);
   if (!job?.manifest) throw new SavedEvidenceError("unknown-job");
-  if (!job.outcome.startsWith("complete")) throw new SavedEvidenceError("job-not-finished");
+  if (!job.outcome.startsWith("complete"))
+    throw new SavedEvidenceError("job-not-finished");
 
   const manifest = ManifestSchema.parse(
     JSON.parse(await input.content.read(fromRef(job.manifest))),
   );
   const citation = manifest.citations.find((c) => c.url === input.url);
-  if (!citation?.archivedArtifact) throw new SavedEvidenceError("citation-not-archived");
+  if (!citation?.archivedArtifact)
+    throw new SavedEvidenceError("citation-not-archived");
   // As in the librarian's own assessment, the monitored publication's material
   // can never independently cover its own claim.
-  if (citation.sourceType === "monitored-source") throw new SavedEvidenceError("monitored-source");
+  if (citation.sourceType === "monitored-source")
+    throw new SavedEvidenceError("monitored-source");
   const snapshot = SnapshotSchema.parse(
     JSON.parse(await input.content.read(fromRef(citation.archivedArtifact))),
   );
-  if (snapshot.url !== input.url || !normalise(snapshot.text).includes(normalise(input.passage)))
+  if (
+    snapshot.url !== input.url ||
+    !normalise(snapshot.text).includes(normalise(input.passage))
+  )
     throw new SavedEvidenceError("passage-not-in-snapshot");
 
   const record = CoverageRecordSchema.parse({
@@ -101,7 +120,10 @@ export async function selectSavedEvidence(input: {
     ),
   });
   const { publicationId, postId } = record.post;
-  const key = createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 32);
+  const key = createHash("sha256")
+    .update(JSON.stringify(record))
+    .digest("hex")
+    .slice(0, 32);
   const ref = await writeOnce(
     input.content,
     `librarian/coverage/${publicationId}/${postId}/${key}.json`,

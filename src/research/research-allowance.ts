@@ -31,7 +31,8 @@ import { researchJobPath } from "./job.js";
  */
 export const RESEARCH_SELECTION_POLICY = "new-jobs-allowance-v1";
 
-export type SelectionDecision = "reuse" | "in-flight" | "new" | "deferred" | "duplicate";
+export type SelectionDecision =
+  "reuse" | "in-flight" | "new" | "deferred" | "duplicate";
 
 export interface SelectionCandidate {
   jobId: string;
@@ -56,7 +57,11 @@ export function selectResearch(
     /** Jobs this article counted in earlier selections. */
     counted: ReadonlySet<string>;
   },
-): { decisions: SelectedCandidate[]; remainingBefore: number; newJobs: number } {
+): {
+  decisions: SelectedCandidate[];
+  remainingBefore: number;
+  newJobs: number;
+} {
   const remainingBefore = Math.max(0, input.allowance - input.counted.size);
   let remaining = remainingBefore;
   const seen = new Set<string>();
@@ -72,7 +77,12 @@ export function selectResearch(
         };
       seen.add(jobId);
       if (input.reusable.has(jobId))
-        return { jobId, rank, decision: "reuse", reason: "saved result reused; no new job" };
+        return {
+          jobId,
+          rank,
+          decision: "reuse",
+          reason: "saved result reused; no new job",
+        };
       if (input.counted.has(jobId))
         return {
           jobId,
@@ -108,7 +118,12 @@ export const dispatched = (d: SelectionDecision) =>
   d === "new" || d === "reuse" || d === "in-flight";
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), sha256: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    sha256: z.string(),
+  })
   .strict();
 export const AllowanceRecordSchema = z
   .object({
@@ -125,7 +140,13 @@ export const AllowanceRecordSchema = z
           .object({
             jobId: z.string(),
             rank: z.number().int().positive(),
-            decision: z.enum(["reuse", "in-flight", "new", "deferred", "duplicate"]),
+            decision: z.enum([
+              "reuse",
+              "in-flight",
+              "new",
+              "deferred",
+              "duplicate",
+            ]),
             reason: z.string().max(300),
           })
           .strict(),
@@ -155,7 +176,10 @@ export const MAX_ALLOWANCE_SELECTIONS = 200;
 const LedgerSchema = z
   .object({
     schemaVersion: z.literal(1),
-    selections: z.record(z.string().regex(/^[0-9a-f]{32}$/), AllowanceRecordSchema),
+    selections: z.record(
+      z.string().regex(/^[0-9a-f]{32}$/),
+      AllowanceRecordSchema,
+    ),
   })
   .strict();
 const STALE_RETRIES = 5;
@@ -189,7 +213,8 @@ export async function selectAndSaveResearch(
   const path = ledgerPath(input.post);
   const reusable = new Set<string>();
   for (const c of input.candidates) {
-    if (await artifacts.lookup(researchJobPath(c.jobId, "result"))) reusable.add(c.jobId);
+    if (await artifacts.lookup(researchJobPath(c.jobId, "result")))
+      reusable.add(c.jobId);
   }
   for (let attempt = 0; ; attempt++) {
     const current = await artifacts.lookup(path);
@@ -203,7 +228,8 @@ export async function selectAndSaveResearch(
       throw new Error("research allowance history too long");
     const counted = new Set<string>();
     for (const r of Object.values(ledger.selections))
-      for (const d of r.decisions) if (d.decision === "new") counted.add(d.jobId);
+      for (const d of r.decisions)
+        if (d.decision === "new") counted.add(d.jobId);
     const selected = selectResearch(input.candidates, {
       allowance: input.allowance,
       reusable,
@@ -218,7 +244,10 @@ export async function selectAndSaveResearch(
       remainingBefore: selected.remainingBefore,
       decisions: selected.decisions,
     });
-    const next = { ...ledger, selections: { ...ledger.selections, [key]: record } };
+    const next = {
+      ...ledger,
+      selections: { ...ledger.selections, [key]: record },
+    };
     try {
       const ref = await artifacts.revise(
         path,
@@ -230,7 +259,8 @@ export async function selectAndSaveResearch(
       // Another selection for this article committed first: re-read, re-select.
       const stale =
         error instanceof ArtifactStoreError &&
-        (error.code === "stale-revision" || error.code === "immutable-conflict");
+        (error.code === "stale-revision" ||
+          error.code === "immutable-conflict");
       if (!stale || attempt >= STALE_RETRIES) throw error;
     }
   }

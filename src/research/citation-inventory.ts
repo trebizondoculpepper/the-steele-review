@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { WebAdapterError } from "../controllers/research-web.js";
 import type { DiscoveryData } from "./discovery-data.js";
@@ -41,7 +44,12 @@ export const MAX_INVENTORY_ENTRIES = 20_000;
 
 export const CitationOriginSchema = z
   .object({
-    kind: z.enum(["provider-citation", "annotation", "search-result", "report-text"]),
+    kind: z.enum([
+      "provider-citation",
+      "annotation",
+      "search-result",
+      "report-text",
+    ]),
     index: z.number().int().min(0),
   })
   .strict();
@@ -60,7 +68,12 @@ export const CitationEntrySchema = z
       .regex(/^fetch-[0-9a-f]{24}$/)
       .optional(),
     invalidReason: z
-      .enum(["not-a-url", "unsupported-scheme", "credentials-in-url", "too-long"])
+      .enum([
+        "not-a-url",
+        "unsupported-scheme",
+        "credentials-in-url",
+        "too-long",
+      ])
       .optional(),
   })
   .strict();
@@ -121,7 +134,10 @@ const fromRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
   sha256: r.hash.replace(/^sha256:/, ""),
 });
 const sameRef = (a: z.infer<typeof Ref>, b: z.infer<typeof Ref>) =>
-  a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash;
+  a.repository === b.repository &&
+  a.commit === b.commit &&
+  a.path === b.path &&
+  a.hash === b.hash;
 
 /**
  * URLs written in the report text, in order. Trailing prose punctuation and
@@ -169,7 +185,8 @@ export function retrievalKeyFor(
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return { invalid: "unsupported-scheme" };
   }
-  if (parsed.username || parsed.password) return { invalid: "credentials-in-url" };
+  if (parsed.username || parsed.password)
+    return { invalid: "credentials-in-url" };
   parsed.hash = "";
   const key = parsed.toString();
   // Normalisation can lengthen a URL (percent-encoding): still bounded.
@@ -183,7 +200,11 @@ export function buildCitationInventory(data: DiscoveryData): {
 } {
   const byUrl = new Map<string, CitationEntry>();
   let omittedEntries = 0;
-  const add = (url: string, kind: z.infer<typeof CitationOriginSchema>["kind"], index: number) => {
+  const add = (
+    url: string,
+    kind: z.infer<typeof CitationOriginSchema>["kind"],
+    index: number,
+  ) => {
     const existing = byUrl.get(url);
     if (existing) {
       if (existing.origins.length < 100) existing.origins.push({ kind, index });
@@ -197,10 +218,15 @@ export function buildCitationInventory(data: DiscoveryData): {
     byUrl.set(url, {
       id: `cite-${sha(url).slice(0, 24)}`,
       originalUrl: url.slice(0, MAX_URL_CHARS),
-      ...(url.length > MAX_URL_CHARS ? { originalUrlTruncated: true as const } : {}),
+      ...(url.length > MAX_URL_CHARS
+        ? { originalUrlTruncated: true as const }
+        : {}),
       origins: [{ kind, index }],
       ...("key" in key
-        ? { retrievalKey: key.key, retrievalId: `fetch-${sha(key.key).slice(0, 24)}` }
+        ? {
+            retrievalKey: key.key,
+            retrievalId: `fetch-${sha(key.key).slice(0, 24)}`,
+          }
         : { invalidReason: key.invalid }),
     });
   };
@@ -219,7 +245,8 @@ export function acceptedDiscoveryReader(
   artifacts: GitArtifactStore,
   operations: Pick<OperationStore, "researchDiscoveryAccepted">,
 ): DiscoveryReader {
-  return async (result) => (await readResearchDiscovery(artifacts, result, operations)).data;
+  return async (result) =>
+    (await readResearchDiscovery(artifacts, result, operations)).data;
 }
 
 export class CitationInventoryError extends Error {
@@ -244,7 +271,9 @@ export async function saveCitationInventory(input: {
   const path = `${dir}/citations/inventory.json`;
   const saved = await input.artifacts.lookup(path);
   if (saved) {
-    const inventory = CitationInventorySchema.parse(JSON.parse(await input.artifacts.read(saved)));
+    const inventory = CitationInventorySchema.parse(
+      JSON.parse(await input.artifacts.read(saved)),
+    );
     // A reused inventory must belong to exactly this discovery result.
     if (!sameRef(inventory.discovery, toRef(input.discovery))) {
       throw new CitationInventoryError("inventory-mismatch");
@@ -268,7 +297,9 @@ export async function saveCitationInventory(input: {
   const ref = await writeOnce(input.artifacts, path, inventory);
   return {
     ref,
-    inventory: CitationInventorySchema.parse(JSON.parse(await input.artifacts.read(ref))),
+    inventory: CitationInventorySchema.parse(
+      JSON.parse(await input.artifacts.read(ref)),
+    ),
   };
 }
 
@@ -298,7 +329,8 @@ async function fetchOnce(fetcher: PageFetcher, key: string, timeoutMs: number) {
   try {
     return { page: await fetcher.fetch(key, deadline.signal) };
   } catch (error) {
-    if (deadline.signal.aborted) return { error: new WebAdapterError("timeout") };
+    if (deadline.signal.aborted)
+      return { error: new WebAdapterError("timeout") };
     if (error instanceof WebAdapterError) return { error };
     // Only fetch failures reach here: storage happens outside this call.
     return { error: new WebAdapterError("unavailable") };
@@ -326,7 +358,9 @@ export async function retrieveCitations(input: {
    */
   only?: ReadonlySet<string>;
 }): Promise<RetrievalSummary> {
-  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep =
+    input.sleep ??
+    ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const random = input.random ?? Math.random;
   // Capped exponential backoff with jitter between retryable attempts
   // (doc/architecture/12-failure-handling.md): never an immediate retry.
@@ -354,7 +388,11 @@ export async function retrieveCitations(input: {
     const outcomePath = `${dir}/retrievals/${id}.json`;
     const existing = await input.artifacts.lookup(outcomePath);
     if (existing) {
-      outcomes.push(RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(existing))));
+      outcomes.push(
+        RetrievalOutcomeSchema.parse(
+          JSON.parse(await input.artifacts.read(existing)),
+        ),
+      );
       continue;
     }
     const base = {
@@ -369,10 +407,19 @@ export async function retrieveCitations(input: {
         outcomePath,
         RetrievalOutcomeSchema.parse(outcome),
       );
-      outcomes.push(RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(ref))));
+      outcomes.push(
+        RetrievalOutcomeSchema.parse(
+          JSON.parse(await input.artifacts.read(ref)),
+        ),
+      );
     };
     if (index >= input.limits.maxSources) {
-      await record({ ...base, status: "not-attempted", reason: "source-limit", attempts: 0 });
+      await record({
+        ...base,
+        status: "not-attempted",
+        reason: "source-limit",
+        attempts: 0,
+      });
       continue;
     }
     // A snapshot retained before a crash is adopted only if it is a valid
@@ -385,14 +432,26 @@ export async function retrieveCitations(input: {
       const retained = await input.artifacts.read(savedSnapshot);
       let valid = false;
       try {
-        valid = CitationSnapshotSchema.parse(JSON.parse(retained)).retrievalKey === key;
+        valid =
+          CitationSnapshotSchema.parse(JSON.parse(retained)).retrievalKey ===
+          key;
       } catch {
         valid = false;
       }
       await record(
         valid
-          ? { ...base, status: "archived", attempts: 0, snapshot: toRef(savedSnapshot) }
-          : { ...base, status: "unavailable", reason: "invalid-retained-snapshot", attempts: 0 },
+          ? {
+              ...base,
+              status: "archived",
+              attempts: 0,
+              snapshot: toRef(savedSnapshot),
+            }
+          : {
+              ...base,
+              status: "unavailable",
+              reason: "invalid-retained-snapshot",
+              attempts: 0,
+            },
       );
       continue;
     }
@@ -423,13 +482,22 @@ export async function retrieveCitations(input: {
           retrievalKey: key,
           url: page.url,
           title: page.title.slice(0, 2000),
-          ...(page.publisher ? { publisher: page.publisher.slice(0, 500) } : {}),
-          ...(page.publishedAt ? { publishedAt: page.publishedAt.slice(0, 100) } : {}),
+          ...(page.publisher
+            ? { publisher: page.publisher.slice(0, 500) }
+            : {}),
+          ...(page.publishedAt
+            ? { publishedAt: page.publishedAt.slice(0, 100) }
+            : {}),
           truncated: page.text.length > text.length,
           text,
         }),
       );
-      await record({ ...base, status: "archived", attempts, snapshot: toRef(snapshot) });
+      await record({
+        ...base,
+        status: "archived",
+        attempts,
+        snapshot: toRef(snapshot),
+      });
       continue;
     }
     if (!last) continue;
@@ -439,7 +507,9 @@ export async function retrieveCitations(input: {
     }
     await record({
       ...base,
-      status: PERMANENT_UNSUPPORTED.has(last.code) ? "unsupported" : "unavailable",
+      status: PERMANENT_UNSUPPORTED.has(last.code)
+        ? "unsupported"
+        : "unavailable",
       reason: last.code,
       attempts,
       ...(last.status ? { httpStatus: last.status } : {}),
@@ -453,5 +523,7 @@ export async function readCitationSnapshot(
   artifacts: Pick<GitArtifactStore, "read">,
   snapshot: z.infer<typeof Ref>,
 ): Promise<CitationSnapshot> {
-  return CitationSnapshotSchema.parse(JSON.parse(await artifacts.read(fromRef(snapshot))));
+  return CitationSnapshotSchema.parse(
+    JSON.parse(await artifacts.read(fromRef(snapshot))),
+  );
 }

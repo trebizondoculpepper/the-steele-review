@@ -160,4 +160,26 @@ describe("reporting periods (#889)", () => {
         text,
       ).toBe(PERIOD_NOT_ANCHORED);
   });
+
+  it("does not count a day of the month as a figure", () => {
+    expect(
+      reportingPeriodIdentity({
+        statement: "The treaty was adopted on 10 December 1976.",
+      }),
+    ).toBeUndefined();
+    expect(
+      reportingPeriodIdentity({ statement: "It opened on December 10." }),
+    ).toBeUndefined();
+    expect(
+      reportingPeriodIdentity({
+        statement: "The vote was held on the 3rd of the month.",
+        dates: [{ text: "the 3rd of the month" }],
+      }),
+    ).toBeUndefined();
+    expect(
+      reportingPeriodIdentity({
+        statement: "Acme sold 10 units on 10 December.",
+      }),
+    ).toBe("occurrence-only");
+  });
 });

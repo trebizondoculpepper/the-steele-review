@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { ArtifactStoreError, type GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactStoreError,
+  type GitArtifactStore,
+} from "../controllers/artifact-store.js";
 
 /**
  * Canonical themes, independent of research (#528).
@@ -38,13 +41,18 @@ export function themePath(id: string): string {
 
 export class ThemeStore {
   constructor(
-    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "write" | "list">,
+    private readonly artifacts: Pick<
+      GitArtifactStore,
+      "lookup" | "read" | "write" | "list"
+    >,
   ) {}
 
   async get(id: string): Promise<CanonicalTheme | undefined> {
     const ref = await this.artifacts.lookup(themePath(id));
     if (!ref) return undefined;
-    const parsed = CanonicalThemeSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
+    const parsed = CanonicalThemeSchema.safeParse(
+      JSON.parse(await this.artifacts.read(ref)),
+    );
     return parsed.success ? parsed.data : undefined;
   }
 
@@ -52,24 +60,37 @@ export class ThemeStore {
   async require(id: string): Promise<CanonicalTheme> {
     const ref = await this.artifacts.lookup(themePath(id));
     if (!ref) throw new Error("canonical theme listed but not found");
-    return CanonicalThemeSchema.parse(JSON.parse(await this.artifacts.read(ref)));
+    return CanonicalThemeSchema.parse(
+      JSON.parse(await this.artifacts.read(ref)),
+    );
   }
 
   /**
    * Record a canonical theme. Write-once: the first title wins, so an
    * established topic is not silently renamed by a later post's wording.
    */
-  async ensure(theme: Omit<CanonicalTheme, "schemaVersion">): Promise<CanonicalTheme> {
-    const payload = CanonicalThemeSchema.parse({ schemaVersion: THEME_SCHEMA_VERSION, ...theme });
+  async ensure(
+    theme: Omit<CanonicalTheme, "schemaVersion">,
+  ): Promise<CanonicalTheme> {
+    const payload = CanonicalThemeSchema.parse({
+      schemaVersion: THEME_SCHEMA_VERSION,
+      ...theme,
+    });
     const existing = await this.get(payload.id);
     if (existing) return existing;
     try {
-      await this.artifacts.write(themePath(payload.id), `${JSON.stringify(payload, null, 2)}\n`);
+      await this.artifacts.write(
+        themePath(payload.id),
+        `${JSON.stringify(payload, null, 2)}\n`,
+      );
       return payload;
     } catch (error) {
       // A concurrent assessment may have established the same theme first; the
       // stored record is authoritative, so reconcile instead of failing.
-      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+      if (
+        error instanceof ArtifactStoreError &&
+        error.code === "immutable-conflict"
+      ) {
         const winner = await this.get(payload.id);
         if (winner) return winner;
       }
@@ -94,7 +115,9 @@ export class ThemeStore {
  * a duplicate identity and commission redundant research, so the caller's
  * assessment fails and stays safely retryable.
  */
-export async function listCanonicalThemes(store: ThemeStore): Promise<CanonicalTheme[]> {
+export async function listCanonicalThemes(
+  store: ThemeStore,
+): Promise<CanonicalTheme[]> {
   const ids: string[] = [];
   for (let after: string | undefined; ;) {
     const page = await store.listPage(1000, after);

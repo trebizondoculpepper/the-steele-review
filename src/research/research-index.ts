@@ -30,10 +30,7 @@ const CHECKPOINT_ID = "checkpoint";
 const MAX_TEXT_CHARS = 1_000_000;
 
 export type ResearchDocumentKind =
-  | "dossier"
-  | "research-report"
-  | "covering-note"
-  | "source-snapshot";
+  "dossier" | "research-report" | "covering-note" | "source-snapshot";
 
 export const RESEARCH_COLLECTION_INDEX_MAPPING: ElasticsearchIndexMapping = {
   dynamic: "strict",
@@ -59,18 +56,29 @@ export const RESEARCH_COLLECTION_INDEX_MAPPING: ElasticsearchIndexMapping = {
 const JOB = /^research-jobs\/(research-[0-9a-f]{32})\//;
 
 /** The kind of an indexable artifact path, or undefined for anything that must stay out of search. */
-export function researchDocumentKind(path: string): ResearchDocumentKind | undefined {
+export function researchDocumentKind(
+  path: string,
+): ResearchDocumentKind | undefined {
   if (/^dossier\/[^/]+\.md$/.test(path)) return "dossier";
   if (/^research-reports\/.+\.md$/.test(path)) return "research-report";
-  if (/^research-jobs\/research-[0-9a-f]{32}\/report\.md$/.test(path)) return "research-report";
-  if (/^research-jobs\/research-[0-9a-f]{32}\/(covering-note|coverage)\.md$/.test(path))
+  if (/^research-jobs\/research-[0-9a-f]{32}\/report\.md$/.test(path))
+    return "research-report";
+  if (
+    /^research-jobs\/research-[0-9a-f]{32}\/(covering-note|coverage)\.md$/.test(
+      path,
+    )
+  )
     return "covering-note";
   if (/^research-jobs\/research-[0-9a-f]{32}\/sources\/[^/]+\.json$/.test(path))
     return "source-snapshot";
   // Staged research outputs (#593).
   if (/^research-discovery\/[^/]+\/[^/]+\/assembled\/report\.md$/.test(path))
     return "research-report";
-  if (/^research-discovery\/[^/]+\/[^/]+\/citations\/snapshots\/[^/]+\.json$/.test(path))
+  if (
+    /^research-discovery\/[^/]+\/[^/]+\/citations\/snapshots\/[^/]+\.json$/.test(
+      path,
+    )
+  )
     return "source-snapshot";
   return undefined;
 }
@@ -89,7 +97,13 @@ export function researchDocument(
   path: string,
   content: string,
 ):
-  | { kind: ResearchDocumentKind; title: string; text: string; url?: string; jobId?: string }
+  | {
+      kind: ResearchDocumentKind;
+      title: string;
+      text: string;
+      url?: string;
+      jobId?: string;
+    }
   | undefined {
   const kind = researchDocumentKind(path);
   if (!kind) return undefined;
@@ -131,10 +145,17 @@ export async function readResearchCheckpoint(
   es: Pick<ElasticsearchController, "search">,
   index: string,
 ): Promise<{ checkpoint?: string; pending?: string }> {
-  const hits = await es.search(index, { ids: { values: [CHECKPOINT_ID] } }, { size: 1 });
-  const source = hits[0]?.source as { checkpoint?: unknown; pending?: unknown } | undefined;
+  const hits = await es.search(
+    index,
+    { ids: { values: [CHECKPOINT_ID] } },
+    { size: 1 },
+  );
+  const source = hits[0]?.source as
+    { checkpoint?: unknown; pending?: unknown } | undefined;
   return {
-    ...(typeof source?.checkpoint === "string" ? { checkpoint: source.checkpoint } : {}),
+    ...(typeof source?.checkpoint === "string"
+      ? { checkpoint: source.checkpoint }
+      : {}),
     ...(typeof source?.pending === "string" ? { pending: source.pending } : {}),
   };
 }
@@ -148,7 +169,11 @@ export async function reconcileResearchIndex(input: {
   artifacts: GitArtifactStore;
   es: Pick<
     ElasticsearchController,
-    "search" | "indexDocument" | "deleteDocument" | "deleteMatching" | "refreshIndex"
+    | "search"
+    | "indexDocument"
+    | "deleteDocument"
+    | "deleteMatching"
+    | "refreshIndex"
   >;
   index?: string;
   refresh?: boolean;
@@ -162,8 +187,10 @@ export async function reconcileResearchIndex(input: {
   // newer head than the checkpoint; diffing from the checkpoint could then miss
   // a later revert. Reconcile everything in that case.
   const checkpoint = marker.pending ? undefined : marker.checkpoint;
-  const { head, full, changes } = await input.artifacts.changesSince(checkpoint);
-  if (!head) return { full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
+  const { head, full, changes } =
+    await input.artifacts.changesSince(checkpoint);
+  if (!head)
+    return { full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
   if (!full && head === checkpoint)
     return { head, full, indexed: 0, removed: 0, skipped: 0, unchanged: true };
 
@@ -225,7 +252,12 @@ export async function reconcileResearchIndex(input: {
     removed += await input.es.deleteMatching(
       index,
       {
-        bool: { must_not: [{ term: { generation: head } }, { ids: { values: [CHECKPOINT_ID] } }] },
+        bool: {
+          must_not: [
+            { term: { generation: head } },
+            { ids: { values: [CHECKPOINT_ID] } },
+          ],
+        },
       },
       input.refresh ? { refresh: true } : {},
     );
@@ -233,7 +265,11 @@ export async function reconcileResearchIndex(input: {
   await input.es.indexDocument(
     index,
     CHECKPOINT_ID,
-    { schemaVersion: RESEARCH_INDEX_SCHEMA_VERSION, kind: "checkpoint", checkpoint: head },
+    {
+      schemaVersion: RESEARCH_INDEX_SCHEMA_VERSION,
+      kind: "checkpoint",
+      checkpoint: head,
+    },
     { refresh: "wait_for" as const },
   );
   return { head, full, indexed, removed, skipped, unchanged: false };

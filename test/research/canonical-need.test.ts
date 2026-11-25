@@ -156,6 +156,94 @@ it("preserves quantity, punctuation, case, negation and semantic qualifiers", ()
   );
 });
 
+it("preserves source qualifier appearance order rather than sorting or deduplicating it", () => {
+  const input = fixture(
+    "same",
+    "The ENMOD Convention allegedly and reportedly was adopted on 10 December 1976.",
+  );
+  const withOrder = (qualifiers: string[]) =>
+    canonicalNeed({
+      ...input,
+      claim: { ...input.claim, qualifiers },
+      occurrence: { ...input.occurrence, qualifiers },
+    });
+  expect(canonicalNeedId(withOrder(["allegedly", "reportedly"]))).not.toBe(
+    canonicalNeedId(withOrder(["reportedly", "allegedly"])),
+  );
+  expect(canonicalNeedId(withOrder(["allegedly"]))).not.toBe(
+    canonicalNeedId(withOrder(["allegedly", "allegedly"])),
+  );
+});
+
+it("does not infer shared scope from a full schema-4 wrapper around an unnamed generic proposition", () => {
+  const generic = (postId: string, derivation?: 1 | 2) => {
+    const text = "A payment funded an attack.";
+    const source = {
+      text,
+      sourceVersion: sourceVersionFor(text),
+      artifact: {
+        repository: "synthetic",
+        commit: "a".repeat(40),
+        path: `${postId}.md`,
+        hash: `sha256:${"b".repeat(64)}`,
+      },
+      publicationId: "pub",
+      postId,
+      url: `https://source.example/${postId}`,
+    };
+    const claim = createClaim(
+      {
+        statement: text,
+        claimType: "factual",
+        sourceVersion: source.sourceVersion,
+        span: { start: 0, end: text.length },
+        passage: text,
+        extraction: {
+          modelVersion: "synthetic",
+          promptVersion: "synthetic",
+          extractedAt: "2026-01-01T00:00:00Z",
+        },
+      },
+      source,
+    );
+    const occurrence = createClaimOccurrence({
+      claim,
+      source,
+      speaker: { kind: "author-voice" },
+      assertionKind: "assertion",
+      themes: ["enmod"],
+    });
+    return canonicalNeed({
+      ...fixture(postId),
+      ...(derivation ? { derivation } : {}),
+      claim,
+      occurrence,
+      binding: {
+        ...fixture(postId).binding,
+        sourceVersion: source.sourceVersion,
+        source: source.artifact,
+      },
+    });
+  };
+  // Version 2 scopes it and labels the need v2; version 1, used to check
+  // bindings saved earlier, reproduces the old unscoped v1 need exactly.
+  expect(generic("first").version).toBe("canonical-theme-need-v2");
+  expect(generic("first", 1).version).toBe("canonical-theme-need-v1");
+  expect(generic("first", 1).occurrenceScope).toBeUndefined();
+  expect(canonicalNeedId(generic("first", 1))).toBe(
+    canonicalNeedId(generic("second", 1)),
+  );
+  // A need the new rule does not change keeps the v1 label and ID.
+  expect(canonicalNeed(fixture()).version).toBe("canonical-theme-need-v1");
+  expect(canonicalNeedId(canonicalNeed({ ...fixture(), derivation: 1 }))).toBe(
+    canonicalNeedId(canonicalNeed(fixture())),
+  );
+  expect(generic("first").occurrenceScope).toBeDefined();
+  expect(canonicalNeedId(generic("first"))).not.toBe(
+    canonicalNeedId(generic("second")),
+  );
+});
+
 it("scopes dates whose meaning depends on the publication date, across posts", () => {
   for (const text of [
     "two days ago",

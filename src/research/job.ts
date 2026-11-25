@@ -111,6 +111,8 @@ export const ResearchRequestSchema = z
     }
     if (r.canonicalNeeds) {
       const needs = r.canonicalNeeds.needs;
+      // New canonical work is theme-only; extraction-origin canonical requests
+      // saved by the earlier format stay readable, so their evidence is reused.
       if (
         (r.origin !== "theme" && r.origin !== "extraction") ||
         needs.length !== r.claims.length ||
@@ -127,7 +129,8 @@ export const ResearchRequestSchema = z
       )
         ctx.addIssue({
           code: "custom",
-          message: "canonical research claims must exactly match their semantic needs",
+          message:
+            "canonical research claims must exactly match their semantic needs",
         });
     }
     const ids = r.claims.map((c) => c.claimRecordId);

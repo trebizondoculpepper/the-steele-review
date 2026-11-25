@@ -15,9 +15,18 @@ import { ReportingPeriodSchema } from "../analysis/claim.js";
  * shared research: it is still researched, but only for its own occurrence,
  * because nothing establishes its period. ("5G" and a bare year such as "2019" are not figures.)
  */
+const MONTH =
+  "(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)";
 const ClaimShape = z.looseObject({
   statement: z.string(),
-  dates: z.array(z.looseObject({ value: z.string().optional() })).optional(),
+  dates: z
+    .array(
+      z.looseObject({
+        text: z.string().optional(),
+        value: z.string().optional(),
+      }),
+    )
+    .optional(),
   reportingPeriod: ReportingPeriodSchema.optional(),
 });
 
@@ -57,11 +66,21 @@ export function reportingPeriodIdentity(
       ? { period: reportingPeriod.text }
       : "occurrence-only";
   }
-  // A standalone number, other than a bare year, is a figure.
+  // Dates are not figures: drop the claim's own date wording and any day of
+  // the month written next to a month name ("10 December", "December 10").
+  let text = statement;
+  for (const d of dates ?? []) {
+    const wording = (d as { text?: unknown }).text;
+    if (typeof wording === "string" && wording)
+      text = text.split(wording).join(" ");
+  }
+  text = text
+    .replace(new RegExp(`\\b\\d{1,2}(st|nd|rd|th)?\\s+${MONTH}\\b`, "gi"), " ")
+    .replace(new RegExp(`\\b${MONTH}\\s+\\d{1,2}(st|nd|rd|th)?\\b`, "gi"), " ");
   // A standalone number is a figure unless it is a bare calendar year; an
   // amount with a currency symbol is always a figure ("$2026").
   const figure = [
-    ...statement.matchAll(/(?<![\w.])([$£€¥])?\s?(\d[\d,.]*)(?![\w])/g),
+    ...text.matchAll(/(?<![\w.])([$£€¥])?\s?(\d[\d,.]*)(?![\w])/g),
   ].some(
     (m) => !!m[1] || !/^(1[5-9]|20)\d{2}$/.test(m[2]!.replace(/[.,]+$/, "")),
   );

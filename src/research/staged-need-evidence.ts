@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readResearchDiscovery } from "./discovery.js";
 import {
@@ -24,7 +27,10 @@ export const StagedNeedEvidenceSchema = z
     assemblyResult: Ref,
   })
   .strict();
-export type DiscoveryAcceptance = Pick<OperationStore, "researchDiscoveryAccepted">;
+export type DiscoveryAcceptance = Pick<
+  OperationStore,
+  "researchDiscoveryAccepted"
+>;
 type Store = Pick<GitArtifactStore, "read" | "lookup" | "lookupAt">;
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
@@ -38,7 +44,8 @@ const artifact = (r: z.infer<typeof Ref>): ArtifactRef => ({
   path: r.path,
   sha256: r.hash.slice(7),
 });
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = (a: unknown, b: unknown) =>
+  JSON.stringify(a) === JSON.stringify(b);
 const directory = (path: string) =>
   /^(research-discovery\/research-[0-9a-f]{32}\/discovery-[0-9a-f]{32})\/assembled\/manifest\.json$/.exec(
     path,
@@ -105,9 +112,15 @@ export async function readStagedNeedEvidence(input: {
     artifact(s.discovery),
     input.acceptance,
   );
-  if (!same(discovery.request, input.request) || discovery.result.requestId !== assembly.jobId)
+  if (
+    !same(discovery.request, input.request) ||
+    discovery.result.requestId !== assembly.jobId
+  )
     throw new Error("research-need-staged-request-mismatch");
-  if ((await input.artifacts.read(artifact(input.report))) !== discovery.data.report)
+  if (
+    (await input.artifacts.read(artifact(input.report))) !==
+    discovery.data.report
+  )
     throw new Error("research-need-staged-report-mismatch");
   const inventory = CitationInventorySchema.parse(
     JSON.parse(await input.artifacts.read(artifact(s.inventory))),
@@ -141,11 +154,16 @@ export async function readStagedNeedEvidence(input: {
     )
       throw new Error("research-need-staged-source-mismatch");
     const snapshot = CitationSnapshotSchema.parse(
-      JSON.parse(await input.artifacts.read(artifact(citation.archivedArtifact))),
+      JSON.parse(
+        await input.artifacts.read(artifact(citation.archivedArtifact)),
+      ),
     );
     if (snapshot.retrievalKey !== entry.retrievalKey)
       throw new Error("research-need-staged-source-mismatch");
-    snapshotKeys.set(JSON.stringify(citation.archivedArtifact), entry.retrievalKey);
+    snapshotKeys.set(
+      JSON.stringify(citation.archivedArtifact),
+      entry.retrievalKey,
+    );
   }
   return snapshotKeys;
 }

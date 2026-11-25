@@ -931,19 +931,8 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
 
 describe("librarian coverage across extraction schema versions", () => {
   it("accepts claims from a version 3 extraction", async () => {
-    const { themeResult, claimResult } = await analysis(
-      "p3",
-      claims,
-      "Weather warfare",
-      3,
-    );
-    // Research cites the request's own claim IDs, which are canonical need
-    // IDs for an accepted version 3 extraction.
-    const r = researcher((req) => ({
-      passages: req.claims
-        .filter((c) => /treaty|ENMOD/i.test(c.statement))
-        .map((c) => ({ claimRecordId: c.claimRecordId, url: SHARED })),
-    }));
+    const { themeResult, claimResult } = await analysis("p3", claims, "Weather warfare", 3);
+    const r = researcher(() => "busy");
     const { record } = await assessPostCoverage({
       artifacts,
       themeResult,
@@ -951,6 +940,8 @@ describe("librarian coverage across extraction schema versions", () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
+    expect(r.requests[0]!.canonicalNeeds!.needs.every((n) => !!n.occurrenceScope)).toBe(true);
+    expect(record.claims.every((c) => c.status === "pending")).toBe(true);
     expect(record.claims.map((c) => c.claimRecordId).sort()).toEqual([
       "claim-payment",
       "claim-treaty",

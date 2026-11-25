@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import type {
+  OperationStore,
+  PendingEventInput,
+} from "../controllers/operation-store.js";
 import {
   createResearchCompletedEvent,
   RESEARCH_COMPLETED_SUBJECT,
@@ -85,7 +91,10 @@ const toRef = (r: ArtifactRef) => ({
 
 export async function assembleResearch(input: {
   artifacts: GitArtifactStore;
-  operations: Pick<OperationStore, "claim" | "complete" | "operationStatus" | "fail">;
+  operations: Pick<
+    OperationStore,
+    "claim" | "complete" | "operationStatus" | "fail"
+  >;
   /** The discovery `result.json` reference. */
   discovery: ArtifactRef;
   /** The saved citation inventory for that discovery. */
@@ -119,19 +128,30 @@ export async function assembleResearch(input: {
   const inventoryRef = toRef(input.inventory);
 
   // Replay: a recorded assembly is returned as it was, never rebuilt.
-  const recorded = async (reused: boolean): Promise<AssembledResearch | undefined> => {
+  const recorded = async (
+    reused: boolean,
+  ): Promise<AssembledResearch | undefined> => {
     const result = await input.artifacts.lookup(`${assembledDir}/result.json`);
-    const manifest = await input.artifacts.lookup(`${assembledDir}/manifest.json`);
+    const manifest = await input.artifacts.lookup(
+      `${assembledDir}/manifest.json`,
+    );
     if (!result || !manifest) return undefined;
-    const parsed = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(result)));
-    const m = ResearchManifestSchema.parse(JSON.parse(await input.artifacts.read(manifest)));
+    const parsed = ResearchResultSchema.parse(
+      JSON.parse(await input.artifacts.read(result)),
+    );
+    const m = ResearchManifestSchema.parse(
+      JSON.parse(await input.artifacts.read(manifest)),
+    );
     return {
       jobId,
-      outcome: parsed.outcome === "complete" ? "complete" : "complete-with-gaps",
+      outcome:
+        parsed.outcome === "complete" ? "complete" : "complete-with-gaps",
       manifest,
       result,
       reused,
-      pending: m.citations.filter((c) => c.retrievalReason === "retrieval-pending").length,
+      pending: m.citations.filter(
+        (c) => c.retrievalReason === "retrieval-pending",
+      ).length,
     };
   };
   if (input.operations.operationStatus(key)?.status === "completed") {
@@ -142,11 +162,17 @@ export async function assembleResearch(input: {
   // Per-URL outcomes, by fetch key, read from their exact saved records.
   const dirOf = input.inventory.path.replace(/\/inventory\.json$/, "");
   const outcomes = new Map<string, RetrievalOutcome>();
-  for (const id of new Set(inventory.entries.map((e) => e.retrievalId).filter(Boolean))) {
+  for (const id of new Set(
+    inventory.entries.map((e) => e.retrievalId).filter(Boolean),
+  )) {
     const ref = await input.artifacts.lookup(`${dirOf}/retrievals/${id}.json`);
     if (!ref) continue;
-    const o = RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(ref)));
-    const key = inventory.entries.find((e) => e.retrievalId === id)?.retrievalKey;
+    const o = RetrievalOutcomeSchema.parse(
+      JSON.parse(await input.artifacts.read(ref)),
+    );
+    const key = inventory.entries.find(
+      (e) => e.retrievalId === id,
+    )?.retrievalKey;
     // An outcome counts only if it belongs to exactly this inventory, id and key.
     const sameInventory =
       o.inventory.repository === inventoryRef.repository &&
@@ -166,7 +192,9 @@ export async function assembleResearch(input: {
     if (o.status === "archived") {
       let valid = false;
       try {
-        valid = (await readCitationSnapshot(input.artifacts, o.snapshot!)).retrievalKey === key;
+        valid =
+          (await readCitationSnapshot(input.artifacts, o.snapshot!))
+            .retrievalKey === key;
       } catch {
         valid = false;
       }
@@ -194,7 +222,10 @@ export async function assembleResearch(input: {
     const parsed = ref
       ? BundleBriefSchema.safeParse(JSON.parse(await input.artifacts.read(ref)))
       : undefined;
-    if (parsed?.success && parsed.data.judge === (input.supportIdentity ?? "none"))
+    if (
+      parsed?.success &&
+      parsed.data.judge === (input.supportIdentity ?? "none")
+    )
       writerBrief = parsed.data.brief;
   }
   let pending = 0;
@@ -209,7 +240,11 @@ export async function assembleResearch(input: {
     const base = { url, support: "not-checked" as const, passages: [] };
     if (!o) {
       pending++;
-      citations.push({ ...base, retrieval: "not-attempted", retrievalReason: "retrieval-pending" });
+      citations.push({
+        ...base,
+        retrieval: "not-attempted",
+        retrievalReason: "retrieval-pending",
+      });
     } else if (o.status === "archived" && o.snapshot) {
       // A saved support judgement counts only for exactly this snapshot (#593).
       const judged = await readSupport(
@@ -234,7 +269,8 @@ export async function assembleResearch(input: {
               ...(judged.monitored
                 ? {
                     sourceType: "monitored-source",
-                    confidenceRationale: "The claimant's own material; not independent support.",
+                    confidenceRationale:
+                      "The claimant's own material; not independent support.",
                   }
                 : {
                     sourceType: judged.sourceType ?? "web-page",
@@ -269,8 +305,11 @@ export async function assembleResearch(input: {
   }
   const missing = citations.filter((c) => c.retrieval !== "archived").length;
   if (missing > 0)
-    gaps.push(`${missing} cited source(s) were not retrieved; see each citation's reason.`);
-  if (pending > 0) gaps.push(`${pending} retrieval(s) are still pending or retryable.`);
+    gaps.push(
+      `${missing} cited source(s) were not retrieved; see each citation's reason.`,
+    );
+  if (pending > 0)
+    gaps.push(`${pending} retrieval(s) are still pending or retryable.`);
   if (invalid > 0)
     gaps.push(
       `${invalid} cited URL(s) could not be fetched (invalid, unsupported scheme or too long).`,
@@ -280,7 +319,9 @@ export async function assembleResearch(input: {
       `${inventory.omittedEntries} cited URL(s) exceeded the inventory bound and were not listed.`,
     );
   if (data.citationProvenance !== "provider-original")
-    gaps.push("Citation list comes from the adapter's return, not the original provider envelope.");
+    gaps.push(
+      "Citation list comes from the adapter's return, not the original provider envelope.",
+    );
   const unjudged = citations.filter(
     (c) => c.retrieval === "archived" && c.support === "not-checked",
   ).length;
@@ -288,15 +329,23 @@ export async function assembleResearch(input: {
     (c) => c.retrieval === "archived" && c.support === "unverified",
   ).length;
   if (unverified > 0)
-    gaps.push(`${unverified} archived source(s) have no verified supporting passage.`);
+    gaps.push(
+      `${unverified} archived source(s) have no verified supporting passage.`,
+    );
   if (unjudged > 0) gaps.push(STANDING_GAP);
 
   if (citations.length > 500) {
     // The manifest contract holds at most 500 citations; the rest stay in the inventory.
-    gaps.push(`${citations.length - 500} further citation(s) are recorded only in the inventory.`);
+    gaps.push(
+      `${citations.length - 500} further citation(s) are recorded only in the inventory.`,
+    );
   }
   // Report text, then manifest, then result: each write-once and deterministic.
-  const report = await writeOnce(input.artifacts, `${assembledDir}/report.md`, data.report);
+  const report = await writeOnce(
+    input.artifacts,
+    `${assembledDir}/report.md`,
+    data.report,
+  );
   const manifest = await writeOnce(
     input.artifacts,
     `${assembledDir}/manifest.json`,
@@ -309,7 +358,9 @@ export async function assembleResearch(input: {
       ...(writerBrief ? { writerBrief } : {}),
       provider: {
         model: data.model,
-        ...(data.usage?.costUsd !== undefined ? { costUsd: data.usage.costUsd } : {}),
+        ...(data.usage?.costUsd !== undefined
+          ? { costUsd: data.usage.costUsd }
+          : {}),
       },
     }),
   );
@@ -337,7 +388,9 @@ export async function assembleResearch(input: {
 
   // The retained result is authoritative: a retry after a partial save
   // announces exactly what was saved, never a recomputed outcome.
-  const retained = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(result)));
+  const retained = ResearchResultSchema.parse(
+    JSON.parse(await input.artifacts.read(result)),
+  );
   if (!retained.manifest) throw new Error("assembled result has no manifest");
 
   // Completion and its event in one state transaction (outbox).
@@ -348,11 +401,17 @@ export async function assembleResearch(input: {
     const event = createResearchCompletedEvent(
       {
         jobId,
-        outcome: retained.outcome === "failed" ? "complete-with-gaps" : retained.outcome,
+        outcome:
+          retained.outcome === "failed"
+            ? "complete-with-gaps"
+            : retained.outcome,
         manifest: retained.manifest,
       },
       // Scoped to this discovery: two discoveries of one request never collide.
-      { id: `research-assembled-${sha(dir).slice(0, 32)}`, now: input.now ?? (() => new Date()) },
+      {
+        id: `research-assembled-${sha(dir).slice(0, 32)}`,
+        now: input.now ?? (() => new Date()),
+      },
     );
     const pendingEvent: PendingEventInput = {
       eventId: event.id,
@@ -381,7 +440,8 @@ export async function assembleResearch(input: {
 }
 
 /** The only gap a complete result may carry: support is assessed separately. */
-const STANDING_GAP = "Retrieved documents are not yet assessed as support for any claim.";
+const STANDING_GAP =
+  "Retrieved documents are not yet assessed as support for any claim.";
 
 /** Complete only when every listed source was archived and no other gap is recorded. */
 function outcomeOf(m: ResearchManifest): "complete" | "complete-with-gaps" {
@@ -399,9 +459,13 @@ async function readSupport(
   snapshot: { repository: string; commit: string; path: string; hash: string },
   identity: string,
 ): Promise<CitationSupport | undefined> {
-  const ref = await artifacts.lookup(supportPath(inventory, retrievalId, identity));
+  const ref = await artifacts.lookup(
+    supportPath(inventory, retrievalId, identity),
+  );
   if (!ref) return undefined;
-  const parsed = CitationSupportSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+  const parsed = CitationSupportSchema.safeParse(
+    JSON.parse(await artifacts.read(ref)),
+  );
   if (!parsed.success) return undefined;
   const s = parsed.data;
   return s.retrievalId === retrievalId &&

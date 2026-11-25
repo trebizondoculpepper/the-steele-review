@@ -2,7 +2,12 @@ import { promptIdentity } from "../drafting/prompt-identity.js";
 import { z } from "zod";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 import { loadPromptFile } from "../prompt-files.js";
-import type { BundleJudgement, Finding, SupportJudge, SupportJudgement } from "./runner.js";
+import type {
+  BundleJudgement,
+  Finding,
+  SupportJudge,
+  SupportJudgement,
+} from "./runner.js";
 
 /**
  * Model-based support check (#216, prompt file `support-judge-v1`). The model
@@ -13,7 +18,12 @@ import type { BundleJudgement, Finding, SupportJudge, SupportJudgement } from ".
 
 const Answer = z.object({
   passages: z
-    .array(z.object({ findingId: z.string().min(1), passage: z.string().min(1).max(4000) }))
+    .array(
+      z.object({
+        findingId: z.string().min(1),
+        passage: z.string().min(1).max(4000),
+      }),
+    )
     .max(50),
   sourceType: z.string().min(1).max(100).optional(),
   rationale: z.string().min(1).max(2000).optional(),
@@ -28,7 +38,12 @@ const BundleAnswer = z.object({
         note: z.string().max(2000).optional(),
         sourceType: z.string().min(1).max(100).optional(),
         passages: z
-          .array(z.object({ findingId: z.string().min(1), passage: z.string().min(1).max(4000) }))
+          .array(
+            z.object({
+              findingId: z.string().min(1),
+              passage: z.string().min(1).max(4000),
+            }),
+          )
           .max(50)
           .default([]),
       }),
@@ -97,7 +112,11 @@ export class ModelSupportJudge implements SupportJudge {
       "Research report (excerpt):",
       input.report,
       "",
-      ...input.sources.flatMap((s) => [`Source ${s.index} (${s.url}):`, s.excerpt, ""]),
+      ...input.sources.flatMap((s) => [
+        `Source ${s.index} (${s.url}):`,
+        s.excerpt,
+        "",
+      ]),
     ].join("\n");
     const raw = await this.provider.complete(
       { system: BUNDLE_PROMPT.instructions, user, maxOutputChars: 24_000 },

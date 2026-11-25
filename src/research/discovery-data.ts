@@ -44,6 +44,8 @@ export function discoveryFromAdapterReport(report: {
     searchResultUrls: [],
     model: report.model,
     citationProvenance: "adapter-return-only",
-    ...(report.costUsd === undefined ? {} : { usage: { costUsd: report.costUsd } }),
+    ...(report.costUsd === undefined
+      ? {}
+      : { usage: { costUsd: report.costUsd } }),
   };
 }
