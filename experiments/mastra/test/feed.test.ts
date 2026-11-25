@@ -110,3 +110,13 @@ test("a body-only edit is detected, and an oversized streamed feed is refused", 
   const r = await pollFeed(h.store, { ...h.config, fetch: (async () => new Response(big, { status: 200 })) as unknown as typeof fetch });
   assert.equal(r.error, "feed-too-large");
 });
+
+test("a truncated HTTP-200 feed is a failure and never establishes the baseline", async () => {
+  const h = harness();
+  h.set(`<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture`);
+  const r = await pollFeed(h.store, h.config);
+  assert.equal(r.error, "invalid-feed");
+  assert.equal(await h.store.activated(), false);
+  h.set(feed(item("one", "One", "1")));
+  assert.equal((await pollFeed(h.store, h.config)).baseline, true);
+});

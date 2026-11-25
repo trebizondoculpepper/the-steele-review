@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { z } from "zod";
 
 /**
@@ -56,6 +56,9 @@ const MAX_ITEMS = 100;
 
 export function parseFeed(xml: string, publicationHost: string): FeedItem[] {
   if (xml.length > 5_000_000) throw new FeedError("invalid-feed", "feed is too large");
+  // Reject truncated or malformed documents before parsing: a lenient parse
+  // of a partial response must never establish the baseline.
+  if (XMLValidator.validate(xml) !== true) throw new FeedError("invalid-feed", "not well-formed XML");
   let doc: unknown;
   try {
     doc = new XMLParser({ ignoreAttributes: false, processEntities: true, htmlEntities: true }).parse(xml);
