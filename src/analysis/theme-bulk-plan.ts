@@ -89,11 +89,23 @@ export function planThemeBulk(input: BulkPlanInput): BulkPlan {
   const entries: BulkPlanEntry[] = selection.map((post) => {
     const saved = input.saved.get(key(post));
     if (!saved)
-      return { ...post, action: "extract", reason: "no saved theme result for this post" };
+      return {
+        ...post,
+        action: "extract",
+        reason: "no saved theme result for this post",
+      };
     if (!saved.readable)
-      return { ...post, action: "extract", reason: "saved theme result is unreadable" };
+      return {
+        ...post,
+        action: "extract",
+        reason: "saved theme result is unreadable",
+      };
     if (saved.complete === false)
-      return { ...post, action: "extract", reason: "saved theme result is incomplete" };
+      return {
+        ...post,
+        action: "extract",
+        reason: "saved theme result is incomplete",
+      };
     if (saved.sourceVersion !== post.sourceVersion)
       return {
         ...post,
@@ -109,7 +121,11 @@ export function planThemeBulk(input: BulkPlanInput): BulkPlan {
         action: "incompatible",
         reason: "saved result came from a different model or prompt version",
       };
-    return { ...post, action: "reuse", reason: "saved result matches the current processor" };
+    return {
+      ...post,
+      action: "reuse",
+      reason: "saved result matches the current processor",
+    };
   });
   const counts = { reuse: 0, extract: 0, incompatible: 0 };
   for (const e of entries) counts[e.action] += 1;
@@ -142,8 +158,13 @@ export interface ThemeFrequency {
  * dominating the ranking, and every saved wording is retained so a human can
  * see what the extractor actually produced.
  */
-export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFrequency[] {
-  const byTheme = new Map<string, { titles: Map<string, number>; posts: Set<string> }>();
+export function rankThemeFrequency(
+  results: SavedThemeExtraction[],
+): ThemeFrequency[] {
+  const byTheme = new Map<
+    string,
+    { titles: Map<string, number>; posts: Set<string> }
+  >();
   results.forEach((result, index) => {
     if (!result.readable) return;
     const postIdentity = result.postKey;
@@ -154,7 +175,10 @@ export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFreque
       // ones stay separate rather than being merged by resemblance.
       const canonical = result.canonicalByTitle?.[title];
       const k = canonical ? `canonical:${canonical}` : wording;
-      const entry = byTheme.get(k) ?? { titles: new Map<string, number>(), posts: new Set<string>() };
+      const entry = byTheme.get(k) ?? {
+        titles: new Map<string, number>(),
+        posts: new Set<string>(),
+      };
       entry.titles.set(title, (entry.titles.get(title) ?? 0) + 1);
       entry.posts.add(postIdentity);
 
@@ -164,7 +188,9 @@ export function rankThemeFrequency(results: SavedThemeExtraction[]): ThemeFreque
   return [...byTheme.entries()]
     .map(([k, entry]) => ({
       key: k,
-      titles: [...entry.titles.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t),
+      titles: [...entry.titles.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([t]) => t),
       postCount: entry.posts.size,
     }))
     .sort((a, b) => b.postCount - a.postCount || a.key.localeCompare(b.key));

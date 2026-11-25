@@ -3,9 +3,15 @@ import { z } from "zod";
 import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 import { transcriptTimingsFor } from "../content/embedding-consumer.js";
-import { ArtifactRefSchema, type ArtifactRef } from "../controllers/artifact-store.js";
+import {
+  ArtifactRefSchema,
+  type ArtifactRef,
+} from "../controllers/artifact-store.js";
 import { ClaimExtractionRecordSchema } from "./grounded-claims.js";
-import { parseClaimOccurrence, type ClaimOccurrence } from "./claim-occurrence.js";
+import {
+  parseClaimOccurrence,
+  type ClaimOccurrence,
+} from "./claim-occurrence.js";
 import { COVERAGE_CAVEAT } from "./claim-timeline.js";
 
 const id = z.string().regex(/^[a-z0-9][a-z0-9-]{0,299}$/);
@@ -42,14 +48,19 @@ export const CorpusPeriodManifestSchema = z
       .strict(),
     /** UTC month boundaries, end exclusive, at most 120 months. */
     window: z.object({ start: month, end: month }).strict(),
-    exactCopies: z.enum(["include", "exclude-identical-source"]).default("include"),
+    exactCopies: z
+      .enum(["include", "exclude-identical-source"])
+      .default("include"),
     posts: z.array(row).max(500),
   })
   .strict();
 export type CorpusPeriodManifest = z.infer<typeof CorpusPeriodManifestSchema>;
 
 export class CorpusPeriodError extends Error {
-  constructor(readonly code: "invalid-manifest" | "ambiguous-revision" | "capture-mismatch") {
+  constructor(
+    readonly code:
+      "invalid-manifest" | "ambiguous-revision" | "capture-mismatch",
+  ) {
     super(`corpus periods: ${code}`);
   }
 }
@@ -90,7 +101,10 @@ const PeriodSchema = z
       p.matchedPosts <= p.occurrences &&
       p.quotedOccurrences <= p.occurrences &&
       p.identicalSourceCopies <= p.analysedPosts + p.excludedCopies &&
-      p.analysedPosts + p.excludedCopies + p.missingExtractions + p.invalidExtractions ===
+      p.analysedPosts +
+        p.excludedCopies +
+        p.missingExtractions +
+        p.invalidExtractions ===
         p.archivedPosts,
     "inconsistent period counts",
   );
@@ -127,8 +141,10 @@ interface Reader {
 interface Store extends Reader {
   write(path: string, body: string): Promise<ArtifactRef>;
 }
-const ordinal = (s: string) => Number(s.slice(0, 4)) * 12 + Number(s.slice(5)) - 1;
-const key = (p: { publicationId: string; postId: string }) => `${p.publicationId}/${p.postId}`;
+const ordinal = (s: string) =>
+  Number(s.slice(0, 4)) * 12 + Number(s.slice(5)) - 1;
+const key = (p: { publicationId: string; postId: string }) =>
+  `${p.publicationId}/${p.postId}`;
 
 /** No model calls, index creation or workflow mutations. All reads are pinned. */
 export async function projectCorpusPeriods(input: {
@@ -146,11 +162,15 @@ export async function projectCorpusPeriods(input: {
   }
   const start = ordinal(manifest.window.start),
     end = ordinal(manifest.window.end);
-  if (end <= start || end - start > 120) throw new CorpusPeriodError("invalid-manifest");
+  if (end <= start || end - start > 120)
+    throw new CorpusPeriodError("invalid-manifest");
   const periods = Array.from({ length: end - start }, (_, i) => ({
     month: `${Math.floor((start + i) / 12)
       .toString()
-      .padStart(4, "0")}-${(((start + i) % 12) + 1).toString().padStart(2, "0")}`,
+      .padStart(
+        4,
+        "0",
+      )}-${(((start + i) % 12) + 1).toString().padStart(2, "0")}`,
     ...counters(),
   }));
   const diagnostics = {
@@ -190,7 +210,8 @@ export async function projectCorpusPeriods(input: {
       diagnostics.invalidSources++;
       continue;
     }
-    if (key(record.item) !== key(p)) throw new CorpusPeriodError("capture-mismatch");
+    if (key(record.item) !== key(p))
+      throw new CorpusPeriodError("capture-mismatch");
     if (!record.item.publishedAt) {
       diagnostics.unknownDates++;
       continue;
@@ -205,7 +226,9 @@ export async function projectCorpusPeriods(input: {
   }
   // Earliest observed complete analysis is the representative of identical
   // source text, with deterministic identity tie-breaking, within this window.
-  sources.sort((a, b) => a.time.localeCompare(b.time) || key(a.p).localeCompare(key(b.p)));
+  sources.sort(
+    (a, b) => a.time.localeCompare(b.time) || key(a.p).localeCompare(key(b.p)),
+  );
   const seenSources = new Set<string>(),
     family = new Set(manifest.family.groupingKeys);
   for (const { p, record, period } of sources) {
@@ -237,12 +260,16 @@ export async function projectCorpusPeriods(input: {
       author: record.item.author,
       ...transcriptTimingsFor(record),
     };
-    let extraction, occurrences: Array<{ occurrence: ClaimOccurrence; kind: string }>;
+    let extraction,
+      occurrences: Array<{ occurrence: ClaimOccurrence; kind: string }>;
     try {
       extraction = ClaimExtractionRecordSchema.parse(
         JSON.parse(await input.content.read(p.extraction)),
       );
-      if (key(extraction.post) !== key(p) || extraction.sourceVersion !== version)
+      if (
+        key(extraction.post) !== key(p) ||
+        extraction.sourceVersion !== version
+      )
         throw new Error("identity");
       occurrences = extraction.claims.map((c) => ({
         occurrence: parseClaimOccurrence(c.occurrence, source),
@@ -267,7 +294,8 @@ export async function projectCorpusPeriods(input: {
     const seenOccurrences = new Set<string>();
     let matched = false;
     for (const { occurrence: o, kind } of occurrences) {
-      if (!family.has(o.grouping.key) || seenOccurrences.has(o.occurrenceId)) continue;
+      if (!family.has(o.grouping.key) || seenOccurrences.has(o.occurrenceId))
+        continue;
       seenOccurrences.add(o.occurrenceId);
       matched = true;
       bucket.occurrences++;
@@ -295,7 +323,9 @@ export async function projectCorpusPeriods(input: {
       "Scope completeness is declared by the manifest author; this projection does not independently enumerate the sampling frame.",
     ],
   });
-  const hash = createHash("sha256").update(JSON.stringify(result)).digest("hex");
+  const hash = createHash("sha256")
+    .update(JSON.stringify(result))
+    .digest("hex");
   const ref = await input.content.write(
     `corpus-periods/${hash}.json`,
     `${JSON.stringify(result, null, 2)}\n`,

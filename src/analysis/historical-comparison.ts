@@ -1,13 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { EarlierPassage } from "../retrieval/earlier-coverage.js";
 import type { Claim } from "./claim.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "./extraction.js";
 
 /**
  * Structured historical comparison of a claim against earlier coverage from
@@ -27,7 +33,10 @@ import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js"
  * generated text, labelled as such, never evidence. No new research.
  */
 
-export const DEFAULT_COMPARISON_PROMPT = loadPromptFile("analysis", "historical-comparison-v1");
+export const DEFAULT_COMPARISON_PROMPT = loadPromptFile(
+  "analysis",
+  "historical-comparison-v1",
+);
 
 const KindSchema = z.enum([
   "repetition",
@@ -45,7 +54,12 @@ const ModelFindingSchema = z
     currentQuote: z.string().min(1).max(2000).optional(),
     earlier: z
       .array(
-        z.object({ passageId: z.string().min(1), quote: z.string().min(1).max(2000) }).strict(),
+        z
+          .object({
+            passageId: z.string().min(1),
+            quote: z.string().min(1).max(2000),
+          })
+          .strict(),
       )
       .max(10),
     conflictRationale: z.string().trim().min(1).max(2000).optional(),
@@ -124,7 +138,10 @@ export type ComparedClaim = Pick<
   "id" | "statement" | "passage" | "artifact" | "sourceVersion" | "span"
 >;
 
-function currentRef(claim: ComparedClaim, quote: string): ComparisonFinding["current"] {
+function currentRef(
+  claim: ComparedClaim,
+  quote: string,
+): ComparisonFinding["current"] {
   const start = claim.span.start + claim.passage.indexOf(quote);
   return {
     claimId: claim.id,
@@ -206,7 +223,11 @@ export class HistoricalComparator {
 
     let items: unknown[] | undefined;
     let last: "provider-failed" | "malformed-output" = "provider-failed";
-    for (let attempt = 1; attempt <= Math.max(1, Math.min(this.maxAttempts, 5)); attempt++) {
+    for (
+      let attempt = 1;
+      attempt <= Math.max(1, Math.min(this.maxAttempts, 5));
+      attempt++
+    ) {
       try {
         const raw = await this.provider.complete(
           { system: this.prompt.instructions, user, maxOutputChars: 50_000 },
@@ -253,7 +274,10 @@ export class HistoricalComparator {
       if (f.kind !== "insufficient-context" && citations.length === 0) {
         return rejected.push({ index, reason: "invalid-citation" });
       }
-      if (f.kind === "possible-contradiction" && (!f.currentQuote || !f.conflictRationale)) {
+      if (
+        f.kind === "possible-contradiction" &&
+        (!f.currentQuote || !f.conflictRationale)
+      ) {
         // Similarity alone is not contradiction.
         return rejected.push({ index, reason: "unsupported-contradiction" });
       }
@@ -265,13 +289,22 @@ export class HistoricalComparator {
           isEvidence: false,
         },
         uncertainty: f.uncertainty,
-        ...(f.changedCircumstances ? { changedCircumstances: f.changedCircumstances } : {}),
+        ...(f.changedCircumstances
+          ? { changedCircumstances: f.changedCircumstances }
+          : {}),
         current: currentRef(claim, currentQuote),
         earlier: citations,
-        ...(f.conflictRationale ? { conflictRationale: f.conflictRationale } : {}),
+        ...(f.conflictRationale
+          ? { conflictRationale: f.conflictRationale }
+          : {}),
       });
     });
-    return { status: rejected.length ? "incomplete" : "complete", ...base, findings, rejected };
+    return {
+      status: rejected.length ? "incomplete" : "complete",
+      ...base,
+      findings,
+      rejected,
+    };
   }
 }
 
@@ -292,7 +325,12 @@ export async function compareAndStore(input: {
   owner: string;
   signal?: AbortSignal;
 }): Promise<
-  | { status: "stored"; result: ComparisonResult; artifact: ArtifactRef; reused: boolean }
+  | {
+      status: "stored";
+      result: ComparisonResult;
+      artifact: ArtifactRef;
+      reused: boolean;
+    }
   | { status: "busy" | "exhausted" }
   | { status: "failed"; reason: string }
 > {
@@ -319,7 +357,9 @@ export async function compareAndStore(input: {
     );
     return {
       status: "stored",
-      result: JSON.parse(await input.artifacts.read(committed)) as ComparisonResult,
+      result: JSON.parse(
+        await input.artifacts.read(committed),
+      ) as ComparisonResult,
       artifact: committed,
       reused: true,
     };
@@ -328,7 +368,9 @@ export async function compareAndStore(input: {
     const artifact = (await input.artifacts.lookup(path))!;
     return {
       status: "stored",
-      result: JSON.parse(await input.artifacts.read(artifact)) as ComparisonResult,
+      result: JSON.parse(
+        await input.artifacts.read(artifact),
+      ) as ComparisonResult,
       artifact,
       reused: true,
     };
@@ -345,7 +387,10 @@ export async function compareAndStore(input: {
   }
   let artifact: ArtifactRef;
   try {
-    artifact = await input.artifacts.write(path, `${JSON.stringify(outcome, null, 2)}\n`);
+    artifact = await input.artifacts.write(
+      path,
+      `${JSON.stringify(outcome, null, 2)}\n`,
+    );
   } catch (error) {
     const existing =
       error instanceof ArtifactStoreError && error.code === "immutable-conflict"
@@ -357,10 +402,16 @@ export async function compareAndStore(input: {
     }
     artifact = existing;
   }
-  input.operations.complete(claimed.claim, { path: artifact.path, commit: artifact.commit }, []);
+  input.operations.complete(
+    claimed.claim,
+    { path: artifact.path, commit: artifact.commit },
+    [],
+  );
   return {
     status: "stored",
-    result: JSON.parse(await input.artifacts.read(artifact)) as ComparisonResult,
+    result: JSON.parse(
+      await input.artifacts.read(artifact),
+    ) as ComparisonResult,
     artifact,
     reused: false,
   };

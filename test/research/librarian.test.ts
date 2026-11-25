@@ -1,3 +1,7 @@
+import {
+  PERIOD_NOT_ANCHORED,
+  PERIOD_NOT_STATED,
+} from "../../src/research/reporting-period.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +41,11 @@ afterEach(async () => {
 
 async function analysis(
   postId: string,
-  claims: { id: string; statement: string }[],
+  claims: {
+    id: string;
+    statement: string;
+    reportingPeriod?: { dependsOnPeriod: boolean; text?: string };
+  }[],
   title = "Weather warfare",
   schemaVersion: 2 | 3 = 2,
   description = "Claims of weather modification as a weapon",
@@ -77,7 +85,10 @@ async function analysis(
       themeIds: [proposalId],
       themeResult: `${themeResult.commit}:${themeResult.path}`,
       claims: claims.map((c) => ({
-        claim: { statement: c.statement },
+        claim: {
+          statement: c.statement,
+          ...(c.reportingPeriod ? { reportingPeriod: c.reportingPeriod } : {}),
+        },
         occurrence: {},
         kind: "assertion",
         themeIds: [proposalId],
@@ -105,9 +116,7 @@ const ref = (r: ArtifactRef) => ({
 
 /** A researcher stand-in: saves a manifest/result per request and records calls. */
 function researcher(
-  plan: (
-    req: ResearchRequest,
-  ) =>
+  plan: (req: ResearchRequest) =>
     | "busy"
     | "failed"
     | {
@@ -1293,6 +1302,167 @@ describe(
       expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
     });
 
+    it("keeps the pinned jobs of reused period-scoped coverage, so evidence provenance survives (#903 review)", async () => {
+      const revenue = {
+        id: "claim-revenue-keep",
+        statement: "Acme reported revenue of 10 million",
+        reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+      };
+      const a = await analysis("keep-jobs", [revenue]);
+      const support = (req: ResearchRequest) => ({
+        passages: req.claims.map((c) => ({
+          claimRecordId: c.claimRecordId,
+          url: SHARED,
+        })),
+      });
+      const first = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: researcher(support).commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const again = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: researcher(() => "busy").commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const claim = again.record.claims.find(
+        (c) => c.claimRecordId === "claim-revenue-keep",
+      )!;
+      expect(claim).toMatchObject({ status: "evidence-found", reused: true });
+      for (const id of claim.jobIds)
+        expect(again.record.jobs.find((j) => j.jobId === id)?.manifest).toEqual(
+          first.record.jobs.find((j) => j.jobId === id)?.manifest,
+        );
+      expect(claim.jobIds.length).toBeGreaterThan(0);
+    });
+
+    it("accepts a full-length claim with its reporting-period note", async () => {
+      const long = `${"A".repeat(1990)} 10 million`;
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...(await analysis("long-claim", [
+          {
+            id: "claim-long",
+            statement: long,
+            reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+          },
+        ])),
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      expect(
+        r.requests
+          .flatMap((q) => q.claims)
+          .find((c) => c.claimRecordId === "claim-long")!.statement,
+      ).toHaveLength(long.length + " [reporting period: Q3 2026]".length);
+    });
+
+    it("refuses recovery of a theme job that no coverage record binds to this article", async () => {
+      const { validateRetainedArticleResearch } =
+        await import("../../src/research/retained-research-source.js");
+      const request: ResearchRequest = {
+        schemaVersion: 1,
+        origin: "theme",
+        pass: 1,
+        claims: [
+          {
+            claimRecordId: "claim-new",
+            statement: "A new aircraft sprayed the region",
+            themeIds: ["weather"],
+          },
+        ],
+        question: "Targeted enhancement",
+        corpusRefs: [],
+      };
+      const id = researchJobId(request);
+      await artifacts.write(
+        `research-jobs/${id}/request.json`,
+        JSON.stringify(request),
+      );
+      const capture = await artifacts.write(
+        "substack/pub/p9/collected.json",
+        "{}",
+      );
+      await expect(
+        validateRetainedArticleResearch({
+          artifacts,
+          operations: {
+            researchRecovery: () => undefined,
+            researchDiscoveryAccepted: () => false,
+          } as never,
+          jobIds: [id],
+          capture,
+          post: { publicationId: "pub", postId: "p9" },
+          sourceContext: { schemaVersion: 1 } as never,
+        }),
+      ).rejects.toThrow("retained-research-capture-mismatch");
+    });
+
+    it("keeps a pre-upgrade workflow's journaled full request for a researched theme", async () => {
+      const dossierId = await firstPost();
+      const accept = {
+        decide: async () => ({ themeId: dossierId, rationale: "same theme" }),
+      };
+      const second = await analysis(
+        "p2",
+        [extra, claims[1]!, claims[0]!],
+        "Weather warfare",
+      );
+      // What the pre-upgrade planner would have pinned: the full extraction request.
+      const probe = researcher(() => "busy");
+      const { assessPostCoverage: assess } =
+        await import("../../src/research/librarian.js");
+      // Derive the full request's ID by planning without prior research context.
+      const fresh = await mkdtemp(join(tmpdir(), "steele-pre-"));
+      const old = artifacts;
+      try {
+        artifacts = new GitArtifactStore({
+          repoPath: fresh,
+          repository: "content",
+        });
+        await artifacts.initialise();
+        const a = await analysis(
+          "p2",
+          [extra, claims[1]!, claims[0]!],
+          "Weather warfare",
+        );
+        await assess({
+          artifacts,
+          ...a,
+          commission: probe.commission,
+          shortlister: new LexicalShortlister(),
+        });
+      } finally {
+        await rm(fresh, { recursive: true, force: true });
+        artifacts = old;
+      }
+      const fullIds = new Set(
+        probe.requests.map((q) =>
+          researchJobId({
+            ...q,
+            post: {
+              ...q.post!,
+              themeResult: ref(second.themeResult),
+              claimResult: ref(second.claimResult),
+            },
+          }),
+        ),
+      );
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...second,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+        pinnedJobIds: fullIds,
+      });
+      expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
+    });
+
     it("replays the planned question even if the prompt file changes", async () => {
       const dossierId = await firstPost();
       const accept = {
@@ -1430,5 +1600,184 @@ describe("mappings first (#531)", { timeout: 60_000 }, () => {
     } finally {
       proto.recordPinned = realRecord;
     }
+  });
+});
+
+describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
+  it("leaves a claim with an unstated reporting period out of research, with the reason", async () => {
+    const { themeResult, claimResult } = await analysis("period-889", [
+      ...claims,
+      {
+        id: "claim-revenue",
+        statement: "Acme reported revenue of 10 million",
+        reportingPeriod: { dependsOnPeriod: true },
+      },
+    ]);
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      themeResult,
+      claimResult,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const revenue = record.claims.find(
+      (c) => c.claimRecordId === "claim-revenue",
+    );
+    expect(revenue).toMatchObject({
+      status: "not-commissioned",
+      reason: PERIOD_NOT_STATED,
+    });
+    // Eligible claims continue; the excluded one is never sent to research.
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
+    ).not.toContain("claim-revenue");
+    expect(r.requests.length).toBeGreaterThan(0);
+  });
+
+  it("never reuses another post's evidence for a period-dependent claim (#903 review)", async () => {
+    const revenue = (period: string) => ({
+      id: "claim-revenue-q",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text: period },
+    });
+    const support = (req: ResearchRequest) => ({
+      passages: req.claims.map((c) => ({
+        claimRecordId: c.claimRecordId,
+        url: SHARED,
+      })),
+    });
+    const first = await analysis("period-q3", [revenue("Q3 2026")]);
+    await assessPostCoverage({
+      artifacts,
+      ...first,
+      commission: researcher(support).commission,
+      shortlister: new LexicalShortlister(),
+    });
+    // Same statement in another post, about another period: researched again.
+    const second = await analysis("period-q4", [revenue("Q4 2026")]);
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...second,
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const claim = record.claims.find(
+      (c) => c.claimRecordId === "claim-revenue-q",
+    )!;
+    expect(claim.reused).toBe(false);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
+    ).toContain("claim-revenue-q");
+  });
+
+  it("sends the stated period to research, so the prompt, judge and job identity carry it", async () => {
+    const revenue = (period?: string) => ({
+      id: "claim-revenue-p",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: period
+        ? { dependsOnPeriod: true, text: period }
+        : { dependsOnPeriod: true },
+    });
+    const ask = async (postId: string, period: string) => {
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...(await analysis(postId, [revenue(period)])),
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return r.requests
+        .flatMap((q) => q.claims)
+        .find((c) => c.claimRecordId === "claim-revenue-p")!;
+    };
+    const q3 = await ask("req-q3", "Q3 2026");
+    const q4 = await ask("req-q4", "Q4 2026");
+    expect(q3.statement).toBe(
+      "Acme reported revenue of 10 million [reporting period: Q3 2026]",
+    );
+    expect(q4.statement).toContain("[reporting period: Q4 2026]");
+    // A relative period is not anchored to a year: excluded, never researched.
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...(await analysis("req-rel", [revenue("last year")])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      record.claims.find((c) => c.claimRecordId === "claim-revenue-p")!.reason,
+    ).toBe(PERIOD_NOT_ANCHORED);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
+    ).not.toContain("claim-revenue-p");
+  });
+
+  it("keeps a claim eligible when any of its occurrences states the period", async () => {
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...(await analysis("mixed-occ", [
+        {
+          id: "claim-mixed",
+          statement: "Acme reported revenue of 10 million",
+          reportingPeriod: { dependsOnPeriod: true },
+        },
+        {
+          id: "claim-mixed",
+          statement: "Acme reported revenue of 10 million",
+          reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+        },
+      ])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      record.claims.find((c) => c.claimRecordId === "claim-mixed")!.reason,
+    ).not.toBe(PERIOD_NOT_STATED);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.statement)),
+    ).toContain(
+      "Acme reported revenue of 10 million [reporting period: Q3 2026]",
+    );
+  });
+
+  it("reassessing reuses only this analysis's own coverage, never another post's later evidence", async () => {
+    const revenue = (period: string) => ({
+      id: "claim-revenue-r",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text: period },
+    });
+    const q3 = await analysis("reassess-q3", [revenue("Q3 2026")]);
+    const assess = async (
+      a: typeof q3,
+      plan: Parameters<typeof researcher>[0],
+    ) => {
+      const r = researcher(plan);
+      const { record } = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return { record, r };
+    };
+    await assess(q3, () => "busy"); // Q3 research pending
+    await assess(
+      await analysis("reassess-q4", [revenue("Q4 2026")]),
+      (req) => ({
+        passages: req.claims.map((c) => ({
+          claimRecordId: c.claimRecordId,
+          url: SHARED,
+        })),
+      }),
+    ); // Q4 evidence saved under the same statement-keyed entry
+    const again = await assess(q3, () => "busy");
+    const claim = again.record.claims.find(
+      (c) => c.claimRecordId === "claim-revenue-r",
+    )!;
+    expect(claim.reused).toBe(false);
+    expect(claim.status).not.toBe("evidence-found");
   });
 });

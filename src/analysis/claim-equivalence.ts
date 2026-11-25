@@ -6,7 +6,10 @@ import {
   type ArtifactRef,
   type GitArtifactStore,
 } from "../controllers/artifact-store.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "./extraction.js";
 import { ClaimRecordSchema, type ClaimRecord } from "./grounded-claims.js";
 
 /**
@@ -32,7 +35,9 @@ import { ClaimRecordSchema, type ClaimRecord } from "./grounded-claims.js";
  *   are idempotent, so repeated runs never inflate occurrence counts.
  */
 
-export const DEFAULT_EQUIVALENCE_PROMPT = loadAnalysisPrompt("claim-equivalence-v1");
+export const DEFAULT_EQUIVALENCE_PROMPT = loadAnalysisPrompt(
+  "claim-equivalence-v1",
+);
 
 export const MAX_CANDIDATES = 10;
 export const MAX_SCANNED_RECORDS = 2_000;
@@ -44,7 +49,9 @@ export const ClaimEquivalenceDecisionSchema = z
     schemaVersion: z.literal(1),
     record: z.string(),
     statement: z.string(),
-    candidates: z.array(z.object({ id: z.string(), statement: z.string() }).strict()),
+    candidates: z.array(
+      z.object({ id: z.string(), statement: z.string() }).strict(),
+    ),
     match: z.string().nullable(),
     confidence: z.enum(["high", "medium", "low"]).nullable(),
     reason: z.string(),
@@ -53,7 +60,9 @@ export const ClaimEquivalenceDecisionSchema = z
     decidedAt: z.string(),
   })
   .strict();
-export type EquivalenceDecision = z.infer<typeof ClaimEquivalenceDecisionSchema>;
+export type EquivalenceDecision = z.infer<
+  typeof ClaimEquivalenceDecisionSchema
+>;
 
 const ModelOutputSchema = z
   .object({
@@ -71,7 +80,12 @@ export type EquivalenceOutcome =
       decision: EquivalenceDecision;
       reused: boolean;
     }
-  | { status: "separate"; record: string; decision?: EquivalenceDecision; reused: boolean }
+  | {
+      status: "separate";
+      record: string;
+      decision?: EquivalenceDecision;
+      reused: boolean;
+    }
   | { status: "already-merged"; record: string; canonical: string }
   | {
       status: "failed";
@@ -94,7 +108,10 @@ async function readRecord(
 ): Promise<{ record: ClaimRecord; ref: ArtifactRef } | undefined> {
   const ref = await artifacts.lookup(`claims/${id}.json`);
   if (!ref) return undefined;
-  return { record: ClaimRecordSchema.parse(JSON.parse(await artifacts.read(ref))), ref };
+  return {
+    record: ClaimRecordSchema.parse(JSON.parse(await artifacts.read(ref))),
+    ref,
+  };
 }
 
 /** Bounded lexical candidate retrieval over canonical claim records. */
@@ -103,8 +120,8 @@ export async function candidateClaims(
   record: ClaimRecord,
   limit = MAX_CANDIDATES,
 ): Promise<ClaimRecord[]> {
-  const paths = (await artifacts.list("claims", MAX_SCANNED_RECORDS)).filter((p) =>
-    RECORD_PATH.test(p),
+  const paths = (await artifacts.list("claims", MAX_SCANNED_RECORDS)).filter(
+    (p) => RECORD_PATH.test(p),
   );
   const target = words(record.statement);
   const scored: Array<{ r: ClaimRecord; s: number }> = [];
@@ -130,7 +147,9 @@ function decisionPath(
   candidateIds: string[],
 ) {
   const key = createHash("sha256")
-    .update(JSON.stringify([modelVersion, promptVersion, [...candidateIds].sort()]))
+    .update(
+      JSON.stringify([modelVersion, promptVersion, [...candidateIds].sort()]),
+    )
     .digest("hex")
     .slice(0, 16);
   return `claim-equivalence/${recordId}-${key}.json`;
@@ -167,7 +186,11 @@ async function revise(
       return;
     } catch (error) {
       const code = error instanceof ArtifactStoreError ? error.code : undefined;
-      if ((code === "stale-revision" || code === "concurrent-update") && attempt < 5) continue;
+      if (
+        (code === "stale-revision" || code === "concurrent-update") &&
+        attempt < 5
+      )
+        continue;
       throw error;
     }
   }
@@ -183,7 +206,10 @@ export async function mergeClaimRecords(
   artifacts: GitArtifactStore,
   from: string,
   into: string,
-  decision: Pick<EquivalenceDecision, "reason" | "modelVersion" | "promptVersion" | "decidedAt">,
+  decision: Pick<
+    EquivalenceDecision,
+    "reason" | "modelVersion" | "promptVersion" | "decidedAt"
+  >,
   depth = 0,
 ): Promise<void> {
   if (depth > 20) throw new Error("redirect chain too long");
@@ -193,9 +219,16 @@ export async function mergeClaimRecords(
   // Durable journal entry first: recovery scans merge sources only, never
   // the whole claim collection, so no pending copy is missed at any size.
   try {
-    await artifacts.write(`claim-merges/${from}.json`, `${JSON.stringify({ from })}\n`);
+    await artifacts.write(
+      `claim-merges/${from}.json`,
+      `${JSON.stringify({ from })}\n`,
+    );
   } catch (error) {
-    if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict") throw error;
+    if (
+      !(error instanceof ArtifactStoreError) ||
+      error.code !== "immutable-conflict"
+    )
+      throw error;
   }
   let existing: string | undefined;
   await revise(artifacts, from, (r) => {
@@ -254,7 +287,10 @@ async function copyOccurrences(
   artifacts: GitArtifactStore,
   from: string,
   into: string,
-  decision: Pick<EquivalenceDecision, "reason" | "modelVersion" | "promptVersion" | "decidedAt">,
+  decision: Pick<
+    EquivalenceDecision,
+    "reason" | "modelVersion" | "promptVersion" | "decidedAt"
+  >,
 ): Promise<void> {
   // The target may itself be redirected concurrently. Each copy is a
   // compare-and-swap on the target that refuses a redirected target, so the
@@ -269,9 +305,13 @@ async function copyOccurrences(
     try {
       await revise(artifacts, target, (t) => {
         if (t.canonical) throw new TargetRedirected();
-        const byId = new Map(source.record.occurrences.map((o) => [o.occurrenceId, o]));
+        const byId = new Map(
+          source.record.occurrences.map((o) => [o.occurrenceId, o]),
+        );
         const known = new Set(t.occurrences.map((o) => o.occurrenceId));
-        const added = source.record.occurrences.filter((o) => !known.has(o.occurrenceId));
+        const added = source.record.occurrences.filter(
+          (o) => !known.has(o.occurrenceId),
+        );
         // A re-extraction with a reworded summary produces a different claim
         // record but the same occurrence identity (post, source version and
         // span). Keep one occurrence, but merge both extraction histories so
@@ -282,7 +322,10 @@ async function copyOccurrences(
           if (!other) return o;
           const before = o.extractions ?? [o.extraction];
           const extractions = [
-            ...new Set([...before, ...(other.extractions ?? [other.extraction])]),
+            ...new Set([
+              ...before,
+              ...(other.extractions ?? [other.extraction]),
+            ]),
           ].slice(-100);
           const unchanged =
             extractions.length === before.length &&
@@ -290,9 +333,16 @@ async function copyOccurrences(
           return unchanged ? o : { ...o, extractions };
         });
         const refreshed = merged.some((o, index) => o !== t.occurrences[index]);
-        const themeIds = [...new Set([...t.themeIds, ...source.record.themeIds])].sort();
+        const themeIds = [
+          ...new Set([...t.themeIds, ...source.record.themeIds]),
+        ].sort();
         const already = (t.equivalences ?? []).some((e) => e.record === from);
-        if (added.length === 0 && !refreshed && already && themeIds.length === t.themeIds.length)
+        if (
+          added.length === 0 &&
+          !refreshed &&
+          already &&
+          themeIds.length === t.themeIds.length
+        )
           return undefined;
         return {
           ...t,
@@ -333,7 +383,10 @@ const MAX_REDIRECT_HOPS = 1_000;
  * compare a pending merge against the wrong target and silently skip its
  * occurrences.
  */
-export async function canonicalOf(artifacts: GitArtifactStore, id: string): Promise<string> {
+export async function canonicalOf(
+  artifacts: GitArtifactStore,
+  id: string,
+): Promise<string> {
   let current = id;
   const seen = new Set<string>([id]);
   for (let hops = 0; ; hops++) {
@@ -357,7 +410,8 @@ export async function resolveClaimEquivalence(input: {
 }): Promise<EquivalenceOutcome> {
   const prompt = input.prompt ?? DEFAULT_EQUIVALENCE_PROMPT;
   const found = await readRecord(input.artifacts, input.recordId);
-  if (!found) return { status: "failed", record: input.recordId, reason: "not-found" };
+  if (!found)
+    return { status: "failed", record: input.recordId, reason: "not-found" };
   const { record } = found;
   if (record.canonical) {
     // Finish a merge interrupted after its redirect (idempotent).
@@ -374,7 +428,8 @@ export async function resolveClaimEquivalence(input: {
   // Finish any merge into this record that stopped after its redirect.
   await completePendingMerges(input.artifacts, record.id);
   const candidates = await candidateClaims(input.artifacts, record);
-  if (candidates.length === 0) return { status: "separate", record: record.id, reused: false };
+  if (candidates.length === 0)
+    return { status: "separate", record: record.id, reused: false };
   const path = decisionPath(
     record.id,
     input.provider.modelVersion,
@@ -386,7 +441,9 @@ export async function resolveClaimEquivalence(input: {
   const existing = await input.artifacts.lookup(path);
   const reused = existing !== undefined;
   if (existing) {
-    decision = ClaimEquivalenceDecisionSchema.parse(JSON.parse(await input.artifacts.read(existing)));
+    decision = ClaimEquivalenceDecisionSchema.parse(
+      JSON.parse(await input.artifacts.read(existing)),
+    );
   } else {
     // Statements alone can hide context ("our revenue"): include the exact
     // source passages, posts and speaker kinds for each side.
@@ -399,7 +456,10 @@ export async function resolveClaimEquivalence(input: {
         passage: o.passage,
       })),
     });
-    const user = JSON.stringify({ newClaim: context(record), candidates: candidates.map(context) });
+    const user = JSON.stringify({
+      newClaim: context(record),
+      candidates: candidates.map(context),
+    });
     let output: z.infer<typeof ModelOutputSchema> | undefined;
     let failure: "provider-failed" | "malformed-output" = "provider-failed";
     const attempts = Math.max(1, Math.min(input.maxAttempts ?? 2, 5));
@@ -417,11 +477,14 @@ export async function resolveClaimEquivalence(input: {
       output = parseOutput(raw);
       if (!output) failure = "malformed-output";
     }
-    if (!output) return { status: "failed", record: record.id, reason: failure };
+    if (!output)
+      return { status: "failed", record: record.id, reason: failure };
     const offered = new Set(candidates.map((c) => c.id));
     // Conservative: only a high-confidence match to an offered candidate merges.
     const match =
-      output.match !== null && offered.has(output.match) && output.confidence === "high"
+      output.match !== null &&
+      offered.has(output.match) &&
+      output.confidence === "high"
         ? output.match
         : null;
     decision = ClaimEquivalenceDecisionSchema.parse({
@@ -437,23 +500,33 @@ export async function resolveClaimEquivalence(input: {
       decidedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
     try {
-      await input.artifacts.write(path, `${JSON.stringify(decision, null, 2)}\n`);
+      await input.artifacts.write(
+        path,
+        `${JSON.stringify(decision, null, 2)}\n`,
+      );
     } catch (error) {
-      if (!(error instanceof ArtifactStoreError) || error.code !== "immutable-conflict")
+      if (
+        !(error instanceof ArtifactStoreError) ||
+        error.code !== "immutable-conflict"
+      )
         throw error;
       const winner = await input.artifacts.lookup(path);
       if (!winner) throw error;
-      decision = ClaimEquivalenceDecisionSchema.parse(JSON.parse(await input.artifacts.read(winner)));
+      decision = ClaimEquivalenceDecisionSchema.parse(
+        JSON.parse(await input.artifacts.read(winner)),
+      );
     }
   }
 
-  if (decision.match === null) return { status: "separate", record: record.id, decision, reused };
+  if (decision.match === null)
+    return { status: "separate", record: record.id, decision, reused };
   // Resolve both sides to their current canonical records, then always merge
   // the larger ID into the smaller. Concurrent reciprocal decisions (A→B and
   // B→A) therefore agree on one direction and can never form a cycle.
   const mine = await canonicalOf(input.artifacts, record.id);
   const theirs = await canonicalOf(input.artifacts, decision.match);
-  if (mine === theirs) return { status: "already-merged", record: record.id, canonical: mine };
+  if (mine === theirs)
+    return { status: "already-merged", record: record.id, canonical: mine };
   const [canonical, merged] = mine < theirs ? [mine, theirs] : [theirs, mine];
   await mergeClaimRecords(input.artifacts, merged, canonical, decision);
   return { status: "merged", record: record.id, canonical, decision, reused };

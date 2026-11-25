@@ -36,7 +36,9 @@ export const FrequencyInputSchema = z
   .object({
     /** Declared scope, e.g. "collected posts from this publication". */
     scope: z.string().min(1).max(1000),
-    window: z.object({ from: z.string().min(1), to: z.string().min(1) }).strict(),
+    window: z
+      .object({ from: z.string().min(1), to: z.string().min(1) })
+      .strict(),
     periods: z.array(FrequencyPeriodSchema).min(1).max(120),
     /** Whether extraction coverage over the whole window is known to be complete. */
     coverage: z.enum(["known", "unknown"]),
@@ -97,7 +99,9 @@ function rate(matchedPosts: number, analysedPosts: number): number {
  * unknown coverage, a truncated result, sparse dates, a denominator below the
  * declared minimum, or fewer than two periods to compare.
  */
-export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAssessment {
+export function assessClaimFamilyFrequency(
+  input: FrequencyInput,
+): FrequencyAssessment {
   const f = FrequencyInputSchema.parse(input);
   const observations: FrequencyObservation[] = f.periods.map((p) => ({
     ...p,
@@ -109,13 +113,18 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
     observations,
   };
   const reasons: string[] = [];
-  if (f.coverage === "unknown") reasons.push("extraction coverage over the window is unknown");
+  if (f.coverage === "unknown")
+    reasons.push("extraction coverage over the window is unknown");
   if (f.truncated) reasons.push("the underlying period result was truncated");
-  if (f.datesSparse) reasons.push("a material share of posts carry no usable date");
-  if (f.periods.length < 2) reasons.push("fewer than two periods were supplied");
+  if (f.datesSparse)
+    reasons.push("a material share of posts carry no usable date");
+  if (f.periods.length < 2)
+    reasons.push("fewer than two periods were supplied");
   const empty = f.periods.filter((p) => p.analysedPosts === 0);
   if (empty.length > 0)
-    reasons.push(`period(s) ${empty.map((p) => p.period).join(", ")} have no analysed posts`);
+    reasons.push(
+      `period(s) ${empty.map((p) => p.period).join(", ")} have no analysed posts`,
+    );
   const small = f.periods.filter(
     (p) => p.analysedPosts > 0 && p.analysedPosts < f.minimumAnalysedPosts,
   );
@@ -125,7 +134,12 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
     );
 
   if (reasons.length > 0) {
-    return { kind: "no-assessment", ...base, reasons, limitations: [LIMITATION] };
+    return {
+      kind: "no-assessment",
+      ...base,
+      reasons,
+      limitations: [LIMITATION],
+    };
   }
 
   // Compare the first and last period: the widest comparison the caller declared.
@@ -133,7 +147,9 @@ export function assessClaimFamilyFrequency(input: FrequencyInput): FrequencyAsse
   const last = observations[observations.length - 1]!;
   // Compare the exact fractions, not the rounded observation rates, so a
   // rounding step cannot push a change across the declared threshold.
-  const delta = last.matchedPosts / last.analysedPosts - first.matchedPosts / first.analysedPosts;
+  const delta =
+    last.matchedPosts / last.analysedPosts -
+    first.matchedPosts / first.analysedPosts;
   // Strictly greater/less, so equal rates stay flat even with a zero threshold.
   // A tolerance keeps a change exactly at the threshold from reading as flat
   // through floating-point subtraction (0.15 - 0.10 is 0.04999...).
@@ -175,7 +191,9 @@ export function renderFrequencyReport(a: FrequencyAssessment): string {
         `${o.period}\t${o.matchedPosts}\t${o.analysedPosts}\t${o.rate}\t${o.distinctOccurrences}`,
     ),
     "",
-    a.kind === "observed" ? a.statement : "No assessment: the input cannot support a claim.",
+    a.kind === "observed"
+      ? a.statement
+      : "No assessment: the input cannot support a claim.",
   ];
   if (a.kind === "no-assessment") {
     lines.push("", "Reasons:", ...a.reasons.map((r) => `- ${r}`));

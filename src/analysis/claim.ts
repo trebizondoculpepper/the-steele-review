@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  ArtifactReferenceSchema,
+  type ArtifactReference,
+} from "../content/artifact-reference.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 
 /**
@@ -39,7 +42,9 @@ export const CLAIM_SCHEMA_VERSION = 1;
 const SourceVersionSchema = z
   .string()
   .regex(/^sha256:[0-9a-f]{64}$/)
-  .describe("Content hash of the whole source text the claim was extracted from.");
+  .describe(
+    "Content hash of the whole source text the claim was extracted from.",
+  );
 
 const MAX_STATEMENT = 2000;
 
@@ -50,13 +55,52 @@ export const ClaimTypeSchema = z
   );
 export type ClaimType = z.infer<typeof ClaimTypeSchema>;
 
-export const ClaimSpanSchema = z
+/**
+ * Reporting period (#889): whether the claim's figure depends on a period
+ * (an amount, count or rate for a quarter, year or other span), and the
+ * source's own wording of that period when the source states it. Never
+ * inferred: absent wording means the source does not establish a period.
+ * Older claims have no such field.
+ */
+export const ReportingPeriodSchema = z
   .object({
-    start: z.number().int().min(0).describe("Inclusive start offset in UTF-16 code units."),
-    end: z.number().int().min(1).describe("Exclusive end offset in UTF-16 code units."),
+    dependsOnPeriod: z
+      .boolean()
+      .describe(
+        "True when the claim's figure is for a reporting period, such as a quarter or year.",
+      ),
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        "Exact source wording of that period. Omitted when the source does not state it.",
+      ),
   })
   .strict()
-  .meta({ title: "ClaimSpan", description: "Half-open character span within the source text." });
+  .meta({ title: "ReportingPeriod" });
+export type ReportingPeriod = z.infer<typeof ReportingPeriodSchema>;
+
+export const ClaimSpanSchema = z
+  .object({
+    start: z
+      .number()
+      .int()
+      .min(0)
+      .describe("Inclusive start offset in UTF-16 code units."),
+    end: z
+      .number()
+      .int()
+      .min(1)
+      .describe("Exclusive end offset in UTF-16 code units."),
+  })
+  .strict()
+  .meta({
+    title: "ClaimSpan",
+    description: "Half-open character span within the source text.",
+  });
 
 export type ClaimSpan = z.infer<typeof ClaimSpanSchema>;
 
@@ -80,7 +124,8 @@ export const DateMentionSchema = z
   .strict()
   .meta({
     title: "DateMention",
-    description: "A date as the source words it, with a normalised value only when unambiguous.",
+    description:
+      "A date as the source words it, with a normalised value only when unambiguous.",
   });
 
 export type DateMention = z.infer<typeof DateMentionSchema>;
@@ -93,29 +138,43 @@ export const ClaimExtractionMetaSchema = z
       .min(1)
       .max(200)
       .describe("Provider and model identifier used for extraction."),
-    promptVersion: z.string().trim().min(1).max(200).describe("Version of the extraction prompt."),
+    promptVersion: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .describe("Version of the extraction prompt."),
     extractedAt: z.iso
       .datetime({ offset: true })
       .describe("When the claim was extracted, in ISO 8601 with offset."),
   })
   .strict()
-  .meta({ title: "ClaimExtractionMeta", description: "Provenance of the extraction run." });
+  .meta({
+    title: "ClaimExtractionMeta",
+    description: "Provenance of the extraction run.",
+  });
 
 export type ClaimExtractionMeta = z.infer<typeof ClaimExtractionMetaSchema>;
 
 export const ClaimSchema = z
   .object({
-    schemaVersion: z.literal(CLAIM_SCHEMA_VERSION).describe("Version of this claim contract."),
+    schemaVersion: z
+      .literal(CLAIM_SCHEMA_VERSION)
+      .describe("Version of this claim contract."),
     id: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
-      .describe("Stable claim ID derived from source version, span, statement and extractor."),
+      .describe(
+        "Stable claim ID derived from source version, span, statement and extractor.",
+      ),
     statement: z
       .string()
       .trim()
       .min(1)
       .max(MAX_STATEMENT)
-      .describe("Normalised claim statement, written as the source asserts it."),
+      .describe(
+        "Normalised claim statement, written as the source asserts it.",
+      ),
     claimType: ClaimTypeSchema,
     sourceVersion: SourceVersionSchema,
     artifact: ArtifactReferenceSchema,
@@ -129,14 +188,20 @@ export const ClaimSchema = z
     qualifiers: z
       .array(z.string().trim().min(1).max(200))
       .max(20)
-      .describe("Hedging and scope wording preserved from the passage, in order of appearance."),
+      .describe(
+        "Hedging and scope wording preserved from the passage, in order of appearance.",
+      ),
     entities: z
       .array(z.string().trim().min(1).max(200))
       .max(50)
       .describe(
         "People, organisations, places or things the claim concerns, as named or referred to in the passage.",
       ),
-    dates: z.array(DateMentionSchema).max(20).describe("Dates the passage mentions, in order."),
+    dates: z
+      .array(DateMentionSchema)
+      .max(20)
+      .describe("Dates the passage mentions, in order."),
+    reportingPeriod: ReportingPeriodSchema.optional(),
     extraction: ClaimExtractionMetaSchema,
   })
   .strict()
@@ -185,21 +250,33 @@ export function claimIdFor(input: {
   modelVersion: string;
   promptVersion: string;
 }): string {
-  const { sourceVersion, start, end, statement, modelVersion, promptVersion } = input;
+  const { sourceVersion, start, end, statement, modelVersion, promptVersion } =
+    input;
   // JSON encoding makes the field boundaries unambiguous: a delimiter embedded
   // in one field cannot be confused with the start of the next.
   return sourceVersionFor(
-    JSON.stringify([sourceVersion, start, end, statement, modelVersion, promptVersion]),
+    JSON.stringify([
+      sourceVersion,
+      start,
+      end,
+      statement,
+      modelVersion,
+      promptVersion,
+    ]),
   );
 }
 
 /** Verify that a claim's span and quote really come from the supplied source. */
 function assertGrounded(claim: Claim, source: ClaimSource): void {
   if (claim.sourceVersion !== source.sourceVersion) {
-    throw new InvalidClaimError("source version does not match the supplied source");
+    throw new InvalidClaimError(
+      "source version does not match the supplied source",
+    );
   }
   if (claim.sourceVersion !== sourceVersionFor(source.text)) {
-    throw new InvalidClaimError("supplied source version does not match its text");
+    throw new InvalidClaimError(
+      "supplied source version does not match its text",
+    );
   }
   if (claim.span.end <= claim.span.start) {
     throw new InvalidClaimError("span end must be after span start");
@@ -209,34 +286,70 @@ function assertGrounded(claim: Claim, source: ClaimSource): void {
   }
   const exact = source.text.slice(claim.span.start, claim.span.end);
   if (claim.passage !== exact) {
-    throw new InvalidClaimError("passage does not match the source text at that span");
+    throw new InvalidClaimError(
+      "passage does not match the source text at that span",
+    );
+  }
+  // A reporting period must be the source's own wording, never inferred (#889).
+  if (
+    claim.reportingPeriod?.text &&
+    !source.text.includes(claim.reportingPeriod.text)
+  ) {
+    throw new InvalidClaimError(
+      "reporting period is not stated in the source text",
+    );
+  }
+  if (claim.reportingPeriod?.text && !claim.reportingPeriod.dependsOnPeriod) {
+    throw new InvalidClaimError(
+      "reporting period wording given for a claim that does not depend on one",
+    );
   }
   // The archive reference comes from trusted context. A syntactically valid
   // but unrelated artifact would point a reader somewhere else entirely.
   for (const field of ["repository", "commit", "path", "hash"] as const) {
     if (claim.artifact[field] !== source.artifact[field]) {
-      throw new InvalidClaimError("artifact does not match the supplied source artifact");
+      throw new InvalidClaimError(
+        "artifact does not match the supplied source artifact",
+      );
     }
   }
   // Verbatim annotations must occur in the validated passage. Otherwise model
   // output could turn vague source wording into an invented precise date or
   // qualifier while the quote itself stays genuine.
   for (const qualifier of claim.qualifiers) {
-    if (!occursAsWholeMentionWithin(source.text, qualifier, claim.span.start, claim.span.end)) {
+    if (
+      !occursAsWholeMentionWithin(
+        source.text,
+        qualifier,
+        claim.span.start,
+        claim.span.end,
+      )
+    ) {
       throw new InvalidClaimError("qualifier does not occur in the passage");
     }
   }
   for (const date of claim.dates) {
-    if (!occursAsWholeMentionWithin(source.text, date.text, claim.span.start, claim.span.end)) {
+    if (
+      !occursAsWholeMentionWithin(
+        source.text,
+        date.text,
+        claim.span.start,
+        claim.span.end,
+      )
+    ) {
       throw new InvalidClaimError("date wording does not occur in the passage");
     }
     if (date.value !== undefined) {
       const canonical = isoDateFromText(date.text);
       if (canonical === undefined) {
-        throw new InvalidClaimError("date value supplied for ambiguous date wording");
+        throw new InvalidClaimError(
+          "date value supplied for ambiguous date wording",
+        );
       }
       if (canonical !== date.value) {
-        throw new InvalidClaimError("date value does not match the date wording");
+        throw new InvalidClaimError(
+          "date value does not match the date wording",
+        );
       }
     }
   }
@@ -262,7 +375,8 @@ function occursAsWholeMentionWithin(
     if (index === -1 || index + text.length > end) return false;
     const before = index === 0 ? "" : (source[index - 1] as string);
     const afterIndex = index + text.length;
-    const after = afterIndex >= source.length ? "" : (source[afterIndex] as string);
+    const after =
+      afterIndex >= source.length ? "" : (source[afterIndex] as string);
     const boundedBefore = before === "" || !isWordCharacter(before);
     const boundedAfter = after === "" || !isWordCharacter(after);
     if (boundedBefore && boundedAfter) return true;
@@ -290,12 +404,16 @@ function isRealDate(year: number, month: number, day: number): boolean {
   if (month < 1 || month > 12 || day < 1) return false;
   const date = new Date(Date.UTC(year, month - 1, day));
   return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
   );
 }
 
 function monthNumber(name: string): number | undefined {
-  const index = MONTH_NAMES.indexOf(name.toLowerCase() as (typeof MONTH_NAMES)[number]);
+  const index = MONTH_NAMES.indexOf(
+    name.toLowerCase() as (typeof MONTH_NAMES)[number],
+  );
   return index === -1 ? undefined : index + 1;
 }
 
@@ -383,6 +501,7 @@ export interface ClaimDraft {
   qualifiers?: string[];
   entities?: string[];
   dates?: DateMention[];
+  reportingPeriod?: ReportingPeriod;
   extraction: ClaimExtractionMeta;
 }
 
@@ -403,6 +522,9 @@ export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
     qualifiers: draft.qualifiers ?? [],
     entities: draft.entities ?? [],
     dates: draft.dates ?? [],
+    ...(draft.reportingPeriod
+      ? { reportingPeriod: draft.reportingPeriod }
+      : {}),
     extraction: draft.extraction,
   });
   const id = claimIdFor({
@@ -416,8 +538,25 @@ export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
   return parseClaim({ ...body, id }, source);
 }
 
+/**
+ * Keep a model's reporting period only as the source states it (#889): wording
+ * that is not in the source is dropped rather than trusted, so the claim is
+ * treated as having no stated period and is never given an inferred one.
+ */
+export function sourceStatedPeriod(
+  period: ReportingPeriod | undefined,
+  sourceText: string,
+): ReportingPeriod | undefined {
+  if (!period) return undefined;
+  if (!period.dependsOnPeriod) return { dependsOnPeriod: false };
+  return period.text && sourceText.includes(period.text)
+    ? { dependsOnPeriod: true, text: period.text }
+    : { dependsOnPeriod: true };
+}
+
 /** Synthetic source text used by the documentation examples and their tests. */
-const SYNTHETIC_FIRST = "The synthetic council said it may raise fees by 3% last spring.";
+const SYNTHETIC_FIRST =
+  "The synthetic council said it may raise fees by 3% last spring.";
 const SYNTHETIC_SECOND = "A synthetic critic called the plan shortsighted.";
 export const SYNTHETIC_SOURCE_TEXT = `${SYNTHETIC_FIRST} ${SYNTHETIC_SECOND}`;
 
@@ -470,7 +609,10 @@ export const SYNTHETIC_CLAIM_EXAMPLES: readonly unknown[] = [
     claimType: "opinion",
     sourceVersion: SYNTHETIC_SOURCE_VERSION,
     artifact: SYNTHETIC_ARTIFACT,
-    span: { start: SYNTHETIC_FIRST.length + 1, end: SYNTHETIC_SOURCE_TEXT.length },
+    span: {
+      start: SYNTHETIC_FIRST.length + 1,
+      end: SYNTHETIC_SOURCE_TEXT.length,
+    },
     passage: SYNTHETIC_SECOND,
     qualifiers: [],
     entities: ["synthetic critic", "the plan"],

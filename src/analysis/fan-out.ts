@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ArtifactReference } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { DeliveredMessage } from "../controllers/nats.js";
-import type { OperationStore, PendingEventInput } from "../controllers/operation-store.js";
+import type {
+  OperationStore,
+  PendingEventInput,
+} from "../controllers/operation-store.js";
 import {
   CLAIM_OCCURRED_SUBJECT,
   ClaimOccurredDataSchema,
@@ -41,7 +47,9 @@ import type { ThemeProposalResult } from "./theme-proposals.js";
  */
 
 const HEX = /^sha256:[0-9a-f]{64}$/;
-const OccurrenceIdentity = z.looseObject({ occurrenceId: z.string().min(1).max(200) });
+const OccurrenceIdentity = z.looseObject({
+  occurrenceId: z.string().min(1).max(200),
+});
 
 export type FanOutRefusal =
   | AnalysisRefusal
@@ -97,7 +105,9 @@ export type OccurrenceEvents =
  * the same inputs always yield the same event IDs and order, so a redelivered
  * parent cannot create a second logical occurrence.
  */
-export function buildOccurrenceEvents(input: OccurrenceInputs): OccurrenceEvents {
+export function buildOccurrenceEvents(
+  input: OccurrenceInputs,
+): OccurrenceEvents {
   if (!HEX.test(input.sourceVersion)) {
     return { status: "refused", reason: "unreadable-claim-result" };
   }
@@ -178,7 +188,11 @@ export function buildOccurrenceEvents(input: OccurrenceInputs): OccurrenceEvents
 }
 
 export interface OccurrencePublisher {
-  publish(subject: string, payload: Uint8Array, options: { msgId: string }): Promise<unknown>;
+  publish(
+    subject: string,
+    payload: Uint8Array,
+    options: { msgId: string },
+  ): Promise<unknown>;
 }
 
 export interface FanOutConfig {
@@ -243,8 +257,10 @@ export class AnalysisFanOut {
     this.config.onDecision?.({
       outcome,
       postId,
-      themeEvents: events.filter((e) => e.subject === THEME_OCCURRED_SUBJECT).length,
-      claimEvents: events.filter((e) => e.subject === CLAIM_OCCURRED_SUBJECT).length,
+      themeEvents: events.filter((e) => e.subject === THEME_OCCURRED_SUBJECT)
+        .length,
+      claimEvents: events.filter((e) => e.subject === CLAIM_OCCURRED_SUBJECT)
+        .length,
     });
     return outcome;
   }
@@ -293,14 +309,22 @@ export class AnalysisFanOut {
     if (pair.status === "unavailable") {
       // Operational failure: release the claim so the redelivery can retry,
       // and leave a recorded failure code for inspection.
-      this.config.operations.fail(claimed.claim, "fan-out:artifact-unavailable", true);
+      this.config.operations.fail(
+        claimed.claim,
+        "fan-out:artifact-unavailable",
+        true,
+      );
       message.nak(retryDelay);
       return this.report("retry", parent.postId);
     }
     if (pair.status === "refused") {
       // Saved results that cannot complete this analysis are permanent: never
       // research or fan out on unvalidated material.
-      this.config.operations.fail(claimed.claim, `fan-out:${pair.reason}`, false);
+      this.config.operations.fail(
+        claimed.claim,
+        `fan-out:${pair.reason}`,
+        false,
+      );
       await message.ack();
       return this.report("refused", parent.postId);
     }
@@ -316,7 +340,11 @@ export class AnalysisFanOut {
       now: this.config.now ?? (() => new Date()),
     });
     if (built.status === "refused") {
-      this.config.operations.fail(claimed.claim, `fan-out:${built.reason}`, false);
+      this.config.operations.fail(
+        claimed.claim,
+        `fan-out:${built.reason}`,
+        false,
+      );
       await message.ack();
       return this.report("refused", parent.postId);
     }
@@ -337,7 +365,10 @@ export class AnalysisFanOut {
   async dispatchPending(limit = 200): Promise<number> {
     let sent = 0;
     for (const subject of [THEME_OCCURRED_SUBJECT, CLAIM_OCCURRED_SUBJECT]) {
-      for (const pending of this.config.operations.duePendingEvents(limit, subject)) {
+      for (const pending of this.config.operations.duePendingEvents(
+        limit,
+        subject,
+      )) {
         try {
           await this.config.publisher.publish(
             pending.subject,

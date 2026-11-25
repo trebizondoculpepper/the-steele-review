@@ -7,7 +7,10 @@ import {
   type ClaimOccurrence,
 } from "./claim-occurrence.js";
 import type { OccurrenceSearchPort } from "./claim-timeline.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "./extraction.js";
 
 /**
  * Earlier examples of a claim from the same speaker (#368).
@@ -115,9 +118,15 @@ const ModelOutputSchema = z.object({
 });
 
 /** The speaker an occurrence verifiably names, or undefined when it names none. */
-export function verifiedSpeaker(o: ClaimOccurrence): VerifiedSpeaker | undefined {
+export function verifiedSpeaker(
+  o: ClaimOccurrence,
+): VerifiedSpeaker | undefined {
   const { kind, name } = o.speaker;
-  if ((kind === "quoted" || kind === "uncertain") && name && o.speaker.evidence) {
+  if (
+    (kind === "quoted" || kind === "uncertain") &&
+    name &&
+    o.speaker.evidence
+  ) {
     return { name, basis: "named-speaker" };
   }
   // The resolved post author (#461): explicit byline, else the configured
@@ -190,7 +199,8 @@ export async function findSameSpeakerHistory(input: {
     note: SPEAKER_HISTORY_NOTE,
   };
   const speaker = verifiedSpeaker(current);
-  if (!speaker) return { outcome: "speaker-unverified", matches: [], diagnostics };
+  if (!speaker)
+    return { outcome: "speaker-unverified", matches: [], diagnostics };
   if (!current.sourcePublishedAt) {
     return { outcome: "source-undated", speaker, matches: [], diagnostics };
   }
@@ -225,7 +235,10 @@ export async function findSameSpeakerHistory(input: {
       index,
       {
         bool: {
-          filter: [speakerFilter(speaker), { term: { "grouping.key": current.grouping.key } }],
+          filter: [
+            speakerFilter(speaker),
+            { term: { "grouping.key": current.grouping.key } },
+          ],
           must_not: [
             { exists: { field: "sourcePublishedAt" } },
             { term: { postId: current.postId } },
@@ -259,7 +272,9 @@ export async function findSameSpeakerHistory(input: {
     const prior = byPassage.get(key);
     if (prior) {
       diagnostics.excludedReposts++;
-      if (Date.parse(o.sourcePublishedAt) < Date.parse(prior.sourcePublishedAt!)) {
+      if (
+        Date.parse(o.sourcePublishedAt) < Date.parse(prior.sourcePublishedAt!)
+      ) {
         byPassage.set(key, o);
       }
       continue;
@@ -312,7 +327,11 @@ export async function findSameSpeakerHistory(input: {
     diagnostics.promptVersion = prompt.version;
     const ids = new Map(toJudge.map((o, i) => [`c${i + 1}`, o]));
     const user = JSON.stringify({
-      current: { statement: current.statement, passage: current.passage, speaker: speaker.name },
+      current: {
+        statement: current.statement,
+        passage: current.passage,
+        speaker: speaker.name,
+      },
       candidates: [...ids].map(([id, o]) => ({
         id,
         publishedAt: o.sourcePublishedAt,
