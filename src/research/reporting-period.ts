@@ -21,6 +21,8 @@ const ClaimShape = z.looseObject({
   reportingPeriod: ReportingPeriodSchema.optional(),
 });
 
+export const PERIOD_NOT_ANCHORED =
+  "excluded: the claim's reporting period is relative (for example 'last year') and the source does not anchor it to a year";
 export const PERIOD_NOT_STATED =
   "excluded: the claim's figure depends on a reporting period the source does not state";
 
@@ -29,9 +31,10 @@ export function reportingPeriodExclusion(claim: unknown): string | undefined {
   const parsed = ClaimShape.safeParse(claim);
   if (!parsed.success) return undefined;
   const period = parsed.data.reportingPeriod;
-  return period?.dependsOnPeriod && !period.text
-    ? PERIOD_NOT_STATED
-    : undefined;
+  if (!period?.dependsOnPeriod) return undefined;
+  if (!period.text) return PERIOD_NOT_STATED;
+  // A relative period is not established without a year: never inferred.
+  return fullySpecified(period.text) ? undefined : PERIOD_NOT_ANCHORED;
 }
 
 /**
@@ -77,8 +80,8 @@ function fullySpecified(text: string): boolean {
  * The statement research is asked about (#889). For a new claim whose figure
  * depends on a stated period, the period is appended, so the researcher and
  * the support judge evaluate it for that period and the job identity differs
- * per period. A relative period also names the post it was stated in, since
- * "last year" means different years in different posts. Older claims, and
+ * per period. Relative periods ("last year") are excluded before research,
+ * because nothing anchors them to a year. Older claims, and
  * claims that do not depend on a period, are unchanged.
  */
 export function researchStatement(
@@ -89,7 +92,7 @@ export function researchStatement(
   const parsed = ClaimShape.safeParse(claim);
   const period = parsed.success ? parsed.data.reportingPeriod : undefined;
   if (!period?.dependsOnPeriod || !period.text) return statement;
-  return fullySpecified(period.text) || !post
-    ? `${statement} [reporting period: ${period.text}]`
-    : `${statement} [reporting period: ${period.text}, as stated in ${post.publicationId}/${post.postId}]`;
+  // Relative periods never reach research: they are excluded as not anchored.
+  void post;
+  return `${statement} [reporting period: ${period.text}]`;
 }

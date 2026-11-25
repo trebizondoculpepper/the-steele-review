@@ -1,4 +1,7 @@
-import { PERIOD_NOT_STATED } from "../../src/research/reporting-period.js";
+import {
+  PERIOD_NOT_ANCHORED,
+  PERIOD_NOT_STATED,
+} from "../../src/research/reporting-period.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1574,11 +1577,20 @@ describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
       "Acme reported revenue of 10 million [reporting period: Q3 2026]",
     );
     expect(q4.statement).toContain("[reporting period: Q4 2026]");
-    // A relative period also names its post.
-    const relative = await ask("req-rel", "last year");
-    expect(relative.statement).toContain(
-      "[reporting period: last year, as stated in pub/req-rel]",
-    );
+    // A relative period is not anchored to a year: excluded, never researched.
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...(await analysis("req-rel", [revenue("last year")])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      record.claims.find((c) => c.claimRecordId === "claim-revenue-p")!.reason,
+    ).toBe(PERIOD_NOT_ANCHORED);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
+    ).not.toContain("claim-revenue-p");
   });
 
   it("keeps a claim eligible when any of its occurrences states the period", async () => {
