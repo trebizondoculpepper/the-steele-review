@@ -438,28 +438,36 @@ export function createLegacyResearchNeedLookup(
         const candidates = (await index).get(id) ?? [];
         if (limited)
           return { status: "unavailable", reason: "legacy-proof-scan-bound" };
-        for (const request of candidates) {
-          const resultRef = await artifacts.lookup(
-            researchJobPath(researchJobId(request), "result"),
-          );
-          if (!resultRef) continue;
-          const saved = ResearchResultSchema.parse(
-            JSON.parse(await cached.read(resultRef)),
-          );
-          if (saved.outcome === "failed") continue;
-          const proof = await researchNeedEvidence(
-            cached,
-            resultRef,
-            need,
-            undefined,
-            acceptance,
-          );
-          const checked = await readResearchNeedEvidence(
-            cached,
-            proof,
-            acceptance,
-          );
-          if (checked.citations.length) return { status: "found", proof };
+        // Validating candidates spends the same read budget as the index, so
+        // running out here is the same explicit, bounded unavailability.
+        try {
+          for (const request of candidates) {
+            const resultRef = await artifacts.lookup(
+              researchJobPath(researchJobId(request), "result"),
+            );
+            if (!resultRef) continue;
+            const saved = ResearchResultSchema.parse(
+              JSON.parse(await cached.read(resultRef)),
+            );
+            if (saved.outcome === "failed") continue;
+            const proof = await researchNeedEvidence(
+              cached,
+              resultRef,
+              need,
+              undefined,
+              acceptance,
+            );
+            const checked = await readResearchNeedEvidence(
+              cached,
+              proof,
+              acceptance,
+            );
+            if (checked.citations.length) return { status: "found", proof };
+          }
+        } catch (error) {
+          if (!(error instanceof LegacyProofLimitError)) throw error;
+          limited = true;
+          return { status: "unavailable", reason: "legacy-proof-scan-bound" };
         }
         return {
           status: "unavailable",
