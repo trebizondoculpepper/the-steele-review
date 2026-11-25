@@ -32,7 +32,7 @@ There are 17 archived Save Us Now posts with claim extractions. I split them int
 | Model calls | 2 | 2 | 2 |
 | Elapsed time | 46 s | 35 s | 36 s |
 
-Across the three batches, **16 underlying-idea groups were accepted**. This is not a corpus-wide count: c45 contributed none, 92 of the 135 specific ideas were left ungrouped, and duplicates between batches were not merged. It doesn't show that the corpus has fewer than twenty recurring ideas. As the ticket says, that number stays a hypothesis, not a quota.
+Across the three batches, **17 underlying-idea groups were accepted** (6 in a45, 11 in b45). They have 16 distinct IDs, because `transport-infrastructure-causes-illness` was reused in both a45 and b45. This is not a corpus-wide count: c45 contributed none, 92 of the 135 specific ideas were left ungrouped, and duplicates between batches were not merged. It doesn't show that the corpus has fewer than twenty recurring ideas. As the ticket says, that number stays a hypothesis, not a quota.
 
 **Repetition across batches.** `transport-infrastructure-causes-illness` was reused from the catalogue in both a45 and b45. `hidden-weapons-in-transport-infrastructure` was reused in a45. In b45 there was a near match (`roadside-devices-as-weapons`) that was left **uncertain** rather than forced. The other new ideas in b45 overlap a45's themes, for example `transport-changes-as-deliberate-harm`. A pooled second stage could merge those, but per-batch runs can't.
 
