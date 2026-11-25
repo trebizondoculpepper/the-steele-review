@@ -52,7 +52,8 @@ const Feed = z.looseObject({
   }),
 });
 
-const MAX_ITEMS = 100;
+/** A larger feed is refused rather than truncated, so a baseline never silently omits items. */
+const MAX_ITEMS = 500;
 
 export function parseFeed(xml: string, publicationHost: string): FeedItem[] {
   if (xml.length > 5_000_000) throw new FeedError("invalid-feed", "feed is too large");
@@ -70,7 +71,8 @@ export function parseFeed(xml: string, publicationHost: string): FeedItem[] {
   const raw = parsed.data.rss.channel.item;
   const items = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   const publication = publicationHost.split(".")[0]!;
-  return items.slice(0, MAX_ITEMS).map((it) => {
+  if (items.length > MAX_ITEMS) throw new FeedError("invalid-feed", `feed has more than ${MAX_ITEMS} items`);
+  return items.map((it) => {
     const url = canonicalPostUrl(it.link, publicationHost);
     const slug = url.pathname.slice(3);
     const enclosureUrl = it.enclosure?.["@_url"] ?? "";
