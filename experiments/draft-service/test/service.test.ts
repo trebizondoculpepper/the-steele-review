@@ -181,3 +181,43 @@ test("a readback showing a published or emailed draft is never reported as deliv
   assert.match(again.body.error ?? "", /readback-mismatch/);
   assert.equal(fake.count(), 1);
 });
+
+test("an incomplete listing never allows another create", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "draft-service-"));
+  const x = setup(dir);
+  const req = request();
+  await x.service.deliver("n8n", req);
+  const state = JSON.parse(readFileSync(join(dir, "fake.json"), "utf8"));
+  state.drafts = {};
+  writeFileSync(join(dir, "fake.json"), JSON.stringify(state));
+  x.fake.inject("incompleteListing");
+  x.store.beginCreate(req.requestId, new Date().toISOString());
+  const blocked = await x.service.deliver("n8n", req);
+  assert.equal(blocked.body.status, "uncertain");
+  assert.match(blocked.body.error ?? "", /reconcile-incomplete/);
+  const refused = await x.service.allowRecreate("n8n", req.requestId);
+  assert.equal(refused.body.status, "uncertain", "operator recovery is refused while coverage is incomplete");
+  assert.equal(x.fake.count(), 0);
+});
+
+test("status and recovery refuse a request recorded against a different destination", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "draft-service-"));
+  const x = setup(dir);
+  await x.service.deliver("n8n", request());
+  const other = new FakeDraftDestination(join(dir, "other.json"));
+  Object.defineProperty(other, "identity", { value: "other-destination" });
+  const moved = new DraftService(x.store, () => other);
+  assert.equal((await moved.status("n8n", request().requestId, true)).httpStatus, 409);
+  assert.equal((await moved.allowRecreate("n8n", request().requestId)).httpStatus, 409);
+  assert.equal(other.count(), 0);
+});
+
+test("Substack readback without explicit published and email fields is not evidence", async () => {
+  const { SubstackDraftDestination } = await import("../src/destination.ts");
+  const fetchStub = (async (url: URL) => {
+    const body = String(url).includes("/api/v1/drafts/") ? { id: 7, draft_title: "t" } : [];
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  const dest = new SubstackDraftDestination({ origin: "https://example.substack.com", session: async () => "s", fetch: fetchStub });
+  await assert.rejects(dest.read("7"), /invalid-response/);
+});

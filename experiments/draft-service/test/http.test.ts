@@ -67,6 +67,15 @@ test("HTTP: authentication, readiness and delivery across a restart", async () =
     assert.equal((await post()).status, 401);
     assert.equal((await post("x".repeat(40))).status, 401);
     assert.equal((await post("n".repeat(40))).status, 403, "the n8n token cannot deliver a Mastra request");
+    const { connect } = await import("node:net");
+    const raw = await new Promise<string>((resolve) => {
+      const sock = connect(port, "127.0.0.1", () => sock.write("GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n"));
+      let data = "";
+      sock.on("data", (d) => ((data += String(d)), sock.end()));
+      sock.on("close", () => resolve(data));
+    });
+    assert.match(raw, /^HTTP\/1\.1 400/, "a malformed request target is rejected, not fatal");
+    assert.equal((await fetch(`${base}/health`)).status, 200, "the service is still running");
     const created = await post(mastraToken);
     assert.equal(created.status, 201);
     const c = (await created.json()) as { draftId: string; receiptId: string };

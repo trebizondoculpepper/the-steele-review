@@ -83,7 +83,13 @@ function log(event: Record<string, unknown>) {
 
 const server = createServer(async (req, res) => {
   const started = Date.now();
-  const url = new URL(req.url ?? "/", "http://service.invalid");
+  let url: URL;
+  try {
+    url = new URL(req.url ?? "/", "http://service.invalid");
+  } catch {
+    log({ method: req.method, path: "(malformed)", status: 400 });
+    return send(res, 400, { status: "invalid" });
+  }
   let platform: string | undefined;
   let status = 500;
   let outcome: string | undefined;

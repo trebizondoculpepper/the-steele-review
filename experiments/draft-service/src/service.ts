@@ -195,8 +195,9 @@ export class DraftService {
   /** Looks for the labelled draft at the destination. Exactly one match settles it as created. */
   private async reconcile(record: DeliveryRecord, dest: DraftDestination): Promise<DeliveryRecord> {
     let matches: DraftReadback[];
+    let complete: boolean;
     try {
-      matches = await dest.findByTitle(record.title);
+      ({ matches, complete } = await dest.findByTitle(record.title, record.createdAt));
     } catch {
       this.store.mark(record.requestId, "uncertain", "reconcile-unavailable", this.stamp());
       return this.store.get(record.requestId)!;
@@ -208,7 +209,11 @@ export class DraftService {
     this.store.mark(
       record.requestId,
       "uncertain",
-      matches.length === 0 ? "no-matching-draft-found" : `multiple-matching-drafts (${matches.length})`,
+      matches.length > 1
+        ? `multiple-matching-drafts (${matches.length})`
+        : complete
+          ? "no-matching-draft-found"
+          : "reconcile-incomplete: the listing did not reach the request's creation time",
       this.stamp(),
     );
     return this.store.get(record.requestId)!;
@@ -220,6 +225,8 @@ export class DraftService {
     if (!record) return respond("not-found", { requestId });
     if (record.platform !== callerPlatform) return respond("forbidden", { error: "platform-mismatch" });
     const dest = this.destination();
+    if (record.destination !== dest.identity)
+      return respond("conflict", { requestId, error: "request was recorded against a different destination" });
     if (refresh && (record.state === "pending" || record.state === "uncertain"))
       return this.locked(requestId, async () => {
         const r = await this.reconcile(this.store.get(requestId)!, dest);
@@ -239,6 +246,8 @@ export class DraftService {
       if (!record) return respond("not-found", { requestId });
       if (record.platform !== callerPlatform) return respond("forbidden", { error: "platform-mismatch" });
       const dest = this.destination();
+      if (record.destination !== dest.identity)
+        return respond("conflict", { requestId, error: "request was recorded against a different destination" });
       if (record.state !== "uncertain") return this.view(record, record.state === "created" ? "existing" : (record.state as Outcome), dest, false);
       const r = await this.reconcile(record, dest);
       if (r.state === "created") return this.view(r, "existing", dest, false);
