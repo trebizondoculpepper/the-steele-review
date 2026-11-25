@@ -742,7 +742,12 @@ export function mergeCoverage(
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
 type RequestPlanEntry =
   | { mode: "full"; question?: string; promptVersion?: string }
-  | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
+  | {
+      mode: "targeted";
+      batches: string[][];
+      question?: string;
+      promptVersion?: string;
+    };
 const RequestPlanEntries = z.record(
   z.string(),
   z.union([
@@ -782,26 +787,32 @@ const OrderedRequestPlanSchema = z
         message: "research plan order must name every dossier exactly once",
       });
   });
-const CanonicalRequestPlanSchema = z
-  .object({
-    schemaVersion: z.literal(3),
-    dossiers: RequestPlanEntries,
-    order: z.array(z.string()).max(1000),
-  })
-  .strict()
-  .superRefine((p, ctx) => {
-    const keys = Object.keys(p.dossiers);
-    if (
-      p.order.length !== keys.length ||
-      new Set(p.order).size !== p.order.length ||
-      p.order.some((id) => !Object.hasOwn(p.dossiers, id))
-    )
-      ctx.addIssue({
-        code: "custom",
-        message: "research plan order must name every dossier exactly once",
-      });
-  });
+const canonicalPlanSchema = <V extends 3 | 4>(version: V) =>
+  z
+    .object({
+      schemaVersion: z.literal(version),
+      dossiers: RequestPlanEntries,
+      order: z.array(z.string()).max(1000),
+    })
+    .strict()
+    .superRefine((p, ctx) => {
+      const keys = Object.keys(p.dossiers);
+      if (
+        p.order.length !== keys.length ||
+        new Set(p.order).size !== p.order.length ||
+        p.order.some((id) => !Object.hasOwn(p.dossiers, id))
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "research plan order must name every dossier exactly once",
+        });
+    });
+/** Version 3: canonical needs in the earlier request format (#827), kept for replay. */
+const CanonicalRequestPlanSchema = canonicalPlanSchema(3);
+/** Version 4: theme-only canonical execution requests (#828). */
+const ThemeCanonicalRequestPlanSchema = canonicalPlanSchema(4);
 const RequestPlanSchema = z.union([
+  ThemeCanonicalRequestPlanSchema,
   CanonicalRequestPlanSchema,
   z
     .object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries })
@@ -839,7 +850,8 @@ async function retainedPlan(
   claimResult: ArtifactRef,
   proposed: () =>
     | z.infer<typeof OrderedRequestPlanSchema>
-    | z.infer<typeof CanonicalRequestPlanSchema>,
+    | z.infer<typeof CanonicalRequestPlanSchema>
+    | z.infer<typeof ThemeCanonicalRequestPlanSchema>,
 ): Promise<RequestPlan> {
   const key = createHash("sha256")
     .update(JSON.stringify([toRef(themeResult), toRef(claimResult)]))
@@ -1043,8 +1055,12 @@ export async function assessPostCoverage(input: {
       )
     : undefined;
   const canonicalMode = priorPlan
-    ? priorPlan.schemaVersion === 3
+    ? priorPlan.schemaVersion >= 3
     : claimRecord.schemaVersion >= 3 && !input.pinnedJobIds?.size;
+  // A version-3 plan was commissioned with the earlier request format; its
+  // replay rebuilds exactly those requests so job IDs reconnect (#828).
+  const themeExecution =
+    canonicalMode && (priorPlan ? priorPlan.schemaVersion === 4 : true);
   const judge: ThemeEquivalenceJudge =
     input.judge ??
     (canonicalMode ? new TitleFirstJudge() : new ThresholdJudge());
@@ -1644,6 +1660,7 @@ export async function assessPostCoverage(input: {
     question?: string,
   ): ResearchRequest {
     const canonical = canonicalMode && group.every((c) => !!c.need);
+    const themeShaped = canonical && themeExecution;
     const needs = canonical
       ? [
           ...new Map(
@@ -1661,10 +1678,10 @@ export async function assessPostCoverage(input: {
           }
         : {}),
       schemaVersion: RESEARCH_JOB_SCHEMA_VERSION,
-      origin: canonical || targeted ? "theme" : "extraction",
+      origin: themeShaped || targeted ? "theme" : "extraction",
       pass,
       ...(previousJobId ? { previousJobId } : {}),
-      ...(canonical || targeted ? {} : { post: postRefs }),
+      ...(themeShaped || targeted ? {} : { post: postRefs }),
       ...boundedClaims(
         needs
           ? needs.map((n) => ({
@@ -1680,10 +1697,12 @@ export async function assessPostCoverage(input: {
                 themeIds: [dossierId],
               })),
       ),
-      question: canonical
-        ? (question ?? CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId))
+      question: themeShaped
+        ? (question ??
+          CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId))
         : targeted
-          ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
+          ? (question ??
+            THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
           : pass === 1
             ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
             : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
@@ -1814,18 +1833,22 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
-        question: (canonicalMode ? CANONICAL_RESEARCH : THEME_ENHANCEMENT).instructions.replaceAll(
-          "{{theme}}",
-          dossierId,
-        ),
-        promptVersion: (canonicalMode ? CANONICAL_RESEARCH : THEME_ENHANCEMENT).version,
+        question: (themeExecution
+          ? CANONICAL_RESEARCH
+          : THEME_ENHANCEMENT
+        ).instructions.replaceAll("{{theme}}", dossierId),
+        promptVersion: (themeExecution ? CANONICAL_RESEARCH : THEME_ENHANCEMENT)
+          .version,
       });
     } else {
       planned.set(dossierId, {
         mode: "full",
         ...(canonicalMode
           ? {
-              question: CANONICAL_RESEARCH.instructions.replaceAll("{{theme}}", dossierId),
+              question: CANONICAL_RESEARCH.instructions.replaceAll(
+                "{{theme}}",
+                dossierId,
+              ),
               promptVersion: CANONICAL_RESEARCH.version,
             }
           : {}),
@@ -1838,7 +1861,7 @@ export async function assessPostCoverage(input: {
     input.themeResult,
     input.claimResult,
     () => ({
-      schemaVersion: canonicalMode ? 3 : 2,
+      schemaVersion: (canonicalMode ? (themeExecution ? 4 : 3) : 2) as 2 | 3 | 4,
       dossiers: Object.fromEntries(
         [...planned].sort(([a], [b]) => a.localeCompare(b)),
       ),
@@ -1850,7 +1873,10 @@ export async function assessPostCoverage(input: {
   );
   // A concurrent older worker may have won the immutable plan. Retry from
   // that authoritative version before making any research request.
-  if ((plan.schemaVersion === 3) !== canonicalMode)
+  if (
+    plan.schemaVersion >= 3 !== canonicalMode ||
+    (canonicalMode && (plan.schemaVersion === 4) !== themeExecution)
+  )
     throw new Error("research-plan-version-changed");
   const order =
     plan.schemaVersion !== 1 ? plan.order : Object.keys(plan.dossiers);
@@ -1876,7 +1902,8 @@ export async function assessPostCoverage(input: {
           ? canonicalNeedId(a.need).localeCompare(canonicalNeedId(b.need))
           : a.key.localeCompare(b.key),
       );
-      for (const g of chunks(sortedAll)) await assessGroup(dossierId, g, entry.question);
+      for (const g of chunks(sortedAll))
+        await assessGroup(dossierId, g, entry.question);
     }
   }
 
@@ -1979,7 +2006,11 @@ export async function assessPostCoverage(input: {
     }
   }
 
-  async function assessGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+  async function assessGroup(
+    dossierId: string,
+    group: AcceptedClaim[],
+    question?: string,
+  ) {
     const first = await run(dossierId, group, 1, undefined, false, question);
     for (const claim of group) {
       if (outcomes.get(claim.key)?.reused) continue;
@@ -1996,7 +2027,14 @@ export async function assessPostCoverage(input: {
     }
     // 4. One targeted second pass for consequential, unsupported claims.
     await secondPass(dossierId, group, first, (followUp) =>
-      run(dossierId, followUp, 2, first.job.jobId, false, canonicalMode ? question : undefined),
+      run(
+        dossierId,
+        followUp,
+        2,
+        first.job.jobId,
+        false,
+        canonicalMode ? question : undefined,
+      ),
     );
   }
 

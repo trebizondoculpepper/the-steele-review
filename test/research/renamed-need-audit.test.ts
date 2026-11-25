@@ -1321,3 +1321,94 @@ it(
     }
   },
 );
+
+it(
+  "replays a version-3 plan with its original request format, so the job ID reconnects (#828 review)",
+  { timeout: 60000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "steele-v3-replay-"));
+    try {
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
+      await artifacts.initialise();
+      const planPath = async (
+        postId: string,
+        a: {
+          themeResult: {
+            repository: string;
+            commit: string;
+            path: string;
+            sha256: string;
+          };
+          claimResult: {
+            repository: string;
+            commit: string;
+            path: string;
+            sha256: string;
+          };
+        },
+      ) => {
+        const ref = (r: typeof a.themeResult) => ({
+          repository: r.repository,
+          commit: r.commit,
+          path: r.path,
+          hash: `sha256:${r.sha256}`,
+        });
+        const key = createHash("sha256")
+          .update(JSON.stringify([ref(a.themeResult), ref(a.claimResult)]))
+          .digest("hex")
+          .slice(0, 32);
+        return `librarian/request-plans/pub/${postId}/${key}.json`;
+      };
+      // A new plan uses the theme-only execution format (version 4).
+      const fresh = await analysis(
+        artifacts,
+        "fresh",
+        `claim-${"7".repeat(32)}`,
+      );
+      const freshRequests: ResearchRequest[] = [];
+      await assessPostCoverage({
+        artifacts,
+        ...fresh,
+        shortlister: new LexicalShortlister(),
+        commission: async (request) => {
+          freshRequests.push(request);
+          return { jobId: researchJobId(request), status: "busy" };
+        },
+      });
+      const freshPlan = JSON.parse(
+        await artifacts.read(
+          (await artifacts.lookup(await planPath("fresh", fresh)))!,
+        ),
+      );
+      expect(freshPlan.schemaVersion).toBe(4);
+      expect(freshRequests[0]!.origin).toBe("theme");
+      expect(freshRequests[0]!.post).toBeUndefined();
+
+      // A version-3 plan saved by the earlier implementation keeps its request format.
+      const old = await analysis(artifacts, "old", `claim-${"8".repeat(32)}`);
+      await artifacts.write(
+        await planPath("old", old),
+        JSON.stringify({ ...freshPlan, schemaVersion: 3 }),
+      );
+      const oldRequests: ResearchRequest[] = [];
+      await assessPostCoverage({
+        artifacts,
+        ...old,
+        shortlister: new LexicalShortlister(),
+        commission: async (request) => {
+          oldRequests.push(request);
+          return { jobId: researchJobId(request), status: "busy" };
+        },
+      });
+      expect(oldRequests).toHaveLength(1);
+      expect(oldRequests[0]!.origin).toBe("extraction");
+      expect(oldRequests[0]!.post).toBeDefined();
+      expect(oldRequests[0]!.canonicalNeeds).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
