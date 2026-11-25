@@ -43,6 +43,8 @@ const Item = z.looseObject({
   guid: z.union([Text, z.looseObject({ "#text": Text })]).optional(),
   pubDate: Text.optional(),
   enclosure: z.looseObject({ "@_url": z.string().optional(), "@_type": z.string().optional() }).optional(),
+  description: Text.optional(),
+  "content:encoded": Text.optional(),
 });
 const Feed = z.looseObject({
   rss: z.looseObject({
@@ -83,7 +85,9 @@ export function parseFeed(xml: string, publicationHost: string): FeedItem[] {
       medium,
     } as const;
     const fingerprint = `sha256:${createHash("sha256")
-      .update(JSON.stringify([item.canonicalUrl, item.postId, item.title, item.publishedAt, item.medium, enclosureUrl]))
+      .update(
+        JSON.stringify([item.canonicalUrl, item.postId, item.title, item.publishedAt, item.medium, enclosureUrl, it.description ?? "", it["content:encoded"] ?? ""]),
+      )
       .digest("hex")}`;
     return { ...item, fingerprint };
   });

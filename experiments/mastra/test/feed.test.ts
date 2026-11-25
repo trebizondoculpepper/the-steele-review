@@ -93,3 +93,20 @@ test("manual selection enters an older item separately from discovery", async ()
   assert.deepEqual(await h.store.select({ canonicalUrl: `https://${HOST}/p/one`, slug: "one" }, new Date().toISOString()), { created: false });
   assert.deepEqual((await h.store.items(10, "selected")).map((i) => i.slug).sort(), ["old-post", "one"]);
 });
+
+test("a body-only edit is detected, and an oversized streamed feed is refused", async () => {
+  const h = harness();
+  const withBody = (body: string) => feed(item("one", "One", "1").replace("</item>", `<description>${body}</description></item>`));
+  h.set(withBody("first"));
+  await pollFeed(h.store, h.config);
+  h.set(withBody("second"));
+  assert.deepEqual((await pollFeed(h.store, h.config)).changedItems.map((i) => i.slug), ["one"]);
+
+  const big = new ReadableStream<Uint8Array>({
+    pull(c) {
+      c.enqueue(new Uint8Array(1_000_000));
+    },
+  });
+  const r = await pollFeed(h.store, { ...h.config, fetch: (async () => new Response(big, { status: 200 })) as unknown as typeof fetch });
+  assert.equal(r.error, "feed-too-large");
+});

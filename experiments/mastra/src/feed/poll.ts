@@ -79,8 +79,23 @@ export async function pollFeed(store: FeedStore, config: FeedConfig): Promise<Po
     if (!res.ok) return fail(`feed-http-${res.status}`);
     const length = Number(res.headers.get("content-length") ?? 0);
     if (length > MAX_BYTES) return fail("feed-too-large");
-    xml = await res.text();
-    if (xml.length > MAX_BYTES) return fail("feed-too-large");
+    // Enforce the limit while streaming, so a chunked response cannot be buffered without bound.
+    const reader = res.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    if (reader) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          return fail("feed-too-large");
+        }
+        chunks.push(value);
+      }
+    }
+    xml = new TextDecoder().decode(Buffer.concat(chunks));
   } catch (e) {
     return fail(e instanceof Error && e.name === "TimeoutError" ? "feed-timeout" : "feed-unavailable");
   }
