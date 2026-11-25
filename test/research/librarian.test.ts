@@ -127,6 +127,12 @@ function researcher(
   const commission: Commission = async (request) => {
     requests.push(request);
     const jobId = researchJobId(request);
+    // As in production (research/job.ts), the exact request is saved before the job runs.
+    if (!(await artifacts.lookup(`research-jobs/${jobId}/request.json`)))
+      await artifacts.write(
+        `research-jobs/${jobId}/request.json`,
+        JSON.stringify(request),
+      );
     const outcome = plan(request);
     if (outcome === "busy") return { jobId, status: "busy" };
     if (outcome === "failed") {
@@ -143,11 +149,19 @@ function researcher(
       );
       return { jobId, status: "finished", result, resultRef };
     }
-    const report = await artifacts.write(
-      `research-jobs/${jobId}/report.md`,
-      "# report\n",
-    );
     const urls = [...new Set(outcome.passages.map((p) => p.url))];
+    // The production runner's saved report (research/runner.ts).
+    const report = await artifacts.write(
+      `research-jobs/${jobId}/report.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        jobId,
+        promptVersion: "fixture",
+        model: "fixture",
+        report: "# report",
+        citations: urls,
+      }),
+    );
     const manifest = await artifacts.write(
       `research-jobs/${jobId}/manifest.json`,
       JSON.stringify({
@@ -923,8 +937,12 @@ describe("librarian coverage across extraction schema versions", () => {
       "Weather warfare",
       3,
     );
-    const r = researcher(() => ({
-      passages: [{ claimRecordId: "claim-treaty", url: SHARED }],
+    // Research cites the request's own claim IDs, which are canonical need
+    // IDs for an accepted version 3 extraction.
+    const r = researcher((req) => ({
+      passages: req.claims
+        .filter((c) => /treaty|ENMOD/i.test(c.statement))
+        .map((c) => ({ claimRecordId: c.claimRecordId, url: SHARED })),
     }));
     const { record } = await assessPostCoverage({
       artifacts,
@@ -1179,6 +1197,109 @@ describe(
         shortlister: new LexicalShortlister(),
       });
       expect(again.requests).toHaveLength(0);
+    });
+
+    it("refuses recovery of a theme job that no coverage record binds to this article", async () => {
+      const { validateRetainedArticleResearch } =
+        await import("../../src/research/retained-research-source.js");
+      const request: ResearchRequest = {
+        schemaVersion: 1,
+        origin: "theme",
+        pass: 1,
+        claims: [
+          {
+            claimRecordId: "claim-new",
+            statement: "A new aircraft sprayed the region",
+            themeIds: ["weather"],
+          },
+        ],
+        question: "Targeted enhancement",
+        corpusRefs: [],
+      };
+      const id = researchJobId(request);
+      await artifacts.write(
+        `research-jobs/${id}/request.json`,
+        JSON.stringify(request),
+      );
+      const capture = await artifacts.write(
+        "substack/pub/p9/collected.json",
+        "{}",
+      );
+      await expect(
+        validateRetainedArticleResearch({
+          artifacts,
+          operations: {
+            researchRecovery: () => undefined,
+            researchDiscoveryAccepted: () => false,
+          } as never,
+          jobIds: [id],
+          capture,
+          post: { publicationId: "pub", postId: "p9" },
+          sourceContext: { schemaVersion: 1 } as never,
+        }),
+      ).rejects.toThrow("retained-research-capture-mismatch");
+    });
+
+    it("keeps a pre-upgrade workflow's journaled full request for a researched theme", async () => {
+      const dossierId = await firstPost();
+      const accept = {
+        decide: async () => ({ themeId: dossierId, rationale: "same theme" }),
+      };
+      const second = await analysis(
+        "p2",
+        [extra, claims[1]!, claims[0]!],
+        "Weather warfare",
+      );
+      // What the pre-upgrade planner would have pinned: the full extraction request.
+      const probe = researcher(() => "busy");
+      const { assessPostCoverage: assess } =
+        await import("../../src/research/librarian.js");
+      // Derive the full request's ID by planning without prior research context.
+      const fresh = await mkdtemp(join(tmpdir(), "steele-pre-"));
+      const old = artifacts;
+      try {
+        artifacts = new GitArtifactStore({
+          repoPath: fresh,
+          repository: "content",
+        });
+        await artifacts.initialise();
+        const a = await analysis(
+          "p2",
+          [extra, claims[1]!, claims[0]!],
+          "Weather warfare",
+        );
+        await assess({
+          artifacts,
+          ...a,
+          commission: probe.commission,
+          shortlister: new LexicalShortlister(),
+        });
+      } finally {
+        await rm(fresh, { recursive: true, force: true });
+        artifacts = old;
+      }
+      const fullIds = new Set(
+        probe.requests.map((q) =>
+          researchJobId({
+            ...q,
+            post: {
+              ...q.post!,
+              themeResult: ref(second.themeResult),
+              claimResult: ref(second.claimResult),
+            },
+          }),
+        ),
+      );
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...second,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+        judge: accept,
+        pinnedJobIds: fullIds,
+      });
+      expect(r.requests.every((q) => q.origin === "extraction")).toBe(true);
     });
 
     it("keeps the pinned jobs of reused period-scoped coverage, so evidence provenance survives (#903 review)", async () => {

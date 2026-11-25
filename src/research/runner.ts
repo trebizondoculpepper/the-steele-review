@@ -1,6 +1,7 @@
 import { reportPartialResearch } from "../observability/research-warning.js";
 import { ConfigurationError } from "../controllers/configuration.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
+import { canonicalNeedId } from "./canonical-need.js";
 import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import {
@@ -73,7 +74,7 @@ export const MAX_SAVED_CITATIONS = 500;
  * kind of record; a saved value with the wrong shape must fail the job rather
  * than reach `.entries()`/`normalise()` or be silently refetched.
  */
-const SavedReportSchema = z
+export const SavedReportSchema = z
   .object({
     schemaVersion: z.literal(RESEARCH_JOB_SCHEMA_VERSION),
     jobId: z.string().min(1).max(200),
@@ -100,7 +101,7 @@ const parseJson = (raw: string): unknown => {
   }
 };
 
-const savedSourceSchema = (maxChars: number) =>
+export const savedSourceSchema = (maxChars: number) =>
   z
     .object({
       url: z.url({ protocol: /^https?$/ }),
@@ -225,6 +226,14 @@ export type RunOutcome =
   | { status: "finished"; jobId: string; result: ResearchResult; reused: boolean };
 
 export function findingsFor(request: ResearchRequest): Finding[] {
+  if (request.canonicalNeeds)
+    return request.claims.map((c) => ({
+      id: c.claimRecordId,
+      statement: JSON.stringify(
+        request.canonicalNeeds!.needs.find((n) => canonicalNeedId(n) === c.claimRecordId)!
+          .proposition,
+      ),
+    }));
   if (request.claims.length > 0)
     return request.claims.map((c) => ({ id: c.claimRecordId, statement: c.statement }));
   return [{ id: REQUEST_FINDING_ID, statement: request.question ?? request.subject ?? "" }];
@@ -237,7 +246,7 @@ export function researchPrompt(request: ResearchRequest): { system: string; user
   if (request.question) lines.push(`Question: ${request.question}`);
   if (request.claims.length > 0) {
     lines.push("Claims to research (as made by the author; do not assume they are true):");
-    for (const c of request.claims) lines.push(`- [${c.claimRecordId}] ${c.statement}`);
+    for (const c of findingsFor(request)) lines.push(`- [${c.id}] ${c.statement}`);
   }
   return {
     system: SONAR_RESEARCH_PROMPT.instructions,

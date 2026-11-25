@@ -147,7 +147,30 @@ const serialise = (m: ThemeMapping) => `${JSON.stringify(m, null, 2)}\n`;
  * meaning never inherits another's decision.
  */
 export class ThemeMappingCatalogue {
-  constructor(private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise">) {}
+  constructor(
+    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise" | "list">,
+  ) {}
+
+  /** Complete bounded title lookup; an incomplete catalogue is never reported as absence. */
+  async titleCandidates(title: string): Promise<PinnedThemeMapping[]> {
+    const out: PinnedThemeMapping[] = [];
+    let count = 0;
+    for (let after: string | undefined; ;) {
+      const page = await this.artifacts.list("librarian/theme-mappings", 1000, after);
+      count += page.length;
+      if (count > 20000) throw new Error("theme-title-catalogue-limit");
+      for (const path of page) {
+        const ref = await this.artifacts.lookup(path);
+        if (!ref) throw new Error("theme-title-catalogue-changed");
+        const mapping = ThemeMappingSchema.parse(JSON.parse(await this.artifacts.read(ref)));
+        if (themeMappingPath(mapping) !== path) throw new Error("theme-title-catalogue-mismatch");
+        if (normaliseMappingKey(mapping.proposal) === normaliseMappingKey(title))
+          out.push({ mapping, ref });
+      }
+      if (page.length < 1000) return out;
+      after = page[page.length - 1];
+    }
+  }
 
   /** The current mapping, or undefined; an unresolved mapping is never reused. */
   async lookup(query: ThemeMappingQuery): Promise<ThemeMapping | undefined> {

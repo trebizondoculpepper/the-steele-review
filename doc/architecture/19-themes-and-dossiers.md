@@ -29,3 +29,39 @@ The writer receives the source post, proposed claims, canonical theme references
 ## Compatibility
 
 Preserve existing theme IDs and pinned source, dossier, coverage, brief, review and article references. The current combined dossier metadata and any legacy theme catalogue need one explicit compatible transition, not competing canonical authorities. Historical records remain readable without rewriting approvals or rerunning paid extraction. Git remains the versioned authority; search indices are derived, replayable projections through existing typed controllers.
+
+## Research need and occurrence bindings
+
+New accepted analyses use retained request-plan version 3. A targeted research
+need identifies a canonical theme and the validated proposition, assertion kind,
+claim type, ordered qualifiers, entities, dates and quoted attribution. Article
+bylines, post metadata and extraction record identifiers remain provenance, not
+shared need identity. Conservative Unicode and whitespace normalization preserves
+case, punctuation, quantities and negation. Missing or context-dependent semantic
+fields bind the need to its exact source/analysis occurrence; an accepted contract
+version alone does not establish equivalence.
+
+Before dispatch, the librarian saves a separate immutable analysis-to-need binding.
+Full seed jobs and targeted enhancements retain exact request, result, manifest,
+raw report and occurrence-binding references. Reuse validates that chain and the
+archived independent supporting passage, then projects it onto current claim IDs.
+Coverage retains the supporting job references so the writer receives the same
+archived evidence snapshot. Staged results additionally bind the accepted discovery,
+its exact inventory and assembly result, and immutable per-URL retrieval outcomes
+and citation snapshots. They retain the original Markdown report rather than
+pretending it is the whole-job runner's JSON snapshot. Discovery acceptance is
+queried through the state controller before staged evidence can be reused. A grouped ID with conflicting occurrence scopes cannot
+select one passage silently.
+
+Existing version 1/2 request plans and their request identities remain immutable.
+Compatible legacy full reports can be proved lazily from their exact accepted
+analysis and saved request/report/support chain, without rewriting those artifacts.
+This read-only lookup has a total per-assessment bound; unavailable, ambiguous or
+incomplete proof is recorded explicitly. Bulk legacy association work remains a
+separate migration.
+
+For new decisions, titles and saved title aliases select candidates before
+secondary description disambiguation. Description similarity alone cannot merge
+unrelated titles. Conflicting or ambiguous meanings remain explicit unresolved
+proposals with uncommissioned claims; they do not silently create another dossier.
+Previously pinned mapping decisions retain their historical interpretation.

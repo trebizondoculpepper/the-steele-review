@@ -1,3 +1,4 @@
+import { CanonicalNeedSetSchema, canonicalNeedId } from "./canonical-need.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
@@ -61,6 +62,7 @@ export const ResearchRequestSchema = z
     pass: z.number().int().min(1).max(5),
     previousJobId: JobId.optional(),
     retainedRecovery: RetainedResearchRecoverySchema.optional(),
+    canonicalNeeds: CanonicalNeedSetSchema.optional(),
     /** Extraction-derived requests point at an exact post and analysis; manual ones may not. */
     post: z
       .object({
@@ -106,6 +108,27 @@ export const ResearchRequestSchema = z
         code: "custom",
         message: "a later pass must name the job it follows",
       });
+    }
+    if (r.canonicalNeeds) {
+      const needs = r.canonicalNeeds.needs;
+      if (
+        (r.origin !== "theme" && r.origin !== "extraction") ||
+        needs.length !== r.claims.length ||
+        needs.some(
+          (n) =>
+            !r.claims.some(
+              (c) =>
+                c.claimRecordId === canonicalNeedId(n) &&
+                c.statement === n.proposition.statement &&
+                c.themeIds.length === 1 &&
+                c.themeIds[0] === n.themeId,
+            ),
+        )
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "canonical research claims must exactly match their semantic needs",
+        });
     }
     const ids = r.claims.map((c) => c.claimRecordId);
     if (new Set(ids).size !== ids.length) {
@@ -323,6 +346,13 @@ export function researchJobId(input: unknown): string {
             refKey(r.retainedRecovery.failedResult),
             r.post?.sourceContext ? refKey(r.post.sourceContext) : null,
           ],
+        }
+      : {}),
+    ...(r.canonicalNeeds
+      ? {
+          canonicalNeeds: [...r.canonicalNeeds.needs].sort((a, b) =>
+            canonicalNeedId(a).localeCompare(canonicalNeedId(b)),
+          ),
         }
       : {}),
     post: r.post

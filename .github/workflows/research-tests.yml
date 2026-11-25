@@ -1,0 +1,29 @@
+name: Research tests
+
+# Runs the research and planning suites on every pull request, including
+# stacked pull requests whose base is not main (#891), so a broken stacked
+# slice fails visibly instead of only on a developer machine.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research-tests:
+    runs-on: ubuntu-24.04
+    container: node:24-bookworm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE" && git config --global user.email ci@example.invalid && git config --global user.name ci
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: >-
+          npx vp test run
+          test/research/canonical-need.test.ts
+          test/research/librarian.test.ts
+          test/research/renamed-need-audit.test.ts
+          test/workflow/planning-validation.test.ts
+          test/workflow/stages.test.ts
