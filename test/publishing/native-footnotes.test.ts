@@ -163,4 +163,39 @@ Closing paragraph."
       JSON.stringify(doc.content.filter((n) => n.type !== "footnote")),
     ).not.toContain("Closing paragraph.");
   });
+
+  it("never mistakes a passage's own numbered list for a source (#897 review)", () => {
+    const md = `First [1] and second [2].
+
+## Sources
+
+Original post: [The post](<https://pub.example.com/p/p1>)
+
+1. https://a.example/one: "Opening.
+
+1. First enumerated point.
+2. Second enumerated point.
+
+Closing."
+2. https://b.example/two: "Second source."
+`;
+    const footnotes = convert(md).content.filter((n) => n.type === "footnote");
+    expect(footnotes).toHaveLength(2);
+    const one = JSON.stringify(footnotes[0]);
+    expect(one).toContain("https://a.example/one");
+    expect(one).toContain("First enumerated point.");
+    expect(one).toContain("Closing.");
+    expect(JSON.stringify(footnotes[1])).toContain("https://b.example/two");
+  });
+
+  it("fingerprints an anchor moved across a paragraph boundary", () => {
+    const md =
+      'Alpha [1]\n\nBeta.\n\n## Sources\n\n1. https://a.example/one: "x"\n';
+    const doc = convert(md);
+    const moved = structuredClone(doc);
+    const [p1, p2] = moved.content as { content: { type: string }[] }[];
+    const anchor = p1!.content.pop()!;
+    p2!.content.unshift(anchor);
+    expect(bodyFingerprint(moved)).not.toBe(bodyFingerprint(doc));
+  });
 });

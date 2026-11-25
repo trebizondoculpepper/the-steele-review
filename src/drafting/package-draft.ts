@@ -1385,6 +1385,22 @@ export async function draftFromPackage(input: {
           }
         }
       }
+      // The JSON format's application-rendered framing must also convert,
+      // including native footnotes (#811), before the draft is accepted.
+      if (!kind && !parsedMd && parsed) {
+        try {
+          withNativeFootnotes(
+            markdownToProseMirror(renderPackageDraft(pkg, parsed, sourceUrl)),
+          );
+        } catch (error) {
+          if (!(error instanceof UnsupportedMarkdownError)) throw error;
+          kind = "application-format";
+          issues = [{ code: "custom", path: [] }];
+          lastProblems = [
+            "application-owned article framing cannot be rendered",
+          ];
+        }
+      }
       if (kind) {
         validationFailure = kind;
         lastFailure =

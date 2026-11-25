@@ -316,6 +316,8 @@ export function bodyFingerprint(doc: unknown): string {
   // never matches.
   const footnotes: unknown[] = [];
   let seen = 0;
+  // Block boundaries passed, so an anchor moved into another paragraph differs.
+  let blocks = 0;
   const walk = (n: unknown) => {
     if (!n || typeof n !== "object") return;
     const o = n as {
@@ -327,14 +329,17 @@ export function bodyFingerprint(doc: unknown): string {
     };
     if (o.type === "text" && typeof o.text === "string") seen += o.text.length;
     if (o.type === "footnoteAnchor")
-      footnotes.push(["anchor", o.attrs?.number, seen]);
+      footnotes.push(["anchor", o.attrs?.number, seen, blocks]);
     if (o.type === "footnote")
       footnotes.push(["footnote", o.attrs?.number, documentText(o)]);
     for (const m of o.marks ?? []) {
       if (m.type === "link" && typeof m.attrs?.href === "string")
         links.push(m.attrs.href);
     }
-    if (Array.isArray(o.content)) for (const c of o.content) walk(c);
+    if (Array.isArray(o.content)) {
+      for (const c of o.content) walk(c);
+      blocks++;
+    }
   };
   walk(doc);
   // Documents without footnotes keep their earlier fingerprint.
@@ -379,17 +384,44 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
   // definition across the whole Sources section, attaching each block that
   // follows an item to that item, so a passage is never cut short.
   const definitions = new Map<number, PmNode[]>();
+  // A source item is recognised by content, not by list structure: it is the
+  // next expected number and opens with its linked URL followed by `: "`, as
+  // the writer renders it. Anything else (a passage's own numbered list, or a
+  // later paragraph of a passage) continues the current source.
+  const opensSource = (item: PmNode): boolean => {
+    const first = (item as { content?: PmNode[] }).content?.[0] as
+      { type: string; content?: PmText[] } | undefined;
+    const [link, rest] =
+      first?.type === "paragraph" ? (first.content ?? []) : [];
+    return (
+      !!link?.marks?.some((m) => m.type === "link") &&
+      typeof rest?.text === "string" &&
+      rest.text.startsWith(': "')
+    );
+  };
   let last: number | undefined;
   for (const n of content.slice(listAt)) {
     if (n.type === "ordered_list") {
       n.content.forEach((item, i) => {
-        last = n.attrs.order + i;
-        definitions.set(last, [
-          ...(item as Extract<PmNode, { type: "list_item" }>).content,
-        ]);
+        const number = n.attrs.order + i;
+        if (number === (last ?? 0) + 1 && opensSource(item)) {
+          last = number;
+          definitions.set(last, [
+            ...(item as Extract<PmNode, { type: "list_item" }>).content,
+          ]);
+        } else if (last !== undefined) {
+          definitions
+            .get(last)!
+            .push({
+              type: "ordered_list",
+              attrs: { order: number },
+              content: [item],
+            });
+        }
       });
     } else if (last !== undefined) definitions.get(last)!.push(n);
   }
+  if (definitions.size === 0) return doc;
   const used = new Set<number>();
   const footnotes: PmNode[] = [];
   const MARKER = /\s*\[(\d+)\](?!\()/g;
