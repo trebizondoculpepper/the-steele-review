@@ -671,7 +671,7 @@ describe("Substack live publication with subscriber email (#789)", () => {
     const s = fakeSubstack();
     const d = new SubstackPublishDestination(s, { publishFrom: FROM });
     expect(d.action).toBe("publish");
-    const receipt = await d.deliver(
+    const receipt = await (await d.prepare(), d).deliver(
       d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
       "k",
     );
@@ -690,7 +690,7 @@ describe("Substack live publication with subscriber email (#789)", () => {
       publishFrom: FROM,
       withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
     });
-    const receipt = await d.deliver(
+    const receipt = await (await d.prepare(), d).deliver(
       d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
       "k",
     );
@@ -702,11 +702,14 @@ describe("Substack live publication with subscriber email (#789)", () => {
 
     // Any other post still publishes with email.
     const other = { ...(fresh as object), postId: "another-post" } as never;
-    await d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: other }), "k2");
+    await (await d.prepare(), d).deliver(
+      d.render({ markdown: WRITER_MARKDOWN, data: other }),
+      "k2",
+    );
     expect(s.published[1]).toEqual({ id: "101", send: true });
   });
 
-  it("reads the email policy at delivery and creates nothing if it cannot (#388)", async () => {
+  it("holds without creating anything unless this delivery's policy read succeeded (#388)", async () => {
     const s = fakeSubstack();
     let policy: () => Promise<ReadonlySet<string>> = async () => {
       throw new Error("config unreadable");
@@ -716,15 +719,24 @@ describe("Substack live publication with subscriber email (#789)", () => {
       withoutEmail: () => policy(),
     });
     const preview = d.render({ markdown: WRITER_MARKDOWN, data: fresh });
+    await expect(d.prepare()).rejects.toBeInstanceOf(
+      DestinationUnavailableError,
+    );
+    // Delivery without a successful read for it creates nothing.
     await expect(d.deliver(preview, "k")).rejects.toBeInstanceOf(
       DestinationUnavailableError,
     );
     expect(s.drafts).toHaveLength(0);
-    // An owner edit after rendering applies to this delivery.
+    // An owner edit applies to the next prepared delivery.
     const f = fresh as { publicationId: string; postId: string };
     policy = async () => new Set([`${f.publicationId}/${f.postId}`]);
+    await d.prepare();
     await d.deliver(preview, "k");
     expect(s.published).toEqual([{ id: "100", send: false }]);
+    // A prepared policy is used once: a later delivery needs a fresh read.
+    await expect(d.deliver(preview, "k2")).rejects.toBeInstanceOf(
+      DestinationUnavailableError,
+    );
   });
 
   it("treats an email timestamp on a suppressed publish as uncertain (#388)", async () => {
@@ -739,7 +751,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
       withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
     });
     await expect(
-      d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),
+      (await d.prepare(), d).deliver(
+        d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
+        "k",
+      ),
     ).rejects.toBeInstanceOf(UncertainDeliveryError);
   });
 
@@ -777,7 +792,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
       s.faults.publish = [fault];
       const d = new SubstackPublishDestination(s, { publishFrom: FROM });
       await expect(
-        d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),
+        (await d.prepare(), d).deliver(
+          d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
+          "k",
+        ),
       ).rejects.toBeInstanceOf(UncertainDeliveryError);
       expect(s.drafts).toHaveLength(1);
     }
@@ -788,7 +806,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
       { publishFrom: FROM },
     );
     await expect(
-      d.deliver(d.render({ markdown: WRITER_MARKDOWN, data: fresh }), "k"),
+      (await d.prepare(), d).deliver(
+        d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
+        "k",
+      ),
     ).rejects.toBeInstanceOf(UncertainDeliveryError);
     expect(await d.reconcile()).toBe("unknown");
   });

@@ -516,14 +516,11 @@ export class SubstackPublishDestination implements DestinationAdapter {
       throw new Error("substack: drafts are never published");
     // The live email policy is read before anything is created; if it cannot
     // be read, nothing happens and the delivery is retried later.
-    // Prefer the current value; if it cannot be read now, use the value read
-    // by prepare() before the intent was recorded.
-    let withoutEmail: ReadonlySet<string> | undefined;
-    try {
-      withoutEmail = await this.withoutEmail();
-    } catch {
-      withoutEmail = this.prepared;
-    }
+    // Use exactly the policy read by prepare() for this delivery, just before
+    // its intent was recorded; there is no second read and no stale fallback.
+    // Without one, nothing is created.
+    const withoutEmail = this.prepared;
+    this.prepared = undefined;
     if (!withoutEmail)
       throw new DestinationUnavailableError("unavailable", 30_000);
     // A preview saved before #388 has no post and keeps its original behaviour.
