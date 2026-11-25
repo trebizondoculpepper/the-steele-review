@@ -45,14 +45,30 @@ export function reportingPeriodIdentity(
   const parsed = ClaimShape.safeParse(claim);
   if (!parsed.success) return undefined;
   const { reportingPeriod, statement, dates } = parsed.data;
-  if (reportingPeriod)
-    return reportingPeriod.dependsOnPeriod && reportingPeriod.text
+  if (reportingPeriod) {
+    if (!reportingPeriod.dependsOnPeriod || !reportingPeriod.text)
+      return undefined;
+    // "last year" or "this quarter" means different periods in different
+    // posts: only a period anchored to an explicit year is shared.
+    return fullySpecified(reportingPeriod.text)
       ? { period: reportingPeriod.text }
-      : undefined;
+      : "occurrence-only";
+  }
   // A standalone number, other than a bare year, is a figure.
-  const figure = [...statement.matchAll(/(?<![\w.])\d[\d,.]*(?![\w])/g)].some(
-    (m) => !/^(1[5-9]|20)\d{2}$/.test(m[0].replace(/[.,]+$/, "")),
+  // A standalone number is a figure unless it is a bare calendar year; an
+  // amount with a currency symbol is always a figure ("$2026").
+  const figure = [
+    ...statement.matchAll(/(?<![\w.])([$£€¥])?\s?(\d[\d,.]*)(?![\w])/g),
+  ].some(
+    (m) => !!m[1] || !/^(1[5-9]|20)\d{2}$/.test(m[2]!.replace(/[.,]+$/, "")),
   );
   const resolved = (dates ?? []).some((d) => !!d.value);
   return figure && !resolved ? "occurrence-only" : undefined;
+}
+
+const RELATIVE =
+  /\b(last|this|next|previous|prior|current|coming|past|recent|ago|year-to-date|ytd|to date|so far)\b/i;
+/** A period wording that names an explicit year and no relative reference. */
+function fullySpecified(text: string): boolean {
+  return /\b(1[5-9]|20)\d{2}\b/.test(text) && !RELATIVE.test(text);
 }

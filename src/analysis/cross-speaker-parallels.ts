@@ -8,7 +8,10 @@ import {
   type ClaimOccurrence,
 } from "./claim-occurrence.js";
 import type { OccurrenceSearchPort } from "./claim-timeline.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "./extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "./extraction.js";
 import {
   collapse,
   speakerFilter,
@@ -67,7 +70,12 @@ export interface CrossSpeakerParallel {
 }
 
 export interface CrossSpeakerResult {
-  outcome: "parallels" | "no-match" | "no-candidates" | "speaker-unverified" | "failed";
+  outcome:
+    | "parallels"
+    | "no-match"
+    | "no-candidates"
+    | "speaker-unverified"
+    | "failed";
   speaker?: VerifiedSpeaker;
   parallels: CrossSpeakerParallel[];
   diagnostics: {
@@ -101,7 +109,8 @@ const ModelSchema = z.object({
     .max(MAX_PARALLEL_CANDIDATES),
 });
 
-const sameName = (a: string, b: string) => collapse(a).toLowerCase() === collapse(b).toLowerCase();
+const sameName = (a: string, b: string) =>
+  collapse(a).toLowerCase() === collapse(b).toLowerCase();
 
 export async function findCrossSpeakerParallels(input: {
   search: OccurrenceSearchPort;
@@ -126,13 +135,17 @@ export async function findCrossSpeakerParallels(input: {
   };
   // Without a verified speaker, "another speaker" cannot be established.
   const speaker = verifiedSpeaker(current);
-  if (!speaker) return { outcome: "speaker-unverified", parallels: [], diagnostics };
+  if (!speaker)
+    return { outcome: "speaker-unverified", parallels: [], diagnostics };
 
   const hits = await input.search.search(
     input.index ?? CLAIM_OCCURRENCE_INDEX_V1,
     {
       bool: {
-        must_not: [speakerFilter(speaker), { term: { postId: current.postId } }],
+        must_not: [
+          speakerFilter(speaker),
+          { term: { postId: current.postId } },
+        ],
         should: [
           { term: { "grouping.key": current.grouping.key } },
           { match: { statement: current.statement } },
@@ -145,7 +158,10 @@ export async function findCrossSpeakerParallels(input: {
   );
 
   const currentPassage = collapse(current.passage).toLowerCase();
-  const byPassage = new Map<string, { o: ClaimOccurrence; speaker: VerifiedSpeaker }>();
+  const byPassage = new Map<
+    string,
+    { o: ClaimOccurrence; speaker: VerifiedSpeaker }
+  >();
   const seen = new Set<string>();
   for (const hit of hits) {
     const parsed = ClaimOccurrenceSchema.safeParse(hit.source);
@@ -175,7 +191,9 @@ export async function findCrossSpeakerParallels(input: {
     const prior = byPassage.get(key);
     if (prior) {
       diagnostics.excludedReposts++;
-      if (Date.parse(o.sourcePublishedAt) < Date.parse(prior.o.sourcePublishedAt!)) {
+      if (
+        Date.parse(o.sourcePublishedAt) < Date.parse(prior.o.sourcePublishedAt!)
+      ) {
         byPassage.set(key, { o, speaker: other });
       }
       continue;
@@ -196,7 +214,11 @@ export async function findCrossSpeakerParallels(input: {
     `Boundary: ${boundary}`,
     boundary,
     JSON.stringify({
-      current: { speaker: speaker.name, statement: current.statement, passage: current.passage },
+      current: {
+        speaker: speaker.name,
+        statement: current.statement,
+        passage: current.passage,
+      },
       candidates: [...ids].map(([id, c]) => ({
         id,
         speaker: c.speaker.name,
@@ -213,7 +235,9 @@ export async function findCrossSpeakerParallels(input: {
       { system: prompt.instructions, user, maxOutputChars: 12_000 },
       input.signal ?? new AbortController().signal,
     );
-    output = ModelSchema.parse(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+    output = ModelSchema.parse(
+      JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)),
+    );
   } catch {
     diagnostics.rejectedByModel = candidates.length;
     return { outcome: "failed", speaker, parallels: [], diagnostics };
@@ -224,12 +248,20 @@ export async function findCrossSpeakerParallels(input: {
   for (const p of output.parallels) {
     const c = ids.get(p.candidate);
     const quote = collapse(p.quote);
-    if (!c || p.confidence !== "high" || !quote || !collapse(c.o.passage).includes(quote)) continue;
+    if (
+      !c ||
+      p.confidence !== "high" ||
+      !quote ||
+      !collapse(c.o.passage).includes(quote)
+    )
+      continue;
     // Borrowing needs the candidate's own verbatim credit naming the speaker.
     const citation =
       p.citationQuote &&
       collapse(c.o.passage).includes(collapse(p.citationQuote)) &&
-      collapse(p.citationQuote).toLowerCase().includes(speaker.name.toLowerCase())
+      collapse(p.citationQuote)
+        .toLowerCase()
+        .includes(speaker.name.toLowerCase())
         ? collapse(p.citationQuote)
         : undefined;
     const parallel: CrossSpeakerParallel = {
@@ -253,7 +285,10 @@ export async function findCrossSpeakerParallels(input: {
     const name = collapse(c.speaker.name).toLowerCase();
     const prior = bySpeaker.get(name);
     if (!prior) accepted++;
-    if (!prior || Date.parse(parallel.publishedAt) < Date.parse(prior.publishedAt)) {
+    if (
+      !prior ||
+      Date.parse(parallel.publishedAt) < Date.parse(prior.publishedAt)
+    ) {
       bySpeaker.set(name, parallel);
     }
   }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createClaim, InvalidClaimError } from "../../src/analysis/claim.js";
+import {
+  createClaim,
+  InvalidClaimError,
+  sourceStatedPeriod,
+} from "../../src/analysis/claim.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import {
   PERIOD_NOT_STATED,
@@ -89,5 +93,47 @@ describe("reporting periods (#889)", () => {
         dates: [{ text: "10 December 1976", value: "1976-12-10" }],
       }),
     ).toBeUndefined();
+  });
+
+  it("keeps relative periods occurrence-only and treats currency amounts as figures (#903 review)", () => {
+    const withPeriod = (text: string) => ({
+      statement: "Acme reported revenue of $10 million.",
+      reportingPeriod: { dependsOnPeriod: true, text },
+    });
+    expect(reportingPeriodIdentity(withPeriod("last year"))).toBe(
+      "occurrence-only",
+    );
+    expect(reportingPeriodIdentity(withPeriod("this quarter"))).toBe(
+      "occurrence-only",
+    );
+    expect(reportingPeriodIdentity(withPeriod("Q3"))).toBe("occurrence-only");
+    expect(reportingPeriodIdentity(withPeriod("Q3 2026"))).toEqual({
+      period: "Q3 2026",
+    });
+    expect(
+      reportingPeriodIdentity({ statement: "Acme reported revenue of $2026." }),
+    ).toBe("occurrence-only");
+    expect(
+      reportingPeriodIdentity({ statement: "The council met in 2019." }),
+    ).toBeUndefined();
+  });
+
+  it("drops period wording the source does not contain, so nothing is inferred", () => {
+    expect(
+      sourceStatedPeriod({ dependsOnPeriod: true, text: "Q4 2026" }, text),
+    ).toEqual({
+      dependsOnPeriod: true,
+    });
+    expect(
+      sourceStatedPeriod({ dependsOnPeriod: true, text: "Q3 2026" }, text),
+    ).toEqual({
+      dependsOnPeriod: true,
+      text: "Q3 2026",
+    });
+    expect(
+      sourceStatedPeriod({ dependsOnPeriod: false, text: "Q3 2026" }, text),
+    ).toEqual({
+      dependsOnPeriod: false,
+    });
   });
 });

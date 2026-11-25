@@ -538,6 +538,22 @@ export function createClaim(draft: ClaimDraft, source: ClaimSource): Claim {
   return parseClaim({ ...body, id }, source);
 }
 
+/**
+ * Keep a model's reporting period only as the source states it (#889): wording
+ * that is not in the source is dropped rather than trusted, so the claim is
+ * treated as having no stated period and is never given an inferred one.
+ */
+export function sourceStatedPeriod(
+  period: ReportingPeriod | undefined,
+  sourceText: string,
+): ReportingPeriod | undefined {
+  if (!period) return undefined;
+  if (!period.dependsOnPeriod) return { dependsOnPeriod: false };
+  return period.text && sourceText.includes(period.text)
+    ? { dependsOnPeriod: true, text: period.text }
+    : { dependsOnPeriod: true };
+}
+
 /** Synthetic source text used by the documentation examples and their tests. */
 const SYNTHETIC_FIRST =
   "The synthetic council said it may raise fees by 3% last spring.";

@@ -9,6 +9,7 @@ import {
   candidateReasons,
   claimRecordId,
   extractGroundedClaims,
+  DEFAULT_GROUNDED_CLAIM_PROMPT,
 } from "../../src/analysis/grounded-claims.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
@@ -34,8 +35,16 @@ const source = (postId = "p1") => ({
   url: `https://pub.example.com/p/${postId}`,
 });
 const themes = [
-  { id: "geoengineering", name: "Geoengineering", definition: "Deliberate weather modification." },
-  { id: "aerial-spraying", name: "Aerial spraying", definition: "Spraying from aircraft." },
+  {
+    id: "geoengineering",
+    name: "Geoengineering",
+    definition: "Deliberate weather modification.",
+  },
+  {
+    id: "aerial-spraying",
+    name: "Aerial spraying",
+    definition: "Spraying from aircraft.",
+  },
 ];
 
 const claim = (over: Record<string, unknown>) => ({
@@ -63,7 +72,11 @@ const RESPONSE = JSON.stringify({
       passage: 'over 90% of planes spray aluminium" in 2019',
       qualifiers: ["over 90%"],
       dates: [{ text: "2019" }],
-      speaker: { kind: "quoted", name: "Dr Smith", attribution: "Dr Smith said" },
+      speaker: {
+        kind: "quoted",
+        name: "Dr Smith",
+        attribution: "Dr Smith said",
+      },
       themeIds: ["aerial-spraying", "geoengineering"],
     }),
     claim({
@@ -79,7 +92,11 @@ const RESPONSE = JSON.stringify({
       passage: "Perhaps the heat is man-made.",
       qualifiers: ["Perhaps"],
     }),
-    claim({ statement: "Bins late", passage: "The bins were late again.", themeIds: ["invented"] }),
+    claim({
+      statement: "Bins late",
+      passage: "The bins were late again.",
+      themeIds: ["invented"],
+    }),
     claim({
       statement: "X",
       passage: "Perhaps the heat is man-made.",
@@ -112,9 +129,15 @@ function model(...responses: string[]): ExtractionModelProvider {
 
 describe("claimRecordId", () => {
   it("keeps signs and operators distinct but ignores case and spacing", () => {
-    expect(claimRecordId("Prices rose +2%")).not.toBe(claimRecordId("Prices rose -2%"));
-    expect(claimRecordId("Dose > 10 mSv")).not.toBe(claimRecordId("Dose < 10 mSv"));
-    expect(claimRecordId("Dose  > 10 MSV")).toBe(claimRecordId("dose > 10 mSv"));
+    expect(claimRecordId("Prices rose +2%")).not.toBe(
+      claimRecordId("Prices rose -2%"),
+    );
+    expect(claimRecordId("Dose > 10 mSv")).not.toBe(
+      claimRecordId("Dose < 10 mSv"),
+    );
+    expect(claimRecordId("Dose  > 10 MSV")).toBe(
+      claimRecordId("dose > 10 mSv"),
+    );
   });
 });
 
@@ -129,14 +152,18 @@ describe("extractGroundedClaims", () => {
     });
     expect(legacy.status).toBe("extracted");
     expect(attributed.status).toBe("extracted");
-    if (legacy.status !== "extracted" || attributed.status !== "extracted") return;
+    if (legacy.status !== "extracted" || attributed.status !== "extracted")
+      return;
     expect(attributed.reused).toBe(false);
     expect(attributed.recordRef.path).not.toBe(legacy.recordRef.path);
     expect(attributed.record.claims[0].occurrence).toMatchObject({
       publisher: { author: "Guest Author" },
     });
     expect(
-      await extractGroundedClaims({ ...input, source: { ...source(), author: "Guest Author" } }),
+      await extractGroundedClaims({
+        ...input,
+        source: { ...source(), author: "Guest Author" },
+      }),
     ).toMatchObject({ reused: true });
   });
   it("accepts themed, self-contained assertions and keeps the rest as candidates (#182)", async () => {
@@ -164,10 +191,16 @@ describe("extractGroundedClaims", () => {
       ["question", ["question", "unclear-referent"]],
       ["speculation", ["no-theme"]],
     ]);
-    expect(rejected.map((r) => r.reason)).toEqual(["unknown-theme-id", "speaker-not-evidenced"]);
+    expect(rejected.map((r) => r.reason)).toEqual([
+      "unknown-theme-id",
+      "speaker-not-evidenced",
+    ]);
 
     // Negation and quantity qualifiers survive; quoted speaker is evidenced.
-    const negated = claims[0].claim as { statement: string; qualifiers: string[] };
+    const negated = claims[0].claim as {
+      statement: string;
+      qualifiers: string[];
+    };
     expect(negated.statement).toContain("not");
     const quoted = claims[1].occurrence as {
       speaker: { name: string; evidence: { start: number } };
@@ -185,10 +218,14 @@ describe("extractGroundedClaims", () => {
     expect(out.claimRecords).toHaveLength(2);
     expect(indexed).toHaveLength(2);
     expect(
-      indexed.map((d) => (d.doc as unknown as { assertionKind: string }).assertionKind),
+      indexed.map(
+        (d) => (d.doc as unknown as { assertionKind: string }).assertionKind,
+      ),
     ).toEqual(["assertion", "quotation"]);
     expect(
-      await content.lookup(`claims/${claimRecordId("The heat may be man-made")}.json`),
+      await content.lookup(
+        `claims/${claimRecordId("The heat may be man-made")}.json`,
+      ),
     ).toBeUndefined();
     const ref = await content.lookup(
       `claims/${claimRecordId("Over 90% of planes spray aluminium")}.json`,
@@ -214,7 +251,9 @@ describe("extractGroundedClaims", () => {
     expect(again.status === "extracted" && again.reused).toBe(true);
     const path = `claims/${claimRecordId("Geoengineering has not been going on for decades")}.json`;
     const read = async () =>
-      ClaimRecordSchema.parse(JSON.parse(await content.read((await content.lookup(path))!)));
+      ClaimRecordSchema.parse(
+        JSON.parse(await content.read((await content.lookup(path))!)),
+      );
     expect((await read()).occurrences).toHaveLength(1);
 
     await extractGroundedClaims({
@@ -223,7 +262,10 @@ describe("extractGroundedClaims", () => {
       source: source("p2"),
       themes,
     });
-    expect((await read()).occurrences.map((o) => o.postId)).toEqual(["p1", "p2"]);
+    expect((await read()).occurrences.map((o) => o.postId)).toEqual([
+      "p1",
+      "p2",
+    ]);
   });
 
   it("does not reuse a cached extraction made against a different theme result", async () => {
@@ -251,7 +293,9 @@ describe("extractGroundedClaims", () => {
     );
     const rec = ClaimRecordSchema.parse(JSON.parse(await content.read(ref!)));
     expect(rec.occurrences).toHaveLength(1);
-    expect(rec.occurrences[0].extraction).toBe(`${two.recordRef.commit}:${two.recordRef.path}`);
+    expect(rec.occurrences[0].extraction).toBe(
+      `${two.recordRef.commit}:${two.recordRef.path}`,
+    );
     if (one.status !== "extracted") throw new Error();
     expect(rec.occurrences[0].extractions).toEqual([
       `${one.recordRef.commit}:${one.recordRef.path}`,
@@ -269,7 +313,9 @@ describe("extractGroundedClaims", () => {
     if (ok.status !== "extracted") throw new Error();
     expect(ok.record.extraction).toMatchObject({
       modelVersion: "fake/model",
-      promptVersion: expect.stringMatching(/^analysis-grounded-claims-v6-sha256:[0-9a-f]{64}$/),
+      promptVersion: expect.stringMatching(
+        /^analysis-grounded-claims-v7-sha256:[0-9a-f]{64}$/,
+      ),
     });
     const bad = await extractGroundedClaims({
       provider: model("nope", "{}"),
@@ -277,9 +323,15 @@ describe("extractGroundedClaims", () => {
       source: source("p3"),
       themes,
     });
-    expect(bad).toMatchObject({ status: "failed", reason: "malformed-output", attempts: 2 });
+    expect(bad).toMatchObject({
+      status: "failed",
+      reason: "malformed-output",
+      attempts: 2,
+    });
     // Bounded, private diagnostics of each malformed attempt.
-    const malformed = (bad as { malformed?: Array<{ reason: string; stage: string }> }).malformed;
+    const malformed = (
+      bad as { malformed?: Array<{ reason: string; stage: string }> }
+    ).malformed;
     expect(malformed?.map((m) => m.stage)).toEqual(["schema", "schema"]);
     expect(malformed?.[0].reason).toBe("not-json");
   });
@@ -303,7 +355,11 @@ describe("record versions (#182)", () => {
         },
       ],
       rejected: [],
-      extraction: { modelVersion: "m", promptVersion: "p", extractedAt: "2026-01-01T00:00:00Z" },
+      extraction: {
+        modelVersion: "m",
+        promptVersion: "p",
+        extractedAt: "2026-01-01T00:00:00Z",
+      },
     };
     const parsed = ClaimExtractionRecordSchema.parse(v1);
     expect(parsed.schemaVersion).toBe(1);
@@ -312,14 +368,26 @@ describe("record versions (#182)", () => {
 
   it("accepts a themed claim whose speaker and date are unknown", () => {
     expect(
-      candidateReasons("assertion", ["geoengineering"], "Geoengineering has run for decades"),
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Geoengineering has run for decades",
+      ),
     ).toEqual([]);
-    expect(candidateReasons("speculation", ["geoengineering"], "The heat may be man-made")).toEqual(
-      [],
-    );
-    expect(candidateReasons("assertion", ["geoengineering"], "They are poisoning us")).toEqual([
-      "unclear-referent",
-    ]);
+    expect(
+      candidateReasons(
+        "speculation",
+        ["geoengineering"],
+        "The heat may be man-made",
+      ),
+    ).toEqual([]);
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "They are poisoning us",
+      ),
+    ).toEqual(["unclear-referent"]);
     // Impersonal and demonstrative constructions are self-contained.
     expect(
       candidateReasons(
@@ -329,7 +397,11 @@ describe("record versions (#182)", () => {
       ),
     ).toEqual([]);
     expect(
-      candidateReasons("assertion", ["geoengineering"], "This treaty bans weather warfare"),
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "This treaty bans weather warfare",
+      ),
     ).toEqual([]);
   });
   it("recovers a quotation differing only in case, saving the source text and the candidate (#202)", async () => {
@@ -366,22 +438,28 @@ describe("record versions (#182)", () => {
       candidate: "geoengineering HAS NOT been going on for decades",
     });
     // Dropping the negation is a material change, never recovered.
-    expect(out.record.rejected.map((r) => r.reason)).toContain("passage-not-found");
+    expect(out.record.rejected.map((r) => r.reason)).toContain(
+      "passage-not-found",
+    );
   });
 
   it("keeps a pure call to action as a not-self-contained candidate", () => {
-    expect(candidateReasons("assertion", ["geoengineering"], "Stop spraying us now")).toEqual([
-      "not-self-contained",
-    ]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Do not spray us")).toEqual([
-      "not-self-contained",
-    ]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Wake up now")).toEqual([
-      "not-self-contained",
-    ]);
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Stop spraying us now"),
+    ).toEqual(["not-self-contained"]);
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Do not spray us"),
+    ).toEqual(["not-self-contained"]);
+    expect(
+      candidateReasons("assertion", ["geoengineering"], "Wake up now"),
+    ).toEqual(["not-self-contained"]);
     // A statement that carries a checkable clause is still an accepted claim.
     expect(
-      candidateReasons("assertion", ["geoengineering"], "Stop spraying because the soil is toxic"),
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Stop spraying because the soil is toxic",
+      ),
     ).toEqual([]);
     expect(
       candidateReasons(
@@ -392,18 +470,36 @@ describe("record versions (#182)", () => {
     ).toEqual([]);
     // A noun that merely opens with an imperative word is not an imperative.
     expect(
-      candidateReasons("assertion", ["geoengineering"], "Stop signs prevent accidents"),
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Stop signs prevent accidents",
+      ),
     ).toEqual([]);
-    expect(candidateReasons("assertion", ["geoengineering"], "Vote rigging happened")).toEqual([]);
     expect(
-      candidateReasons("assertion", ["geoengineering"], "Fight back was the headline"),
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Vote rigging happened",
+      ),
+    ).toEqual([]);
+    expect(
+      candidateReasons(
+        "assertion",
+        ["geoengineering"],
+        "Fight back was the headline",
+      ),
     ).toEqual([]);
   });
 
   it("accepts a short exact quotation that is self-contained", () => {
     // Exact equality with the passage is never on its own a rejection reason.
     expect(
-      candidateReasons("quotation", ["geoengineering"], "The council raised fees by 3%"),
+      candidateReasons(
+        "quotation",
+        ["geoengineering"],
+        "The council raised fees by 3%",
+      ),
     ).toEqual([]);
   });
 });
@@ -469,7 +565,9 @@ describe("configured source attribution (#462)", () => {
         sourceMetadataVersion: attribution.sourceMetadataVersion,
       });
     // The stored occurrence keeps only what the capture observed.
-    expect(out.record.claims[0]!.occurrence.publisher).not.toHaveProperty("attributedAuthor");
+    expect(out.record.claims[0]!.occurrence.publisher).not.toHaveProperty(
+      "attributedAuthor",
+    );
     // A reused extraction is indexed with the same projection.
     docs.length = 0;
     const again = await extractGroundedClaims({
@@ -550,9 +648,12 @@ describe("configured source attribution (#462)", () => {
     const authors = async () => {
       const out: unknown[] = [];
       for (const path of await content.list("claims", 1000)) {
-        const rec = JSON.parse(await content.read((await content.lookup(path))!));
+        const rec = JSON.parse(
+          await content.read((await content.lookup(path))!),
+        );
         for (const o of rec.occurrences ?? [])
-          if (o.postId === "p-attr-refresh" && o.speakerKind === "author-voice") out.push(o.author);
+          if (o.postId === "p-attr-refresh" && o.speakerKind === "author-voice")
+            out.push(o.author);
       }
       return out;
     };
@@ -572,7 +673,9 @@ describe("configured source attribution (#462)", () => {
     });
     const set = await authors();
     expect(set.length).toBeGreaterThan(0);
-    expect(set.every((a) => (a as { name: string }).name === "Configured Author")).toBe(true);
+    expect(
+      set.every((a) => (a as { name: string }).name === "Configured Author"),
+    ).toBe(true);
     await extractGroundedClaims({
       provider: model(RESPONSE),
       artifacts: content,
@@ -622,5 +725,51 @@ describe("configured source attribution (#462)", () => {
     expect(same.reused).toBe(true);
     expect(changed.reused).toBe(false);
     expect(changed.recordRef.path).not.toBe(first.recordRef.path);
+  });
+});
+
+describe("reporting periods through the grounded extractor (#889)", () => {
+  it("records the source-stated period, drops invented wording and marks absence on new claims", async () => {
+    const response = JSON.stringify({
+      claims: [
+        claim({
+          statement: "Over 90% of planes spray aluminium",
+          passage: "over 90% of planes spray aluminium",
+          themeIds: ["aerial-spraying"],
+          reportingPeriod: { dependsOnPeriod: true, text: "2019" },
+        }),
+        claim({
+          statement: "Geoengineering has not been going on for decades",
+          passage: "Geoengineering has not been going on for decades",
+          themeIds: ["geoengineering"],
+          // Wording the source does not contain is dropped, never trusted.
+          reportingPeriod: { dependsOnPeriod: true, text: "fiscal 2031" },
+        }),
+        claim({
+          statement: "Perhaps the heat is man-made",
+          passage: "Perhaps the heat is man-made.",
+          kind: "speculation",
+          themeIds: ["geoengineering"],
+        }),
+      ],
+    });
+    const out = await extractGroundedClaims({
+      provider: model(response),
+      artifacts: content,
+      source: source("period-889"),
+      themes,
+    });
+    if (out.status !== "extracted") throw new Error(out.status);
+    const all = [...out.record.claims, ...(out.record.candidates ?? [])].map(
+      (c) => c.claim as { statement: string; reportingPeriod?: unknown },
+    );
+    const by = (s: string) =>
+      all.find((c) => c.statement.startsWith(s))!.reportingPeriod;
+    expect(by("Over 90%")).toEqual({ dependsOnPeriod: true, text: "2019" });
+    expect(by("Geoengineering")).toEqual({ dependsOnPeriod: true });
+    expect(by("Perhaps")).toEqual({ dependsOnPeriod: false });
+    expect(DEFAULT_GROUNDED_CLAIM_PROMPT.version).toMatch(
+      /^analysis-grounded-claims-v7-/,
+    );
   });
 });

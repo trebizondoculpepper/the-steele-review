@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
+  sourceStatedPeriod,
   ReportingPeriodSchema,
   ClaimTypeSchema,
   DateMentionSchema,
@@ -385,7 +386,10 @@ export class ClaimExtractor {
             qualifiers: parsed.data.qualifiers,
             entities: parsed.data.entities,
             dates: parsed.data.dates,
-            reportingPeriod: parsed.data.reportingPeriod,
+            reportingPeriod: sourceStatedPeriod(
+              parsed.data.reportingPeriod,
+              source.text,
+            ),
             extraction,
           },
           source,

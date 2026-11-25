@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  ArtifactReferenceSchema,
+  type ArtifactReference,
+} from "../content/artifact-reference.js";
 import { sourceVersionFor } from "../content/fulltext-document.js";
 
 /**
@@ -47,16 +50,33 @@ export function normaliseThemeLabel(wording: string): string {
 
 export const ThemeEvidenceSchema = z
   .object({
-    start: z.number().int().min(0).describe("Inclusive start offset in UTF-16 code units."),
-    end: z.number().int().min(1).describe("Exclusive end offset in UTF-16 code units."),
-    passage: z.string().min(1).max(4000).describe("Exact source text between start and end."),
+    start: z
+      .number()
+      .int()
+      .min(0)
+      .describe("Inclusive start offset in UTF-16 code units."),
+    end: z
+      .number()
+      .int()
+      .min(1)
+      .describe("Exclusive end offset in UTF-16 code units."),
+    passage: z
+      .string()
+      .min(1)
+      .max(4000)
+      .describe("Exact source text between start and end."),
   })
   .strict()
-  .meta({ title: "ThemeEvidence", description: "One exact source span supporting a theme." });
+  .meta({
+    title: "ThemeEvidence",
+    description: "One exact source span supporting a theme.",
+  });
 
 export const ThemeConfidenceSchema = z
   .enum(["low", "medium", "high"])
-  .describe("How clearly the source engages with the theme. Not a judgement about truth.");
+  .describe(
+    "How clearly the source engages with the theme. Not a judgement about truth.",
+  );
 
 export const ThemeSchema = z
   .object({
@@ -65,12 +85,19 @@ export const ThemeSchema = z
       .min(1)
       .max(MAX_LABEL)
       .describe("Normalised theme label: the normalised form of `wording`."),
-    wording: z.string().trim().min(1).max(200).describe("The theme as the extractor worded it."),
+    wording: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .describe("The theme as the extractor worded it."),
     confidence: ThemeConfidenceSchema,
     novel: z
       .boolean()
       .optional()
-      .describe("True when the label is outside a supplied known vocabulary; omitted without one."),
+      .describe(
+        "True when the label is outside a supplied known vocabulary; omitted without one.",
+      ),
     evidence: z
       .array(ThemeEvidenceSchema)
       .min(1)
@@ -91,7 +118,9 @@ export const ThemeSetSchema = z
     sourceVersion: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/)
-      .describe("Content hash of the whole source text the themes were extracted from."),
+      .describe(
+        "Content hash of the whole source text the themes were extracted from.",
+      ),
     artifact: ArtifactReferenceSchema,
     themes: z.array(ThemeSchema).max(30),
     extraction: z
@@ -105,7 +134,8 @@ export const ThemeSetSchema = z
   .strict()
   .meta({
     title: "ThemeSet",
-    description: "Themes extracted from one versioned captured text, each with exact evidence.",
+    description:
+      "Themes extracted from one versioned captured text, each with exact evidence.",
   });
 export type ThemeSet = z.infer<typeof ThemeSetSchema>;
 
@@ -139,39 +169,60 @@ export function parseThemeSet(
   knownLabels?: ReadonlySet<string>,
 ): ThemeSet {
   const parsed = ThemeSetSchema.safeParse(input);
-  if (!parsed.success) throw new InvalidThemeError("structure failed validation");
+  if (!parsed.success)
+    throw new InvalidThemeError("structure failed validation");
   const set = parsed.data;
   if (
     set.sourceVersion !== source.sourceVersion ||
     sourceVersionFor(source.text) !== set.sourceVersion
   ) {
-    throw new InvalidThemeError("source version does not match the supplied source");
+    throw new InvalidThemeError(
+      "source version does not match the supplied source",
+    );
   }
   for (const field of ["repository", "commit", "path", "hash"] as const) {
     if (set.artifact[field] !== source.artifact[field]) {
-      throw new InvalidThemeError("artifact does not match the supplied source artifact");
+      throw new InvalidThemeError(
+        "artifact does not match the supplied source artifact",
+      );
     }
   }
   const labels = new Set<string>();
   for (const theme of set.themes) {
     const normalised = normaliseThemeLabel(theme.wording);
     if (!normalised || theme.label !== normalised) {
-      throw new InvalidThemeError("label is not the normalised form of its wording");
+      throw new InvalidThemeError(
+        "label is not the normalised form of its wording",
+      );
     }
-    if (labels.has(theme.label)) throw new InvalidThemeError("duplicate theme label");
+    if (labels.has(theme.label))
+      throw new InvalidThemeError("duplicate theme label");
     labels.add(theme.label);
-    if (knownLabels !== undefined && theme.novel !== !knownLabels.has(theme.label)) {
-      throw new InvalidThemeError("novel flag does not match the known vocabulary");
+    if (
+      knownLabels !== undefined &&
+      theme.novel !== !knownLabels.has(theme.label)
+    ) {
+      throw new InvalidThemeError(
+        "novel flag does not match the known vocabulary",
+      );
     }
     if (knownLabels === undefined && theme.novel !== undefined) {
-      throw new InvalidThemeError("novel flag given without a known vocabulary");
+      throw new InvalidThemeError(
+        "novel flag given without a known vocabulary",
+      );
     }
     for (const evidence of theme.evidence) {
       if (evidence.end <= evidence.start || evidence.end > source.text.length) {
-        throw new InvalidThemeError("evidence span lies outside the source text");
+        throw new InvalidThemeError(
+          "evidence span lies outside the source text",
+        );
       }
-      if (source.text.slice(evidence.start, evidence.end) !== evidence.passage) {
-        throw new InvalidThemeError("evidence passage does not match the source text at that span");
+      if (
+        source.text.slice(evidence.start, evidence.end) !== evidence.passage
+      ) {
+        throw new InvalidThemeError(
+          "evidence passage does not match the source text at that span",
+        );
       }
     }
   }
