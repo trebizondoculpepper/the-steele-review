@@ -8,8 +8,10 @@
 set -euo pipefail
 : "${STEELE_EXP_HOST:?set STEELE_EXP_HOST}" "${STEELE_EXP_DIR:?set STEELE_EXP_DIR}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
-tag="$(git -C "$here" rev-parse --short=12 HEAD)$(git -C "$here" diff --quiet -- . || echo -dirty)-$(date -u +%Y%m%d%H%M%S)"
-rsync -a --delete --exclude node_modules --exclude .mastra --exclude .data "$here/" "$STEELE_EXP_HOST:$STEELE_EXP_DIR/src/"
+tag="$(git -C "$here" rev-parse --short=12 HEAD)$(git -C "$here" diff --quiet HEAD -- . || echo -dirty)-$(date -u +%Y%m%d%H%M%S)"
+# Transfer only files tracked by Git, so local configuration, tokens or .env
+# files in the working tree can never reach the host or the image.
+git -C "$here" ls-files -z -- . | rsync -a --delete --from0 --files-from=- "$here/" "$STEELE_EXP_HOST:$STEELE_EXP_DIR/src/"
 ssh -o BatchMode=yes "$STEELE_EXP_HOST" bash -s -- "$STEELE_EXP_DIR" "$tag" <<'REMOTE'
 set -euo pipefail
 dir="$1"; tag="$2"; cd "$dir"
