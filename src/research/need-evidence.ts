@@ -11,7 +11,10 @@ import { canonicalNeed } from "./canonical-need.js";
 import { readResearchNeedBindings } from "./need-bindings.js";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { CanonicalNeedSchema, canonicalNeedId } from "./canonical-need.js";
 import {
   ResearchManifestSchema,
@@ -20,8 +23,15 @@ import {
   researchJobId,
   researchJobPath,
 } from "./job.js";
-import { SavedReportSchema, savedSourceSchema, MAX_SAVED_REPORT_CHARS } from "./runner.js";
-type EvidenceStore = Pick<GitArtifactStore, "read" | "lookup" | "lookupAt" | "list">;
+import {
+  SavedReportSchema,
+  savedSourceSchema,
+  MAX_SAVED_REPORT_CHARS,
+} from "./runner.js";
+type EvidenceStore = Pick<
+  GitArtifactStore,
+  "read" | "lookup" | "lookupAt" | "list"
+>;
 const Ref = ArtifactReferenceSchema;
 export const ResearchNeedEvidenceSchema = z
   .object({
@@ -48,7 +58,8 @@ const reference = (r: ArtifactRef) => ({
   path: r.path,
   hash: `sha256:${r.sha256}`,
 });
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = (a: unknown, b: unknown) =>
+  JSON.stringify(a) === JSON.stringify(b);
 
 /** Validate the exact original request, paid report and support before projecting into a new post. */
 export async function readResearchNeedEvidence(
@@ -65,12 +76,19 @@ export async function readResearchNeedEvidence(
   let passageId = needId;
   if (request.canonicalNeeds) {
     if (!proof.bindings) throw new Error("research-need-binding-missing");
-    const bindings = await readResearchNeedBindings(artifacts, artifact(proof.bindings));
-    const selected = request.canonicalNeeds.needs.find((n) => canonicalNeedId(n) === needId);
+    const bindings = await readResearchNeedBindings(
+      artifacts,
+      artifact(proof.bindings),
+    );
+    const selected = request.canonicalNeeds.needs.find(
+      (n) => canonicalNeedId(n) === needId,
+    );
     if (
       !selected ||
       !same(selected, proof.need) ||
-      !bindings.entries.some((e) => e.needId === needId && same(e.need, proof.need))
+      !bindings.entries.some(
+        (e) => e.needId === needId && same(e.need, proof.need),
+      )
     )
       throw new Error("research-need-binding-mismatch");
   } else {
@@ -97,7 +115,8 @@ export async function readResearchNeedEvidence(
     throw new Error("research-need-manifest-mismatch");
   let stagedKeys: Map<string, string> | undefined;
   if (proof.staged) {
-    if (!acceptance) throw new Error("research-need-discovery-acceptance-required");
+    if (!acceptance)
+      throw new Error("research-need-discovery-acceptance-required");
     stagedKeys = await readStagedNeedEvidence({
       artifacts,
       acceptance,
@@ -114,14 +133,22 @@ export async function readResearchNeedEvidence(
     const report = SavedReportSchema.parse(
       JSON.parse(await artifacts.read(artifact(proof.report))),
     );
-    if (report.jobId !== jobId || proof.report.path !== `research-jobs/${jobId}/report.json`)
+    if (
+      report.jobId !== jobId ||
+      proof.report.path !== `research-jobs/${jobId}/report.json`
+    )
       throw new Error("research-need-report-mismatch");
   }
   const allowed = new Set(request.claims.map((c) => c.claimRecordId));
-  if (manifest.citations.some((c) => c.passages.some((p) => !allowed.has(p.claimRecordId))))
+  if (
+    manifest.citations.some((c) =>
+      c.passages.some((p) => !allowed.has(p.claimRecordId)),
+    )
+  )
     throw new Error("research-need-passage-mismatch");
   const citations: { url: string; passage: string }[] = [];
-  const normalise = (value: string) => value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  const normalise = (value: string) =>
+    value.normalize("NFC").replace(/\s+/gu, " ").trim();
   for (const citation of manifest.citations) {
     if (
       citation.retrieval !== "archived" ||
@@ -131,22 +158,31 @@ export async function readResearchNeedEvidence(
       !citation.url.startsWith("https://")
     )
       continue;
-    const matching = citation.passages.filter((p) => p.claimRecordId === passageId);
+    const matching = citation.passages.filter(
+      (p) => p.claimRecordId === passageId,
+    );
     if (!matching.length) continue;
-    const rawSource = JSON.parse(await artifacts.read(artifact(citation.archivedArtifact)));
+    const rawSource = JSON.parse(
+      await artifacts.read(artifact(citation.archivedArtifact)),
+    );
     const source = stagedKeys
       ? CitationSnapshotSchema.parse(rawSource)
       : savedSourceSchema(MAX_SAVED_REPORT_CHARS).parse(rawSource);
     const sourceMatches = stagedKeys
       ? "retrievalKey" in source &&
-        source.retrievalKey === stagedKeys.get(JSON.stringify(citation.archivedArtifact))
+        source.retrievalKey ===
+          stagedKeys.get(JSON.stringify(citation.archivedArtifact))
       : source.url === citation.url;
     if (
       !sourceMatches ||
-      matching.some((p) => !normalise(source.text).includes(normalise(p.passage)))
+      matching.some(
+        (p) => !normalise(source.text).includes(normalise(p.passage)),
+      )
     )
       throw new Error("research-need-source-passage-mismatch");
-    citations.push(...matching.map((p) => ({ url: citation.url, passage: p.passage })));
+    citations.push(
+      ...matching.map((p) => ({ url: citation.url, passage: p.passage })),
+    );
   }
   return { proof, request, result, manifest, citations };
 }
@@ -159,7 +195,9 @@ export async function researchNeedEvidence(
   bindingsRef?: ArtifactRef,
   acceptance?: DiscoveryAcceptance,
 ): Promise<ResearchNeedEvidence> {
-  const result = ResearchResultSchema.parse(JSON.parse(await artifacts.read(resultRef)));
+  const result = ResearchResultSchema.parse(
+    JSON.parse(await artifacts.read(resultRef)),
+  );
   if (!result.manifest) throw new Error("research-need-result-mismatch");
   const request = await artifacts.lookupAt(
     resultRef.commit,
@@ -179,7 +217,13 @@ export async function researchNeedEvidence(
     report: manifest.report,
     ...(result.manifest.path === researchJobPath(result.jobId, "manifest")
       ? {}
-      : { staged: await stagedNeedEvidence(artifacts, resultRef, artifact(result.manifest)) }),
+      : {
+          staged: await stagedNeedEvidence(
+            artifacts,
+            resultRef,
+            artifact(result.manifest),
+          ),
+        }),
   });
   await readResearchNeedEvidence(artifacts, proof, acceptance);
   return proof;
@@ -208,7 +252,8 @@ async function legacyRequestNeeds(
     record.sourceVersion !== themes.sourceVersion ||
     !same(themes.artifact, post.sourceArtifact) ||
     (record.themeResult &&
-      record.themeResult !== `${post.themeResult.commit}:${post.themeResult.path}`)
+      record.themeResult !==
+        `${post.themeResult.commit}:${post.themeResult.path}`)
   )
     return out;
   for (const requested of request.claims) {
@@ -219,8 +264,8 @@ async function legacyRequestNeeds(
     if (!rows.length) continue;
     const needs = rows.map(({ claim, index }) => {
       if (
-        z.looseObject({ statement: z.string() }).parse(claim.claim).statement !==
-          requested.statement ||
+        z.looseObject({ statement: z.string() }).parse(claim.claim)
+          .statement !== requested.statement ||
         claim.themeIds.some((id) => !themes.proposals.some((p) => p.id === id))
       )
         return undefined;
@@ -261,7 +306,9 @@ async function legacyRequestNeed(
   expected: z.infer<typeof CanonicalNeedSchema>,
 ) {
   if (expected.occurrenceScope) return undefined;
-  return (await legacyRequestNeeds(artifacts, request)).get(canonicalNeedId(expected));
+  return (await legacyRequestNeeds(artifacts, request)).get(
+    canonicalNeedId(expected),
+  );
 }
 
 class LegacyProofLimitError extends Error {}
@@ -270,10 +317,15 @@ export type LegacyNeedLookup =
   | { status: "found"; proof: ResearchNeedEvidence }
   | {
       status: "unavailable";
-      reason: "legacy-proof-missing" | "legacy-proof-scan-bound" | "legacy-proof-ambiguous";
+      reason:
+        | "legacy-proof-missing"
+        | "legacy-proof-scan-bound"
+        | "legacy-proof-ambiguous";
     };
 /** Exact immutable reads may be shared within one assessment, never across mutable path lookups. */
-export function cachedResearchEvidenceStore(artifacts: EvidenceStore): EvidenceStore {
+export function cachedResearchEvidenceStore(
+  artifacts: EvidenceStore,
+): EvidenceStore {
   const reads = new Map<string, Promise<string>>();
   return {
     lookup: artifacts.lookup.bind(artifacts),
@@ -304,14 +356,16 @@ export function createLegacyResearchNeedLookup(
       const key = JSON.stringify(reference(ref));
       let value = reads.get(key);
       if (!value) {
-        if (reads.size >= 20000) throw new LegacyProofLimitError("research-need-legacy-read-limit");
+        if (reads.size >= 20000)
+          throw new LegacyProofLimitError("research-need-legacy-read-limit");
         value = artifacts.read(ref);
         reads.set(key, value);
       }
       return value;
     },
   };
-  let index: Promise<Map<string, z.infer<typeof ResearchRequestSchema>[]>> | undefined;
+  let index:
+    Promise<Map<string, z.infer<typeof ResearchRequestSchema>[]>> | undefined;
   let limited = false;
   const ambiguous = new Set<string>();
   const build = async () => {
@@ -326,17 +380,23 @@ export function createLegacyResearchNeedLookup(
         return out;
       }
       for (const path of page) {
-        if (!/^research-jobs\/research-[0-9a-f]{32}\/request\.json$/.test(path)) continue;
+        if (!/^research-jobs\/research-[0-9a-f]{32}\/request\.json$/.test(path))
+          continue;
         const ref = await artifacts.lookup(path);
         if (!ref) throw new Error("research-need-legacy-lookup-changed");
-        const request = ResearchRequestSchema.parse(JSON.parse(await cached.read(ref)));
+        const request = ResearchRequestSchema.parse(
+          JSON.parse(await cached.read(ref)),
+        );
         if (request.canonicalNeeds || request.origin !== "extraction") continue;
         rows += request.claims.length;
         if (rows > 20000) {
           limited = true;
           return out;
         }
-        for (const [id, passageId] of await legacyRequestNeeds(cached, request)) {
+        for (const [id, passageId] of await legacyRequestNeeds(
+          cached,
+          request,
+        )) {
           if (passageId === undefined) ambiguous.add(id);
           else out.set(id, [...(out.get(id) ?? []), request]);
         }
@@ -359,21 +419,44 @@ export function createLegacyResearchNeedLookup(
           return new Map();
         });
         const candidates = (await index).get(id) ?? [];
-        if (limited) return { status: "unavailable", reason: "legacy-proof-scan-bound" };
-        for (const request of candidates) {
-          const resultRef = await artifacts.lookup(
-            researchJobPath(researchJobId(request), "result"),
-          );
-          if (!resultRef) continue;
-          const saved = ResearchResultSchema.parse(JSON.parse(await cached.read(resultRef)));
-          if (saved.outcome === "failed") continue;
-          const proof = await researchNeedEvidence(cached, resultRef, need, undefined, acceptance);
-          const checked = await readResearchNeedEvidence(cached, proof, acceptance);
-          if (checked.citations.length) return { status: "found", proof };
+        if (limited)
+          return { status: "unavailable", reason: "legacy-proof-scan-bound" };
+        // Validating candidates spends the same read budget as the index, so
+        // running out here is the same explicit, bounded unavailability.
+        try {
+          for (const request of candidates) {
+            const resultRef = await artifacts.lookup(
+              researchJobPath(researchJobId(request), "result"),
+            );
+            if (!resultRef) continue;
+            const saved = ResearchResultSchema.parse(
+              JSON.parse(await cached.read(resultRef)),
+            );
+            if (saved.outcome === "failed") continue;
+            const proof = await researchNeedEvidence(
+              cached,
+              resultRef,
+              need,
+              undefined,
+              acceptance,
+            );
+            const checked = await readResearchNeedEvidence(
+              cached,
+              proof,
+              acceptance,
+            );
+            if (checked.citations.length) return { status: "found", proof };
+          }
+        } catch (error) {
+          if (!(error instanceof LegacyProofLimitError)) throw error;
+          limited = true;
+          return { status: "unavailable", reason: "legacy-proof-scan-bound" };
         }
         return {
           status: "unavailable",
-          reason: ambiguous.has(id) ? "legacy-proof-ambiguous" : "legacy-proof-missing",
+          reason: ambiguous.has(id)
+            ? "legacy-proof-ambiguous"
+            : "legacy-proof-missing",
         };
       })();
       results.set(id, result);
