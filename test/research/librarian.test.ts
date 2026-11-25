@@ -1489,4 +1489,104 @@ describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
       r.requests.flatMap((q) => q.claims.map((c) => c.claimRecordId)),
     ).toContain("claim-revenue-q");
   });
+
+  it("sends the stated period to research, so the prompt, judge and job identity carry it", async () => {
+    const revenue = (period?: string) => ({
+      id: "claim-revenue-p",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: period
+        ? { dependsOnPeriod: true, text: period }
+        : { dependsOnPeriod: true },
+    });
+    const ask = async (postId: string, period: string) => {
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...(await analysis(postId, [revenue(period)])),
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return r.requests
+        .flatMap((q) => q.claims)
+        .find((c) => c.claimRecordId === "claim-revenue-p")!;
+    };
+    const q3 = await ask("req-q3", "Q3 2026");
+    const q4 = await ask("req-q4", "Q4 2026");
+    expect(q3.statement).toBe(
+      "Acme reported revenue of 10 million [reporting period: Q3 2026]",
+    );
+    expect(q4.statement).toContain("[reporting period: Q4 2026]");
+    // A relative period also names its post.
+    const relative = await ask("req-rel", "last year");
+    expect(relative.statement).toContain(
+      "[reporting period: last year, as stated in pub/req-rel]",
+    );
+  });
+
+  it("keeps a claim eligible when any of its occurrences states the period", async () => {
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...(await analysis("mixed-occ", [
+        {
+          id: "claim-mixed",
+          statement: "Acme reported revenue of 10 million",
+          reportingPeriod: { dependsOnPeriod: true },
+        },
+        {
+          id: "claim-mixed",
+          statement: "Acme reported revenue of 10 million",
+          reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+        },
+      ])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      record.claims.find((c) => c.claimRecordId === "claim-mixed")!.reason,
+    ).not.toBe(PERIOD_NOT_STATED);
+    expect(
+      r.requests.flatMap((q) => q.claims.map((c) => c.statement)),
+    ).toContain(
+      "Acme reported revenue of 10 million [reporting period: Q3 2026]",
+    );
+  });
+
+  it("reassessing reuses only this analysis's own coverage, never another post's later evidence", async () => {
+    const revenue = (period: string) => ({
+      id: "claim-revenue-r",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text: period },
+    });
+    const q3 = await analysis("reassess-q3", [revenue("Q3 2026")]);
+    const assess = async (
+      a: typeof q3,
+      plan: Parameters<typeof researcher>[0],
+    ) => {
+      const r = researcher(plan);
+      const { record } = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return { record, r };
+    };
+    await assess(q3, () => "busy"); // Q3 research pending
+    await assess(
+      await analysis("reassess-q4", [revenue("Q4 2026")]),
+      (req) => ({
+        passages: req.claims.map((c) => ({
+          claimRecordId: c.claimRecordId,
+          url: SHARED,
+        })),
+      }),
+    ); // Q4 evidence saved under the same statement-keyed entry
+    const again = await assess(q3, () => "busy");
+    const claim = again.record.claims.find(
+      (c) => c.claimRecordId === "claim-revenue-r",
+    )!;
+    expect(claim.reused).toBe(false);
+    expect(claim.status).not.toBe("evidence-found");
+  });
 });

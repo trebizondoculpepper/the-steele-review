@@ -72,3 +72,24 @@ const RELATIVE =
 function fullySpecified(text: string): boolean {
   return /\b(1[5-9]|20)\d{2}\b/.test(text) && !RELATIVE.test(text);
 }
+
+/**
+ * The statement research is asked about (#889). For a new claim whose figure
+ * depends on a stated period, the period is appended, so the researcher and
+ * the support judge evaluate it for that period and the job identity differs
+ * per period. A relative period also names the post it was stated in, since
+ * "last year" means different years in different posts. Older claims, and
+ * claims that do not depend on a period, are unchanged.
+ */
+export function researchStatement(
+  statement: string,
+  claim: unknown,
+  post?: { publicationId: string; postId: string },
+): string {
+  const parsed = ClaimShape.safeParse(claim);
+  const period = parsed.success ? parsed.data.reportingPeriod : undefined;
+  if (!period?.dependsOnPeriod || !period.text) return statement;
+  return fullySpecified(period.text) || !post
+    ? `${statement} [reporting period: ${period.text}]`
+    : `${statement} [reporting period: ${period.text}, as stated in ${post.publicationId}/${post.postId}]`;
+}
