@@ -1472,15 +1472,34 @@ export async function assessPostCoverage(input: {
       if (claim.need) {
         for (const id of mapped) {
           const dossier = existing.get(id);
+          // Each dossier is searched with the need bound to its own theme
+          // (the need ID includes the theme); the home need is kept for
+          // commissioning. A theme with no single bound need is skipped.
+          const themeNeeds = [
+            ...new Map(
+              bindings!.entries
+                .filter(
+                  (e) => e.themeId === id && e.claimRecordId === claim.key,
+                )
+                .map((e) => [e.needId, e.need]),
+            ).values(),
+          ];
+          const themeNeed =
+            id === home
+              ? claim.need
+              : themeNeeds.length === 1
+                ? themeNeeds[0]!
+                : undefined;
+          if (!themeNeed) continue;
           const proofs: ResearchNeedEvidence[] =
             dossier?.metadata.researchNeeds?.filter(
-              (p) => canonicalNeedId(p.need) === canonicalNeedId(claim.need!),
+              (p) => canonicalNeedId(p.need) === canonicalNeedId(themeNeed),
             ) ?? [];
           if (
             !proofs.length &&
             dossier?.metadata.claims.some((c) => c.status === "covered")
           ) {
-            const legacy = await legacyNeedLookup(claim.need);
+            const legacy = await legacyNeedLookup(themeNeed);
             if (legacy.status === "found") proofs.push(legacy.proof);
             else
               reuseLimitations.push({
