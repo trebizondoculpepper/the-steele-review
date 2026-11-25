@@ -1,6 +1,6 @@
 # Separately named experiment stack (#918). Real values are supplied privately:
-#   STEELE_EXP_MASTRA_BIND   host address:port to publish on (private interface only)
-#   STEELE_EXP_MASTRA_SECRETS  host directory holding the access token file (read-only)
+#   STEELE_EXP_MASTRA_BIND   host address:port to publish on. PRIVATE INTERFACE ONLY: Studio
+#                            and the API have no login (#930), so this bind is the access control.
 #   STEELE_EXP_MASTRA_DATA     host directory for persistent LibSQL storage
 name: steele-exp-mastra
 services:
@@ -12,10 +12,8 @@ services:
     environment:
       STEELE_EXP_MASTRA_DB: file:/data/mastra.db
       STEELE_EXP_MASTRA_FEED_DB: file:/data/feed.db
-      STEELE_EXP_MASTRA_TOKEN_FILE: /run/steele-exp-mastra/access.token
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
-      - ${STEELE_EXP_MASTRA_SECRETS:?set the secrets directory}:/run/steele-exp-mastra:ro
     mem_limit: 768m
     read_only: true
     tmpfs:

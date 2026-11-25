@@ -4,14 +4,13 @@ This is the Mastra side of the [n8n versus Mastra experiment](../../doc/experime
 
 - **Versions:** Mastra 1.82.0, CLI 1.38.0 and Node 22.23.4. They are pinned in `package.json`, with `overrides` so that the CLI's deployer and server match the pinned core.
 - **State:** LibSQL (`STEELE_EXP_MASTRA_DB`) holds workflow snapshots, run history and traces. Traces come from `MastraStorageExporter`, so Studio and the API can query them.
-- **Access:** Mastra `SimpleAuth` protects every `/api/*` route and Studio. The token is read from a mounted file (`STEELE_EXP_MASTRA_TOKEN_FILE`); there is no default. In Studio, enter any email and use the token as the password. `/health` is open.
+- **Access:** Studio and the API have **no login**, by owner decision (#930). The only access control is the network boundary: the deployment publishes the port on the private network interface only, never on a LAN, public or tunnelled address. Anyone who can reach it can start, cancel and rerun workflows and read their data, so workflow inputs, outputs and logs must never contain secrets. `/health` is open as before.
 - **Local development:**
   ```bash
   npm ci
-  STEELE_EXP_MASTRA_INSECURE_DEV=1 npm run dev
+  npm run dev
   ```
-  This runs with no authentication and is for local development only.
-- **Deploy:** run `deploy/deploy.sh`, setting `STEELE_EXP_HOST` and `STEELE_EXP_DIR` from private configuration. It builds the image on the linux/arm64 host and updates the compose stack defined in `deploy/compose.yaml`. That compose file contains only placeholders: the real bind address, directories and token live in private configuration outside this repository.
+- **Deploy:** run `deploy/deploy.sh`, setting `STEELE_EXP_HOST` and `STEELE_EXP_DIR` from private configuration. It builds the image on the linux/arm64 host and updates the compose stack defined in `deploy/compose.yaml`. That compose file contains only placeholders: the real bind address and directories live in private configuration outside this repository.
 
 ## Inspecting runs
 
