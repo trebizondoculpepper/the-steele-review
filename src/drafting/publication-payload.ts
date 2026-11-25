@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
-import { PublicationFieldsSchema, type PublicationFields } from "../content/publication-fields.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  ArtifactReferenceSchema,
+  type ArtifactReference,
+} from "../content/artifact-reference.js";
+import {
+  PublicationFieldsSchema,
+  type PublicationFields,
+} from "../content/publication-fields.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { writeOnce } from "../research/job.js";
 import { classifyArticlePath } from "./article-identity.js";
 import { PackageDraftMetadataSchema } from "./package-draft.js";
@@ -33,21 +42,44 @@ export function publicationContentHash(payload: PayloadContent): string {
     .digest("hex")}`;
 }
 
+/**
+ * The source's retained preview image (#893), for a destination's featured
+ * image: the exact content-addressed artifact saved with the source capture.
+ */
+export const PublicationPreviewImageSchema = z
+  .object({
+    artifact: ArtifactReferenceSchema,
+    contentType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    bytes: z.number().int().positive(),
+  })
+  .strict();
+export type PublicationPreviewImage = z.infer<
+  typeof PublicationPreviewImageSchema
+>;
+
 const Base = z.object({
   schemaVersion: z.literal(1),
   metadata: ArtifactReferenceSchema,
   body: ArtifactReferenceSchema,
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  /** Absent when the source has no retained preview, and on earlier manifests. */
+  previewImage: PublicationPreviewImageSchema.optional(),
 });
 /** An immutable manifest, never a second body or a regenerated title. */
 export const PublicationPayloadSchema = z
   .discriminatedUnion("mode", [
-    Base.extend({ mode: z.literal("structured"), fields: PublicationFieldsSchema }).strict(),
+    Base.extend({
+      mode: z.literal("structured"),
+      fields: PublicationFieldsSchema,
+    }).strict(),
     Base.extend({ mode: z.literal("legacy-body-only") }).strict(),
   ])
-  .refine((payload) => payload.contentHash === publicationContentHash(payload), {
-    message: "publication content hash mismatch",
-  });
+  .refine(
+    (payload) => payload.contentHash === publicationContentHash(payload),
+    {
+      message: "publication content hash mismatch",
+    },
+  );
 export type PublicationPayload = z.infer<typeof PublicationPayloadSchema>;
 /** Canonical manifest bytes are part of the exact verification identity. */
 export const publicationManifestHash = (payload: PublicationPayload) =>
@@ -67,7 +99,10 @@ export const artifactRef = (ref: ArtifactReference): ArtifactRef => ({
   sha256: ref.hash.slice(7),
 });
 export const sameArtifact = (a: ArtifactReference, b: ArtifactReference) =>
-  a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash;
+  a.repository === b.repository &&
+  a.commit === b.commit &&
+  a.path === b.path &&
+  a.hash === b.hash;
 
 /**
  * Canonical metadata retains the write-once generation pointer (a Git commit
@@ -106,7 +141,11 @@ export async function assertMetadataBodyBinding(
     throw new PublicationPayloadError();
   // GitArtifactStore verifies the supplied hash as well as commit/path. Using
   // the canonical hash proves equality without resolving any current head.
-  await content.read({ ...body, commit: generationCommit, path: generationPath });
+  await content.read({
+    ...body,
+    commit: generationCommit,
+    path: generationPath,
+  });
 }
 
 /** Save the exact metadata/body association before verification. */
@@ -115,11 +154,18 @@ export async function savePublicationPayload(input: {
   metadata: ArtifactRef;
   body: ArtifactRef;
   post: { publicationId: string; postId: string };
+  /** The source's retained preview image, when it has one. */
+  previewImage?: PublicationPreviewImage;
 }): Promise<{ ref: ArtifactRef; payload: PublicationPayload }> {
   const metadata = PackageDraftMetadataSchema.parse(
     JSON.parse(await input.content.read(input.metadata)),
   );
-  await assertMetadataBodyBinding(input.content, input.metadata, metadata, input.body);
+  await assertMetadataBodyBinding(
+    input.content,
+    input.metadata,
+    metadata,
+    input.body,
+  );
   const candidate = {
     schemaVersion: 1,
     metadata: artifactReference(input.metadata),
@@ -127,6 +173,11 @@ export async function savePublicationPayload(input: {
     ...(metadata.fields
       ? { mode: "structured" as const, fields: metadata.fields }
       : { mode: "legacy-body-only" as const }),
+    ...(input.previewImage
+      ? {
+          previewImage: PublicationPreviewImageSchema.parse(input.previewImage),
+        }
+      : {}),
   };
   const payload = PublicationPayloadSchema.parse({
     ...candidate,
@@ -146,8 +197,11 @@ export async function readPublicationPayload(
   content: Pick<GitArtifactStore, "read">,
   ref: ArtifactReference,
 ): Promise<{ payload: PublicationPayload; markdown: string }> {
-  const payload = PublicationPayloadSchema.parse(JSON.parse(await content.read(artifactRef(ref))));
-  if (publicationManifestHash(payload) !== ref.hash) throw new PublicationPayloadError();
+  const payload = PublicationPayloadSchema.parse(
+    JSON.parse(await content.read(artifactRef(ref))),
+  );
+  if (publicationManifestHash(payload) !== ref.hash)
+    throw new PublicationPayloadError();
   const metadata = PackageDraftMetadataSchema.parse(
     JSON.parse(await content.read(artifactRef(payload.metadata))),
   );

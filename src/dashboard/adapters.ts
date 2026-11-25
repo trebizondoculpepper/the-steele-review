@@ -1,10 +1,15 @@
+import { deliveryKindOf } from "./articles.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readPublicationPayload, sameArtifact } from "../drafting/publication-payload.js";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import type { OccurrenceSearchPort } from "../analysis/claim-timeline.js";
 import type { GitArtifactStore } from "../controllers/artifact-store.js";
-import { articleRunKey, type ArticleRunApi } from "../workflow/article-run.js";
+import {
+  articleRunKey,
+  type ArticleRunApi,
+  type ArticleRunFinal,
+} from "../workflow/article-run.js";
 import { isCreditBlocked } from "./article-views.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import { DeliveryReceiptSchema } from "../publishing/approved-article.js";
@@ -22,6 +27,7 @@ import type {
   SourcePort,
   RecentArticlesPort,
   RunState,
+  RunByKeyPort,
   RunStatusPort,
 } from "./articles.js";
 import type { Ref } from "../workflow/article-run.js";
@@ -320,6 +326,8 @@ export function contentReceipts(
                 simulated: receipt.simulated,
                 deliveredAt: receipt.deliveredAt,
                 ...(confirmed ? { url: receipt.url } : {}),
+                kind: deliveryKindOf(receipt),
+                ...(receipt.judgmentDecision ? { judgmentDecision: receipt.judgmentDecision } : {}),
               });
             } catch {
               // An unreadable receipt is omitted, never guessed.
@@ -355,14 +363,30 @@ export function restateRuns(
   timeoutMs = 5_000,
   attempts?: Pick<OperationStore, "articleAttempts">,
   connect: typeof clients.connect = clients.connect,
-): RunStatusPort {
+): RunStatusPort & RunByKeyPort {
   const ingress = connect({ url: ingressUrl });
   const read = async (key: string): Promise<RunState> => {
     const workflow = ingress.workflowClient<ArticleRunApi>({ name: "ArticleRun" }, key);
     try {
-      const out = await workflow.workflowOutput(
-        clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
-      );
+      let out;
+      try {
+        out = await workflow.workflowOutput(
+          clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
+        );
+      } catch (error) {
+        // A failed run ends as a terminal failure in Restate (#825): its saved
+        // result keeps the stage and reason visible. Otherwise the error stands.
+        let saved: ArticleRunFinal | null = null;
+        try {
+          saved = await workflow.final(
+            clients.rpc.opts({ signal: AbortSignal.timeout(timeoutMs) }),
+          );
+        } catch {
+          saved = null;
+        }
+        if (saved) return { state: "finished", result: saved };
+        throw error;
+      }
       if (out.ready) return { state: "finished", result: out.result };
       // Running: read the run's own progress (#439). A failed read is shown as
       // unavailable progress, never as success.
@@ -382,6 +406,9 @@ export function restateRuns(
     }
   };
   return {
+    // One exact workflow key, as Restate reports it (#522): an attempt or a
+    // recovery is read as itself, never resolved to the article's current run.
+    byKey: read,
     async status(post): Promise<RunState> {
       const normal = await read(articleRunKey(post));
       let recorded: ReturnType<OperationStore["articleAttempts"]>;

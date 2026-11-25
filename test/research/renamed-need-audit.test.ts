@@ -1,4 +1,7 @@
-import { sourceContextFor, saveSourceContext } from "../../src/content/source-context.js";
+import {
+  sourceContextFor,
+  saveSourceContext,
+} from "../../src/content/source-context.js";
 import { saveWriterPackage } from "../../src/drafting/writer-package.js";
 import { createHash } from "node:crypto";
 import { newDossierId } from "../../src/research/librarian.js";
@@ -10,13 +13,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
-import { assessPostCoverage, LexicalShortlister } from "../../src/research/librarian.js";
+import {
+  assessPostCoverage,
+  LexicalShortlister,
+} from "../../src/research/librarian.js";
 import { researchJobId, openResearchJob } from "../../src/research/job.js";
 import { librarianFixtures, SHARED } from "./librarian-fixtures.js";
 import { proposeThemes } from "../../src/analysis/theme-proposals.js";
 import { createClaim } from "../../src/analysis/claim.js";
 import { createClaimOccurrence } from "../../src/analysis/claim-occurrence.js";
-import { ClaimExtractionRecordSchema, claimRecordId } from "../../src/analysis/grounded-claims.js";
+import {
+  ClaimExtractionRecordSchema,
+  claimRecordId,
+} from "../../src/analysis/grounded-claims.js";
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 const statements = [
   "The ENMOD Convention prohibits hostile environmental modification.",
@@ -46,12 +55,21 @@ async function analysis(
 ) {
   const assertions = options.statements ?? statements;
   const bodyText = options.qualifier
-    ? assertions.join(" ").replace(assertions[1]!, `${options.qualifier} ${assertions[1]}`)
+    ? assertions
+        .join(" ")
+        .replace(assertions[1]!, `${options.qualifier} ${assertions[1]}`)
     : assertions.join(" ");
-  const sourceText = options.quotedBy ? `${options.quotedBy} said: ${bodyText}` : bodyText;
-  const actualText = options.duplicateMixed ? `${sourceText} ${assertions[1]}` : sourceText;
+  const sourceText = options.quotedBy
+    ? `${options.quotedBy} said: ${bodyText}`
+    : bodyText;
+  const actualText = options.duplicateMixed
+    ? `${sourceText} ${assertions[1]}`
+    : sourceText;
   const post = { publicationId: "pub", postId };
-  const raw = await artifacts.write(`synthetic-sources/${postId}.md`, actualText);
+  const raw = await artifacts.write(
+    `synthetic-sources/${postId}.md`,
+    actualText,
+  );
   const artifact = {
     repository: raw.repository,
     commit: raw.commit,
@@ -106,7 +124,9 @@ async function analysis(
           themes: [
             {
               title: options.title ?? "Weather warfare",
-              description: options.description ?? "History and scope of the ENMOD Convention",
+              description:
+                options.description ??
+                "History and scope of the ENMOD Convention",
             },
           ],
         }),
@@ -116,11 +136,16 @@ async function analysis(
     source,
     sourceContext: contextRef,
   });
-  if (proposed.status !== "proposed") throw new Error(`synthetic-theme-fixture-${proposed.reason}`);
+  if (proposed.status !== "proposed")
+    throw new Error(`synthetic-theme-fixture-${proposed.reason}`);
   const themeResult = proposed.ref;
-  const proposal = JSON.parse(await artifacts.read(themeResult)).proposals[0].id as string;
+  const proposal = JSON.parse(await artifacts.read(themeResult)).proposals[0]
+    .id as string;
   const claims = assertions.map((statement, i) => {
-    const passage = options.qualifier && i === 1 ? `${options.qualifier} ${statement}` : statement;
+    const passage =
+      options.qualifier && i === 1
+        ? `${options.qualifier} ${statement}`
+        : statement;
     const start = actualText.indexOf(passage);
     const claim = createClaim(
       {
@@ -130,8 +155,11 @@ async function analysis(
         span: { start, end: start + passage.length },
         passage,
         entities: ["ENMOD Convention"],
-        ...(options.qualifier && i === 1 ? { qualifiers: [options.qualifier] } : {}),
-        dates: i === 1 ? [{ text: "10 December 1976", value: "1976-12-10" }] : [],
+        ...(options.qualifier && i === 1
+          ? { qualifiers: [options.qualifier] }
+          : {}),
+        dates:
+          i === 1 ? [{ text: "10 December 1976", value: "1976-12-10" }] : [],
         extraction: meta,
       },
       source,
@@ -155,7 +183,8 @@ async function analysis(
       kind: options.quotedBy ? ("quotation" as const) : ("assertion" as const),
       themeIds: [proposal],
       classification: "themed" as const,
-      claimRecordId: i === 0 ? treatyId : (options.claimIds?.[i] ?? needRecordId),
+      claimRecordId:
+        i === 0 ? treatyId : (options.claimIds?.[i] ?? needRecordId),
     };
   });
   if (options.duplicateMixed) {
@@ -214,11 +243,20 @@ it(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-renamed-need-audit-"));
     try {
-      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
       await artifacts.initialise();
       const fx = librarianFixtures(artifacts);
-      const first = await analysis(artifacts, "first", `claim-${"a".repeat(32)}`);
-      const operations = new OperationStore({ path: join(dir, "state.sqlite") });
+      const first = await analysis(
+        artifacts,
+        "first",
+        `claim-${"a".repeat(32)}`,
+      );
+      const operations = new OperationStore({
+        path: join(dir, "state.sqlite"),
+      });
       const commission = async (req: ResearchRequest) => {
         const outcome = await runResearchJob({
           artifacts,
@@ -248,7 +286,9 @@ it(
               status: "finished" as const,
               jobId: outcome.jobId,
               result: outcome.result,
-              resultRef: await artifacts.lookup(`research-jobs/${outcome.jobId}/result.json`),
+              resultRef: await artifacts.lookup(
+                `research-jobs/${outcome.jobId}/result.json`,
+              ),
             }
           : outcome;
       };
@@ -271,14 +311,23 @@ it(
           ...a,
           commission: pending.commission,
           shortlister: new LexicalShortlister(),
-          judge: { decide: async () => ({ themeId, rationale: "same canonical topic" }) },
+          judge: {
+            decide: async () => ({
+              themeId,
+              rationale: "same canonical topic",
+            }),
+          },
         });
-        expect(later.record.claims.find((c) => c.claimRecordId === treatyId)).toMatchObject({
+        expect(
+          later.record.claims.find((c) => c.claimRecordId === treatyId),
+        ).toMatchObject({
           status: "evidence-found",
           reused: true,
         });
         expect(pending.requests).toHaveLength(1);
-        expect(pending.requests[0]!.claims.map((c) => c.statement)).toEqual([statements[1]]);
+        expect(pending.requests[0]!.claims.map((c) => c.statement)).toEqual([
+          statements[1],
+        ]);
         expect(pending.requests[0]!.origin).toBe("theme");
         jobs.push(researchJobId(pending.requests[0]!));
       }
@@ -295,7 +344,10 @@ it(
   { timeout: 60000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-finished-need-"));
-    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
     await artifacts.initialise();
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
     let discoveries = 0;
@@ -327,7 +379,9 @@ it(
               .filter((f) => supportDate || f.statement.includes("prohibits"))
               .map((f) => ({
                 findingId: f.id,
-                passage: f.statement.includes("prohibits") ? statements[0]! : statements[1]!,
+                passage: f.statement.includes("prohibits")
+                  ? statements[0]!
+                  : statements[1]!,
               })),
           }),
         },
@@ -337,12 +391,18 @@ it(
             status: "finished" as const,
             jobId: outcome.jobId,
             result: outcome.result,
-            resultRef: await artifacts.lookup(`research-jobs/${outcome.jobId}/result.json`),
+            resultRef: await artifacts.lookup(
+              `research-jobs/${outcome.jobId}/result.json`,
+            ),
           }
         : outcome;
     };
     try {
-      const first = await analysis(artifacts, "seed", `claim-${"1".repeat(32)}`);
+      const first = await analysis(
+        artifacts,
+        "seed",
+        `claim-${"1".repeat(32)}`,
+      );
       await assessPostCoverage({
         artifacts,
         ...first,
@@ -350,18 +410,28 @@ it(
         shortlister: new LexicalShortlister(),
       });
       supportDate = true;
-      const second = await analysis(artifacts, "enhance", `claim-${"2".repeat(32)}`);
+      const second = await analysis(
+        artifacts,
+        "enhance",
+        `claim-${"2".repeat(32)}`,
+      );
       const completed = await assessPostCoverage({
         artifacts,
         ...second,
         commission,
         shortlister: new LexicalShortlister(),
       });
-      expect(completed.record.claims.every((c) => c.status === "evidence-found")).toBe(true);
+      expect(
+        completed.record.claims.every((c) => c.status === "evidence-found"),
+      ).toBe(true);
       expect(requests).toHaveLength(2);
-      expect(requests[1]!.claims.map((c) => c.statement)).toEqual([statements[1]]);
+      expect(requests[1]!.claims.map((c) => c.statement)).toEqual([
+        statements[1],
+      ]);
       const currentId = `claim-${"3".repeat(32)}`;
-      const third = await analysis(artifacts, "current", currentId, { reverse: true });
+      const third = await analysis(artifacts, "current", currentId, {
+        reverse: true,
+      });
       const reused = await assessPostCoverage({
         artifacts,
         ...third,
@@ -370,22 +440,31 @@ it(
         },
         shortlister: new LexicalShortlister(),
       });
-      expect(reused.record.claims.every((c) => c.status === "evidence-found" && c.reused)).toBe(
-        true,
+      expect(
+        reused.record.claims.every(
+          (c) => c.status === "evidence-found" && c.reused,
+        ),
+      ).toBe(true);
+      expect(reused.record.claims.map((c) => c.claimRecordId)).toContain(
+        currentId,
       );
-      expect(reused.record.claims.map((c) => c.claimRecordId)).toContain(currentId);
       expect(reused.record.claims.map((c) => c.claimRecordId)).not.toContain(
         `claim-${"2".repeat(32)}`,
       );
       expect(discoveries).toBe(2);
       expect(reused.record.jobs).toHaveLength(2);
-      const packaged = await saveWriterPackage({ content: artifacts, coverage: reused.ref });
+      const packaged = await saveWriterPackage({
+        content: artifacts,
+        coverage: reused.ref,
+      });
       const currentEvidence = packaged.package.claims.find(
         (c) => c.claimRecordId === currentId,
       )!.evidence;
       const originalJob = completed.record.jobs.find(
         (j) =>
-          j.jobId === reused.record.claims.find((c) => c.claimRecordId === currentId)!.jobIds[0],
+          j.jobId ===
+          reused.record.claims.find((c) => c.claimRecordId === currentId)!
+            .jobIds[0],
       )!;
       const originalManifest = JSON.parse(
         await artifacts.read({
@@ -396,7 +475,9 @@ it(
         }),
       );
       expect(currentEvidence[0]!.passage).toBe(statements[1]);
-      expect(currentEvidence[0]!.archived).toEqual(originalManifest.citations[0].archivedArtifact);
+      expect(currentEvidence[0]!.archived).toEqual(
+        originalManifest.citations[0].archivedArtifact,
+      );
       const changed = await analysis(artifacts, "changed-scope", currentId, {
         qualifier: "allegedly",
       });
@@ -407,15 +488,19 @@ it(
         commission: pending.commission,
         shortlister: new LexicalShortlister(),
       });
-      expect(scoped.record.claims.find((c) => c.claimRecordId === currentId)).toMatchObject({
+      expect(
+        scoped.record.claims.find((c) => c.claimRecordId === currentId),
+      ).toMatchObject({
         status: "pending",
         reused: false,
       });
       expect(pending.requests).toHaveLength(1);
-      expect(pending.requests[0]!.claims.map((c) => c.statement)).toEqual([statements[1]]);
-      expect(pending.requests[0]!.canonicalNeeds!.needs[0]!.proposition.qualifiers).toEqual([
-        "allegedly",
+      expect(pending.requests[0]!.claims.map((c) => c.statement)).toEqual([
+        statements[1],
       ]);
+      expect(
+        pending.requests[0]!.canonicalNeeds!.needs[0]!.proposition.qualifiers,
+      ).toEqual(["allegedly"]);
       expect(discoveries).toBe(2);
     } finally {
       operations.close();
@@ -429,11 +514,18 @@ it(
   { timeout: 60000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-legacy-need-"));
-    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
     await artifacts.initialise();
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
     try {
-      const first = await analysis(artifacts, "legacy", `claim-${"4".repeat(32)}`);
+      const first = await analysis(
+        artifacts,
+        "legacy",
+        `claim-${"4".repeat(32)}`,
+      );
       const ref = (r: typeof first.themeResult) => ({
         repository: r.repository,
         commit: r.commit,
@@ -441,7 +533,9 @@ it(
         hash: `sha256:${r.sha256}`,
       });
       const key = createHash("sha256")
-        .update(JSON.stringify([ref(first.themeResult), ref(first.claimResult)]))
+        .update(
+          JSON.stringify([ref(first.themeResult), ref(first.claimResult)]),
+        )
         .digest("hex")
         .slice(0, 32);
       const dossierId = newDossierId("Weather warfare");
@@ -481,7 +575,10 @@ it(
             judge: {
               judge: async ({ findings }) => ({
                 sourceType: "treaty",
-                passages: findings.map((f) => ({ findingId: f.id, passage: f.statement })),
+                passages: findings.map((f) => ({
+                  findingId: f.id,
+                  passage: f.statement,
+                })),
               }),
             },
           });
@@ -490,20 +587,29 @@ it(
                 status: "finished",
                 jobId: result.jobId,
                 result: result.result,
-                resultRef: await artifacts.lookup(`research-jobs/${result.jobId}/result.json`),
+                resultRef: await artifacts.lookup(
+                  `research-jobs/${result.jobId}/result.json`,
+                ),
               }
             : result;
         },
       });
       expect(originalRequest!.canonicalNeeds).toBeUndefined();
-      expect(seeded.record.claims.every((c) => c.status === "evidence-found")).toBe(true);
+      expect(
+        seeded.record.claims.every((c) => c.status === "evidence-found"),
+      ).toBe(true);
       const oldResultRef = await artifacts.lookup(
         `research-jobs/${researchJobId(originalRequest!)}/result.json`,
       );
       const oldResultBytes = await artifacts.read(oldResultRef!);
-      const later = await analysis(artifacts, "later-legacy", `claim-${"5".repeat(32)}`, {
-        reverse: true,
-      });
+      const later = await analysis(
+        artifacts,
+        "later-legacy",
+        `claim-${"5".repeat(32)}`,
+        {
+          reverse: true,
+        },
+      );
       const reused = await assessPostCoverage({
         artifacts,
         ...later,
@@ -512,13 +618,17 @@ it(
           throw new Error("legacy proof must not commission");
         },
       });
-      expect(reused.record.claims.every((c) => c.reused && c.status === "evidence-found")).toBe(
-        true,
-      );
+      expect(
+        reused.record.claims.every(
+          (c) => c.reused && c.status === "evidence-found",
+        ),
+      ).toBe(true);
       expect(discoveries).toBe(1);
       expect(await artifacts.read(oldResultRef!)).toBe(oldResultBytes);
       expect(await artifacts.lookup(planRef.path)).toEqual(planRef);
-      expect(researchJobId(originalRequest!)).toBe(oldResultRef!.path.split("/")[1]);
+      expect(researchJobId(originalRequest!)).toBe(
+        oldResultRef!.path.split("/")[1],
+      );
     } finally {
       operations.close();
       await rm(dir, { recursive: true, force: true });
@@ -532,19 +642,28 @@ it(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-title-conflict-"));
     try {
-      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
       await artifacts.initialise();
-      const { ThemeStore, listCanonicalThemes } = await import("../../src/research/theme-store.js");
+      const { ThemeStore, listCanonicalThemes } =
+        await import("../../src/research/theme-store.js");
       await new ThemeStore(artifacts).ensure({
         id: "mercury-planet",
         title: "Mercury",
         description: "Astronomical planet orbit around the Sun",
         createdAt: meta.extractedAt,
       });
-      const item = await analysis(artifacts, "mercury", `claim-${"6".repeat(32)}`, {
-        title: "Mercury",
-        description: "Toxic liquid metal health hazards",
-      });
+      const item = await analysis(
+        artifacts,
+        "mercury",
+        `claim-${"6".repeat(32)}`,
+        {
+          title: "Mercury",
+          description: "Toxic liquid metal health hazards",
+        },
+      );
       const result = await assessPostCoverage({
         artifacts,
         ...item,
@@ -554,12 +673,21 @@ it(
         },
       });
       expect(result.record.mappings).toEqual([]);
-      expect(result.record.unresolvedProposals).toHaveLength(1);
-      expect(result.record.unresolvedProposals![0]!.reason).toContain("conflicts");
+      // The byline's author theme (added on main) is also proposed; this test
+      // is about the same-title Mercury conflict.
+      const mercury = result.record.unresolvedProposals!.filter(
+        (p) => p.title === "Mercury",
+      );
+      expect(mercury).toHaveLength(1);
+      expect(mercury[0]!.reason).toContain("conflicts");
       expect(
-        result.record.claims.every((c) => c.dossierId === null && c.status === "not-commissioned"),
+        result.record.claims.every(
+          (c) => c.dossierId === null && c.status === "not-commissioned",
+        ),
       ).toBe(true);
-      expect(await listCanonicalThemes(new ThemeStore(artifacts))).toHaveLength(1);
+      expect(await listCanonicalThemes(new ThemeStore(artifacts))).toHaveLength(
+        1,
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -572,10 +700,14 @@ it(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-title-first-"));
     try {
-      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
       await artifacts.initialise();
       const { ThemeStore } = await import("../../src/research/theme-store.js");
-      const { ThemeMappingCatalogue } = await import("../../src/research/theme-mappings.js");
+      const { ThemeMappingCatalogue } =
+        await import("../../src/research/theme-mappings.js");
       await new ThemeStore(artifacts).ensure({
         id: "enmod-topic",
         title: "Environmental treaties",
@@ -591,9 +723,14 @@ it(
         decidedBy: { publicationId: "pub", postId: "saved" },
         rationale: "synthetic established alias",
       });
-      const item = await analysis(artifacts, "alias", `claim-${"7".repeat(32)}`, {
-        description: "History and scope of the ENMOD treaty Convention",
-      });
+      const item = await analysis(
+        artifacts,
+        "alias",
+        `claim-${"7".repeat(32)}`,
+        {
+          description: "History and scope of the ENMOD treaty Convention",
+        },
+      );
       const pending = librarianFixtures(artifacts).researcher(() => "busy");
       const result = await assessPostCoverage({
         artifacts,
@@ -615,7 +752,11 @@ it(
       expect(result.record.mappings[0]!.created).toBe(false);
       expect(result.record.mappings[0]!.rationale).toContain("title-first");
       expect(pending.requests).toHaveLength(1);
-      expect(pending.requests[0]!.claims.every((c) => c.themeIds[0] === "enmod-topic")).toBe(true);
+      expect(
+        pending.requests[0]!.claims.every(
+          (c) => c.themeIds[0] === "enmod-topic",
+        ),
+      ).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -628,10 +769,14 @@ it(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-title-fallback-"));
     try {
-      const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+      const artifacts = new GitArtifactStore({
+        repoPath: dir,
+        repository: "content",
+      });
       await artifacts.initialise();
       const { ThemeStore } = await import("../../src/research/theme-store.js");
-      const scope = "Public accountability policy and facial recognition systems";
+      const scope =
+        "Public accountability policy and facial recognition systems";
       const store = new ThemeStore(artifacts);
       await store.ensure({
         id: "un-topic",
@@ -654,7 +799,14 @@ it(
       const shortlister = {
         shortlist: async () => ({
           method: "lexical" as const,
-          candidates: [{ themeId: "distractor", title: "Separate archive", scope, score: 1 }],
+          candidates: [
+            {
+              themeId: "distractor",
+              title: "Separate archive",
+              scope,
+              score: 1,
+            },
+          ],
         }),
       };
       for (const [title, id] of [
@@ -675,10 +827,15 @@ it(
         expect(result.record.mappings[0]!.dossierId).toBe(id);
         expect(result.record.mappings[0]!.rationale).toContain("title-primary");
       }
-      const unrelated = await analysis(artifacts, "unrelated", `claim-${"9".repeat(32)}`, {
-        title: "Unrelated subject",
-        description: scope,
-      });
+      const unrelated = await analysis(
+        artifacts,
+        "unrelated",
+        `claim-${"9".repeat(32)}`,
+        {
+          title: "Unrelated subject",
+          description: scope,
+        },
+      );
       const result = await assessPostCoverage({
         artifacts,
         ...unrelated,
@@ -702,7 +859,10 @@ it(
   { timeout: 30000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-legacy-ambiguous-"));
-    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
     await artifacts.initialise();
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
     try {
@@ -731,7 +891,13 @@ it(
           themeResult: ref(old.themeResult),
           claimResult: ref(old.claimResult),
         },
-        claims: [{ claimRecordId: id, statement: statements[1]!, themeIds: ["enmod-topic"] }],
+        claims: [
+          {
+            claimRecordId: id,
+            statement: statements[1]!,
+            themeIds: ["enmod-topic"],
+          },
+        ],
         question: "What does independent evidence show?",
         corpusRefs: [],
       };
@@ -745,7 +911,11 @@ it(
           model: "synthetic",
           research: async () => {
             discoveries++;
-            return { model: "synthetic", report: "Treaty history.", citations: [SHARED] };
+            return {
+              model: "synthetic",
+              report: "Treaty history.",
+              citations: [SHARED],
+            };
           },
         },
         fetcher: { fetch: async (url) => ({ url, title: "Treaty", text }) },
@@ -757,14 +927,20 @@ it(
         },
       });
       const current = await analysis(artifacts, "mixed-current", id);
-      const currentThemes = JSON.parse(await artifacts.read(current.themeResult));
-      const { researchNeedBindings } = await import("../../src/research/need-bindings.js");
+      const currentThemes = JSON.parse(
+        await artifacts.read(current.themeResult),
+      );
+      const { researchNeedBindings } =
+        await import("../../src/research/need-bindings.js");
       const binding = researchNeedBindings({
         record: JSON.parse(await artifacts.read(current.claimResult)),
         source: currentThemes.artifact,
         ...current,
         mappings: new Map(
-          currentThemes.proposals.map((p: { id: string }) => [p.id, "enmod-topic"]),
+          currentThemes.proposals.map((p: { id: string }) => [
+            p.id,
+            "enmod-topic",
+          ]),
         ),
       });
       const { createLegacyResearchNeedLookup } =
@@ -772,7 +948,10 @@ it(
       const result = await createLegacyResearchNeedLookup(artifacts)(
         binding.entries.find((e) => e.claimRecordId === id)!.need,
       );
-      expect(result).toEqual({ status: "unavailable", reason: "legacy-proof-ambiguous" });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason: "legacy-proof-ambiguous",
+      });
       expect(discoveries).toBe(1);
     } finally {
       operations.close();
@@ -922,7 +1101,10 @@ it(
   { timeout: 60000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "steele-staged-canonical-"));
-    const artifacts = new GitArtifactStore({ repoPath: dir, repository: "content" });
+    const artifacts = new GitArtifactStore({
+      repoPath: dir,
+      repository: "content",
+    });
     await artifacts.initialise();
     const operations = new OperationStore({ path: join(dir, "state.sqlite") });
     try {
@@ -942,7 +1124,12 @@ it(
         artifacts,
         operations,
         owner: "synthetic-staged",
-        limits: { maxSources: 5, maxAttempts: 1, timeoutMs: 1000, maxSourceChars: 10000 },
+        limits: {
+          maxSources: 5,
+          maxAttempts: 1,
+          timeoutMs: 1000,
+          maxSourceChars: 10000,
+        },
         sonar: {
           model: "synthetic",
           research: async (input: { user: string }) => {
@@ -955,26 +1142,37 @@ it(
             };
           },
         },
-        fetcher: { fetch: async (url: string) => ({ url, title: "Treaty", text }) },
+        fetcher: {
+          fetch: async (url: string) => ({ url, title: "Treaty", text }),
+        },
         judge: {
           identity: "synthetic-support-v1",
-          judge: async (input: { findings: { id: string; statement: string }[] }) => {
+          judge: async (input: {
+            findings: { id: string; statement: string }[];
+          }) => {
             supportCalls++;
             findings.push(...input.findings);
             return {
               sourceType: "treaty",
               passages: input.findings.map((f) => ({
                 findingId: f.id,
-                passage: f.statement.includes("prohibits") ? statements[0]! : statements[1]!,
+                passage: f.statement.includes("prohibits")
+                  ? statements[0]!
+                  : statements[1]!,
               })),
             };
           },
         },
       };
-      const item = await analysis(artifacts, "staged-first", `claim-${"d".repeat(32)}`, {
-        qualifier: "allegedly",
-        quotedBy: "Synthetic Witness",
-      });
+      const item = await analysis(
+        artifacts,
+        "staged-first",
+        `claim-${"d".repeat(32)}`,
+        {
+          qualifier: "allegedly",
+          quotedBy: "Synthetic Witness",
+        },
+      );
       const first = await assessPostCoverage({
         artifacts,
         ...item,
@@ -982,7 +1180,8 @@ it(
         shortlister: new LexicalShortlister(),
         commission: async (request) => {
           const discovery = await discoverStage(deps, request);
-          if (discovery.kind !== "discovered") throw new Error("synthetic staged discovery failed");
+          if (discovery.kind !== "discovered")
+            throw new Error("synthetic staged discovery failed");
           const inventory = await inventoryStage(deps, discovery.discovery);
           for (const id of await retrievalIds(deps, inventory)) {
             await retrieveOneStage(deps, inventory, id);
@@ -991,16 +1190,24 @@ it(
           return assembleStage(deps, discovery.discovery, inventory);
         },
       });
-      expect(first.record.claims.every((c) => c.status === "evidence-found")).toBe(true);
+      expect(
+        first.record.claims.every((c) => c.status === "evidence-found"),
+      ).toBe(true);
       expect(discoveries).toBe(1);
       expect(supportCalls).toBe(1);
       expect(discoveryInputs[0]!.user).toContain('"kind":"quotation"');
       expect(discoveryInputs[0]!.user).toContain('"qualifiers":["allegedly"]');
-      expect(discoveryInputs[0]!.user).toContain('"attribution":{"name":"Synthetic Witness"}');
+      expect(discoveryInputs[0]!.user).toContain(
+        '"attribution":{"name":"Synthetic Witness"}',
+      );
       expect(
         findings
           .map((f) => JSON.parse(f.statement))
-          .every((p) => p.kind === "quotation" && p.attribution.name === "Synthetic Witness"),
+          .every(
+            (p) =>
+              p.kind === "quotation" &&
+              p.attribution.name === "Synthetic Witness",
+          ),
       ).toBe(true);
       expect(
         findings
@@ -1022,10 +1229,15 @@ it(
           throw new Error("staged cache hit must not commission");
         },
       });
-      expect(reused.record.claims.every((c) => c.reused && c.status === "evidence-found")).toBe(
-        true,
-      );
-      const pkg = await saveWriterPackage({ content: artifacts, coverage: reused.ref });
+      expect(
+        reused.record.claims.every(
+          (c) => c.reused && c.status === "evidence-found",
+        ),
+      ).toBe(true);
+      const pkg = await saveWriterPackage({
+        content: artifacts,
+        coverage: reused.ref,
+      });
       const savedManifest = JSON.parse(
         await artifacts.read({
           repository: first.record.jobs[0]!.manifest!.repository,
@@ -1036,12 +1248,18 @@ it(
       );
       expect(savedManifest.report.path).toMatch(/\/assembled\/report\.md$/);
       expect(
-        pkg.package.claims.find((c) => c.claimRecordId === laterId)!.evidence[0]!.archived,
+        pkg.package.claims.find((c) => c.claimRecordId === laterId)!
+          .evidence[0]!.archived,
       ).toEqual(savedManifest.citations[0].archivedArtifact);
-      const refused = await analysis(artifacts, "staged-refused", `claim-${"f".repeat(32)}`, {
-        qualifier: "allegedly",
-        quotedBy: "Synthetic Witness",
-      });
+      const refused = await analysis(
+        artifacts,
+        "staged-refused",
+        `claim-${"f".repeat(32)}`,
+        {
+          qualifier: "allegedly",
+          quotedBy: "Synthetic Witness",
+        },
+      );
       await expect(
         assessPostCoverage({
           artifacts,

@@ -1476,14 +1476,18 @@ export async function assessPostCoverage(input: {
             }
           }
           if (!checked) continue;
-          retainJob({
-            jobId: checked.result.jobId,
-            dossierId: id,
-            pass: checked.request.pass,
-            outcome: checked.result.outcome,
-            result: checked.proof.result,
-            manifest: checked.proof.manifest,
-          });
+          // Saved dossier evidence is reused with its provenance, but a job
+          // this run pinned keeps its pinned outcome in the job list: the
+          // reuse never records it a second time with another outcome.
+          if (!input.pinnedJobIds?.has(checked.result.jobId))
+            retainJob({
+              jobId: checked.result.jobId,
+              dossierId: id,
+              pass: checked.request.pass,
+              outcome: checked.result.outcome,
+              result: checked.proof.result,
+              manifest: checked.proof.manifest,
+            });
           outcomes.set(claim.key, {
             claimRecordId: claim.claimRecordId,
             statement: claim.statement,

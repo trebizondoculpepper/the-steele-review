@@ -28,6 +28,10 @@ import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
  *   STEELE_DISCOVERY_STATUS_PATH?                    discovery runner status file
  *   STEELE_DASHBOARD_DESTINATIONS?                   comma-separated publisher destinations
  */
+import { corpusRefinementAction } from "../dashboard/corpus-refinement.js";
+import { parsePollSources, pollNowAction } from "../dashboard/poll-now.js";
+import { discoveryPollClient } from "../controllers/discovery-poll-client.js";
+import { corpusRefinementSubmitter } from "../corpus-refinement/submission.js";
 import { z } from "zod";
 import { elasticsearchConnection, natsConnection } from "../config/credentials.js";
 import { GitArtifactStore } from "../controllers/artifact-store.js";
@@ -36,6 +40,11 @@ import { FULLTEXT_INDEX_V1 } from "../content/fulltext-document.js";
 import { fileCheckpoint } from "../collection/catchup-checkpoint.js";
 import { systemStatusSource } from "../dashboard/status-adapters.js";
 import { statusView } from "../dashboard/status.js";
+import {
+  collectRunningNow,
+  renderRunningNow,
+  restateActiveRuns,
+} from "../dashboard/running-now.js";
 import { tracePost } from "../diagnostics/post-trace.js";
 import { natsProbe, stateProbeFor } from "../diagnostics/runtime-status.js";
 import {
@@ -98,6 +107,8 @@ const env = z
       (v) => (v === "" ? undefined : v),
       z.url({ protocol: /^https?$/ }).optional(),
     ),
+    /** Sources Poll now may poll (#824), e.g. `substack:saveusnow`. */
+    STEELE_POLL_SOURCES: z.string().max(2000).optional(),
     STEELE_DASHBOARD_ORIGIN: z
       .url({ protocol: /^https?$/ })
       .refine((value) => value === new URL(value).origin)
@@ -234,8 +245,26 @@ const overview = statusView(
   }),
   // One console link on Overview (#816), only from a validated private base.
   (() => {
-    const home = restateUiLinks(env.data.STEELE_RESTATE_UI_URL)?.home;
-    return home ? { consoleUrl: home } : {};
+    const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
+    const runningArticles = es
+      ? indexArticles(es, e.STEELE_FULLTEXT_INDEX || undefined)
+      : undefined;
+    // Running now (#522): needs the admin query API, run status and the index.
+    const running =
+      env.data.STEELE_RESTATE_ADMIN_URL && env.data.RESTATE_INGRESS_URL && runningArticles
+        ? {
+            active: restateActiveRuns(env.data.STEELE_RESTATE_ADMIN_URL),
+            articles: runningArticles,
+            runs: restateRuns(env.data.RESTATE_INGRESS_URL, 5_000, attemptSource),
+            ...(links ? { invocationLink: links.invocation } : {}),
+          }
+        : undefined;
+    return {
+      ...(links?.home ? { consoleUrl: links.home } : {}),
+      ...(running
+        ? { runningNow: async () => renderRunningNow(await collectRunningNow(running)) }
+        : {}),
+    };
   })(),
 );
 // Live article-stage activity for the console (#479).
@@ -297,6 +326,18 @@ const configView = [
     },
   },
 ];
+// Poll now (#824): the scheduled DiscoveryPoll handler, on demand, per source type.
+const pollSources = parsePollSources(env.data.STEELE_POLL_SOURCES);
+const pollNow =
+  env.data.RESTATE_INGRESS_URL && pollSources.length && env.data.STEELE_DASHBOARD_ORIGIN
+    ? pollNowAction({
+        sources: pollSources,
+        poll: (() => {
+          const client = discoveryPollClient(env.data.RESTATE_INGRESS_URL!);
+          return (source) => client.pollNow(source.id);
+        })(),
+      })
+    : undefined;
 const views = [
   overview,
   ...configView,
@@ -305,6 +346,9 @@ const views = [
   ...(refetch ? [refetch.view] : []),
   ...(recovery ? [recovery.view] : []),
   ...articleViews({
+    ...(pollNow
+      ? { pollPanel: (url: URL) => pollNow.panel(url, env.data.STEELE_DASHBOARD_ORIGIN ?? "") }
+      : {}),
     canTrigger: Boolean(trigger),
     canRecover: Boolean(recovery),
     canRefetch: Boolean(refetch),
@@ -419,6 +463,19 @@ const views = [
   { ...overview, path: "/status", title: "Status", hidden: true },
 ];
 
+// Run Corpus Refinement from the console (#831): the same workflow and
+// submission contract as the CLI, fixture mode only.
+const corpusAction = env.data.RESTATE_INGRESS_URL
+  ? corpusRefinementAction({
+      submitter: corpusRefinementSubmitter(env.data.RESTATE_INGRESS_URL),
+      ...(() => {
+        const links = restateUiLinks(env.data.STEELE_RESTATE_UI_URL);
+        return links ? { links } : {};
+      })(),
+    })
+  : undefined;
+if (corpusAction && env.data.STEELE_DASHBOARD_ORIGIN) views.push(corpusAction.view);
+
 // Recoverable trash for saved drafts (#478); markers live in the content repo.
 // Writing markers mutates the content repository, so the console only offers
 // this when the deployment explicitly enables it (#478).
@@ -429,7 +486,7 @@ const trashAction = trashStore?.action();
 // action route is registered at all.
 const actionOrigin = env.data.STEELE_DASHBOARD_ORIGIN;
 const actions =
-  (trigger || trashAction || refetch) && actionOrigin
+  (trigger || trashAction || refetch || corpusAction || pollNow) && actionOrigin
     ? {
         origin: actionOrigin,
         routes: {
@@ -438,6 +495,8 @@ const actions =
           ...(trashAction ? { "/drafts/trash": trashAction.submit } : {}),
           ...(refetch ? { "/articles/refetch": refetch.submit } : {}),
           ...(configAction ? { "/config/save": configAction.submit } : {}),
+          ...(corpusAction ? { "/corpus-refinement/run": corpusAction.submit } : {}),
+          ...(pollNow ? { "/articles/poll": pollNow.submit } : {}),
         },
       }
     : undefined;

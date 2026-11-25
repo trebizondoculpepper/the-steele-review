@@ -112,17 +112,10 @@ export function canonicalNeed(input: {
   const attributed = speaker?.kind === "quoted" && speaker.name;
   // A date has a value only when its wording is unambiguous. Without one, its
   // meaning may depend on when the source was published ("two days ago",
-  // "Monday", "March 3"), so it stays occurrence-specific. Only an explicit
-  // year with no relative wording ("in 2019") is source-independent.
+  // "Monday", "March 3", "since 2019"), so it stays occurrence-specific. Only
+  // an explicit bare year ("2019", "in 2019") is source-independent.
   const unresolvedDate = claim.dates?.some(
-    (d) =>
-      !d.value &&
-      !(
-        /\b(1[5-9]|20)\d{2}\b/.test(d.text) &&
-        !/\b(today|yesterday|tomorrow|ago|last|next|this|coming|previous|recent(ly)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(
-          d.text,
-        )
-      ),
+    (d) => !d.value && !/^(in\s+)?(1[5-9]|20)\d{2}$/i.test(d.text.trim()),
   );
   const fullClaim = ClaimSchema.safeParse(input.claim);
   const fullOccurrence = ClaimOccurrenceSchema.safeParse(input.occurrence);

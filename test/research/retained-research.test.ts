@@ -1,6 +1,7 @@
 import * as clients from "@restatedev/restate-sdk-clients";
 import { RestateTestEnvironment, RestateContainer } from "@restatedev/restate-sdk-testcontainers";
 import {
+  articleRunResult,
   articleRunWorkflow,
   researchService,
   type ArticleStages,
@@ -508,7 +509,10 @@ describe("retained incomplete research composition", { timeout: 60000 }, () => {
       const submit = async (key: string, extra: object = {}) => {
         const w = ingress.workflowClient(Workflow, key);
         await w.workflowSubmit({ ...base, ...extra });
-        return w.workflowAttach();
+        return articleRunResult(
+          () => Promise.resolve(w.workflowAttach()),
+          () => Promise.resolve(w.final()),
+        );
       };
       // The gate no longer stops before drafting (#769); this fixture's draft
       // stage itself reports the synthetic stop.

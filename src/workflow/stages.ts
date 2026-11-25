@@ -1,3 +1,4 @@
+import { saveCrossSpeakerComparisons } from "../drafting/cross-speaker-comparisons.js";
 import { editorialPolicyFromConfiguration } from "../config/editorial-live-policy.js";
 import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configuration.js";
 import { authorizeConfiguredDraft } from "../publishing/configured-draft-authorization.js";
@@ -135,6 +136,11 @@ export function articleStages(deps: {
    * nothing is found, the article simply has no historical section.
    */
   history?: SpeakerComparisonDeps;
+  /**
+   * Cross-speaker parallels for the essay (#388). Optional and independent of
+   * same-speaker history: other people making the same specific claim.
+   */
+  crossSpeaker?: SpeakerComparisonDeps;
   /** Configured source attribution (#482); absent keeps legacy behaviour. */
   sourceMetadata?: ParsedSourceMetadata;
   owner: string;
@@ -232,7 +238,9 @@ export function articleStages(deps: {
       shortlister: deps.shortlister,
       commission: async (request) => {
         requests.push(request);
-        return { jobId: "planning", status: "busy" };
+        // Planning commissions nothing, but each request keeps its own job
+        // identity, so distinct requests are never recorded as one job.
+        return { jobId: researchJobId(request), status: "busy" };
       },
     });
     // Most useful gap first: the workflow commissions the first
@@ -587,17 +595,28 @@ export function articleStages(deps: {
 
     async package(coverage) {
       let comparisons: ArtifactRef[] = [];
-      if (deps.history) {
+      if (deps.history || deps.crossSpeaker) {
         const record = CoverageRecordSchema.parse(
           JSON.parse(await deps.content.read(coverage)),
         );
         const claimResult = await deps.content.lookup(record.claimResult.path);
-        if (claimResult) {
+        if (claimResult && deps.history) {
           comparisons = await saveSpeakerComparisons({
             content: deps.content,
             claimResult,
             deps: deps.history,
           });
+        }
+        // Same-speaker history first, then other speakers' parallels (#388).
+        if (claimResult && deps.crossSpeaker) {
+          comparisons = [
+            ...comparisons,
+            ...(await saveCrossSpeakerComparisons({
+              content: deps.content,
+              claimResult,
+              deps: deps.crossSpeaker,
+            })),
+          ];
         }
       }
       const { package: pkg, ref } = await saveWriterPackage({

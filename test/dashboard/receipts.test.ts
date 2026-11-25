@@ -141,6 +141,7 @@ describe("contentReceipts", { timeout: 30_000 }, () => {
         action: "draft",
         simulated: true,
         deliveredAt: "2026-01-01T00:00:00Z",
+        kind: "simulated",
       },
       {
         destination: "dummy-b",
@@ -148,6 +149,7 @@ describe("contentReceipts", { timeout: 30_000 }, () => {
         simulated: false,
         deliveredAt: "2026-01-01T00:00:00Z",
         url: "https://example.test/b",
+        kind: "draft",
       },
     ]);
     expect(receipts[0]).not.toHaveProperty("url");
@@ -221,5 +223,33 @@ describe("contentReceipts", { timeout: 30_000 }, () => {
     expect(
       await contentReceipts(content).receiptsFor({ publicationId: "pub", postId: "p1" }),
     ).toEqual({ receipts: [], truncated: false });
+  });
+});
+
+describe("delivery kinds are distinguishable (#809)", () => {
+  it("labels simulated, draft and published deliveries from the receipt's own facts", async () => {
+    const { deliveryKindOf, deliveryLabel } = await import("../../src/dashboard/articles.js");
+    expect(deliveryKindOf({ simulated: true, action: "publish" })).toBe("simulated");
+    expect(deliveryKindOf({ simulated: false, action: "draft" })).toBe("draft");
+    // A publish action is "published" only with the recorded read-back evidence.
+    expect(deliveryKindOf({ simulated: false, action: "publish" })).toBe("draft");
+    expect(
+      deliveryKindOf({
+        simulated: false,
+        action: "publish",
+        publicationSafety: { published: true, subscriberEmail: "requested" },
+      }),
+    ).toBe("published");
+    expect(
+      deliveryLabel({
+        simulated: false,
+        action: "publish",
+        kind: "published",
+        judgmentDecision: "revise",
+      }),
+    ).toBe("published, subscribers emailed, released after one correction cycle");
+    expect(deliveryLabel({ simulated: false, action: "draft", kind: "draft" })).toBe(
+      "unpublished draft",
+    );
   });
 });
