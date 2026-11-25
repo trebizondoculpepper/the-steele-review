@@ -11,7 +11,11 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 tag="$(git -C "$here" rev-parse --short=12 HEAD)$(git -C "$here" diff --quiet HEAD -- . || echo -dirty)-$(date -u +%Y%m%d%H%M%S)"
 # Transfer only files tracked by Git, so local configuration, tokens or .env
 # files in the working tree can never reach the host or the image.
-git -C "$here" ls-files -z -- . | rsync -a --delete --from0 --files-from=- "$here/" "$STEELE_EXP_HOST:$STEELE_EXP_DIR/src/"
+# Upload into a fresh staging directory and swap it in, so files deleted or
+# renamed in Git never linger in the deployed source.
+ssh -o BatchMode=yes "$STEELE_EXP_HOST" "rm -rf '$STEELE_EXP_DIR/src.next' && mkdir -p '$STEELE_EXP_DIR/src.next'"
+git -C "$here" ls-files -z -- . | rsync -a --from0 --files-from=- "$here/" "$STEELE_EXP_HOST:$STEELE_EXP_DIR/src.next/"
+ssh -o BatchMode=yes "$STEELE_EXP_HOST" "cd '$STEELE_EXP_DIR' && rm -rf src.previous && { [ ! -d src ] || mv src src.previous; } && mv src.next src"
 ssh -o BatchMode=yes "$STEELE_EXP_HOST" bash -s -- "$STEELE_EXP_DIR" "$tag" <<'REMOTE'
 set -euo pipefail
 dir="$1"; tag="$2"; cd "$dir"
