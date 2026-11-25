@@ -8,6 +8,7 @@ import type { OccurrenceSearchPort } from "../../src/analysis/claim-timeline.js"
 import { sourceVersionFor } from "../../src/content/fulltext-document.js";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { draftFromPackage } from "../../src/drafting/package-draft.js";
+import { saveCrossSpeakerComparisons } from "../../src/drafting/cross-speaker-comparisons.js";
 import { saveSpeakerComparisons } from "../../src/drafting/speaker-comparisons.js";
 import { saveWriterPackage } from "../../src/drafting/writer-package.js";
 import { LexicalShortlister, assessPostCoverage } from "../../src/research/librarian.js";
@@ -350,5 +351,123 @@ describe("same-speaker comparisons in the unattended essay (#370)", { timeout: 6
       status: "failed",
       search: { outcome: "search-failed" },
     });
+  });
+});
+
+// #388: another verified speaker making the same claim, attributed by name.
+const RIVAL = "a treaty bans weather weapons outright, everyone knows it";
+const rival = occurrence({
+  postId: "rival",
+  occurrenceId: h("3"),
+  statement: "A treaty bans weather weapons.",
+  passage: `Opening. ${RIVAL}.`,
+  span: { start: 10, end: 10 + `Opening. ${RIVAL}.`.length },
+  sourceVersion: h("8"),
+  artifact: { ...SOURCE, path: "substack/pub/rival/collected.json" },
+  sourcePublishedAt: "2025-03-01T00:00:00Z",
+  speaker: { kind: "quoted", name: "Jo Rival", evidence: { start: 0, end: 1 } },
+});
+
+describe("cross-speaker parallels in the unattended essay (#388)", { timeout: 60_000 }, () => {
+  it("saves a parallel attributed to the other speaker and hands it to the writer", async () => {
+    const { coverage: cov, claimResult } = await coverage();
+    const writerInputs: string[] = [];
+    const provider = {
+      modelVersion: "fake/m",
+      async complete(req: { system: string; user: string }) {
+        if (req.system.includes("each from a different speaker than the current claim"))
+          return JSON.stringify({
+            parallels: [
+              {
+                candidate: "c1",
+                quote: RIVAL,
+                relation: "agrees",
+                difference: "The same treaty claim, stated as common knowledge.",
+                confidence: "high",
+              },
+            ],
+          });
+        writerInputs.push(req.user);
+        return JSON.stringify({
+          ...ESSAY,
+          narrative: { status: "supported", text: "Jo Rival made the same claim.", history: [0] },
+        });
+      },
+    };
+    const refs = await saveCrossSpeakerComparisons({
+      content,
+      claimResult,
+      deps: { search: search([rival]), provider },
+    });
+    expect(refs).toHaveLength(1);
+    expect(refs[0]!.path).toMatch(/\/cross-[0-9a-f]{32}\.json$/);
+    const record = JSON.parse(await content.read(refs[0]!));
+    expect(record).toMatchObject({
+      kind: "cross-speaker",
+      status: "parallels",
+      speaker: { name: NAME },
+      findings: [{ kind: "cross-speaker-parallel", relation: "agrees" }],
+    });
+    expect(record.findings[0].earlier[0]).toMatchObject({
+      speaker: "Jo Rival",
+      quote: RIVAL,
+      publishedAt: "2025-03-01T00:00:00Z",
+      start: 19,
+      end: 19 + RIVAL.length,
+    });
+    expect(record.note).toMatch(/do not show who originated it/);
+
+    const { package: pkg, ref } = await saveWriterPackage({
+      content,
+      coverage: cov,
+      comparisons: refs,
+      historyGap: "omit",
+    });
+    expect(pkg.context!.history.comparisons[0]).toMatchObject({
+      kind: "cross-speaker-parallel",
+      relation: "agrees",
+      earlier: [{ speaker: "Jo Rival", quote: RIVAL }],
+    });
+    const out = await draftFromPackage({
+      operations,
+      content,
+      archive,
+      package: ref,
+      provider,
+      sourceUrl: "https://pub.example.com/p/p1",
+    });
+    if (out.status !== "drafted") throw new Error(out.status);
+    // The writer is told who said the earlier passage, and how it relates.
+    const history = JSON.parse(writerInputs.at(-1)!.match(/\{[\s\S]*\}/)![0]).history;
+    expect(history[0]).toMatchObject({
+      kind: "cross-speaker-parallel",
+      relation: "agrees",
+      earlier: [{ speaker: "Jo Rival", quote: RIVAL }],
+    });
+  });
+
+  it("records a no-match search and leaves the essay's history out", async () => {
+    const { coverage: cov, claimResult } = await coverage();
+    const provider = {
+      modelVersion: "fake/m",
+      async complete() {
+        return JSON.stringify({ parallels: [] });
+      },
+    };
+    const refs = await saveCrossSpeakerComparisons({
+      content,
+      claimResult,
+      deps: { search: search([rival]), provider },
+    });
+    const record = JSON.parse(await content.read(refs[0]!));
+    expect(record).toMatchObject({ kind: "cross-speaker", findings: [] });
+    expect(record.status).not.toBe("parallels");
+    const { package: pkg } = await saveWriterPackage({
+      content,
+      coverage: cov,
+      comparisons: refs,
+      historyGap: "omit",
+    });
+    expect(pkg.context!.history).toMatchObject({ status: "gap", omitWhenAbsent: true });
   });
 });

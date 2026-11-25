@@ -117,9 +117,17 @@ const REVISABLE_ARTICLE =
 const REVISABLE_CAPTURE =
   /^substack\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/[a-z0-9][a-z0-9-]{0,254}\/collected\.json$/;
 
+/**
+ * The composable source-capture block's record (#865): one stable file per
+ * source, revised in place when the source changes; Git keeps the history.
+ * Byte-identical refetches are no-ops, so they make no commit.
+ */
+const REVISABLE_SOURCE =
+  /^substack\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/[a-z0-9][a-z0-9-]{0,254}\/source\.json$/;
+
 /** Revisable paths that may also be created write-once through `write()`. */
 function isWritableAndRevisable(path: string): boolean {
-  return REVISABLE_CAPTURE.test(path);
+  return REVISABLE_CAPTURE.test(path) || REVISABLE_SOURCE.test(path);
 }
 
 export function isRevisablePath(path: string): boolean {
@@ -127,7 +135,8 @@ export function isRevisablePath(path: string): boolean {
     REVISABLE_PREFIXES.some((p) => path.startsWith(p)) ||
     REVISABLE_CLAIM_RECORD.test(path) ||
     REVISABLE_ARTICLE.test(path) ||
-    REVISABLE_CAPTURE.test(path)
+    REVISABLE_CAPTURE.test(path) ||
+    REVISABLE_SOURCE.test(path)
   );
 }
 

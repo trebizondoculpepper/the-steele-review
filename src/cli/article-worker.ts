@@ -1,4 +1,8 @@
 import { editorialJudgeRecoveryWorkflow } from "../workflow/editorial-judge-recovery.js";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { corpusRefinementWorkflow } from "../corpus-refinement/workflow.js";
+import { assertIsolatedStore, CorpusStorageConflictError } from "../corpus-refinement/storage.js";
 import { restateRecoveryParentCompletion } from "../controllers/editorial-recovery-ingress.js";
 import { editorialContinuationWorkflow } from "../workflow/editorial-continuation.js";
 import { editorialPolicyFromEnv } from "../workflow/editorial-contract.js";
@@ -17,11 +21,15 @@ import { writerMechanicalPolicy } from "../drafting/mechanical-policy.js";
  *   STEELE_ARCHIVE_PATH, STEELE_ARCHIVE_REPOSITORY   captured sources (read only)
  *   STEELE_CONTENT_PATH, STEELE_CONTENT_REPOSITORY   private content repository
  *   STEELE_STATE_PATH                                state controller (research job leases)
+ *   STEELE_MODEL_CORPUS?                             Corpus Refinement archive-mode model (#832)
+ *   STEELE_CORPUS_REFINEMENT_PATH?                   Corpus Refinement prototype repository (#830);
+ *                                                    default: beside the state file
  *   OPENROUTER_API_KEY[_FILE], STEELE_MODEL          default model for model-backed stages
  *   STEELE_MODEL_THEMES?, STEELE_MODEL_CLAIMS?, STEELE_MODEL_WRITER?, STEELE_MODEL_SUPPORT?, STEELE_MODEL_VERIFIER?
  *                                                    per-stage overrides
  *   STEELE_RESEARCH_MODEL?, STEELE_RESEARCH_TIMEOUT_MS?, STEELE_RESEARCH_MAX_TOKENS?
  *   STEELE_MONITORED_HOSTS?                          comma-separated claimant hosts
+ *   STEELE_CROSS_SPEAKER?                            "1" adds cross-speaker parallels to the essay (#388); needs ELASTICSEARCH_URL
  *   ELASTICSEARCH_URL?, ELASTICSEARCH_API_KEY[_FILE]?  claim-occurrence index; enables same-speaker
  *                                                    history in the essay (#370)
  *   STEELE_MODEL_HISTORY?                            model for history matching and comparison
@@ -86,6 +94,7 @@ function main(): number {
   // Same-speaker history needs the occurrence index; without it the essay
   // simply has no historical section.
   let history;
+  let crossSpeaker;
   if (process.env.ELASTICSEARCH_URL) {
     try {
       const es = elasticsearchConnection();
@@ -93,6 +102,8 @@ function main(): number {
         search: new ElasticsearchController(es.url, es.apiKey),
         provider: model("STEELE_MODEL_HISTORY"),
       };
+      // Cross-speaker parallels (#388): opt-in, on the same index and model.
+      if (process.env.STEELE_CROSS_SPEAKER === "1") crossSpeaker = history;
     } catch {
       console.error("article-worker: Elasticsearch or history model is not configured");
       return 2;
@@ -145,6 +156,7 @@ function main(): number {
           : {}),
       },
       ...(history ? { history } : {}),
+      ...(crossSpeaker ? { crossSpeaker } : {}),
       owner: `article-worker@${hostname()}:${process.pid}`,
     });
     continuation = editorialContinuationWorkflow({
@@ -177,8 +189,75 @@ function main(): number {
     console.error("article-worker: model or research provider is not configured");
     return 2;
   }
+  // Corpus Refinement prototype (#830): independent of article production,
+  // deterministic stubs, artifacts in its own isolated repository (never the
+  // content or archive repositories).
+  // The store must not resolve to, contain or sit inside a live repository,
+  // including through an alias (#847); refuse to start rather than write there.
+  // Errors name the variables only, never their values.
+  const corpusStore = {
+    name: process.env.STEELE_CORPUS_REFINEMENT_PATH
+      ? "STEELE_CORPUS_REFINEMENT_PATH"
+      : "default beside STEELE_STATE_PATH",
+    path:
+      process.env.STEELE_CORPUS_REFINEMENT_PATH ||
+      join(dirname(c.STEELE_STATE_PATH), "corpus-refinement-prototype"),
+  };
+  const liveRepositories = [
+    { name: "STEELE_ARCHIVE_PATH", path: c.STEELE_ARCHIVE_PATH },
+    { name: "STEELE_CONTENT_PATH", path: c.STEELE_CONTENT_PATH },
+  ];
+  let corpusRefinementPath: string;
+  try {
+    corpusRefinementPath = assertIsolatedStore(corpusStore, liveRepositories);
+  } catch (error) {
+    if (!(error instanceof CorpusStorageConflictError)) throw error;
+    console.error(`article-worker: ${error.message}`);
+    return 2;
+  }
+  /**
+   * Check again when the store is created: a directory swapped for a symbolic
+   * link after startup must not redirect the store into a live repository.
+   * The created directory must still be the one validated at startup.
+   */
+  const recheckCorpusStore = () => {
+    try {
+      const now = assertIsolatedStore(
+        { name: corpusStore.name, path: corpusRefinementPath },
+        liveRepositories,
+      );
+      if (now !== corpusRefinementPath) throw new Error("moved");
+    } catch (error) {
+      throw new restate.TerminalError(
+        error instanceof CorpusStorageConflictError
+          ? `article-worker: ${error.message}`
+          : `article-worker: Corpus Refinement store (${corpusStore.name}) changed after startup`,
+      );
+    }
+  };
+  const corpusRefinement = new GitArtifactStore({
+    repoPath: corpusRefinementPath,
+    repository: "corpus-refinement-prototype",
+  });
   restate.serve({
-    services: [articleRunWorkflow(stages), researchService(stages), continuation, judgeRecovery],
+    services: [
+      articleRunWorkflow(stages),
+      researchService(stages),
+      continuation,
+      judgeRecovery,
+      corpusRefinementWorkflow({
+        artifacts: corpusRefinement,
+        // Archive-mode experiment only (#832); fixture runs never call it.
+        provider: model("STEELE_MODEL_CORPUS"),
+        // Created on first use, so a missing prototype repository never blocks startup.
+        ready: async () => {
+          recheckCorpusStore();
+          await mkdir(corpusRefinementPath, { recursive: true, mode: 0o700 });
+          recheckCorpusStore();
+          await corpusRefinement.initialise();
+        },
+      }),
+    ],
     port: c.STEELE_ARTICLE_WORKER_PORT,
   });
   console.log(

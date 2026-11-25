@@ -22,7 +22,10 @@ import {
   type ApprovalKind,
   type ApprovalEvidence,
 } from "./approval-evidence.js";
-import { DraftTargetSchema, type DraftTarget } from "../content/owner-draft-authorization.js";
+import {
+  DraftTargetSchema,
+  type DraftTarget,
+} from "../content/owner-draft-authorization.js";
 import {
   ARTICLE_APPROVED_SUBJECT,
   ArticleApprovedDataSchema,
@@ -78,7 +81,10 @@ export class ApprovalError extends Error {
 }
 
 /** Stable event ID for one approved draft revision and its approval. */
-export const approvedArticleEventId = (draft: ArtifactRef, approval: ArtifactRef) =>
+export const approvedArticleEventId = (
+  draft: ArtifactRef,
+  approval: ArtifactRef,
+) =>
   `approved-${createHash("sha256")
     .update(JSON.stringify([toRef(draft), toRef(approval)]))
     .digest("hex")
@@ -101,13 +107,20 @@ export async function recordApproval(input: {
   );
   const { eventId, data, event } = approvalEventFor(evidence, input.report);
   input.operations.reconcileCompleted(`approved:${eventId}`, { eventId }, [
-    { eventId, subject: ARTICLE_APPROVED_SUBJECT, payload: JSON.stringify(event.toJSON()) },
+    {
+      eventId,
+      subject: ARTICLE_APPROVED_SUBJECT,
+      payload: JSON.stringify(event.toJSON()),
+    },
   ]);
   return { eventId, data };
 }
 
 /** Shared pure envelope construction; authorization is checked by the caller. */
-export function approvalEventFor(evidence: ApprovalEvidence, report: ArtifactRef) {
+export function approvalEventFor(
+  evidence: ApprovalEvidence,
+  report: ArtifactRef,
+) {
   const eventId = approvedArticleEventId(fromRef(evidence.body), report);
   const data: ArticleApprovedData = {
     publicationId: evidence.post.publicationId,
@@ -119,9 +132,14 @@ export function approvalEventFor(evidence: ApprovalEvidence, report: ArtifactRef
       ? { approvalKind: evidence.kind, assessment: evidence.assessment }
       : {}),
     ...(evidence.authorizationOutcome
-      ? { authorizationOutcome: evidence.authorizationOutcome, draftTargets: evidence.draftTargets }
+      ? {
+          authorizationOutcome: evidence.authorizationOutcome,
+          draftTargets: evidence.draftTargets,
+        }
       : {}),
-    ...(evidence.judgmentDecision ? { judgmentDecision: evidence.judgmentDecision } : {}),
+    ...(evidence.judgmentDecision
+      ? { judgmentDecision: evidence.judgmentDecision }
+      : {}),
     package: evidence.package,
     approvedAt: evidence.approvedAt,
   };
@@ -140,6 +158,11 @@ export interface DestinationPreview {
   /** Exact saved payload, retained by simulated previews; live adapters map approved fields explicitly. */
   publication?: PublicationPayload;
   draftAuthorization?: DraftTarget;
+  /**
+   * `publicationId/postId`, recorded by the publishing destination so the
+   * live email policy can be applied at delivery (#388).
+   */
+  post?: string;
 }
 
 export const DeliveryReceiptSchema = z
@@ -167,12 +190,21 @@ export const DeliveryReceiptSchema = z
     authorizationOutcome: z.literal("owner-authorized-draft").optional(),
     draftTarget: DraftTargetSchema.optional(),
     draftSafety: z
-      .object({ unpublished: z.literal(true), emailTimestampAbsent: z.literal(true) })
+      .object({
+        unpublished: z.literal(true),
+        emailTimestampAbsent: z.literal(true),
+      })
       .strict()
       .optional(),
-    /** Live publication evidence (#789): read back as published, email requested. */
+    /**
+     * Live publication evidence (#789): read back as published, with email
+     * requested, or suppressed and read back as never sent (#388).
+     */
     publicationSafety: z
-      .object({ published: z.literal(true), subscriberEmail: z.literal("requested") })
+      .object({
+        published: z.literal(true),
+        subscriberEmail: z.enum(["requested", "suppressed"]),
+      })
       .strict()
       .optional(),
     approval: ArtifactReferenceSchema.optional(),
@@ -232,6 +264,12 @@ export interface DestinationAdapter {
    * `not-eligible` before anything is read, rendered or sent.
    */
   eligible?(data: ArticleApprovedData): boolean;
+  /**
+   * Optional check before a new delivery intent is recorded (#388). A
+   * `DestinationUnavailableError` here leaves nothing retained, so the
+   * delivery is simply retried later.
+   */
+  prepare?(): Promise<void>;
   /** Absent by default. Only a narrowly implemented draft-only adapter opts in. */
   readonly draftTarget?: DraftTarget;
   /** Opt in only when render consumes the exact structured fields without substitutions. */
@@ -286,7 +324,8 @@ export type DeliveryDecision =
     }
   | {
       action: "term";
-      reason: "invalid-event" | "approval-mismatch" | "exhausted" | "not-eligible";
+      reason:
+        "invalid-event" | "approval-mismatch" | "exhausted" | "not-eligible";
     };
 
 const DeliveryIntentSchema = z.looseObject({
@@ -305,7 +344,10 @@ const SavedPreviewSchema = z.looseObject({
 export async function readApprovedContent(
   content: Pick<GitArtifactStore, "read">,
   article: ArticleApprovedData,
-  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
+  operations?: Pick<
+    OperationStore,
+    "ownerDraftAuthorization" | "editorialRecoveryAttempt"
+  >,
 ) {
   const evidence = await readApprovalEvidence(
     content,
@@ -316,16 +358,19 @@ export async function readApprovedContent(
   if (
     evidence.authorizationOutcome !== article.authorizationOutcome ||
     evidence.judgmentDecision !== article.judgmentDecision ||
-    JSON.stringify(evidence.draftTargets) !== JSON.stringify(article.draftTargets) ||
+    JSON.stringify(evidence.draftTargets) !==
+      JSON.stringify(article.draftTargets) ||
     evidence.post.publicationId !== article.publicationId ||
     evidence.post.postId !== article.postId ||
     !sameArtifact(evidence.body, article.draft) ||
     !sameArtifact(evidence.package, article.package) ||
     (evidence.publication
-      ? !article.publication || !sameArtifact(evidence.publication, article.publication)
+      ? !article.publication ||
+        !sameArtifact(evidence.publication, article.publication)
       : article.publication !== undefined) ||
     (evidence.assessment
-      ? !article.assessment || !sameArtifact(evidence.assessment, article.assessment)
+      ? !article.assessment ||
+        !sameArtifact(evidence.assessment, article.assessment)
       : article.assessment !== undefined)
   )
     throw new ApprovalError("approval does not match the draft");
@@ -343,7 +388,9 @@ export function assertDraftAuthorizationTarget(
     !actual.success ||
     destination.action !== "draft" ||
     actual.data.name !== destination.name ||
-    !article.draftTargets?.some((t) => JSON.stringify(t) === JSON.stringify(actual.data))
+    !article.draftTargets?.some(
+      (t) => JSON.stringify(t) === JSON.stringify(actual.data),
+    )
   )
     throw new ApprovalError("draft authorization target mismatch");
   return actual.data;
@@ -392,7 +439,10 @@ function ownerReceiptMatches(
 }
 
 function deliveryDirectory(
-  article: Pick<ArticleApprovedData, "publicationId" | "postId" | "draft" | "publication">,
+  article: Pick<
+    ArticleApprovedData,
+    "publicationId" | "postId" | "draft" | "publication"
+  >,
   destination: Pick<DestinationAdapter, "name" | "action">,
   contentHash = article.draft.hash,
 ): string {
@@ -404,7 +454,10 @@ function deliveryDirectory(
 export async function readDummyDeliveryProof(
   content: Pick<GitArtifactStore, "lookup" | "read">,
   article: ArticleApprovedData,
-  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
+  operations?: Pick<
+    OperationStore,
+    "ownerDraftAuthorization" | "editorialRecoveryAttempt"
+  >,
 ): Promise<{ a: ArtifactRef; b: ArtifactRef } | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
   if (approved.approvalKind === "owner-draft-rehearsal")
@@ -414,7 +467,8 @@ export async function readDummyDeliveryProof(
     : undefined;
   if (payload && !sameArtifact(payload.body, approved.draft))
     throw new ApprovalError("dummy receipt does not prove the approved draft");
-  const publicationHash = payload?.mode === "structured" ? payload.contentHash : undefined;
+  const publicationHash =
+    payload?.mode === "structured" ? payload.contentHash : undefined;
   const read = async (name: string) => {
     const dir = deliveryDirectory(
       approved,
@@ -423,7 +477,9 @@ export async function readDummyDeliveryProof(
     );
     const ref = await content.lookup(`${dir}/receipt.json`);
     if (!ref) return undefined;
-    const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+    const receipt = DeliveryReceiptSchema.parse(
+      JSON.parse(await content.read(ref)),
+    );
     if (
       !receipt.simulated ||
       receipt.destination !== name ||
@@ -436,7 +492,9 @@ export async function readDummyDeliveryProof(
         draftTarget: dummyDraftTarget(name),
       })
     ) {
-      throw new ApprovalError("dummy receipt does not prove the approved draft");
+      throw new ApprovalError(
+        "dummy receipt does not prove the approved draft",
+      );
     }
     return ref;
   };
@@ -450,22 +508,30 @@ export async function readDestinationDeliveryProof(
   article: ArticleApprovedData,
   destination: Pick<DestinationAdapter, "name" | "action" | "draftTarget">,
   expectedSimulated?: boolean,
-  operations?: Pick<OperationStore, "ownerDraftAuthorization" | "editorialRecoveryAttempt">,
+  operations?: Pick<
+    OperationStore,
+    "ownerDraftAuthorization" | "editorialRecoveryAttempt"
+  >,
 ): Promise<ArtifactRef | undefined> {
   const approved = ArticleApprovedDataSchema.parse(article);
   const checked = await readApprovedContent(content, approved, operations);
   assertDraftAuthorizationTarget(approved, destination);
   const publicationHash =
-    checked.publication?.mode === "structured" ? checked.publication.contentHash : undefined;
+    checked.publication?.mode === "structured"
+      ? checked.publication.contentHash
+      : undefined;
   const ref = await content.lookup(
     `${deliveryDirectory(approved, destination, publicationHash ?? approved.draft.hash)}/receipt.json`,
   );
   if (!ref) return undefined;
-  const receipt = DeliveryReceiptSchema.parse(JSON.parse(await content.read(ref)));
+  const receipt = DeliveryReceiptSchema.parse(
+    JSON.parse(await content.read(ref)),
+  );
   if (
     receipt.destination !== destination.name ||
     receipt.action !== destination.action ||
-    (expectedSimulated !== undefined && receipt.simulated !== expectedSimulated) ||
+    (expectedSimulated !== undefined &&
+      receipt.simulated !== expectedSimulated) ||
     receipt.draftHash !== approved.draft.hash ||
     receipt.publicationHash !== publicationHash ||
     (publicationHash !== undefined && !receipt.publication) ||
@@ -521,10 +587,18 @@ async function deliverApprovedArticle(
   let markdown: string;
   let publication: PublicationPayload | undefined;
   try {
-    const checked = await readApprovedContent(input.content, event, input.operations);
+    const checked = await readApprovedContent(
+      input.content,
+      event,
+      input.operations,
+    );
     const target = assertDraftAuthorizationTarget(event, input.destination);
     if (target && !(await input.deliveryControl?.allow(target)))
-      return { action: "nak", reason: "paused", delayMs: input.retryDelayMs ?? 30_000 };
+      return {
+        action: "nak",
+        reason: "paused",
+        delayMs: input.retryDelayMs ?? 30_000,
+      };
     markdown = checked.markdown;
     publication = checked.publication;
   } catch (error) {
@@ -544,19 +618,32 @@ async function deliverApprovedArticle(
     ) {
       return { action: "term", reason: "approval-mismatch" };
     }
-    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
+    return {
+      action: "nak",
+      delayMs: input.retryDelayMs ?? 30_000,
+      reason: "retry",
+    };
   }
 
   const { destination } = input;
-  const publicationHash = publication?.mode === "structured" ? publication.contentHash : undefined;
-  const revision = (publicationHash ?? event.draft.hash).replace(/^sha256:/, "").slice(0, 32);
+  const publicationHash =
+    publication?.mode === "structured" ? publication.contentHash : undefined;
+  const revision = (publicationHash ?? event.draft.hash)
+    .replace(/^sha256:/, "")
+    .slice(0, 32);
   const key = `publish:${destination.name}:${destination.action}:${revision}`;
-  const dir = deliveryDirectory(event, destination, publicationHash ?? event.draft.hash);
+  const dir = deliveryDirectory(
+    event,
+    destination,
+    publicationHash ?? event.draft.hash,
+  );
   // A receipt committed before a crash is the durable result: record completion
   // from it rather than delivering again or giving up on attempt limits.
   const committed = await input.content.lookup(`${dir}/receipt.json`);
   if (committed) {
-    const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(committed)));
+    const receipt = DeliveryReceiptSchema.parse(
+      JSON.parse(await input.content.read(committed)),
+    );
     if (
       receipt.publicationHash !== publicationHash ||
       receipt.draftHash !== event.draft.hash ||
@@ -571,24 +658,39 @@ async function deliverApprovedArticle(
     );
     return { action: "ack", outcome: "reused", receipt: committed };
   }
-  if (publication?.mode === "structured" && destination.supportsPublicationPayload !== true)
-    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "unsupported-payload" };
+  if (
+    publication?.mode === "structured" &&
+    destination.supportsPublicationPayload !== true
+  )
+    return {
+      action: "nak",
+      delayMs: input.retryDelayMs ?? 30_000,
+      reason: "unsupported-payload",
+    };
   const claim = input.operations.claim(key, input.owner, 10 * 60_000, 5);
   if (claim.kind === "completed") {
     const saved = await input.content.lookup(`${dir}/receipt.json`);
     if (saved) {
       if (event.approvalKind === "owner-draft-rehearsal") {
-        const receipt = DeliveryReceiptSchema.parse(JSON.parse(await input.content.read(saved)));
+        const receipt = DeliveryReceiptSchema.parse(
+          JSON.parse(await input.content.read(saved)),
+        );
         if (!ownerReceiptMatches(receipt, event, destination))
           return { action: "term", reason: "approval-mismatch" };
       }
       return { action: "ack", outcome: "reused", receipt: saved };
     }
   }
-  if (claim.kind === "busy") return { action: "nak", delayMs: 5_000, reason: "busy" };
-  if (claim.kind === "exhausted") return { action: "term", reason: "exhausted" };
+  if (claim.kind === "busy")
+    return { action: "nak", delayMs: 5_000, reason: "busy" };
+  if (claim.kind === "exhausted")
+    return { action: "term", reason: "exhausted" };
   if (claim.kind !== "claimed")
-    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
+    return {
+      action: "nak",
+      delayMs: input.retryDelayMs ?? 30_000,
+      reason: "retry",
+    };
 
   try {
     const requireLive = async (article: ArticleApprovedData) => {
@@ -598,19 +700,33 @@ async function deliverApprovedArticle(
       try {
         allowed = await input.deliveryControl?.allow(target);
       } catch {
-        throw new DestinationUnavailableError("unavailable", input.retryDelayMs ?? 30_000);
+        throw new DestinationUnavailableError(
+          "unavailable",
+          input.retryDelayMs ?? 30_000,
+        );
       }
-      if (!allowed) throw new DestinationUnavailableError("paused", input.retryDelayMs ?? 30_000);
+      if (!allowed)
+        throw new DestinationUnavailableError(
+          "paused",
+          input.retryDelayMs ?? 30_000,
+        );
     };
     const holdUncertain = (): DeliveryDecision => {
       input.operations.yieldClaim(claim.claim);
-      return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
+      return {
+        action: "nak",
+        delayMs: input.retryDelayMs ?? 30_000,
+        reason: "uncertain",
+      };
     };
     const priorIntent = await input.content.lookup(`${dir}/intent.json`);
     const priorPreview = await input.content.lookup(`${dir}/preview.json`);
     const uncertain = await input.content.lookup(`${dir}/uncertain.json`);
     // An orphaned uncertain attempt has no authoritative original version.
-    if (!priorIntent && (uncertain || (publication?.mode === "structured" && priorPreview)))
+    if (
+      !priorIntent &&
+      (uncertain || (publication?.mode === "structured" && priorPreview))
+    )
       return holdUncertain();
     const currentArticle: ArticleApprovedData = {
       publicationId: event.publicationId,
@@ -618,9 +734,14 @@ async function deliverApprovedArticle(
       draft: event.draft,
       approval: event.approval,
       ...(event.approvalKind ? { approvalKind: event.approvalKind } : {}),
-      ...(event.judgmentDecision ? { judgmentDecision: event.judgmentDecision } : {}),
+      ...(event.judgmentDecision
+        ? { judgmentDecision: event.judgmentDecision }
+        : {}),
       ...(event.authorizationOutcome
-        ? { authorizationOutcome: event.authorizationOutcome, draftTargets: event.draftTargets }
+        ? {
+            authorizationOutcome: event.authorizationOutcome,
+            draftTargets: event.draftTargets,
+          }
         : {}),
       ...(event.assessment ? { assessment: event.assessment } : {}),
       package: event.package,
@@ -630,17 +751,24 @@ async function deliverApprovedArticle(
     const candidate = `${JSON.stringify({ key, at: now.toISOString(), article: currentArticle }, null, 2)}\n`;
     // Intent precedes preview and any external action. Re-read the retained
     // write-once result rather than assuming this caller won the write.
+    if (!priorIntent) await destination.prepare?.();
     const intentRef =
-      priorIntent ?? (await writeOnce(input.content, `${dir}/intent.json`, candidate));
+      priorIntent ??
+      (await writeOnce(input.content, `${dir}/intent.json`, candidate));
     const rawIntent = await input.content.read(intentRef);
     const parsedIntent = DeliveryIntentSchema.safeParse(JSON.parse(rawIntent));
-    if (!parsedIntent.success || parsedIntent.data.key !== key) return holdUncertain();
+    if (!parsedIntent.success || parsedIntent.data.key !== key)
+      return holdUncertain();
     const intent = parsedIntent.data;
     let deliveryArticle = currentArticle;
     let deliveryMarkdown = markdown;
     let deliveryPublication = publication;
     if (intent.article) {
-      const original = await readApprovedContent(input.content, intent.article, input.operations);
+      const original = await readApprovedContent(
+        input.content,
+        intent.article,
+        input.operations,
+      );
       assertDraftAuthorizationTarget(intent.article, destination);
       if (
         event.approvalKind === "owner-draft-rehearsal" &&
@@ -686,17 +814,22 @@ async function deliverApprovedArticle(
           ...(deliveryPublication ? { publication: deliveryPublication } : {}),
         }),
       ));
-    const preview = SavedPreviewSchema.parse(JSON.parse(await input.content.read(previewRef)));
+    const preview = SavedPreviewSchema.parse(
+      JSON.parse(await input.content.read(previewRef)),
+    );
     if (
       deliveryArticle.approvalKind === "owner-draft-rehearsal" &&
       JSON.stringify(preview.draftAuthorization) !==
-        JSON.stringify(assertDraftAuthorizationTarget(deliveryArticle, destination))
+        JSON.stringify(
+          assertDraftAuthorizationTarget(deliveryArticle, destination),
+        )
     )
       return holdUncertain();
     if (
       preview.publication &&
       (!deliveryArticle.publication ||
-        publicationManifestHash(preview.publication) !== deliveryArticle.publication.hash)
+        publicationManifestHash(preview.publication) !==
+          deliveryArticle.publication.hash)
     )
       return holdUncertain();
     let delivered: Omit<DeliveryReceipt, "destination" | "action"> | undefined;
@@ -710,7 +843,11 @@ async function deliverApprovedArticle(
       });
       if (r === "unknown") {
         input.operations.fail(claim.claim, "uncertain-delivery", true);
-        return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
+        return {
+          action: "nak",
+          delayMs: input.retryDelayMs ?? 30_000,
+          reason: "uncertain",
+        };
       }
       if (r.delivered) delivered = r.delivered;
     }
@@ -723,7 +860,8 @@ async function deliverApprovedArticle(
       destination: destination.name,
       action: destination.action,
       ...delivered,
-      ...(deliveryArticle.approvalKind && deliveryArticle.approvalKind !== "combined-verification"
+      ...(deliveryArticle.approvalKind &&
+      deliveryArticle.approvalKind !== "combined-verification"
         ? {
             approvalKind: deliveryArticle.approvalKind,
             approval: deliveryArticle.approval,
@@ -736,21 +874,34 @@ async function deliverApprovedArticle(
       ...(deliveryArticle.authorizationOutcome
         ? {
             authorizationOutcome: deliveryArticle.authorizationOutcome,
-            draftTarget: assertDraftAuthorizationTarget(deliveryArticle, destination),
+            draftTarget: assertDraftAuthorizationTarget(
+              deliveryArticle,
+              destination,
+            ),
           }
         : {}),
       draftHash: deliveryArticle.draft.hash,
       ...(publicationHash ? { publicationHash } : {}),
-      ...(deliveryArticle.publication ? { publication: deliveryArticle.publication } : {}),
+      ...(deliveryArticle.publication
+        ? { publication: deliveryArticle.publication }
+        : {}),
     });
     const ref = await writeOnce(input.content, `${dir}/receipt.json`, receipt);
-    input.operations.complete(claim.claim, { path: ref.path, commit: ref.commit }, []);
+    input.operations.complete(
+      claim.claim,
+      { path: ref.path, commit: ref.commit },
+      [],
+    );
     return { action: "ack", outcome: "delivered", receipt: ref };
   } catch (error) {
     if (error instanceof DestinationUnavailableError) {
       // Nothing was sent: wait without spending the attempt budget.
       input.operations.yieldClaim(claim.claim);
-      return { action: "nak", delayMs: error.retryAfterMs, reason: error.reason };
+      return {
+        action: "nak",
+        delayMs: error.retryAfterMs,
+        reason: error.reason,
+      };
     }
     if (error instanceof UncertainDeliveryError) {
       await writeOnce(input.content, `${dir}/uncertain.json`, {
@@ -758,10 +909,18 @@ async function deliverApprovedArticle(
         recordedAt: now.toISOString(),
       });
       input.operations.fail(claim.claim, "uncertain-delivery", true);
-      return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "uncertain" };
+      return {
+        action: "nak",
+        delayMs: input.retryDelayMs ?? 30_000,
+        reason: "uncertain",
+      };
     }
     input.operations.fail(claim.claim, "delivery-failed", true);
-    return { action: "nak", delayMs: input.retryDelayMs ?? 30_000, reason: "retry" };
+    return {
+      action: "nak",
+      delayMs: input.retryDelayMs ?? 30_000,
+      reason: "retry",
+    };
   }
 }
 

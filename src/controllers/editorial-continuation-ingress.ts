@@ -55,12 +55,25 @@ export function restateParentCompletion(
     async read(key) {
       const signal = AbortSignal.timeout(timeoutMs);
       try {
-        const output = await ingress
-          .workflowClient<{ run: (value: unknown) => Promise<unknown> }>(
-            { name: "ArticleRun" },
-            key,
-          )
-          .workflowOutput(clients.rpc.opts({ signal }));
+        const parent = ingress.workflowClient<{
+          run: (value: unknown) => Promise<unknown>;
+          final: () => Promise<unknown>;
+        }>({ name: "ArticleRun" }, key);
+        let output: { ready: boolean; result?: unknown };
+        try {
+          output = await parent.workflowOutput(clients.rpc.opts({ signal }));
+        } catch (error) {
+          // A failed parent ends as a terminal failure in Restate (#825); its
+          // saved final result is the completed outcome.
+          let saved: unknown = null;
+          try {
+            saved = await parent.final(clients.rpc.opts({ signal }));
+          } catch {
+            saved = null;
+          }
+          if (!saved) throw error;
+          output = { ready: true, result: saved };
+        }
         if (!output.ready) return { state: "not-complete" };
         const parsed = ParentResultSchema.safeParse(output.result);
         if (!parsed.success) throw new EditorialIngressError("invalid-response");

@@ -1,3 +1,4 @@
+import { deliveryLabel } from "./articles.js";
 import { articleRunKey } from "../workflow/article-run.js";
 import { recoveryWorkflowKey } from "./recovery.js";
 import {
@@ -56,6 +57,8 @@ export interface ArticleViewDeps {
   actionOrigin?: string;
   /** Links to Restate's own execution UI (#561), from private configuration. */
   restate?: { links: RestateUiLinks; lookup?: InvocationLookupPort };
+  /** The Poll now panel (#824), when polling is configured. */
+  pollPanel?: (url: URL) => string;
 }
 
 const link = (p: { publicationId: string; postId: string }) =>
@@ -216,7 +219,7 @@ export function articleViews(deps: ArticleViewDeps): DashboardView[] {
       const searchForm = deps.articles.page
         ? `<form method="get" action="/articles" class="search"><input type="hidden" name="sort" value="${sort}">${filter === "all" ? "" : `<input type="hidden" name="status" value="${escapeHtml(filter)}">`}<label>Search title and text <input name="q" value="${escapeHtml(q)}" maxlength="200"></label> <label>Publication <input name="publication" value="${escapeHtml(publication)}" maxlength="300"></label> <button>Search</button></form>`
         : "";
-      const pagingControls = `${searchForm}${filterLinks}${
+      const pagingControls = `${deps.pollPanel ? deps.pollPanel(url) : ""}${searchForm}${filterLinks}${
         deps.articles.page
           ? `<p class="sorting">Sort: ${
               sort === "newest"
@@ -498,7 +501,7 @@ export function renderTrace(t: ArticleTrace): string {
           const link = confirmed
             ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
             : "";
-          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+          return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", deliveryLabel(r))}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
         })
         .join(
           "",
@@ -518,28 +521,35 @@ export function renderTrace(t: ArticleTrace): string {
         // merged proposal list shows the same topic twice and hides which
         // result is current (#765).
         const groups = t.themes.results
-          .map((result: {
-            result: string;
-            current: boolean;
-            modelVersion: string;
-            promptVersion: string;
-            proposedAt: string;
-            themes: readonly { result: string; id: string; title: string; description?: string }[];
-          }) => {
-            const list =
-              result.themes.length === 0
-                ? '<p class="empty">This extraction saved no proposals.</p>'
-                : `<ul>${result.themes
-                    .map((theme) => {
-                      const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
-                      return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
-                        theme.description ? ` — ${escapeHtml(theme.description)}` : ""
-                      } <span class="empty">(extractor proposal, not canonical)</span></li>`;
-                    })
-                    .join("")}</ul>`;
-            return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
+          .map(
+            (result: {
+              result: string;
+              current: boolean;
+              modelVersion: string;
+              promptVersion: string;
+              proposedAt: string;
+              themes: readonly {
+                result: string;
+                id: string;
+                title: string;
+                description?: string;
+              }[];
+            }) => {
+              const list =
+                result.themes.length === 0
+                  ? '<p class="empty">This extraction saved no proposals.</p>'
+                  : `<ul>${result.themes
+                      .map((theme) => {
+                        const link = `/themes/view?result=${encodeURIComponent(theme.result)}&id=${encodeURIComponent(theme.id)}`;
+                        return `<li><a href="${escapeHtml(link)}">${escapeHtml(theme.title)}</a>${
+                          theme.description ? ` — ${escapeHtml(theme.description)}` : ""
+                        } <span class="empty">(extractor proposal, not canonical)</span></li>`;
+                      })
+                      .join("")}</ul>`;
+              return `<h3>Theme extraction ${badge(result.current ? "done" : "unknown", result.current ? "current" : "superseded")}</h3>
 <p class="empty"><code>${escapeHtml(result.result)}</code> · ${escapeHtml(result.modelVersion)} · ${escapeHtml(result.promptVersion)} · saved ${escapeHtml(result.proposedAt)}</p>${list}`;
-          })
+            },
+          )
           .join("");
         const many =
           t.themes.results.length > 1
@@ -590,7 +600,7 @@ export function renderTrace(t: ArticleTrace): string {
       const link = confirmed
         ? `<a href="${escapeHtml(r.url!)}" rel="noopener noreferrer">${escapeHtml(r.url!)}</a>`
         : "";
-      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", r.simulated ? "simulated" : "delivered")}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
+      return `<tr><td>${escapeHtml(r.destination)}</td><td>${escapeHtml(r.action)}</td><td>${badge(r.simulated ? "pending" : "done", deliveryLabel(r))}</td><td>${escapeHtml(r.deliveredAt)}</td><td>${link}</td></tr>`;
     })
     .join("");
   const receipts =

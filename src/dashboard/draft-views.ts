@@ -1,3 +1,4 @@
+import { deliveryLabel } from "./articles.js";
 import type { DraftEntry, DraftInventoryPort } from "./drafts.js";
 import { escapeHtml, type DashboardView } from "./server.js";
 import { renderMarkdown } from "./draft-markdown.js";
@@ -20,10 +21,10 @@ const delivery = (e: DraftEntry) => {
   return e.receipts
     .map((r) =>
       r.simulated
-        ? `${escapeHtml(r.destination)} (simulated)`
+        ? `${escapeHtml(r.destination)} (${deliveryLabel(r)})`
         : r.url
-          ? `<a href="${escapeHtml(r.url)}" rel="noopener noreferrer">${escapeHtml(r.destination)}</a> (delivered)`
-          : `${escapeHtml(r.destination)} (delivered, unconfirmed link)`,
+          ? `<a href="${escapeHtml(r.url)}" rel="noopener noreferrer">${escapeHtml(r.destination)}</a> (${deliveryLabel(r)})`
+          : `${escapeHtml(r.destination)} (${deliveryLabel(r)}, unconfirmed link)`,
     )
     .join(", ");
 };
@@ -156,10 +157,10 @@ ${fieldsSection(e)}`;
 <h2>Exact saved source</h2>
 <p class="empty">The saved artifact is not modified or reformatted; this is the source the reading view rendered.</p>
 ${
-        found.markdown === undefined
-          ? '<p class="empty">This draft has no saved body.</p>'
-          : `<pre class="draft-text">${escapeHtml(found.markdown)}</pre>`
-      }`;
+  found.markdown === undefined
+    ? '<p class="empty">This draft has no saved body.</p>'
+    : `<pre class="draft-text">${escapeHtml(found.markdown)}</pre>`
+}`;
     },
   };
   const article: DashboardView = {

@@ -16,6 +16,7 @@ import {
 } from "../../src/research/librarian.js";
 import { researchJobId, type ResearchRequest } from "../../src/research/job.js";
 import {
+  articleRunResult,
   articleRunWorkflow,
   researchService,
   type ArticleStages,
@@ -261,12 +262,20 @@ describe("retained commissioning priority", { timeout: 60_000 }, () => {
         retainedResearchJobIds: expected,
       };
       await w.workflowSubmit(input);
-      expect(await w.workflowAttach()).toMatchObject({
+      expect(
+        await articleRunResult(
+          () => Promise.resolve(w.workflowAttach()),
+          () => Promise.resolve(w.final()),
+        ),
+      ).toMatchObject({
         outcome: "failed",
         reason: "synthetic stop after normal retained guard",
       });
       await w.workflowSubmit(input);
-      await w.workflowAttach();
+      await articleRunResult(
+        () => Promise.resolve(w.workflowAttach()),
+        () => Promise.resolve(w.final()),
+      );
       expect(researchCalls).toBe(2);
       expect(discoveryCalls).toBe(0);
     } finally {
