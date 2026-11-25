@@ -931,7 +931,12 @@ describe("librarian coverage", { timeout: 60_000 }, () => {
 
 describe("librarian coverage across extraction schema versions", () => {
   it("accepts claims from a version 3 extraction", async () => {
-    const { themeResult, claimResult } = await analysis("p3", claims, "Weather warfare", 3);
+    const { themeResult, claimResult } = await analysis(
+      "p3",
+      claims,
+      "Weather warfare",
+      3,
+    );
     const r = researcher(() => "busy");
     const { record } = await assessPostCoverage({
       artifacts,
@@ -940,7 +945,9 @@ describe("librarian coverage across extraction schema versions", () => {
       commission: r.commission,
       shortlister: new LexicalShortlister(),
     });
-    expect(r.requests[0]!.canonicalNeeds!.needs.every((n) => !!n.occurrenceScope)).toBe(true);
+    expect(
+      r.requests[0]!.canonicalNeeds!.needs.every((n) => !!n.occurrenceScope),
+    ).toBe(true);
     expect(record.claims.every((c) => c.status === "pending")).toBe(true);
     expect(record.claims.map((c) => c.claimRecordId).sort()).toEqual([
       "claim-payment",
@@ -1770,5 +1777,76 @@ describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
     )!;
     expect(claim.reused).toBe(false);
     expect(claim.status).not.toBe("evidence-found");
+  });
+
+  it("keeps identically worded claims with different periods separate within one post (#904)", async () => {
+    const same = (text: string) => ({
+      id: "claim-twin",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text },
+    });
+    const r = researcher(() => "busy");
+    const { record } = await assessPostCoverage({
+      artifacts,
+      ...(await analysis("twin-periods", [same("Q3 2026"), same("Q4 2026")])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    const asked = r.requests.flatMap((q) => q.claims);
+    expect(asked.map((c) => c.statement).sort()).toEqual([
+      "Acme reported revenue of 10 million [reporting period: Q3 2026]",
+      "Acme reported revenue of 10 million [reporting period: Q4 2026]",
+    ]);
+    expect(new Set(asked.map((c) => c.claimRecordId)).size).toBe(2);
+    expect(
+      record.claims.filter((c) => c.claimRecordId.startsWith("claim-twin")),
+    ).toHaveLength(2);
+  });
+
+  it("still merges occurrences of the same claim and period", async () => {
+    const same = {
+      id: "claim-once",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+    };
+    const r = researcher(() => "busy");
+    await assessPostCoverage({
+      artifacts,
+      ...(await analysis("same-period", [same, same])),
+      commission: r.commission,
+      shortlister: new LexicalShortlister(),
+    });
+    expect(
+      r.requests
+        .flatMap((q) => q.claims)
+        .filter((c) => c.claimRecordId.startsWith("claim-once")),
+    ).toHaveLength(1);
+  });
+
+  it("replays an analysis with the grouping its earlier assessment used (#910 review)", async () => {
+    const same = (text: string) => ({
+      id: "claim-replay",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text },
+    });
+    const a = await analysis("replay-periods", [
+      same("Q3 2026"),
+      same("Q4 2026"),
+    ]);
+    const ids = async () => {
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return r.requests
+        .flatMap((q) => q.claims.map((c) => c.claimRecordId))
+        .sort();
+    };
+    const first = await ids();
+    expect(first).toHaveLength(2);
+    expect(await ids()).toEqual(first);
   });
 });

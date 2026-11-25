@@ -540,6 +540,10 @@ interface AcceptedClaim {
   need?: z.infer<typeof CanonicalNeedSchema>;
   /** Why the claim is left out of the eligible research set (#889), if it is. */
   excluded?: string;
+  /** The extraction's claim ID before any period separation (#904). */
+  recordId?: string;
+  /** Indices of this claim's occurrences in the extraction record (#904). */
+  indices?: number[];
   /**
    * The claim's reporting period bears on its identity (#889): saved evidence
    * found under the same statement may be for another period, so it is never
@@ -550,14 +554,47 @@ interface AcceptedClaim {
 
 function acceptedClaims(
   record: z.infer<typeof ClaimExtractionRecordSchema>,
+  /**
+   * Separate same-worded claims by reporting period (#904). Deterministic:
+   * it depends only on the extraction record, so every assessment and retry
+   * of one analysis groups identically. Records made before reporting
+   * periods existed have none, so their grouping is unchanged.
+   */
+  splitPeriods = true,
 ): AcceptedClaim[] {
   // Versions 2 and 3 share the accepted/candidate contract; version 1 is legacy.
   if (record.schemaVersion < 2) return [];
   const seen = new Map<string, AcceptedClaim>();
+  // Identically worded claims stating different reporting periods stay
+  // separate claims (#904): only when one claim ID carries more than one
+  // stated period in this record does the period join the grouping key, so
+  // every other claim keeps its exact ID.
+  const periodKey = (claim: unknown) => {
+    const period = reportingPeriodIdentity(claim);
+    return period && period !== "occurrence-only"
+      ? period.period.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase()
+      : undefined;
+  };
+  const periodsById = new Map<string, Set<string>>();
   for (const c of record.claims) {
+    const p = c.claimRecordId ? periodKey(c.claim) : undefined;
+    if (!c.claimRecordId || p === undefined) continue;
+    periodsById.set(
+      c.claimRecordId,
+      (periodsById.get(c.claimRecordId) ?? new Set()).add(p),
+    );
+  }
+  for (const [index, c] of record.claims.entries()) {
     const parsed = ClaimText.safeParse(c.claim);
     if (!c.claimRecordId || !parsed.success) continue;
-    const prior = seen.get(c.claimRecordId);
+    const p = periodKey(c.claim);
+    const groupId =
+      splitPeriods &&
+      p !== undefined &&
+      (periodsById.get(c.claimRecordId)?.size ?? 0) > 1
+        ? `${c.claimRecordId}~period-${createHash("sha256").update(p).digest("hex").slice(0, 12)}`
+        : c.claimRecordId;
+    const prior = seen.get(groupId);
     const proposalIds = [
       ...new Set([...(prior?.proposalIds ?? []), ...c.themeIds]),
     ];
@@ -578,12 +615,14 @@ function acceptedClaims(
       prior && !prior.excluded
         ? prior.extracted[0]!.statement
         : researchStatement(parsed.data.statement, c.claim, record.post);
-    seen.set(c.claimRecordId, {
+    seen.set(groupId, {
       ...(excluded ? { excluded } : {}),
       ...(periodScoped ? { periodScoped } : {}),
-      key: c.claimRecordId,
-      extracted: [{ claimRecordId: c.claimRecordId, statement: researched }],
-      claimRecordId: c.claimRecordId,
+      key: groupId,
+      recordId: c.claimRecordId,
+      indices: [...(prior?.indices ?? []), index],
+      extracted: [{ claimRecordId: groupId, statement: researched }],
+      claimRecordId: groupId,
       statement: parsed.data.statement,
       proposalIds,
     });
@@ -1411,7 +1450,11 @@ export async function assessPostCoverage(input: {
   const claims: AcceptedClaim[] = [];
   const byCanonical = new Map<string, AcceptedClaim>();
   for (const c of acceptedClaims(claimRecord)) {
-    const canonical = await canonicalOf(input.artifacts, c.claimRecordId);
+    // A period-separated claim (#904) keeps its own ID; merges apply to the base.
+    const canonical =
+      c.recordId && c.recordId !== c.claimRecordId
+        ? c.claimRecordId
+        : await canonicalOf(input.artifacts, c.claimRecordId);
     // One entry per extracted claim: grouping and request limits follow the
     // extraction, so later merges cannot regroup or resize requests.
     const entry = { ...c, claimRecordId: canonical };
@@ -1535,7 +1578,10 @@ export async function assessPostCoverage(input: {
     ];
     if (canonicalMode) {
       const entries = bindings!.entries.filter(
-        (e) => e.themeId === home && e.claimRecordId === claim.key,
+        (e) =>
+          e.themeId === home &&
+          e.claimRecordId === (claim.recordId ?? claim.key) &&
+          (!claim.indices || claim.indices.includes(e.index)),
       );
       if (new Set(entries.map((e) => e.needId)).size > 1) {
         reuseLimitations.push({
@@ -1567,7 +1613,10 @@ export async function assessPostCoverage(input: {
             ...new Map(
               bindings!.entries
                 .filter(
-                  (e) => e.themeId === id && e.claimRecordId === claim.key,
+                  (e) =>
+                    e.themeId === id &&
+                    e.claimRecordId === (claim.recordId ?? claim.key) &&
+                    (!claim.indices || claim.indices.includes(e.index)),
                 )
                 .map((e) => [e.needId, e.need]),
             ).values(),
