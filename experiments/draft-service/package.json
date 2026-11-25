@@ -1,0 +1,19 @@
+{
+  "name": "steele-exp-draft-service",
+  "private": true,
+  "type": "module",
+  "description": "Shared duplicate-safe Substack draft service for the n8n versus Mastra experiment (#912)",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.18.6"
+  }
+}

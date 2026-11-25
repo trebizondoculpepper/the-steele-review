@@ -1,0 +1,29 @@
+# Separately named experiment stack (#912). Real values are supplied privately (stack.env):
+#   STEELE_EXP_DRAFT_TAG            image tag built on the host
+#   STEELE_EXP_DRAFT_BIND           private host address:port (never public)
+#   STEELE_EXP_DRAFT_DATA           host directory for the delivery store
+#   STEELE_EXP_DRAFT_CLIENTS_DIR    host directory holding clients.json (token hashes only)
+#   STEELE_EXP_DRAFT_PUBLISHING_DIR canonical private publishing configuration (session file), mounted read-only
+#   STEELE_EXP_DRAFT_ORIGIN         bare https origin of the destination publication
+#   STEELE_EXP_DRAFT_DESTINATION    substack or fake
+name: steele-exp-draft
+services:
+  draft-service:
+    image: steele-exp-draft:${STEELE_EXP_DRAFT_TAG:?set the image tag}
+    restart: unless-stopped
+    ports:
+      - "${STEELE_EXP_DRAFT_BIND:?set a private bind address}:4200"
+    environment:
+      STEELE_DRAFT_DB: /data/deliveries.sqlite
+      STEELE_DRAFT_CLIENTS_FILE: /run/clients/clients.json
+      STEELE_DRAFT_DESTINATION: ${STEELE_EXP_DRAFT_DESTINATION:?substack or fake}
+      STEELE_DRAFT_SUBSTACK_ORIGIN: ${STEELE_EXP_DRAFT_ORIGIN:-}
+      STEELE_DRAFT_SUBSTACK_SESSION_FILE: /run/publishing/substack.sid
+      STEELE_DRAFT_FAKE_FILE: /data/fake-destination.json
+    volumes:
+      - ${STEELE_EXP_DRAFT_DATA:?set the data directory}:/data
+      - ${STEELE_EXP_DRAFT_CLIENTS_DIR:?set the clients directory}:/run/clients:ro
+      - ${STEELE_EXP_DRAFT_PUBLISHING_DIR:?set the publishing configuration directory}:/run/publishing:ro
+    read_only: true
+    tmpfs:
+      - /tmp
