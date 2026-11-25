@@ -554,6 +554,12 @@ interface AcceptedClaim {
 
 function acceptedClaims(
   record: z.infer<typeof ClaimExtractionRecordSchema>,
+  /**
+   * Separate same-worded claims by reporting period (#904). Off when this
+   * analysis was assessed before, so a retained plan replays with the keys
+   * it was built from.
+   */
+  splitPeriods = true,
 ): AcceptedClaim[] {
   // Versions 2 and 3 share the accepted/candidate contract; version 1 is legacy.
   if (record.schemaVersion < 2) return [];
@@ -582,7 +588,9 @@ function acceptedClaims(
     if (!c.claimRecordId || !parsed.success) continue;
     const p = periodKey(c.claim);
     const groupId =
-      p !== undefined && (periodsById.get(c.claimRecordId)?.size ?? 0) > 1
+      splitPeriods &&
+      p !== undefined &&
+      (periodsById.get(c.claimRecordId)?.size ?? 0) > 1
         ? `${c.claimRecordId}~period-${createHash("sha256").update(p).digest("hex").slice(0, 12)}`
         : c.claimRecordId;
     const prior = seen.get(groupId);
@@ -941,6 +949,7 @@ async function priorMappings(
   commissioningOrders?: string[][],
   coveredClaims?: Map<string, CoverageRecord["claims"][number]>,
   recordedJobs?: Map<string, CoverageRecord["jobs"][number]>,
+  priorClaimIds?: Set<string>,
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -969,6 +978,7 @@ async function priorMappings(
     ]);
     for (const m of r.mappings)
       if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    for (const c of r.claims) priorClaimIds?.add(c.claimRecordId);
     // Coverage whose dossier update failed is not reusable as-is: the claim
     // goes through normal assessment again, so the dossier write is retried.
     const unsaved = new Set(r.unsavedDossiers ?? []);
@@ -1206,6 +1216,8 @@ export async function assessPostCoverage(input: {
   const priorOrders: string[][] = [];
   /** Claims this exact analysis's earlier coverage records found evidence for (#889). */
   const coveredBefore = new Map<string, CoverageRecord["claims"][number]>();
+  /** Claim IDs this analysis's earlier coverage records used (#904). */
+  const priorClaimIds = new Set<string>();
   /** Jobs those records pinned, so reused coverage keeps its provenance. */
   const recordedBefore = new Map<string, CoverageRecord["jobs"][number]>();
   const reusedJobIds = new Set<string>();
@@ -1219,6 +1231,7 @@ export async function assessPostCoverage(input: {
     priorOrders,
     coveredBefore,
     recordedBefore,
+    priorClaimIds,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -1440,7 +1453,12 @@ export async function assessPostCoverage(input: {
   // claim later merged into an earlier one is covered by the canonical record.
   const claims: AcceptedClaim[] = [];
   const byCanonical = new Map<string, AcceptedClaim>();
-  for (const c of acceptedClaims(claimRecord)) {
+  // Replay keeps the grouping the earlier assessment used (#904): split by
+  // period for a new analysis, or when its earlier records already did.
+  const splitPeriods =
+    (!priorPlanRef && savedMapping.size === 0) ||
+    [...priorClaimIds].some((id) => id.includes("~period-"));
+  for (const c of acceptedClaims(claimRecord, splitPeriods)) {
     // A period-separated claim (#904) keeps its own ID; merges apply to the base.
     const canonical =
       c.recordId && c.recordId !== c.claimRecordId

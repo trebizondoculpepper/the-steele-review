@@ -1822,4 +1822,31 @@ describe("reporting periods in research (#889)", { timeout: 60_000 }, () => {
         .filter((c) => c.claimRecordId.startsWith("claim-once")),
     ).toHaveLength(1);
   });
+
+  it("replays an analysis with the grouping its earlier assessment used (#910 review)", async () => {
+    const same = (text: string) => ({
+      id: "claim-replay",
+      statement: "Acme reported revenue of 10 million",
+      reportingPeriod: { dependsOnPeriod: true, text },
+    });
+    const a = await analysis("replay-periods", [
+      same("Q3 2026"),
+      same("Q4 2026"),
+    ]);
+    const ids = async () => {
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      return r.requests
+        .flatMap((q) => q.claims.map((c) => c.claimRecordId))
+        .sort();
+    };
+    const first = await ids();
+    expect(first).toHaveLength(2);
+    expect(await ids()).toEqual(first);
+  });
 });
