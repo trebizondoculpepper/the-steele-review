@@ -14,6 +14,10 @@ import type { FeedItem } from "./rss.js";
  *   status, not a poll run's output, is the hand-off to capture: an item
  *   recorded here survives even if the process stops before Mastra saves
  *   the poll step's result.
+ *
+ * `needs_capture` is set in the same transaction that records a new or
+ * edited item, and cleared only by capture (#920). Discovery results are
+ * therefore durable before any fingerprint advances.
  * - selected: entered manually by an operator.
  */
 
@@ -24,6 +28,7 @@ export interface StoredItem extends FeedItem {
   firstSeenAt: string;
   lastSeenAt: string;
   changeCount: number;
+  needsCapture: boolean;
 }
 
 export interface PollRecord {
@@ -63,7 +68,8 @@ export class FeedStore {
             canonical_url TEXT PRIMARY KEY, slug TEXT NOT NULL, post_id TEXT, source_item TEXT,
             title TEXT NOT NULL, published_at TEXT, medium TEXT NOT NULL, fingerprint TEXT NOT NULL,
             status TEXT NOT NULL CHECK (status IN ('baseline','new','selected')),
-            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, change_count INTEGER NOT NULL DEFAULT 0)`,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, change_count INTEGER NOT NULL DEFAULT 0,
+            needs_capture INTEGER NOT NULL DEFAULT 0)`,
           `CREATE TABLE IF NOT EXISTS feed_polls (
             poll_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
             outcome TEXT NOT NULL, http_status INTEGER, item_count INTEGER NOT NULL,
@@ -72,7 +78,12 @@ export class FeedStore {
           "write",
         ),
       )
-      .then(() => undefined)
+      .then(async () => {
+        // Migration for databases created before needs_capture existed.
+        const cols = await this.db.execute("PRAGMA table_info(feed_items)");
+        if (!cols.rows.some((c) => c.name === "needs_capture"))
+          await this.db.execute("ALTER TABLE feed_items ADD COLUMN needs_capture INTEGER NOT NULL DEFAULT 0");
+      })
       .catch((e) => {
         // Allow a later call to retry after a transient failure.
         this.ready = undefined;
@@ -104,9 +115,9 @@ export class FeedStore {
         const prev = (await tx.execute({ sql: "SELECT fingerprint FROM feed_items WHERE canonical_url = ?", args: [it.canonicalUrl] })).rows[0];
         if (!prev) {
           await tx.execute({
-            sql: `INSERT INTO feed_items (canonical_url, slug, post_id, source_item, title, published_at, medium, fingerprint, status, first_seen_at, last_seen_at)
-                  VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-            args: [it.canonicalUrl, it.slug, it.postId, it.sourceItem, it.title, it.publishedAt, it.medium, it.fingerprint, baseline ? "baseline" : "new", poll.finishedAt, poll.finishedAt],
+            sql: `INSERT INTO feed_items (canonical_url, slug, post_id, source_item, title, published_at, medium, fingerprint, status, first_seen_at, last_seen_at, needs_capture)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            args: [it.canonicalUrl, it.slug, it.postId, it.sourceItem, it.title, it.publishedAt, it.medium, it.fingerprint, baseline ? "baseline" : "new", poll.finishedAt, poll.finishedAt, baseline ? 0 : 1],
           });
           if (!baseline) added.push(it);
         } else if (prev.fingerprint === "manual" || (baseline && prev.fingerprint !== it.fingerprint)) {
@@ -120,7 +131,7 @@ export class FeedStore {
         } else if (prev.fingerprint !== it.fingerprint) {
           await tx.execute({
             sql: `UPDATE feed_items SET post_id = COALESCE(?, post_id), source_item = COALESCE(?, source_item), title = ?, published_at = ?, medium = ?,
-                  fingerprint = ?, last_seen_at = ?, change_count = change_count + 1 WHERE canonical_url = ?`,
+                  fingerprint = ?, last_seen_at = ?, change_count = change_count + 1, needs_capture = 1 WHERE canonical_url = ?`,
             args: [it.postId, it.sourceItem, it.title, it.publishedAt, it.medium, it.fingerprint, poll.finishedAt, it.canonicalUrl],
           });
           changed.push(it);
@@ -157,11 +168,11 @@ export class FeedStore {
     try {
       const exists = (await tx.execute({ sql: "SELECT 1 FROM feed_items WHERE canonical_url = ?", args: [item.canonicalUrl] })).rows.length > 0;
       if (exists)
-        await tx.execute({ sql: "UPDATE feed_items SET status = 'selected', last_seen_at = ? WHERE canonical_url = ?", args: [now, item.canonicalUrl] });
+        await tx.execute({ sql: "UPDATE feed_items SET status = 'selected', needs_capture = 1, last_seen_at = ? WHERE canonical_url = ?", args: [now, item.canonicalUrl] });
       else
         await tx.execute({
-          sql: `INSERT INTO feed_items (canonical_url, slug, title, medium, fingerprint, status, first_seen_at, last_seen_at)
-                VALUES (?, ?, '', 'unknown', 'manual', 'selected', ?, ?)`,
+          sql: `INSERT INTO feed_items (canonical_url, slug, title, medium, fingerprint, status, first_seen_at, last_seen_at, needs_capture)
+                VALUES (?, ?, '', 'unknown', 'manual', 'selected', ?, ?, 1)`,
           args: [item.canonicalUrl, item.slug, now, now],
         });
       await tx.commit();
@@ -172,6 +183,26 @@ export class FeedStore {
     }
   }
 
+  /** Items awaiting capture (new or edited since activation, or manually selected), oldest first. */
+  async pendingCapture(limit: number): Promise<StoredItem[]> {
+    await this.init();
+    const r = await this.db.execute({
+      sql: "SELECT * FROM feed_items WHERE needs_capture = 1 ORDER BY last_seen_at ASC LIMIT ?",
+      args: [Math.min(Math.max(Math.trunc(limit) || 20, 1), 100)],
+    });
+    return r.rows.map(toStored);
+  }
+
+  /** Clears the capture flag, only if the item has not changed since `fingerprint` was captured. */
+  async markCaptured(canonicalUrl: string, fingerprint: string): Promise<boolean> {
+    await this.init();
+    const r = await this.db.execute({
+      sql: "UPDATE feed_items SET needs_capture = 0 WHERE canonical_url = ? AND fingerprint = ?",
+      args: [canonicalUrl, fingerprint],
+    });
+    return r.rowsAffected === 1;
+  }
+
   async items(limit: number, status?: ItemStatus): Promise<StoredItem[]> {
     await this.init();
     const bounded = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
@@ -179,20 +210,7 @@ export class FeedStore {
       sql: `SELECT * FROM feed_items ${status ? "WHERE status = ?" : ""} ORDER BY COALESCE(published_at, first_seen_at) DESC LIMIT ?`,
       args: status ? [status, bounded] : [bounded],
     });
-    return r.rows.map((row) => ({
-      canonicalUrl: String(row.canonical_url),
-      slug: String(row.slug),
-      postId: (row.post_id as string | null) ?? null,
-      sourceItem: (row.source_item as string | null) ?? null,
-      title: String(row.title),
-      publishedAt: (row.published_at as string | null) ?? null,
-      medium: row.medium as FeedItem["medium"],
-      fingerprint: String(row.fingerprint),
-      status: row.status as ItemStatus,
-      firstSeenAt: String(row.first_seen_at),
-      lastSeenAt: String(row.last_seen_at),
-      changeCount: Number(row.change_count),
-    }));
+    return r.rows.map(toStored);
   }
 
   async lastPolls(limit: number): Promise<PollRecord[]> {
@@ -216,4 +234,22 @@ export class FeedStore {
     this.client?.close();
     this.client = undefined;
   }
+}
+
+function toStored(row: Record<string, unknown>): StoredItem {
+  return {
+    canonicalUrl: String(row.canonical_url),
+    slug: String(row.slug),
+    postId: (row.post_id as string | null) ?? null,
+    sourceItem: (row.source_item as string | null) ?? null,
+    title: String(row.title),
+    publishedAt: (row.published_at as string | null) ?? null,
+    medium: row.medium as FeedItem["medium"],
+    fingerprint: String(row.fingerprint),
+    status: row.status as ItemStatus,
+    firstSeenAt: String(row.first_seen_at),
+    lastSeenAt: String(row.last_seen_at),
+    changeCount: Number(row.change_count),
+    needsCapture: Number(row.needs_capture) === 1,
+  };
 }

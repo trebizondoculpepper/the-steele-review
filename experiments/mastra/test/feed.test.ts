@@ -144,3 +144,21 @@ test("store initialisation retries after a failure", async () => {
   await assert.rejects(store.activated());
   await assert.rejects(store.activated(), "a second call retries rather than reusing the rejected promise");
 });
+
+test("new, edited and selected items stay durably pending until captured at their current fingerprint", async () => {
+  const h = harness();
+  h.set(feed(item("one", "One", "1")));
+  await pollFeed(h.store, h.config);
+  assert.equal((await h.store.pendingCapture(10)).length, 0, "baseline items are not pending");
+  h.set(feed(item("two", "Two", "2"), item("one", "One (edited)", "1")));
+  await pollFeed(h.store, h.config);
+  // Simulate a crash before the poll output was saved: a fresh store still sees the pending work.
+  const pending = await h.store.pendingCapture(10);
+  assert.deepEqual(pending.map((i) => i.slug).sort(), ["one", "two"]);
+  const two = pending.find((i) => i.slug === "two")!;
+  assert.equal(await h.store.markCaptured(two.canonicalUrl, "sha256:stale"), false, "a stale capture does not clear the flag");
+  assert.equal(await h.store.markCaptured(two.canonicalUrl, two.fingerprint), true);
+  assert.deepEqual((await h.store.pendingCapture(10)).map((i) => i.slug), ["one"]);
+  await h.store.select({ canonicalUrl: `https://${HOST}/p/old`, slug: "old" }, new Date().toISOString());
+  assert.ok((await h.store.pendingCapture(10)).some((i) => i.slug === "old"));
+});
