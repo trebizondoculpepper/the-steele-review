@@ -1,25 +1,43 @@
 import { isCanonicalArticlePath } from "./article-identity.js";
+import { CollectionRecordSchema } from "../collection/collection-store.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "../analysis/extraction.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { MechanicalPolicy } from "./mechanical-policy.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { writeOnce } from "../research/job.js";
 import { commitArticleRevision } from "./article-revisions.js";
-import { draftFromPackage, PackageDraftMetadataSchema } from "./package-draft.js";
+import {
+  draftFromPackage,
+  PackageDraftMetadataSchema,
+} from "./package-draft.js";
 import { loadPinnedContext } from "./pinned-context.js";
 import { DEFAULT_MAX_REVISIONS } from "./revision-policy.js";
-import { WriterPackageSchema, type WriterPackage, contextSources } from "./writer-package.js";
+import {
+  WriterPackageSchema,
+  type WriterPackage,
+  contextSources,
+} from "./writer-package.js";
 import {
   savePublicationPayload,
+  type PublicationPreviewImage,
   sameArtifact,
   artifactReference,
   publicationManifestHash,
   type PublicationPayload,
 } from "./publication-payload.js";
-import { ArtifactReferenceSchema, type ArtifactReference } from "../content/artifact-reference.js";
+import {
+  ArtifactReferenceSchema,
+  type ArtifactReference,
+} from "../content/artifact-reference.js";
 import { promptIdentity } from "./prompt-identity.js";
 import { rethrowCreditExhausted } from "../observability/provider-condition.js";
 
@@ -48,10 +66,18 @@ export const VERIFICATION_REPORT_SCHEMA_VERSION = 2;
  * recorded `promptVersion` of new reports (and their cache identity) without
  * making old reports unreadable.
  */
-export const DEFAULT_PACKAGE_VERIFY_PROMPT = loadPromptFile("verifier", "package-verifier");
+export const DEFAULT_PACKAGE_VERIFY_PROMPT = loadPromptFile(
+  "verifier",
+  "package-verifier",
+);
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    hash: z.string(),
+  })
   .strict();
 const Issue = z
   .object({
@@ -63,7 +89,10 @@ const Issue = z
 export type VerificationIssue = z.infer<typeof Issue>;
 
 const ModelVerdictSchema = z
-  .object({ verdict: z.enum(["approved", "redraft"]), issues: z.array(Issue).max(50) })
+  .object({
+    verdict: z.enum(["approved", "redraft"]),
+    issues: z.array(Issue).max(50),
+  })
   .strict();
 
 const LegacyPackageVerificationReportSchema = z
@@ -84,14 +113,19 @@ const LegacyPackageVerificationReportSchema = z
     verifiedAt: z.string(),
   })
   .strict();
-export const PackageVerificationReportSchema = z.discriminatedUnion("schemaVersion", [
-  LegacyPackageVerificationReportSchema,
-  LegacyPackageVerificationReportSchema.extend({
-    schemaVersion: z.literal(VERIFICATION_REPORT_SCHEMA_VERSION),
-    publication: ArtifactReferenceSchema,
-  }).strict(),
-]);
-export type PackageVerificationReport = z.infer<typeof PackageVerificationReportSchema>;
+export const PackageVerificationReportSchema = z.discriminatedUnion(
+  "schemaVersion",
+  [
+    LegacyPackageVerificationReportSchema,
+    LegacyPackageVerificationReportSchema.extend({
+      schemaVersion: z.literal(VERIFICATION_REPORT_SCHEMA_VERSION),
+      publication: ArtifactReferenceSchema,
+    }).strict(),
+  ],
+);
+export type PackageVerificationReport = z.infer<
+  typeof PackageVerificationReportSchema
+>;
 
 const toRef = (r: ArtifactRef) => ({
   repository: r.repository,
@@ -108,7 +142,10 @@ const toArtifactRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** Deterministic checks of the rendered draft against the package; returns substantive issues. */
-export function deterministicIssues(pkg: WriterPackage, markdown: string): VerificationIssue[] {
+export function deterministicIssues(
+  pkg: WriterPackage,
+  markdown: string,
+): VerificationIssue[] {
   const issues: VerificationIssue[] = [];
   const known = new Set<string>([
     ...pkg.claims.flatMap((c) => c.evidence.map((e) => e.url)),
@@ -126,12 +163,20 @@ export function deterministicIssues(pkg: WriterPackage, markdown: string): Verif
     }
   }
   const byId = new Map(pkg.claims.map((claim) => [claim.claimRecordId, claim]));
-  for (const marker of markdown.matchAll(/^<!-- claim-verdict ([a-f0-9]+) ([a-z]+) -->$/gm)) {
+  for (const marker of markdown.matchAll(
+    /^<!-- claim-verdict ([a-f0-9]+) ([a-z]+) -->$/gm,
+  )) {
     const claim = byId.get(Buffer.from(marker[1], "hex").toString("utf8"));
-    if (!claim || !["supported", "contradicted", "unsupported", "unresolved"].includes(marker[2])) {
+    if (
+      !claim ||
+      !["supported", "contradicted", "unsupported", "unresolved"].includes(
+        marker[2],
+      )
+    ) {
       issues.push({
         passage: marker[0],
-        reason: "responds to a claim that is not in the package or declares an invalid verdict",
+        reason:
+          "responds to a claim that is not in the package or declares an invalid verdict",
         severity: "substantive",
       });
     } else if (claim.status === "gap" && marker[2] !== "unresolved") {
@@ -144,7 +189,9 @@ export function deterministicIssues(pkg: WriterPackage, markdown: string): Verif
   }
   // Legacy renderer placed the statement and verdict in the visible prose.
   const claims = new Map(pkg.claims.map((c) => [c.statement, c]));
-  for (const m of markdown.matchAll(/^### "(.+)"\s*\n\s*\n\*\*([^*]+)\.\*\*/gm)) {
+  for (const m of markdown.matchAll(
+    /^### "(.+)"\s*\n\s*\n\*\*([^*]+)\.\*\*/gm,
+  )) {
     const claim = claims.get(m[1]);
     if (!claim) {
       issues.push({
@@ -169,7 +216,10 @@ export function approvalValidFor(
   markdown: string,
   publication?: { ref: ArtifactReference; payload: PublicationPayload },
 ): boolean {
-  if (report.outcome !== "approved" || report.draft.hash !== `sha256:${sha256(markdown)}`)
+  if (
+    report.outcome !== "approved" ||
+    report.draft.hash !== `sha256:${sha256(markdown)}`
+  )
     return false;
   // A legacy report approves its body only, never metadata attached afterwards.
   if (report.schemaVersion === 1) return publication === undefined;
@@ -192,6 +242,35 @@ export type VerifyOutcome =
  * package and the pinned source context. Shared by the combined verifier and
  * the findings-only assessor (#598) so both bind exactly the same inputs.
  */
+/**
+ * The retained preview image of the exact pinned source (#893), if it has one.
+ * A storage failure propagates; a record that is not a capture record, or has
+ * no retained preview, simply has no image.
+ */
+async function sourcePreviewImage(
+  archive: Pick<GitArtifactStore, "read">,
+  source: ArtifactRef,
+): Promise<PublicationPreviewImage | undefined> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await archive.read(source));
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+  const record = CollectionRecordSchema.safeParse(raw);
+  const retained = record.success
+    ? record.data.previewImage?.retained
+    : undefined;
+  return retained
+    ? {
+        artifact: retained.artifact,
+        contentType: retained.contentType,
+        bytes: retained.bytes,
+      }
+    : undefined;
+}
+
 export async function loadArticleForReview(input: {
   content: GitArtifactStore;
   archive: Pick<GitArtifactStore, "read">;
@@ -205,23 +284,38 @@ export async function loadArticleForReview(input: {
   const draftPath = canonical
     ? input.metadata.path.replace(/\.json$/, ".md")
     : meta.draft.slice(separator + 1);
-  const draftCommit = canonical ? input.metadata.commit : meta.draft.slice(0, separator);
+  const draftCommit = canonical
+    ? input.metadata.commit
+    : meta.draft.slice(0, separator);
   const pinned = await input.content.lookupAt(draftCommit, draftPath);
   const draftRef = pinned
     ? { ...pinned.ref, ...(canonical ? { commit: input.metadata.commit } : {}) }
     : undefined;
-  if (!draftRef || (!canonical && `${draftRef.commit}:${draftRef.path}` !== meta.draft)) {
-    return { status: "context-unavailable" as const, reason: "draft-version-mismatch" };
+  if (
+    !draftRef ||
+    (!canonical && `${draftRef.commit}:${draftRef.path}` !== meta.draft)
+  ) {
+    return {
+      status: "context-unavailable" as const,
+      reason: "draft-version-mismatch",
+    };
   }
   const markdown = await input.content.read(draftRef);
   const pkgRef = toArtifactRef(meta.package);
-  const pkg = WriterPackageSchema.parse(JSON.parse(await input.content.read(pkgRef)));
+  const pkg = WriterPackageSchema.parse(
+    JSON.parse(await input.content.read(pkgRef)),
+  );
 
+  const previewImage = await sourcePreviewImage(
+    input.archive,
+    toArtifactRef(pkg.source.artifact),
+  );
   const publication = await savePublicationPayload({
     content: input.content,
     metadata: input.metadata,
     body: draftRef,
     post: pkg.post,
+    ...(previewImage ? { previewImage } : {}),
   });
 
   const loaded = await loadPinnedContext({
@@ -238,14 +332,27 @@ export async function loadArticleForReview(input: {
       },
     },
     themes: toArtifactRef(pkg.themeResult),
-    ...(pkg.source.context ? { sourceContext: toArtifactRef(pkg.source.context) } : {}),
+    ...(pkg.source.context
+      ? { sourceContext: toArtifactRef(pkg.source.context) }
+      : {}),
   });
   if (loaded.kind !== "loaded")
     return { status: "context-unavailable" as const, reason: loaded.kind };
   if (meta.contextVersion && meta.contextVersion !== loaded.context.contextRef)
-    return { status: "context-unavailable" as const, reason: "source-context-version-mismatch" };
+    return {
+      status: "context-unavailable" as const,
+      reason: "source-context-version-mismatch",
+    };
 
-  return { status: "loaded" as const, meta, draftRef, markdown, pkg, publication, loaded };
+  return {
+    status: "loaded" as const,
+    meta,
+    draftRef,
+    markdown,
+    pkg,
+    publication,
+    loaded,
+  };
 }
 
 /** Verify one exact draft against its exact package and pinned context. */
@@ -288,7 +395,10 @@ export async function verifyPackageDraft(input: {
       !sameArtifact(report.draft, toRef(draftRef)) ||
       !sameArtifact(report.package, meta.package)
     )
-      return { status: "context-unavailable", reason: "verification-version-mismatch" };
+      return {
+        status: "context-unavailable",
+        reason: "verification-version-mismatch",
+      };
     return { status: "verified", report, ref: saved };
   }
 
@@ -319,7 +429,11 @@ export async function verifyPackageDraft(input: {
   });
   let verdict: z.infer<typeof ModelVerdictSchema> | undefined;
   let failure: "provider-failed" | "malformed-output" = "malformed-output";
-  for (let attempt = 0; attempt < (input.maxAttempts ?? 2) && !verdict; attempt++) {
+  for (
+    let attempt = 0;
+    attempt < (input.maxAttempts ?? 2) && !verdict;
+    attempt++
+  ) {
     let raw: string;
     try {
       raw = await input.verifier.complete(
@@ -344,7 +458,8 @@ export async function verifyPackageDraft(input: {
   const issues = [...checks, ...verdict.issues];
   // Approval needs no substantive problem from either the checks or the model.
   const outcome =
-    issues.some((i) => i.severity === "substantive") || verdict.verdict === "redraft"
+    issues.some((i) => i.severity === "substantive") ||
+    verdict.verdict === "redraft"
       ? "redraft"
       : "approved";
   const report = PackageVerificationReportSchema.parse({
@@ -424,7 +539,10 @@ export async function verifyWithRevisions(input: {
   const pkgPost = WriterPackageSchema.parse(
     JSON.parse(await input.content.read(input.package)),
   ).post;
-  const articleKey = { publicationId: pkgPost.publicationId, postId: pkgPost.postId };
+  const articleKey = {
+    publicationId: pkgPost.publicationId,
+    postId: pkgPost.postId,
+  };
   let article: ArticleVersion | undefined;
   const commit = async (generation: {
     draft: ArtifactRef;
@@ -436,11 +554,16 @@ export async function verifyWithRevisions(input: {
       generation,
       // The first version replaces whatever is current; each revision must
       // replace exactly the version it was derived from.
-      base: article ? { body: article.body.sha256, metadata: article.metadata.sha256 } : "current",
+      base: article
+        ? { body: article.body.sha256, metadata: article.metadata.sha256 }
+        : "current",
     });
-    return out.status === "conflict" ? undefined : { body: out.body, metadata: out.metadata };
+    return out.status === "conflict"
+      ? undefined
+      : { body: out.body, metadata: out.metadata };
   };
-  const withArticle = <T extends object>(o: T) => (article ? { ...o, article } : o);
+  const withArticle = <T extends object>(o: T) =>
+    article ? { ...o, article } : o;
   for (let revisions = 0; ; revisions++) {
     const verified = await verifyPackageDraft({
       content: input.content,
@@ -452,7 +575,8 @@ export async function verifyWithRevisions(input: {
     if (verified.status !== "verified")
       return {
         outcome: "failed",
-        reason: verified.status === "failed" ? verified.reason : verified.reason,
+        reason:
+          verified.status === "failed" ? verified.reason : verified.reason,
         revisions,
       };
     const draftRef = toArtifactRef(verified.report.draft);
@@ -465,7 +589,8 @@ export async function verifyWithRevisions(input: {
         // The generation could not be read back: stop before any model call.
         return { outcome: "failed", reason: "draft-unavailable", revisions };
       }
-      if (!article) return { outcome: "failed", reason: "article-conflict", revisions };
+      if (!article)
+        return { outcome: "failed", reason: "article-conflict", revisions };
     }
     if (verified.report.outcome === "approved") {
       return withArticle({
@@ -476,13 +601,20 @@ export async function verifyWithRevisions(input: {
         revisions,
       });
     }
-    const substantive = verified.report.issues.filter((i) => i.severity === "substantive");
+    const substantive = verified.report.issues.filter(
+      (i) => i.severity === "substantive",
+    );
     const MAX_OBSERVATIONS = 20;
     if (revisions >= max) {
       const unresolved = await writeOnce(
         input.content,
         verified.ref.path.replace(/\.json$/, ".unresolved.json"),
-        { outcome: "unresolved", revisions, report: toRef(verified.ref), issues: substantive },
+        {
+          outcome: "unresolved",
+          revisions,
+          report: toRef(verified.ref),
+          issues: substantive,
+        },
       );
       return withArticle({
         outcome: "unresolved" as const,
@@ -496,7 +628,8 @@ export async function verifyWithRevisions(input: {
     // with the generated fields saved beside it (#489). An unreadable or
     // malformed previous draft stops here, before any model call.
     let previousMarkdown: string;
-    let previousFields: { title: string; subtitle: string; excerpt: string } | undefined;
+    let previousFields:
+      { title: string; subtitle: string; excerpt: string } | undefined;
     try {
       previousMarkdown = await input.content.read(draftRef);
       const saved = JSON.parse(await input.content.read(metadata)) as {
@@ -523,7 +656,10 @@ export async function verifyWithRevisions(input: {
       },
       revision: {
         number: revisions + 1,
-        feedback: substantive.map((i) => ({ passage: i.passage, reason: i.reason })),
+        feedback: substantive.map((i) => ({
+          passage: i.passage,
+          reason: i.reason,
+        })),
         // Minor notes ride along as non-blocking context only when a substantive
         // redraft is already required (#576); approval policy is unchanged.
         ...(() => {
@@ -549,7 +685,10 @@ export async function verifyWithRevisions(input: {
       };
     }
     metadata = redraft.metadata;
-    const next = await commit({ draft: redraft.draft, metadata: redraft.metadata });
+    const next = await commit({
+      draft: redraft.draft,
+      metadata: redraft.metadata,
+    });
     if (!next) {
       return withArticle({
         outcome: "failed" as const,
