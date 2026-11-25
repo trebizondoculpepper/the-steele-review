@@ -1365,9 +1365,38 @@ export async function assessPostCoverage(input: {
   );
   const reuseLimitations: NonNullable<CoverageRecord["reuseLimitations"]> = [];
   const jobs: CoverageRecord["jobs"] = [];
-  const retainJob = (job: CoverageRecord["jobs"][number]) => {
+  /** Jobs recorded only from reused dossier evidence, not from this run's commission. */
+  const reusedOnly = new Set<string>();
+  const retainJob = (
+    job: CoverageRecord["jobs"][number],
+    from: "commission" | "reuse" = "commission",
+  ) => {
     const existing = jobs.find((j) => j.jobId === job.jobId);
     if (existing) {
+      // A job this run pinned is also reused from the dossier: the pinned
+      // outcome stands, and the reused proof's references are kept, so
+      // archived evidence and report context keep their provenance.
+      const mixed =
+        from === "reuse"
+          ? !reusedOnly.has(job.jobId)
+          : reusedOnly.has(job.jobId);
+      if (
+        mixed &&
+        existing.dossierId === job.dossierId &&
+        existing.pass === job.pass
+      ) {
+        const pinned = from === "reuse" ? existing : job;
+        const reused = from === "reuse" ? job : existing;
+        Object.assign(existing, {
+          ...pinned,
+          ...(pinned.result || !reused.result ? {} : { result: reused.result }),
+          ...(pinned.manifest || !reused.manifest
+            ? {}
+            : { manifest: reused.manifest }),
+        });
+        reusedOnly.delete(job.jobId);
+        return;
+      }
       if (
         existing.dossierId !== job.dossierId ||
         existing.pass !== job.pass ||
@@ -1387,6 +1416,7 @@ export async function assessPostCoverage(input: {
         ];
       return;
     }
+    if (from === "reuse") reusedOnly.add(job.jobId);
     jobs.push(job);
   };
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
@@ -1474,18 +1504,17 @@ export async function assessPostCoverage(input: {
             }
           }
           if (!checked) continue;
-          // Saved dossier evidence is reused with its provenance, but a job
-          // this run pinned keeps its pinned outcome in the job list: the
-          // reuse never records it a second time with another outcome.
-          if (!input.pinnedJobIds?.has(checked.result.jobId))
-            retainJob({
+          retainJob(
+            {
               jobId: checked.result.jobId,
               dossierId: id,
               pass: checked.request.pass,
               outcome: checked.result.outcome,
               result: checked.proof.result,
               manifest: checked.proof.manifest,
-            });
+            },
+            "reuse",
+          );
           outcomes.set(claim.key, {
             claimRecordId: claim.claimRecordId,
             statement: claim.statement,
