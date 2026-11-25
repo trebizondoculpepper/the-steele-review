@@ -66,6 +66,7 @@ const modelId = z
   .regex(/^[a-z0-9._-]+\/[A-Za-z0-9._:-]+$/, "provider/model");
 
 export const PUBLISH_WITHOUT_EMAIL = "STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL";
+export const SUBSCRIBER_EMAIL = "STEELE_SUBSTACK_SUBSCRIBER_EMAIL";
 const PostKey = /^[a-z0-9][a-z0-9-]{0,199}\/[a-z0-9][a-z0-9-]{0,199}$/;
 /** Blank, or up to 20 `publicationId/postId` pairs; parsed to the list of pairs. */
 export const PublishWithoutEmailSchema = z
@@ -139,6 +140,16 @@ export const SETTINGS: readonly SettingSpec[] = [
     schema: z.string().regex(/^[0-9]*$/),
     default: "",
     sensitivity: "private",
+    activation: "live",
+  },
+  {
+    key: SUBSCRIBER_EMAIL,
+    domain: "providers",
+    description:
+      "Whether the live Substack publisher emails subscribers when it publishes: off (the owner's stabilisation setting, #895) or on. Read before every delivery. Posts listed in STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL are never emailed either way.",
+    schema: z.enum(["off", "on"]),
+    default: "off",
+    sensitivity: "public",
     activation: "live",
   },
   {

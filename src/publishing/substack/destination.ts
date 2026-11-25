@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { EmailPolicy } from "../../config/publish-email-policy.js";
 import { z } from "zod";
 import {
   DestinationUnavailableError,
@@ -455,8 +456,8 @@ export class SubstackPublishDestination implements DestinationAdapter {
   readonly supportsPublicationPayload = true;
   private readonly draft: SubstackDraftDestination;
   private readonly publishFrom: number;
-  private readonly withoutEmail: () => Promise<ReadonlySet<string>>;
-  private prepared: ReadonlySet<string> | undefined;
+  private readonly emailPolicy: () => Promise<EmailPolicy>;
+  private prepared: EmailPolicy | undefined;
 
   constructor(
     private readonly client: Pick<
@@ -472,14 +473,19 @@ export class SubstackPublishDestination implements DestinationAdapter {
        * configuration immediately before each delivery. Every other post is
        * published with email as before.
        */
-      withoutEmail?: () => Promise<ReadonlySet<string>>;
+      emailPolicy?: () => Promise<EmailPolicy>;
     },
   ) {
     const from = Date.parse(options.publishFrom);
     if (!Number.isFinite(from))
       throw new Error("substack: invalid publish activation time");
     this.publishFrom = from;
-    this.withoutEmail = options.withoutEmail ?? (async () => new Set<string>());
+    this.emailPolicy =
+      options.emailPolicy ??
+      (async () => ({
+        subscriberEmail: "on" as const,
+        withoutEmail: new Set<string>(),
+      }));
     this.name = options.name ?? "substack";
     this.draft = new SubstackDraftDestination(client, options);
   }
@@ -505,7 +511,7 @@ export class SubstackPublishDestination implements DestinationAdapter {
   /** Read the live email policy before any delivery intent is recorded (#388). */
   async prepare(): Promise<void> {
     try {
-      this.prepared = await this.withoutEmail();
+      this.prepared = await this.emailPolicy();
     } catch {
       throw new DestinationUnavailableError("unavailable", 30_000);
     }
@@ -519,12 +525,13 @@ export class SubstackPublishDestination implements DestinationAdapter {
     // Use exactly the policy read by prepare() for this delivery, just before
     // its intent was recorded; there is no second read and no stale fallback.
     // Without one, nothing is created.
-    const withoutEmail = this.prepared;
+    const policy = this.prepared;
     this.prepared = undefined;
-    if (!withoutEmail)
-      throw new DestinationUnavailableError("unavailable", 30_000);
+    if (!policy) throw new DestinationUnavailableError("unavailable", 30_000);
     // A preview saved before #388 has no post and keeps its original behaviour.
-    const send = !(preview.post && withoutEmail.has(preview.post));
+    const send =
+      policy.subscriberEmail === "on" &&
+      !(preview.post && policy.withoutEmail.has(preview.post));
     const created = await this.draft.deliver(preview, key);
     const id = created.externalId!;
     try {

@@ -688,7 +688,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
     const s = fakeSubstack();
     const d = new SubstackPublishDestination(s, {
       publishFrom: FROM,
-      withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
+      emailPolicy: async () => ({
+        subscriberEmail: "on" as const,
+        withoutEmail: new Set([`${f.publicationId}/${f.postId}`]),
+      }),
     });
     const receipt = await (await d.prepare(), d).deliver(
       d.render({ markdown: WRITER_MARKDOWN, data: fresh }),
@@ -716,7 +719,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
     };
     const d = new SubstackPublishDestination(s, {
       publishFrom: FROM,
-      withoutEmail: () => policy(),
+      emailPolicy: async () => ({
+        subscriberEmail: "on" as const,
+        withoutEmail: await policy(),
+      }),
     });
     const preview = d.render({ markdown: WRITER_MARKDOWN, data: fresh });
     await expect(d.prepare()).rejects.toBeInstanceOf(
@@ -748,7 +754,10 @@ describe("Substack live publication with subscriber email (#789)", () => {
     };
     const d = new SubstackPublishDestination(s, {
       publishFrom: FROM,
-      withoutEmail: async () => new Set([`${f.publicationId}/${f.postId}`]),
+      emailPolicy: async () => ({
+        subscriberEmail: "on" as const,
+        withoutEmail: new Set([`${f.publicationId}/${f.postId}`]),
+      }),
     });
     await expect(
       (await d.prepare(), d).deliver(
@@ -756,6 +765,33 @@ describe("Substack live publication with subscriber email (#789)", () => {
         "k",
       ),
     ).rejects.toBeInstanceOf(UncertainDeliveryError);
+  });
+
+  it("publishes every post without email when the live switch is off (#895)", async () => {
+    const s = fakeSubstack();
+    const d = new SubstackPublishDestination(s, {
+      publishFrom: FROM,
+      emailPolicy: async () => ({
+        subscriberEmail: "off",
+        withoutEmail: new Set(),
+      }),
+    });
+    const other = { ...(fresh as object), postId: "another-post" } as never;
+    for (const [data, key] of [
+      [fresh, "k1"],
+      [other, "k2"],
+    ] as const) {
+      await d.prepare();
+      const receipt = await d.deliver(
+        d.render({ markdown: WRITER_MARKDOWN, data }),
+        key,
+      );
+      expect(receipt).toMatchObject({
+        publicationSafety: { published: true, subscriberEmail: "suppressed" },
+      });
+    }
+    expect(s.published.map((p) => p.send)).toEqual([false, false]);
+    expect(s.drafts.every((x) => !x.email_sent_at)).toBe(true);
   });
 
   it("never touches the backlog or owner draft rehearsals", () => {
@@ -867,9 +903,12 @@ describe(
       let readable = false;
       const d = new SubstackPublishDestination(s, {
         publishFrom: "2000-01-01T00:00:00.000Z",
-        withoutEmail: async () => {
+        emailPolicy: async () => {
           if (!readable) throw new Error("config unreadable");
-          return new Set(["pub/a-post"]);
+          return {
+            subscriberEmail: "on" as const,
+            withoutEmail: new Set(["pub/a-post"]),
+          };
         },
       });
       const run = () =>
