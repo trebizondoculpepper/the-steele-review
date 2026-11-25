@@ -719,6 +719,7 @@ async function priorMappings(
   targetedBatches?: Map<string, string[][]>,
   commissioningOrders?: string[][],
   coveredClaims?: Map<string, CoverageRecord["claims"][number]>,
+  recordedJobs?: Map<string, CoverageRecord["jobs"][number]>,
 ): Promise<Map<string, CoverageRecord["mappings"][number]>> {
   const out = new Map<string, CoverageRecord["mappings"][number]>();
   const paths = await artifacts.list(
@@ -759,6 +760,7 @@ async function priorMappings(
         coveredClaims?.set(c.claimRecordId, c);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
+      if (!recordedJobs?.has(j.jobId)) recordedJobs?.set(j.jobId, j);
       if (j.targetedClaims && targetedBatches) {
         const batches = targetedBatches.get(j.dossierId) ?? [];
         const key = JSON.stringify(j.targetedClaims);
@@ -945,6 +947,9 @@ export async function assessPostCoverage(input: {
   const priorOrders: string[][] = [];
   /** Claims this exact analysis's earlier coverage records found evidence for (#889). */
   const coveredBefore = new Map<string, CoverageRecord["claims"][number]>();
+  /** Jobs those records pinned, so reused coverage keeps its provenance. */
+  const recordedBefore = new Map<string, CoverageRecord["jobs"][number]>();
+  const reusedJobIds = new Set<string>();
   const savedMapping = await priorMappings(
     input.artifacts,
     post,
@@ -954,6 +959,7 @@ export async function assessPostCoverage(input: {
     priorTargeted,
     priorOrders,
     coveredBefore,
+    recordedBefore,
   );
   const catalogue = new ThemeMappingCatalogue(input.artifacts);
   // Canonical themes exist independently of research (#528).
@@ -1149,6 +1155,7 @@ export async function assessPostCoverage(input: {
       : undefined;
     if (ownCoverage) {
       outcomes.set(claim.key, { ...ownCoverage, reused: true });
+      for (const id of ownCoverage.jobIds) reusedJobIds.add(id);
       groups.set(home, [...(groups.get(home) ?? []), claim]);
       continue;
     }
@@ -1189,7 +1196,11 @@ export async function assessPostCoverage(input: {
   }
 
   // 3. Commission one request per dossier, then assess from exact saved results.
-  const jobs: CoverageRecord["jobs"] = [];
+  // Reused coverage carries its pinned jobs (result, manifest, warnings), so
+  // the writer still resolves archived evidence and research context.
+  const jobs: CoverageRecord["jobs"] = [...reusedJobIds]
+    .map((id) => recordedBefore.get(id))
+    .filter((j): j is CoverageRecord["jobs"][number] => !!j);
   const postRefs = {
     publicationId: post.publicationId,
     postId: post.postId,
@@ -1313,6 +1324,8 @@ export async function assessPostCoverage(input: {
         JSON.parse(await input.artifacts.read(manifestRef)),
       );
     }
+    const already = jobs.findIndex((j) => j.jobId === job.jobId);
+    if (already >= 0) jobs.splice(already, 1);
     jobs.push({
       jobId: job.jobId,
       dossierId,

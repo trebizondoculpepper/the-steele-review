@@ -1178,6 +1178,64 @@ describe(
       expect(again.requests).toHaveLength(0);
     });
 
+    it("keeps the pinned jobs of reused period-scoped coverage, so evidence provenance survives (#903 review)", async () => {
+      const revenue = {
+        id: "claim-revenue-keep",
+        statement: "Acme reported revenue of 10 million",
+        reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+      };
+      const a = await analysis("keep-jobs", [revenue]);
+      const support = (req: ResearchRequest) => ({
+        passages: req.claims.map((c) => ({
+          claimRecordId: c.claimRecordId,
+          url: SHARED,
+        })),
+      });
+      const first = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: researcher(support).commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const again = await assessPostCoverage({
+        artifacts,
+        ...a,
+        commission: researcher(() => "busy").commission,
+        shortlister: new LexicalShortlister(),
+      });
+      const claim = again.record.claims.find(
+        (c) => c.claimRecordId === "claim-revenue-keep",
+      )!;
+      expect(claim).toMatchObject({ status: "evidence-found", reused: true });
+      for (const id of claim.jobIds)
+        expect(again.record.jobs.find((j) => j.jobId === id)?.manifest).toEqual(
+          first.record.jobs.find((j) => j.jobId === id)?.manifest,
+        );
+      expect(claim.jobIds.length).toBeGreaterThan(0);
+    });
+
+    it("accepts a full-length claim with its reporting-period note", async () => {
+      const long = `${"A".repeat(1990)} 10 million`;
+      const r = researcher(() => "busy");
+      await assessPostCoverage({
+        artifacts,
+        ...(await analysis("long-claim", [
+          {
+            id: "claim-long",
+            statement: long,
+            reportingPeriod: { dependsOnPeriod: true, text: "Q3 2026" },
+          },
+        ])),
+        commission: r.commission,
+        shortlister: new LexicalShortlister(),
+      });
+      expect(
+        r.requests
+          .flatMap((q) => q.claims)
+          .find((c) => c.claimRecordId === "claim-long")!.statement,
+      ).toHaveLength(long.length + " [reporting period: Q3 2026]".length);
+    });
+
     it("refuses recovery of a theme job that no coverage record binds to this article", async () => {
       const { validateRetainedArticleResearch } =
         await import("../../src/research/retained-research-source.js");

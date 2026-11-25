@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
-import type { OperationClaim, OperationStore } from "../controllers/operation-store.js";
+import type {
+  OperationClaim,
+  OperationStore,
+} from "../controllers/operation-store.js";
 import {
   RESEARCH_COMPLETED_SUBJECT,
   createResearchCompletedEvent,
@@ -72,7 +78,8 @@ export const ResearchRequestSchema = z
         z
           .object({
             claimRecordId: z.string().min(1).max(200),
-            statement: z.string().min(1).max(2000),
+            // A 2,000-character claim plus its reporting-period note (#889).
+            statement: z.string().min(1).max(3000),
             themeIds: z.array(z.string().min(1)).max(30),
           })
           .strict(),
@@ -83,7 +90,10 @@ export const ResearchRequestSchema = z
      * cap (#533), in priority order. Recorded for audit; not part of the job
      * identity. They stay explicit gaps in coverage.
      */
-    omittedClaimRecordIds: z.array(z.string().min(1).max(200)).max(500).optional(),
+    omittedClaimRecordIds: z
+      .array(z.string().min(1).max(200))
+      .max(500)
+      .optional(),
     /** The question or gap the research must resolve (optional for a manual subject request). */
     question: z.string().trim().min(1).max(4000).optional(),
     /** Existing corpus material the researcher should start from. */
@@ -92,14 +102,23 @@ export const ResearchRequestSchema = z
   .strict()
   .superRefine((r, ctx) => {
     if (r.pass > 1 && !r.previousJobId) {
-      ctx.addIssue({ code: "custom", message: "a later pass must name the job it follows" });
+      ctx.addIssue({
+        code: "custom",
+        message: "a later pass must name the job it follows",
+      });
     }
     const ids = r.claims.map((c) => c.claimRecordId);
     if (new Set(ids).size !== ids.length) {
-      ctx.addIssue({ code: "custom", message: "claims must not repeat a claim record ID" });
+      ctx.addIssue({
+        code: "custom",
+        message: "claims must not repeat a claim record ID",
+      });
     }
     if (r.pass === 1 && r.previousJobId) {
-      ctx.addIssue({ code: "custom", message: "a first pass has no previous job" });
+      ctx.addIssue({
+        code: "custom",
+        message: "a first pass has no previous job",
+      });
     }
     if (r.origin === "extraction") {
       if (!r.post || r.claims.length === 0 || !r.question) {
@@ -110,10 +129,19 @@ export const ResearchRequestSchema = z
         });
       }
       if (r.subject || r.brief) {
-        ctx.addIssue({ code: "custom", message: "subject and brief are for manual requests" });
+        ctx.addIssue({
+          code: "custom",
+          message: "subject and brief are for manual requests",
+        });
       }
     } else if (r.origin === "theme") {
-      if (r.post || r.subject || r.brief || r.claims.length === 0 || !r.question) {
+      if (
+        r.post ||
+        r.subject ||
+        r.brief ||
+        r.claims.length === 0 ||
+        !r.question
+      ) {
         ctx.addIssue({
           code: "custom",
           message:
@@ -122,23 +150,42 @@ export const ResearchRequestSchema = z
       }
       const themes = new Set(r.claims.flatMap((c) => c.themeIds));
       if (themes.size !== 1) {
-        ctx.addIssue({ code: "custom", message: "a theme request targets exactly one theme" });
+        ctx.addIssue({
+          code: "custom",
+          message: "a theme request targets exactly one theme",
+        });
       }
     } else {
-      if (!r.subject) ctx.addIssue({ code: "custom", message: "a manual request needs a subject" });
+      if (!r.subject)
+        ctx.addIssue({
+          code: "custom",
+          message: "a manual request needs a subject",
+        });
       if (r.post)
-        ctx.addIssue({ code: "custom", message: "a manual request has no post analysis" });
+        ctx.addIssue({
+          code: "custom",
+          message: "a manual request has no post analysis",
+        });
     }
   });
 export type ResearchRequest = z.infer<typeof ResearchRequestSchema>;
 
-export const ResearchOutcomeSchema = z.enum(["complete", "complete-with-gaps", "failed"]);
+export const ResearchOutcomeSchema = z.enum([
+  "complete",
+  "complete-with-gaps",
+  "failed",
+]);
 export type ResearchOutcome = z.infer<typeof ResearchOutcomeSchema>;
 
 export const CitationRecordSchema = z
   .object({
     url: z.url({ protocol: /^https?$/ }),
-    retrieval: z.enum(["archived", "inaccessible", "unsupported", "not-attempted"]),
+    retrieval: z.enum([
+      "archived",
+      "inaccessible",
+      "unsupported",
+      "not-attempted",
+    ]),
     /** Sanitised reason when not archived, e.g. "redirected", "unsupported-content", "timeout". */
     retrievalReason: z.string().max(100).optional(),
     archivedArtifact: Ref.optional(),
@@ -157,7 +204,10 @@ export const CitationRecordSchema = z
     passages: z
       .array(
         z
-          .object({ claimRecordId: z.string().min(1), passage: z.string().min(1).max(4000) })
+          .object({
+            claimRecordId: z.string().min(1),
+            passage: z.string().min(1).max(4000),
+          })
           .strict(),
       )
       .max(50),
@@ -176,7 +226,9 @@ export const ResearchWarningSchema = z
   .strict();
 export const ResearchWarningsSchema = z.array(ResearchWarningSchema).max(1);
 export type ResearchWarning = z.infer<typeof ResearchWarningSchema>;
-export const outputLimitWarning = (discovery: z.infer<typeof Ref>): ResearchWarning => ({
+export const outputLimitWarning = (
+  discovery: z.infer<typeof Ref>,
+): ResearchWarning => ({
   code: "report-output-limit",
   discovery,
   message:
@@ -196,7 +248,9 @@ export const ResearchManifestSchema = z
     gaps: z.array(z.string().min(1).max(2000)).max(100),
     /** Writer orientation from the bundle assessment (#795). */
     writerBrief: z.string().min(1).max(2000).optional(),
-    provider: z.object({ model: z.string().min(1), costUsd: z.number().optional() }).strict(),
+    provider: z
+      .object({ model: z.string().min(1), costUsd: z.number().optional() })
+      .strict(),
   })
   .strict();
 export type ResearchManifest = z.infer<typeof ResearchManifestSchema>;
@@ -210,7 +264,13 @@ export const ResearchResultSchema = z
     manifest: Ref.optional(),
     /** Sanitised failure code; never provider payloads or credentials. */
     failure: z
-      .enum(["provider-error", "timeout", "interrupted", "invalid-report", "budget-exceeded"])
+      .enum([
+        "provider-error",
+        "timeout",
+        "interrupted",
+        "invalid-report",
+        "budget-exceeded",
+      ])
       .optional(),
     warnings: ResearchWarningsSchema.optional(),
     finishedAt: z.iso.datetime({ offset: true }),
@@ -218,9 +278,15 @@ export const ResearchResultSchema = z
   .strict()
   .superRefine((r, ctx) => {
     if (r.warnings?.length && r.outcome !== "complete-with-gaps")
-      ctx.addIssue({ code: "custom", message: "partial research must retain gaps" });
+      ctx.addIssue({
+        code: "custom",
+        message: "partial research must retain gaps",
+      });
     if (r.outcome !== "failed" && !r.manifest) {
-      ctx.addIssue({ code: "custom", message: "a completed job must reference its manifest" });
+      ctx.addIssue({
+        code: "custom",
+        message: "a completed job must reference its manifest",
+      });
     }
     if (r.outcome === "failed" && !r.failure) {
       ctx.addIssue({ code: "custom", message: "a failed job must state why" });
@@ -228,12 +294,12 @@ export const ResearchResultSchema = z
   });
 export type ResearchResult = z.infer<typeof ResearchResultSchema>;
 
-const refKey = (r: { repository: string; commit: string; path: string; hash: string }) => [
-  r.repository,
-  r.commit,
-  r.path,
-  r.hash,
-];
+const refKey = (r: {
+  repository: string;
+  commit: string;
+  path: string;
+  hash: string;
+}) => [r.repository, r.commit, r.path, r.hash];
 
 /** Stable job ID from the immutable inputs and pass. */
 export function researchJobId(input: unknown): string {
@@ -241,8 +307,12 @@ export function researchJobId(input: unknown): string {
   const canonical = JSON.stringify({
     v: r.schemaVersion,
     origin: r.origin,
-    subject: r.subject ? r.subject.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
-    brief: r.brief ? r.brief.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
+    subject: r.subject
+      ? r.subject.normalize("NFKC").replace(/\s+/g, " ").trim()
+      : null,
+    brief: r.brief
+      ? r.brief.normalize("NFKC").replace(/\s+/g, " ").trim()
+      : null,
     pass: r.pass,
     previous: r.previousJobId ?? null,
     ...(r.retainedRecovery
@@ -265,10 +335,16 @@ export function researchJobId(input: unknown): string {
         ]
       : null,
     claims: [...r.claims]
-      .map((c) => JSON.stringify([c.claimRecordId, c.statement, [...c.themeIds].sort()]))
+      .map((c) =>
+        JSON.stringify([c.claimRecordId, c.statement, [...c.themeIds].sort()]),
+      )
       .sort(),
-    question: r.question ? r.question.normalize("NFKC").replace(/\s+/g, " ").trim() : null,
-    corpus: r.corpusRefs.map(refKey).sort((a, b) => a.join().localeCompare(b.join())),
+    question: r.question
+      ? r.question.normalize("NFKC").replace(/\s+/g, " ").trim()
+      : null,
+    corpus: r.corpusRefs
+      .map(refKey)
+      .sort((a, b) => a.join().localeCompare(b.join())),
   });
   return `research-${createHash("sha256").update(canonical).digest("hex").slice(0, 32)}`;
 }
@@ -280,8 +356,10 @@ export class InvalidResearchManifestError extends Error {
   }
 }
 
-export const researchJobPath = (jobId: string, file: "request" | "result" | "manifest") =>
-  `research-jobs/${JobId.parse(jobId)}/${file}.json`;
+export const researchJobPath = (
+  jobId: string,
+  file: "request" | "result" | "manifest",
+) => `research-jobs/${JobId.parse(jobId)}/${file}.json`;
 
 const asReference = (r: ArtifactRef) => ({
   repository: r.repository,
@@ -295,7 +373,8 @@ export async function writeOnce(
   path: string,
   value: unknown,
 ): Promise<ArtifactRef> {
-  const content = typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`;
+  const content =
+    typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`;
   for (let attempt = 0; ; attempt++) {
     try {
       return await store.write(path, content);
@@ -329,7 +408,12 @@ export type OpenedResearchJob =
       claim: OperationClaim;
       leaseMs: number;
     }
-  | { status: "finished"; jobId: string; requestRef: ArtifactRef; existing: ResearchResult }
+  | {
+      status: "finished";
+      jobId: string;
+      requestRef: ArtifactRef;
+      existing: ResearchResult;
+    }
   | { status: "busy"; jobId: string; requestRef: ArtifactRef };
 
 /**
@@ -350,10 +434,18 @@ export async function openResearchJob(input: {
 }): Promise<OpenedResearchJob> {
   const request = ResearchRequestSchema.parse(input.request);
   const jobId = researchJobId(request);
-  const requestRef = await writeOnce(input.artifacts, researchJobPath(jobId, "request"), request);
-  const resultRef = await input.artifacts.lookup(researchJobPath(jobId, "result"));
+  const requestRef = await writeOnce(
+    input.artifacts,
+    researchJobPath(jobId, "request"),
+    request,
+  );
+  const resultRef = await input.artifacts.lookup(
+    researchJobPath(jobId, "result"),
+  );
   if (resultRef) {
-    const existing = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(resultRef)));
+    const existing = ResearchResultSchema.parse(
+      JSON.parse(await input.artifacts.read(resultRef)),
+    );
     // Ensure the completion is recorded even if an earlier run stopped between saving and recording.
     recordOutcome(input.operations, jobId, existing);
     return { status: "finished", jobId, requestRef, existing };
@@ -388,19 +480,31 @@ export async function openResearchJob(input: {
   return { status: "finished", jobId, requestRef, existing: result };
 }
 
-function recordOutcome(operations: OperationStore, jobId: string, result: ResearchResult): void {
+function recordOutcome(
+  operations: OperationStore,
+  jobId: string,
+  result: ResearchResult,
+): void {
   if (operations.pendingEventStatus(jobId) !== undefined) return;
   const event = createResearchCompletedEvent(
-    { jobId, outcome: result.outcome, ...(result.manifest ? { manifest: result.manifest } : {}) },
+    {
+      jobId,
+      outcome: result.outcome,
+      ...(result.manifest ? { manifest: result.manifest } : {}),
+    },
     { id: jobId, now: () => new Date(result.finishedAt) },
   );
-  operations.reconcileCompleted(`research:${jobId}`, { jobId, outcome: result.outcome }, [
-    {
-      eventId: jobId,
-      subject: RESEARCH_COMPLETED_SUBJECT,
-      payload: JSON.stringify(event.toJSON()),
-    },
-  ]);
+  operations.reconcileCompleted(
+    `research:${jobId}`,
+    { jobId, outcome: result.outcome },
+    [
+      {
+        eventId: jobId,
+        subject: RESEARCH_COMPLETED_SUBJECT,
+        payload: JSON.stringify(event.toJSON()),
+      },
+    ],
+  );
 }
 
 /**
@@ -417,11 +521,17 @@ export async function finishResearchJob(input: {
   failure?: ResearchResult["failure"];
   warnings?: ResearchWarning[];
   now?: () => Date;
-}): Promise<{ result: ResearchResult; resultRef: ArtifactRef; reused: boolean }> {
+}): Promise<{
+  result: ResearchResult;
+  resultRef: ArtifactRef;
+  reused: boolean;
+}> {
   const path = researchJobPath(input.jobId, "result");
   const saved = await input.artifacts.lookup(path);
   if (saved) {
-    const result = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(saved)));
+    const result = ResearchResultSchema.parse(
+      JSON.parse(await input.artifacts.read(saved)),
+    );
     recordOutcome(input.operations, input.jobId, result);
     return { result, resultRef: saved, reused: true };
   }
@@ -434,10 +544,15 @@ export async function finishResearchJob(input: {
         JSON.parse(await input.artifacts.read(input.manifest)),
       );
     } catch {
-      throw new InvalidResearchManifestError("manifest is unreadable or invalid");
+      throw new InvalidResearchManifestError(
+        "manifest is unreadable or invalid",
+      );
     }
     manifestWarnings = manifest.warnings;
-    if (input.warnings && JSON.stringify(input.warnings) !== JSON.stringify(manifestWarnings))
+    if (
+      input.warnings &&
+      JSON.stringify(input.warnings) !== JSON.stringify(manifestWarnings)
+    )
       throw new InvalidResearchManifestError("warnings disagree with manifest");
     if (manifest.jobId !== input.jobId) {
       throw new InvalidResearchManifestError("manifest belongs to another job");
@@ -453,7 +568,13 @@ export async function finishResearchJob(input: {
     finishedAt: (input.now ?? (() => new Date()))().toISOString(),
   });
   const resultRef = await writeOnce(input.artifacts, path, result);
-  const stored = ResearchResultSchema.parse(JSON.parse(await input.artifacts.read(resultRef)));
+  const stored = ResearchResultSchema.parse(
+    JSON.parse(await input.artifacts.read(resultRef)),
+  );
   recordOutcome(input.operations, input.jobId, stored);
-  return { result: stored, resultRef, reused: stored.finishedAt !== result.finishedAt };
+  return {
+    result: stored,
+    resultRef,
+    reused: stored.finishedAt !== result.finishedAt,
+  };
 }
