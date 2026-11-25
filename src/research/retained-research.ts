@@ -1,11 +1,18 @@
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { researchJobId } from "./job.js";
 import {
   prepareRetainedResearch,
   readAcceptedResearchRecovery,
 } from "./retained-research-source.js";
-import { runResearchJob, type SupportJudge, type RunnerLimits } from "./runner.js";
+import {
+  runResearchJob,
+  type SupportJudge,
+  type RunnerLimits,
+} from "./runner.js";
 import type { PageFetcher } from "./gap-research.js";
 
 const ref = (r: ArtifactRef) => ({
@@ -31,7 +38,8 @@ export async function recoverRetainedResearch(input: {
   const prepared = await prepareRetainedResearch(input);
   const jobId = researchJobId(prepared.request);
   const existing = input.operations.researchRecovery(prepared.originalJobId);
-  if (existing && existing.jobId !== jobId) throw new Error("retained-research-recovery-conflict");
+  if (existing && existing.jobId !== jobId)
+    throw new Error("retained-research-recovery-conflict");
   const claim = input.operations.claim(
     `retained-research:${prepared.originalJobId}:${jobId}`,
     input.owner,
@@ -48,7 +56,8 @@ export async function recoverRetainedResearch(input: {
       throw new Error("retained-research-acceptance-mismatch");
     return { status: "recovered" as const, ...saved, reused: true };
   }
-  if (claim.kind !== "claimed") throw new Error("retained-research-recovery-exhausted");
+  if (claim.kind !== "claimed")
+    throw new Error("retained-research-recovery-exhausted");
   try {
     const out = await runResearchJob({ ...input, request: prepared.request });
     if (out.status === "busy" || out.result.outcome === "failed") {
@@ -59,7 +68,9 @@ export async function recoverRetainedResearch(input: {
         ...(out.status === "finished" ? { result: out.result } : {}),
       };
     }
-    const result = await input.artifacts.lookup(`research-jobs/${jobId}/result.json`);
+    const result = await input.artifacts.lookup(
+      `research-jobs/${jobId}/result.json`,
+    );
     if (!result || out.result.outcome !== "complete-with-gaps")
       throw new Error("invalid-retained-research-result");
     const binding = {

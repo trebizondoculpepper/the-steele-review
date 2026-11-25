@@ -1,6 +1,9 @@
 import * as clients from "@restatedev/restate-sdk-clients";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { ResearchServiceApi } from "../workflow/article-run.js";
 import { RESEARCH_SCOPE, researchCallKey } from "../workflow/article-run.js";
 import {
@@ -33,12 +36,17 @@ export interface ResearchIngressPort {
     handler: "run" | "runStaged",
     request: ResearchRequest,
     idempotencyKey: string,
-  ): Promise<{ invocationId: string; status: "Accepted" | "PreviouslyAccepted" }>;
+  ): Promise<{
+    invocationId: string;
+    status: "Accepted" | "PreviouslyAccepted";
+  }>;
   /** Attach to an accepted invocation and wait for its job. */
   attach(invocationId: string, signal: AbortSignal): Promise<CommissionedJob>;
 }
 
-export function restateResearchIngress(ingressUrl: string): ResearchIngressPort {
+export function restateResearchIngress(
+  ingressUrl: string,
+): ResearchIngressPort {
   const ingress = clients.connect({ url: ingressUrl });
   return {
     async send(handler, request, idempotencyKey) {
@@ -70,7 +78,9 @@ export function restateResearchIngress(ingressUrl: string): ResearchIngressPort 
       }
       if (!res.ok) throw new Error(`attach failed (HTTP ${res.status})`);
       // An external boundary: the job envelope, result and refs are validated.
-      const parsed = CommissionedJobSchema.safeParse(await res.json().catch(() => undefined));
+      const parsed = CommissionedJobSchema.safeParse(
+        await res.json().catch(() => undefined),
+      );
       if (!parsed.success) throw new Error("attach returned an invalid job");
       return parsed.data as CommissionedJob;
     },
@@ -107,9 +117,16 @@ export type SubmissionOutcome = {
 };
 
 /** The request a reprocessing generation submits: a later pass linked to the original job. */
-export function reprocessedRequest(request: ResearchRequest, reprocess = 0): ResearchRequest {
+export function reprocessedRequest(
+  request: ResearchRequest,
+  reprocess = 0,
+): ResearchRequest {
   return reprocess > 0
-    ? { ...request, pass: request.pass + reprocess, previousJobId: researchJobId(request) }
+    ? {
+        ...request,
+        pass: request.pass + reprocess,
+        previousJobId: researchJobId(request),
+      }
     : request;
 }
 
@@ -131,7 +148,11 @@ export async function submitManualResearch(input: {
   // and, through the state controller, repairs a missing completion event.
   // The stable call key makes a repeat attach to the same invocation.
   const handler: "run" | "runStaged" = input.staged ? "runStaged" : "run";
-  const sent = await input.ingress.send(handler, request, researchCallKey(jobId));
+  const sent = await input.ingress.send(
+    handler,
+    request,
+    researchCallKey(jobId),
+  );
   const base = {
     kind: "submitted" as const,
     jobId,
@@ -141,7 +162,10 @@ export async function submitManualResearch(input: {
   };
   if (!input.waitMs) return base;
   try {
-    const job = await input.ingress.attach(sent.invocationId, AbortSignal.timeout(input.waitMs));
+    const job = await input.ingress.attach(
+      sent.invocationId,
+      AbortSignal.timeout(input.waitMs),
+    );
     return { ...base, job };
   } catch (error) {
     if (error instanceof Error && error.message === "wait-timeout") {

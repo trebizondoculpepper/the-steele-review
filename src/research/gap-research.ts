@@ -1,11 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
-import type { AddressedClaim, EvidenceSource, ResearchEntry } from "./research-entry.js";
-import { InvalidResearchEntryError, RESEARCH_ENTRY_SCHEMA_VERSION } from "./research-entry.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "../analysis/extraction.js";
+import type {
+  AddressedClaim,
+  EvidenceSource,
+  ResearchEntry,
+} from "./research-entry.js";
+import {
+  InvalidResearchEntryError,
+  RESEARCH_ENTRY_SCHEMA_VERSION,
+} from "./research-entry.js";
 import type { ResearchStore, StoredResearchEntry } from "./research-store.js";
-import { ResearchRevisionConflictError, researchEntryId } from "./research-store.js";
+import {
+  ResearchRevisionConflictError,
+  researchEntryId,
+} from "./research-store.js";
 
 /**
  * Bounded gap research (#40).
@@ -25,7 +38,10 @@ import { ResearchRevisionConflictError, researchEntryId } from "./research-store
  * than producing a result.
  */
 
-export const DEFAULT_GAP_RESEARCH_PROMPT = loadPromptFile("research", "gap-research-v1");
+export const DEFAULT_GAP_RESEARCH_PROMPT = loadPromptFile(
+  "research",
+  "gap-research-v1",
+);
 
 export interface SearchResult {
   url: string;
@@ -59,12 +75,23 @@ const ModelOutputSchema = z
     explanation: z.string().trim().min(1).max(8000),
     evidence: z
       .array(
-        z.object({ url: z.string().min(1).max(2000), quote: z.string().min(1).max(4000) }).strict(),
+        z
+          .object({
+            url: z.string().min(1).max(2000),
+            quote: z.string().min(1).max(4000),
+          })
+          .strict(),
       )
       .max(30),
     unresolvedReason: z.string().trim().min(1).max(1000).optional(),
-    limitations: z.array(z.string().trim().min(1).max(1000)).max(20).default([]),
-    remainingGaps: z.array(z.string().trim().min(1).max(1000)).max(20).default([]),
+    limitations: z
+      .array(z.string().trim().min(1).max(1000))
+      .max(20)
+      .default([]),
+    remainingGaps: z
+      .array(z.string().trim().min(1).max(1000))
+      .max(20)
+      .default([]),
   })
   .strict();
 
@@ -78,7 +105,11 @@ export type GapResearchOutcome =
     }
   | {
       kind: "failed";
-      reason: "search-failed" | "reasoning-failed" | "malformed-output" | "revision-conflict";
+      reason:
+        | "search-failed"
+        | "reasoning-failed"
+        | "malformed-output"
+        | "revision-conflict";
       retryable: boolean;
     };
 
@@ -104,7 +135,8 @@ export function isPublicHttpsUrl(u: string): boolean {
   if (url.protocol !== "https:" || url.username || url.password) return false;
   const host = canonicalHost(url.hostname);
   if (!host.includes(".") && !host.includes(":")) return false;
-  if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/.test(host)) return false;
+  if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/.test(host))
+    return false;
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];
@@ -138,7 +170,9 @@ async function withDeadline<T>(
     run(combined),
     new Promise<never>((_, reject) => {
       if (combined.aborted) reject(new Error("deadline"));
-      combined.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
+      combined.addEventListener("abort", () => reject(new Error("deadline")), {
+        once: true,
+      });
     }),
   ]);
 }
@@ -164,18 +198,26 @@ export async function researchGaps(input: {
 }): Promise<GapResearchOutcome> {
   const maxQueries = Math.max(1, Math.min(input.limits?.maxQueries ?? 5, 20));
   const maxPages = Math.max(1, Math.min(input.limits?.maxPages ?? 10, 50));
-  const maxPageChars = Math.max(1_000, Math.min(input.limits?.maxPageChars ?? 20_000, 200_000));
-  const timeoutMs = Math.max(100, Math.min(input.limits?.timeoutMs ?? 30_000, 300_000));
+  const maxPageChars = Math.max(
+    1_000,
+    Math.min(input.limits?.maxPageChars ?? 20_000, 200_000),
+  );
+  const timeoutMs = Math.max(
+    100,
+    Math.min(input.limits?.timeoutMs ?? 30_000, 300_000),
+  );
   const prompt = input.prompt ?? DEFAULT_GAP_RESEARCH_PROMPT;
   const now = (input.now ?? (() => new Date()))().toISOString();
-  const monitored = new Set(input.monitoredHosts.map(canonicalHost).filter(Boolean));
-  if (monitored.size === 0) throw new Error("monitoredHosts must name the monitored publication");
+  const monitored = new Set(
+    input.monitoredHosts.map(canonicalHost).filter(Boolean),
+  );
+  if (monitored.size === 0)
+    throw new Error("monitoredHosts must name the monitored publication");
 
   // Only the gaps are researched.
-  const queries = [...new Set(input.gaps.map((g) => g.trim()).filter(Boolean))].slice(
-    0,
-    maxQueries,
-  );
+  const queries = [
+    ...new Set(input.gaps.map((g) => g.trim()).filter(Boolean)),
+  ].slice(0, maxQueries);
   const urls: string[] = [];
   let searchFailures = 0;
   for (const q of queries) {
@@ -198,10 +240,16 @@ export async function researchGaps(input: {
   let fetchFailures = 0;
   for (const url of urls) {
     try {
-      const page = await withDeadline(timeoutMs, input.signal, (s) => input.fetcher.fetch(url, s));
+      const page = await withDeadline(timeoutMs, input.signal, (s) =>
+        input.fetcher.fetch(url, s),
+      );
       // The page's own URL must be the one requested: no silent substitution.
       if (page.url !== url || !page.text.trim()) throw new Error("bad-page");
-      pages.set(url, { ...page, text: page.text.slice(0, maxPageChars), retrievedAt: now });
+      pages.set(url, {
+        ...page,
+        text: page.text.slice(0, maxPageChars),
+        retrievedAt: now,
+      });
     } catch {
       fetchFailures++;
     }
@@ -228,7 +276,10 @@ export async function researchGaps(input: {
     let raw: string;
     try {
       raw = await withDeadline(timeoutMs, input.signal, (s) =>
-        input.reasoner.complete({ system: prompt.instructions, user, maxOutputChars: 50_000 }, s),
+        input.reasoner.complete(
+          { system: prompt.instructions, user, maxOutputChars: 50_000 },
+          s,
+        ),
       );
     } catch (error) {
       const retryable = (error as { retryable?: boolean }).retryable !== false;
@@ -281,9 +332,11 @@ export async function researchGaps(input: {
   ) {
     // A settled finding needs verifiable independent support.
     finding = "unresolved";
-    unresolvedReason = "No verifiable independent source supports a settled finding.";
+    unresolvedReason =
+      "No verifiable independent source supports a settled finding.";
   }
-  if (finding === "unresolved") unresolvedReason ??= "The supplied pages do not settle the claim.";
+  if (finding === "unresolved")
+    unresolvedReason ??= "The supplied pages do not settle the claim.";
 
   const addressed: AddressedClaim = {
     ...(input.claim.id ? { claimId: input.claim.id } : {}),
@@ -296,7 +349,9 @@ export async function researchGaps(input: {
   const current = await input.store.latest(researchEntryId(input.question));
   const previous = current?.entry;
   const sameClaim = (c: AddressedClaim) =>
-    input.claim.id ? c.claimId === input.claim.id : c.statement === input.claim.statement;
+    input.claim.id
+      ? c.claimId === input.claim.id
+      : c.statement === input.claim.statement;
   const entry: ResearchEntry = {
     schemaVersion: RESEARCH_ENTRY_SCHEMA_VERSION,
     question: input.question,
@@ -305,11 +360,15 @@ export async function researchGaps(input: {
       addressed,
     ].slice(-50),
     explanation: {
-      text: output?.explanation ?? `No evidence was gathered: ${unresolvedReason}`,
+      text:
+        output?.explanation ?? `No evidence was gathered: ${unresolvedReason}`,
       generatedBy: output ? input.reasoner.modelVersion : "rule",
     },
     limitations: [
-      ...new Set([...(previous?.limitations ?? []), ...(output?.limitations ?? [])]),
+      ...new Set([
+        ...(previous?.limitations ?? []),
+        ...(output?.limitations ?? []),
+      ]),
     ].slice(0, 20),
     // Gaps the run did not settle stay open: the model's list when it gives
     // one, otherwise every researched gap whenever the finding is not settled.

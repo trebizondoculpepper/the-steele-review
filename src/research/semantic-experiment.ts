@@ -27,7 +27,8 @@ export const MAX_EXPERIMENT_SOURCES = 20;
 export const MAX_EXPERIMENT_PASSAGES = 200;
 export const MAX_EXPERIMENT_PROBES = 12;
 
-export type ProbeKind = "claim" | "paraphrase" | "negation" | "correction" | "unrelated";
+export type ProbeKind =
+  "claim" | "paraphrase" | "negation" | "correction" | "unrelated";
 
 export interface ExperimentSource {
   sourceId: string;
@@ -117,11 +118,21 @@ export async function runSemanticExperiment(input: {
   topK?: number;
   signal?: AbortSignal;
 }): Promise<ExperimentReport> {
-  if (input.sources.length === 0 || input.sources.length > MAX_EXPERIMENT_SOURCES) {
-    throw new ExperimentBoundError(`between 1 and ${MAX_EXPERIMENT_SOURCES} sources are required`);
+  if (
+    input.sources.length === 0 ||
+    input.sources.length > MAX_EXPERIMENT_SOURCES
+  ) {
+    throw new ExperimentBoundError(
+      `between 1 and ${MAX_EXPERIMENT_SOURCES} sources are required`,
+    );
   }
-  if (input.probes.length === 0 || input.probes.length > MAX_EXPERIMENT_PROBES) {
-    throw new ExperimentBoundError(`between 1 and ${MAX_EXPERIMENT_PROBES} probes are required`);
+  if (
+    input.probes.length === 0 ||
+    input.probes.length > MAX_EXPERIMENT_PROBES
+  ) {
+    throw new ExperimentBoundError(
+      `between 1 and ${MAX_EXPERIMENT_PROBES} probes are required`,
+    );
   }
   // Vectors are keyed by probe ID, so IDs must be unique.
   if (new Set(input.probes.map((p) => p.id)).size !== input.probes.length) {
@@ -178,7 +189,10 @@ export async function runSemanticExperiment(input: {
     })),
   ];
   const vectors = new Map(
-    (await input.embedder.embed(inputs, input.signal)).map((v) => [v.inputId, v.vector]),
+    (await input.embedder.embed(inputs, input.signal)).map((v) => [
+      v.inputId,
+      v.vector,
+    ]),
   );
   const vectorOf = (id: string) => {
     const v = vectors.get(id);
@@ -189,7 +203,9 @@ export async function runSemanticExperiment(input: {
   const rank = (score: (p: Omit<ExperimentMatch, "score">) => number) =>
     passages
       .map((p) => ({ ...p, score: score(p) }))
-      .sort((a, b) => b.score - a.score || a.passageId.localeCompare(b.passageId))
+      .sort(
+        (a, b) => b.score - a.score || a.passageId.localeCompare(b.passageId),
+      )
       .slice(0, topK);
 
   const results = input.probes.map((probe) => {
@@ -213,7 +229,10 @@ export async function runSemanticExperiment(input: {
     }
   }
   return {
-    model: { vectorSpace: input.embedder.vectorSpace, dimensions: input.embedder.model.dimensions },
+    model: {
+      vectorSpace: input.embedder.vectorSpace,
+      dimensions: input.embedder.model.dimensions,
+    },
     chunking: chunking!,
     passages: passages.length,
     modelCalls: 1,
@@ -235,7 +254,10 @@ export function renderExperimentReport(r: ExperimentReport): string {
     "Similarity is not truth or entailment: a negation or a correction can be as close to a claim as a paraphrase. Ranked passages are candidates to read, not true statements.",
   ];
   for (const res of r.results) {
-    lines.push("", `Probe [SYNTHETIC ${res.probe.kind}] ${res.probe.id}: "${res.probe.text}"`);
+    lines.push(
+      "",
+      `Probe [SYNTHETIC ${res.probe.kind}] ${res.probe.id}: "${res.probe.text}"`,
+    );
     for (const [label, matches] of [
       ["semantic", res.semantic],
       ["keyword", res.keyword],
@@ -251,7 +273,8 @@ export function renderExperimentReport(r: ExperimentReport): string {
   }
   if (r.probeSimilarity.length) {
     lines.push("", "Probe-to-probe similarity:");
-    for (const s of r.probeSimilarity) lines.push(`  ${fmt(s.score)}  ${s.a} ~ ${s.b}`);
+    for (const s of r.probeSimilarity)
+      lines.push(`  ${fmt(s.score)}  ${s.a} ~ ${s.b}`);
   }
   return lines.join("\n");
 }

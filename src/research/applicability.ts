@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
 import type { Claim } from "../analysis/claim.js";
-import type { ExtractionModelProvider, ExtractionPrompt } from "../analysis/extraction.js";
+import type {
+  ExtractionModelProvider,
+  ExtractionPrompt,
+} from "../analysis/extraction.js";
 import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { EvidenceSource } from "./research-entry.js";
 import type { ResearchCandidate } from "./research-store.js";
@@ -28,7 +31,10 @@ import type { ResearchCandidate } from "./research-store.js";
  * - No external research happens here; gaps are what #40 would research.
  */
 
-export const DEFAULT_APPLICABILITY_PROMPT = loadPromptFile("research", "applicability-v1");
+export const DEFAULT_APPLICABILITY_PROMPT = loadPromptFile(
+  "research",
+  "applicability-v1",
+);
 
 const ModelAssessmentSchema = z
   .object({
@@ -38,7 +44,10 @@ const ModelAssessmentSchema = z
     reuseEvidence: z
       .array(
         z
-          .object({ url: z.string().min(1).max(2000), passage: z.string().min(1).max(4000) })
+          .object({
+            url: z.string().min(1).max(2000),
+            passage: z.string().min(1).max(4000),
+          })
           .strict(),
       )
       .max(20),
@@ -97,7 +106,9 @@ export type ApplicabilityOutcome =
   | ApplicabilityResult
   | { status: "failed"; reason: "provider-failed" | "malformed-output" };
 
-function parseOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
+function parseOutput(
+  raw: string,
+): z.infer<typeof ModelOutputSchema> | undefined {
   let body = raw.trim();
   if (body.startsWith("```") && body.endsWith("```") && body.length >= 6) {
     const nl = body.indexOf("\n");
@@ -132,7 +143,9 @@ export class ApplicabilityAssessor {
       timeoutMs?: number;
     } = {},
   ) {
-    this.prompt = Object.freeze({ ...(options.prompt ?? DEFAULT_APPLICABILITY_PROMPT) });
+    this.prompt = Object.freeze({
+      ...(options.prompt ?? DEFAULT_APPLICABILITY_PROMPT),
+    });
   }
 
   async assess(
@@ -169,7 +182,9 @@ export class ApplicabilityAssessor {
           matches: c.matches.map((m) => ({
             statement: m.statement,
             finding: m.finding,
-            ...(m.unresolvedReason ? { unresolvedReason: m.unresolvedReason } : {}),
+            ...(m.unresolvedReason
+              ? { unresolvedReason: m.unresolvedReason }
+              : {}),
             evidence: m.evidence.map((e) => ({
               url: e.url,
               title: e.title,
@@ -190,7 +205,9 @@ export class ApplicabilityAssessor {
     for (let attempt = 1; attempt <= attempts && !output; attempt++) {
       const deadline = AbortSignal.timeout(this.options.timeoutMs ?? 120_000);
       try {
-        const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+        const combined = signal
+          ? AbortSignal.any([signal, deadline])
+          : deadline;
         // Race the call against the deadline so a provider that ignores its
         // abort signal still cannot hold the assessment open.
         const raw = await Promise.race([
@@ -200,7 +217,11 @@ export class ApplicabilityAssessor {
           ),
           new Promise<never>((_, reject) => {
             if (combined.aborted) reject(new Error("deadline"));
-            combined.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
+            combined.addEventListener(
+              "abort",
+              () => reject(new Error("deadline")),
+              { once: true },
+            );
           }),
         ]);
         output = parseOutput(raw);
@@ -213,10 +234,18 @@ export class ApplicabilityAssessor {
 
     const now = (this.options.now ?? (() => new Date()))().getTime();
     const staleAfterDays = this.options.staleAfterDays;
-    if (staleAfterDays !== undefined && (!Number.isFinite(staleAfterDays) || staleAfterDays < 1)) {
-      throw new RangeError("staleAfterDays must be a positive number of days when supplied");
+    if (
+      staleAfterDays !== undefined &&
+      (!Number.isFinite(staleAfterDays) || staleAfterDays < 1)
+    ) {
+      throw new RangeError(
+        "staleAfterDays must be a positive number of days when supplied",
+      );
     }
-    const cutoff = staleAfterDays === undefined ? undefined : now - staleAfterDays * 86_400_000;
+    const cutoff =
+      staleAfterDays === undefined
+        ? undefined
+        : now - staleAfterDays * 86_400_000;
     const byId = new Map(candidates.map((c) => [c.entryId, c]));
     const seen = new Set<string>();
     const assessments: EntryAssessment[] = [];
@@ -231,12 +260,15 @@ export class ApplicabilityAssessor {
       const a = parsed.data;
       const candidate = byId.get(a.entryId);
       if (!candidate) return rejected.push({ index, reason: "unknown-entry" });
-      if (seen.has(a.entryId)) return rejected.push({ index, reason: "duplicate" });
+      if (seen.has(a.entryId))
+        return rejected.push({ index, reason: "duplicate" });
       // Keyed by URL and passage: one URL can carry several distinct passages.
       const evidenceKey = (e: { url: string; passage: string }) =>
         JSON.stringify([e.url, e.passage]);
       const evidence = new Map(
-        candidate.matches.flatMap((m) => m.evidence).map((e) => [evidenceKey(e), e]),
+        candidate.matches
+          .flatMap((m) => m.evidence)
+          .map((e) => [evidenceKey(e), e]),
       );
       if (a.reuseEvidence.some((r) => !evidence.has(evidenceKey(r)))) {
         return rejected.push({ index, reason: "unknown-evidence" });
@@ -274,12 +306,15 @@ export class ApplicabilityAssessor {
           outdated.push({ ...ref, reason: "stale" });
         }
         // Monitored material never confirms the publication's own assertion.
-        else if (e.kind === "monitored") outdated.push({ ...ref, reason: "monitored-only" });
+        else if (e.kind === "monitored")
+          outdated.push({ ...ref, reason: "monitored-only" });
         else selected.push(ref);
       }
     });
     // Every supplied entry must be assessed; an omission is not a judgement.
-    const omitted = candidates.filter((c) => !seen.has(c.entryId)).map((c) => c.entryId);
+    const omitted = candidates
+      .filter((c) => !seen.has(c.entryId))
+      .map((c) => c.entryId);
     // Applicable entries with nothing current to reuse leave the claim open.
     if (selected.length === 0) gaps.add(claim.statement);
     return {

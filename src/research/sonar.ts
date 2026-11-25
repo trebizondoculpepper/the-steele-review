@@ -5,7 +5,10 @@ import {
 } from "../config/research-tokens.js";
 import { z } from "zod";
 import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
-import type { DiscoveryCapture, PartialDiscoveryBody } from "./discovery-data.js";
+import type {
+  DiscoveryCapture,
+  PartialDiscoveryBody,
+} from "./discovery-data.js";
 import {
   DEFAULT_RESEARCH_MODEL,
   ResearchModelSchema,
@@ -50,7 +53,14 @@ export interface SonarReport {
  * `reasoning: { effort }`; a model exposes effort selection only when its
  * public metadata lists `reasoning.supported_efforts`. Values follow that doc.
  */
-export const ReasoningEffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export const ReasoningEffortSchema = z.enum([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 
 /**
@@ -63,7 +73,9 @@ export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
  *   `supported_efforts`, i.e. "the model does not expose effort selection".
  *   No default effort is documented, so none is claimed.
  */
-export const RESEARCH_EFFORT_SUPPORT: Readonly<Record<string, readonly ReasoningEffort[]>> = {
+export const RESEARCH_EFFORT_SUPPORT: Readonly<
+  Record<string, readonly ReasoningEffort[]>
+> = {
   "perplexity/sonar-deep-research": [],
 };
 
@@ -77,7 +89,10 @@ export class ResearchEffortUnsupportedError extends Error {
 }
 
 /** Refuse a configured effort the model's route cannot honour, before any request. */
-export function assertResearchEffort(model: string, effort: ReasoningEffort | undefined): void {
+export function assertResearchEffort(
+  model: string,
+  effort: ReasoningEffort | undefined,
+): void {
   if (effort === undefined) return;
   if (!(RESEARCH_EFFORT_SUPPORT[model] ?? []).includes(effort))
     throw new ResearchEffortUnsupportedError(model);
@@ -99,7 +114,11 @@ export function researchEffortFromEnv(
 
 export interface SonarClient {
   readonly model: string;
-  readonly settings?: { model: string; timeoutMs: number; maxOutputTokens: number };
+  readonly settings?: {
+    model: string;
+    timeoutMs: number;
+    maxOutputTokens: number;
+  };
   readonly liveTokens?: boolean;
   readonly discoveryParameters?: {
     timeoutMs: number;
@@ -136,7 +155,10 @@ const Limits = z.object({
 });
 
 /** http(s) citation URLs in first-seen order, without duplicates. */
-export function citationUrls(candidates: readonly string[], max = 500): string[] {
+export function citationUrls(
+  candidates: readonly string[],
+  max = 500,
+): string[] {
   const seen = new Set<string>();
   for (const raw of candidates) {
     let url: URL;
@@ -171,7 +193,9 @@ export class OpenRouterSonarClient implements SonarClient {
     assertResearchEffort(this.model, config.reasoningEffort);
     const base = new URL(config.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL);
     if (base.protocol !== "https:" || base.username || base.password) {
-      throw new Error("model provider base URL must be https without user info");
+      throw new Error(
+        "model provider base URL must be https without user info",
+      );
     }
     this.endpoint = new URL(base.href);
     this.endpoint.pathname = `${base.pathname.replace(/\/+$/, "")}/chat/completions`;
@@ -181,7 +205,11 @@ export class OpenRouterSonarClient implements SonarClient {
   }
 
   /** Fixed constructor limits; currentSettings() resolves the live outbound limit. */
-  get settings(): { model: string; timeoutMs: number; maxOutputTokens: number } {
+  get settings(): {
+    model: string;
+    timeoutMs: number;
+    maxOutputTokens: number;
+  } {
     return { model: this.model, ...this.limits };
   }
 
@@ -190,17 +218,24 @@ export class OpenRouterSonarClient implements SonarClient {
   }
 
   async currentSettings() {
-    return { ...this.settings, ...(this.config.tokens ? await this.config.tokens() : {}) };
+    return {
+      ...this.settings,
+      ...(this.config.tokens ? await this.config.tokens() : {}),
+    };
   }
 
   get discoveryParameters() {
     return {
       timeoutMs: this.limits.timeoutMs,
-      ...(this.config.tokens ? {} : { maxOutputTokens: this.limits.maxOutputTokens }),
+      ...(this.config.tokens
+        ? {}
+        : { maxOutputTokens: this.limits.maxOutputTokens }),
       maxResponseBytes: this.config.maxResponseBytes ?? 4 * 1024 * 1024,
       // Part of the discovery identity only when configured: omitted keeps
       // existing identities unchanged.
-      ...(this.config.reasoningEffort ? { reasoningEffort: this.config.reasoningEffort } : {}),
+      ...(this.config.reasoningEffort
+        ? { reasoningEffort: this.config.reasoningEffort }
+        : {}),
     };
   }
 
@@ -218,7 +253,9 @@ export class OpenRouterSonarClient implements SonarClient {
     signal: AbortSignal,
     capture?: DiscoveryCapture,
   ): Promise<SonarReport> {
-    const appliedTokens = this.config.tokens ? await this.config.tokens() : undefined;
+    const appliedTokens = this.config.tokens
+      ? await this.config.tokens()
+      : undefined;
     const timeout = AbortSignal.timeout(this.limits.timeoutMs);
     const combined = AbortSignal.any([signal, timeout]);
     const failed = () =>
@@ -244,7 +281,8 @@ export class OpenRouterSonarClient implements SonarClient {
             { role: "system", content: prompt.system },
             { role: "user", content: prompt.user },
           ],
-          max_tokens: appliedTokens?.maxOutputTokens ?? this.limits.maxOutputTokens,
+          max_tokens:
+            appliedTokens?.maxOutputTokens ?? this.limits.maxOutputTokens,
           ...(this.config.reasoningEffort
             ? { reasoning: { effort: this.config.reasoningEffort } }
             : {}),
@@ -258,7 +296,10 @@ export class OpenRouterSonarClient implements SonarClient {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new ModelProviderError(codeForStatus(response.status), response.status);
+      throw new ModelProviderError(
+        codeForStatus(response.status),
+        response.status,
+      );
     }
     let bytes: Buffer;
     let partial: PartialDiscoveryBody | undefined;
@@ -271,7 +312,11 @@ export class OpenRouterSonarClient implements SonarClient {
         },
       );
     } catch (error) {
-      if (partial) await capture?.({ ...partial, ...(appliedTokens ? { appliedTokens } : {}) });
+      if (partial)
+        await capture?.({
+          ...partial,
+          ...(appliedTokens ? { appliedTokens } : {}),
+        });
       if (error instanceof ModelProviderError) throw error;
       throw failed();
     }
@@ -283,7 +328,8 @@ export class OpenRouterSonarClient implements SonarClient {
       ...(appliedTokens ? { appliedTokens } : {}),
     });
     const replay = replaySonarDiscovery(bytes.toString("utf8"), this.model);
-    if (replay.validation !== "valid" || !replay.data) throw new ModelProviderError("bad-response");
+    if (replay.validation !== "valid" || !replay.data)
+      throw new ModelProviderError("bad-response");
     const parsed = replay.data;
     const report = parsed.report;
     const all = citationUrls(
@@ -294,9 +340,13 @@ export class OpenRouterSonarClient implements SonarClient {
     return {
       report,
       citations: kept,
-      ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
+      ...(all.length > kept.length
+        ? { omittedCitations: all.length - kept.length }
+        : {}),
       model: parsed.model ?? this.model,
-      ...(parsed.usage?.costUsd !== undefined ? { costUsd: parsed.usage.costUsd } : {}),
+      ...(parsed.usage?.costUsd !== undefined
+        ? { costUsd: parsed.usage.costUsd }
+        : {}),
     };
   }
 }
@@ -362,7 +412,9 @@ export function sonarFromEnv(
     timeoutMs: num("STEELE_RESEARCH_TIMEOUT_MS", DEFAULT_SONAR_TIMEOUT_MS),
     maxOutputTokens: DEFAULT_SONAR_MAX_OUTPUT_TOKENS,
     tokens: researchTokensFromConfiguration({ env }),
-    ...(researchEffortFromEnv(env) ? { reasoningEffort: researchEffortFromEnv(env)! } : {}),
+    ...(researchEffortFromEnv(env)
+      ? { reasoningEffort: researchEffortFromEnv(env)! }
+      : {}),
     ...(env.OPENROUTER_BASE_URL ? { baseUrl: env.OPENROUTER_BASE_URL } : {}),
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
   });

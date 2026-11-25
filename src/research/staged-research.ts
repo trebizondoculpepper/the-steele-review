@@ -1,10 +1,16 @@
 import { ConfigurationError } from "../controllers/configuration.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { WebAdapterError } from "../controllers/research-web.js";
 import { isCreditExhausted } from "../observability/provider-condition.js";
-import { acceptedAssemblyReader, assembleResearch } from "./assemble-research.js";
+import {
+  acceptedAssemblyReader,
+  assembleResearch,
+} from "./assemble-research.js";
 import {
   acceptedDiscoveryReader,
   CitationInventorySchema,
@@ -13,7 +19,10 @@ import {
   type RetrievalLimits,
 } from "./citation-inventory.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
-import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
+import {
+  captureResearchDiscovery,
+  ResearchDiscoveryError,
+} from "./discovery.js";
 import type { PageFetcher } from "./gap-research.js";
 import {
   finishResearchJob,
@@ -87,7 +96,9 @@ export type DiscoverOutcome =
 export async function discoverStage(
   deps: StagedResearchDeps,
   request: ResearchRequest,
-  signal: AbortSignal = AbortSignal.timeout(deps.sonar.settings?.timeoutMs ?? 600_000),
+  signal: AbortSignal = AbortSignal.timeout(
+    deps.sonar.settings?.timeoutMs ?? 600_000,
+  ),
 ): Promise<DiscoverOutcome> {
   try {
     const captured = await captureResearchDiscovery({
@@ -123,7 +134,8 @@ export async function discoverStage(
     )
       throw error;
     // Credit exhaustion is not a verdict on the evidence (#407).
-    if (isCreditExhausted(error)) return { kind: "failed", failure: "budget-exceeded" };
+    if (isCreditExhausted(error))
+      return { kind: "failed", failure: "budget-exceeded" };
     if (error instanceof WebAdapterError && error.code === "credit-exhausted")
       return { kind: "failed", failure: "budget-exceeded" };
     if (error instanceof ResearchDiscoveryError) {
@@ -188,7 +200,9 @@ export async function retrievalIds(
   deps: Pick<StagedResearchDeps, "artifacts">,
   inventory: StageRef,
 ): Promise<string[]> {
-  const parsed = CitationInventorySchema.parse(JSON.parse(await deps.artifacts.read(inventory)));
+  const parsed = CitationInventorySchema.parse(
+    JSON.parse(await deps.artifacts.read(inventory)),
+  );
   const ids: string[] = [];
   for (const e of parsed.entries)
     if (e.retrievalId && !ids.includes(e.retrievalId)) ids.push(e.retrievalId);
@@ -230,7 +244,9 @@ export async function supportBundleStage(
   discovery: StageRef,
   inventory: StageRef,
   retrievalIds: string[],
-): Promise<{ kind: "judged" | "not-checked" | "credit-exhausted" } | undefined> {
+): Promise<
+  { kind: "judged" | "not-checked" | "credit-exhausted" } | undefined
+> {
   const judge = deps.judge;
   if (!judge?.judgeBundle) return undefined;
   const { request, data } = await acceptedAssemblyReader(
@@ -288,7 +304,9 @@ export async function assembleStage(
     ...(deps.now ? { now: deps.now } : {}),
     supportIdentity: judgeIdentity(deps.judge),
   });
-  const result = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(out.result)));
+  const result = ResearchResultSchema.parse(
+    JSON.parse(await deps.artifacts.read(out.result)),
+  );
   // Compatible job artifacts (write-once), so the result is found by its
   // stable job ID whatever the processor settings later become, and existing
   // research readers (dashboard listing, theme view, detail) see it. The
@@ -297,11 +315,30 @@ export async function assembleStage(
     deps.artifacts,
     deps.operations,
   )(discovery);
-  await writeOnce(deps.artifacts, researchJobPath(out.jobId, "request"), request);
-  await writeOnce(deps.artifacts, `research-jobs/${out.jobId}/report.md`, data.report);
-  const canonical = await writeOnce(deps.artifacts, researchJobPath(out.jobId, "result"), result);
-  const kept = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(canonical)));
-  return { jobId: out.jobId, status: "finished", result: kept, resultRef: plain(canonical) };
+  await writeOnce(
+    deps.artifacts,
+    researchJobPath(out.jobId, "request"),
+    request,
+  );
+  await writeOnce(
+    deps.artifacts,
+    `research-jobs/${out.jobId}/report.md`,
+    data.report,
+  );
+  const canonical = await writeOnce(
+    deps.artifacts,
+    researchJobPath(out.jobId, "result"),
+    result,
+  );
+  const kept = ResearchResultSchema.parse(
+    JSON.parse(await deps.artifacts.read(canonical)),
+  );
+  return {
+    jobId: out.jobId,
+    status: "finished",
+    result: kept,
+    resultRef: plain(canonical),
+  };
 }
 
 /** A failed job from a stage that ended without evidence (provider failure or credit). */
@@ -343,7 +380,13 @@ export async function finishFailedStage(
     await writeOnce(
       deps.artifacts,
       `research-jobs/${job.jobId}/attempts/${at.replace(/[:.]/g, "-")}.json`,
-      { schemaVersion: 1, jobId: job.jobId, stopped: "budget-exceeded", at, final: false },
+      {
+        schemaVersion: 1,
+        jobId: job.jobId,
+        stopped: "budget-exceeded",
+        at,
+        final: false,
+      },
     );
     return job;
   }
@@ -356,7 +399,12 @@ export async function finishFailedStage(
     failure,
     ...(deps.now ? { now: deps.now } : {}),
   });
-  return { jobId, status: "finished", result: out.result, resultRef: plain(out.resultRef) };
+  return {
+    jobId,
+    status: "finished",
+    result: out.result,
+    resultRef: plain(out.resultRef),
+  };
 }
 
 /** A job whose terminal result is already saved is reused, never rerun. */
@@ -367,7 +415,9 @@ export async function existingJob(
   const jobId = researchJobId(request);
   const ref = await deps.artifacts.lookup(researchJobPath(jobId, "result"));
   if (!ref) return null;
-  const saved = ResearchResultSchema.parse(JSON.parse(await deps.artifacts.read(ref)));
+  const saved = ResearchResultSchema.parse(
+    JSON.parse(await deps.artifacts.read(ref)),
+  );
   // A staged success recorded its own completion event with the assembly.
   if (saved.manifest?.path.startsWith("research-discovery/")) {
     return { jobId, status: "finished", result: saved, resultRef: plain(ref) };
@@ -380,7 +430,12 @@ export async function existingJob(
     jobId,
     outcome: saved.outcome,
   });
-  return { jobId, status: "finished", result: out.result, resultRef: plain(out.resultRef) };
+  return {
+    jobId,
+    status: "finished",
+    result: out.result,
+    resultRef: plain(out.resultRef),
+  };
 }
 
 /** Bound on retrieval rounds for transient failures within one invocation. */

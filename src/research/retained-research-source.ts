@@ -1,5 +1,11 @@
-import { SourceContextSchema, type SourceContext } from "../content/source-context.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import {
+  SourceContextSchema,
+  type SourceContext,
+} from "../content/source-context.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { readLengthLimitedResearchDiscovery } from "./discovery.js";
 import { CoverageRecordSchema } from "./librarian.js";
@@ -16,7 +22,10 @@ const ref = (r: ArtifactRef) => ({
   path: r.path,
   hash: `sha256:${r.sha256}`,
 });
-const fromRef = (r: ReturnType<typeof ref>): ArtifactRef => ({ ...r, sha256: r.hash.slice(7) });
+const fromRef = (r: ReturnType<typeof ref>): ArtifactRef => ({
+  ...r,
+  sha256: r.hash.slice(7),
+});
 
 /** No provider capability: derive one exact, distinct recovery request from accepted retained bytes. */
 export async function prepareRetainedResearch(input: {
@@ -62,7 +71,8 @@ export async function loadRetainedResearch(input: {
   request: unknown;
 }) {
   const request = ResearchRequestSchema.parse(input.request);
-  if (!request.retainedRecovery) throw new Error("missing-retained-research-recovery");
+  if (!request.retainedRecovery)
+    throw new Error("missing-retained-research-recovery");
   const loaded = await prepareRetainedResearch({
     ...input,
     discovery: fromRef(request.retainedRecovery.discovery),
@@ -76,7 +86,10 @@ export async function loadRetainedResearch(input: {
 /** Validate the accepted binding and exact request again before normal research composition reuses it. */
 export async function readAcceptedResearchRecovery(input: {
   artifacts: GitArtifactStore;
-  operations: Pick<OperationStore, "researchRecovery" | "researchDiscoveryAccepted">;
+  operations: Pick<
+    OperationStore,
+    "researchRecovery" | "researchDiscoveryAccepted"
+  >;
   request: unknown;
 }) {
   const request = ResearchRequestSchema.parse(input.request),
@@ -97,14 +110,19 @@ export async function readAcceptedResearchRecovery(input: {
   const result = ResearchResultSchema.parse(
     JSON.parse(await input.artifacts.read(fromRef(binding.result))),
   );
-  if (result.jobId !== binding.jobId || result.outcome !== "complete-with-gaps" || !result.manifest)
+  if (
+    result.jobId !== binding.jobId ||
+    result.outcome !== "complete-with-gaps" ||
+    !result.manifest
+  )
     throw new Error("invalid-retained-research-result");
   const manifest = ResearchManifestSchema.parse(
     JSON.parse(await input.artifacts.read(fromRef(result.manifest))),
   );
   if (
     manifest.jobId !== binding.jobId ||
-    JSON.stringify(manifest.retainedRecovery) !== JSON.stringify(loaded.request.retainedRecovery)
+    JSON.stringify(manifest.retainedRecovery) !==
+      JSON.stringify(loaded.request.retainedRecovery)
   )
     throw new Error("invalid-retained-research-manifest");
   return { binding, result, resultRef: fromRef(binding.result) };
@@ -113,7 +131,10 @@ export async function readAcceptedResearchRecovery(input: {
 /** Pre-submit validation for a normal article continuation; a supplied ID is never acceptance. */
 export async function validateRetainedArticleResearch(input: {
   artifacts: GitArtifactStore;
-  operations: Pick<OperationStore, "researchRecovery" | "researchDiscoveryAccepted">;
+  operations: Pick<
+    OperationStore,
+    "researchRecovery" | "researchDiscoveryAccepted"
+  >;
   jobIds: readonly string[];
   capture: ArtifactRef;
   sourceContext: SourceContext;
@@ -121,15 +142,21 @@ export async function validateRetainedArticleResearch(input: {
   post: { publicationId: string; postId: string };
 }) {
   for (const id of input.jobIds) {
-    if (!/^research-[0-9a-f]{32}$/.test(id)) throw new Error("invalid-retained-research-id");
-    const requestRef = await input.artifacts.lookup(`research-jobs/${id}/request.json`);
+    if (!/^research-[0-9a-f]{32}$/.test(id))
+      throw new Error("invalid-retained-research-id");
+    const requestRef = await input.artifacts.lookup(
+      `research-jobs/${id}/request.json`,
+    );
     if (!requestRef) throw new Error("retained-research-request-missing");
-    const request = ResearchRequestSchema.parse(JSON.parse(await input.artifacts.read(requestRef)));
+    const request = ResearchRequestSchema.parse(
+      JSON.parse(await input.artifacts.read(requestRef)),
+    );
     if (request.origin === "theme") {
       // A theme request (#658) carries no post by design: it is bound to this
       // article through the coverage record that commissioned it, never by
       // putting post data back into its shared identity.
-      if (researchJobId(request) !== id) throw new Error("retained-research-capture-mismatch");
+      if (researchJobId(request) !== id)
+        throw new Error("retained-research-capture-mismatch");
       await requireCommissioningCoverage(input, id);
       if (!(await readAcceptedResearchRecovery({ ...input, request })))
         throw new Error("retained-research-not-accepted");
@@ -138,13 +165,19 @@ export async function validateRetainedArticleResearch(input: {
     if (
       researchJobId(request) !== id ||
       !request.post?.sourceContext ||
-      JSON.stringify(request.post.sourceArtifact) !== JSON.stringify(ref(input.capture))
+      JSON.stringify(request.post.sourceArtifact) !==
+        JSON.stringify(ref(input.capture))
     )
       throw new Error("retained-research-capture-mismatch");
     const context = SourceContextSchema.parse(
-      JSON.parse(await input.artifacts.read(fromRef(request.post.sourceContext))),
+      JSON.parse(
+        await input.artifacts.read(fromRef(request.post.sourceContext)),
+      ),
     );
-    if (JSON.stringify(context) !== JSON.stringify(SourceContextSchema.parse(input.sourceContext)))
+    if (
+      JSON.stringify(context) !==
+      JSON.stringify(SourceContextSchema.parse(input.sourceContext))
+    )
       throw new Error("retained-research-context-mismatch");
     if (!(await readAcceptedResearchRecovery({ ...input, request })))
       throw new Error("retained-research-not-accepted");
@@ -183,15 +216,23 @@ async function requireCommissioningCoverage(
       scanned++;
       const r = await input.artifacts.lookup(path);
       if (!r) continue;
-      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await input.artifacts.read(r)));
+      const parsed = CoverageRecordSchema.safeParse(
+        JSON.parse(await input.artifacts.read(r)),
+      );
       if (!parsed.success) continue;
       const c = parsed.data;
-      if (JSON.stringify(c.source) !== capture || !c.jobs.some((j) => j.jobId === jobId)) continue;
+      if (
+        JSON.stringify(c.source) !== capture ||
+        !c.jobs.some((j) => j.jobId === jobId)
+      )
+        continue;
       if (!c.sourceContext) continue;
       const context = SourceContextSchema.parse(
         JSON.parse(await input.artifacts.read(fromRef(c.sourceContext))),
       );
-      const wanted = JSON.stringify(SourceContextSchema.parse(input.sourceContext));
+      const wanted = JSON.stringify(
+        SourceContextSchema.parse(input.sourceContext),
+      );
       // Another record (for example after an attribution change) may match.
       if (JSON.stringify(context) !== wanted) {
         contextMismatch = true;
@@ -203,6 +244,8 @@ async function requireCommissioningCoverage(
     after = paths[paths.length - 1];
   }
   throw new Error(
-    contextMismatch ? "retained-research-context-mismatch" : "retained-research-capture-mismatch",
+    contextMismatch
+      ? "retained-research-context-mismatch"
+      : "retained-research-capture-mismatch",
   );
 }

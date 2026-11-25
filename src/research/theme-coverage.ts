@@ -13,7 +13,8 @@ import { ThemeStore, type CanonicalTheme } from "./theme-store.js";
  * from the dossier's per-claim records, never from the theme as a whole.
  */
 
-export type ResearchState = "unresearched" | "partially-researched" | "researched";
+export type ResearchState =
+  "unresearched" | "partially-researched" | "researched";
 
 export interface ThemeCoverage {
   theme: CanonicalTheme;
@@ -37,7 +38,9 @@ export function researchState(dossier?: Dossier): ResearchState {
   const covered = claims.filter((c) => c.status === "covered").length;
   if (covered === 0 || citations.length === 0) return "unresearched";
   const uncovered = claims.length - covered;
-  return uncovered > 0 || gaps.length > 0 ? "partially-researched" : "researched";
+  return uncovered > 0 || gaps.length > 0
+    ? "partially-researched"
+    : "researched";
 }
 
 /** Per-claim coverage in a theme's dossier; a missing dossier covers nothing. */
@@ -45,7 +48,9 @@ export function claimCoverage(
   dossier: Dossier | undefined,
   claimIds: string[],
 ): Map<string, ClaimCoverageState> {
-  const saved = new Map((dossier?.metadata.claims ?? []).map((c) => [c.claimId, c.status]));
+  const saved = new Map(
+    (dossier?.metadata.claims ?? []).map((c) => [c.claimId, c.status]),
+  );
   return new Map(claimIds.map((id) => [id, saved.get(id) ?? "not-in-dossier"]));
 }
 
@@ -58,11 +63,15 @@ const RANK: Record<ResearchState, number> = {
 /** Least-researched first; ties keep stable theme-ID order. */
 export function rankForResearch(coverage: ThemeCoverage[]): ThemeCoverage[] {
   return [...coverage].sort(
-    (a, b) => RANK[a.state] - RANK[b.state] || a.theme.id.localeCompare(b.theme.id),
+    (a, b) =>
+      RANK[a.state] - RANK[b.state] || a.theme.id.localeCompare(b.theme.id),
   );
 }
 
-type Store = Pick<GitArtifactStore, "lookup" | "read" | "write" | "list" | "revise">;
+type Store = Pick<
+  GitArtifactStore,
+  "lookup" | "read" | "write" | "list" | "revise"
+>;
 
 /** Coverage of one canonical theme, resolving its research by theme ID. */
 export async function themeCoverage(

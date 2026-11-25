@@ -3,8 +3,15 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { canonicalNeed, canonicalNeedId, CanonicalNeedSchema } from "./canonical-need.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import {
+  canonicalNeed,
+  canonicalNeedId,
+  CanonicalNeedSchema,
+} from "./canonical-need.js";
 import { writeOnce } from "./job.js";
 
 const Ref = ArtifactReferenceSchema;
@@ -38,7 +45,10 @@ export const ResearchNeedBindingsSchema = z
         entry.needId !== canonicalNeedId(entry.need) ||
         entry.themeId !== entry.need.themeId
       )
-        ctx.addIssue({ code: "custom", message: "research need binding is inconsistent" });
+        ctx.addIssue({
+          code: "custom",
+          message: "research need binding is inconsistent",
+        });
       seen.add(key);
     }
   });
@@ -57,12 +67,15 @@ export function researchNeedBindings(input: {
   themeResult: ArtifactRef;
   claimResult: ArtifactRef;
   mappings: ReadonlyMap<string, string>;
+  /** Need derivation rules; 1 when replaying a plan saved before #828. */
+  derivation?: 1 | 2;
 }): ResearchNeedBindings {
   const record = ClaimExtractionRecordSchema.parse(input.record);
   const source = Ref.parse(input.source);
   if (
     record.themeResult &&
-    record.themeResult !== `${input.themeResult.commit}:${input.themeResult.path}`
+    record.themeResult !==
+      `${input.themeResult.commit}:${input.themeResult.path}`
   )
     throw new Error("research-need-analysis-mismatch");
   const entries: ResearchNeedBindings["entries"] = [];
@@ -70,11 +83,14 @@ export function researchNeedBindings(input: {
     if (!claim.claimRecordId) return;
     const themes = [
       ...new Set(
-        claim.themeIds.map((id) => input.mappings.get(id)).filter((id): id is string => !!id),
+        claim.themeIds
+          .map((id) => input.mappings.get(id))
+          .filter((id): id is string => !!id),
       ),
     ];
     for (const themeId of themes) {
       const need = canonicalNeed({
+        derivation: input.derivation ?? 2,
         themeId,
         claimRecordId: claim.claimRecordId,
         kind: claim.kind,
@@ -115,9 +131,16 @@ export async function retainResearchNeedBindings(
   const parsed = ResearchNeedBindingsSchema.parse(bindings);
   const bytes = JSON.stringify(parsed);
   const key = createHash("sha256").update(bytes).digest("hex");
-  const ref = await writeOnce(artifacts, `librarian/need-bindings/${key}.json`, parsed);
-  const saved = ResearchNeedBindingsSchema.parse(JSON.parse(await artifacts.read(ref)));
-  if (JSON.stringify(saved) !== bytes) throw new Error("research-need-binding-conflict");
+  const ref = await writeOnce(
+    artifacts,
+    `librarian/need-bindings/${key}.json`,
+    parsed,
+  );
+  const saved = ResearchNeedBindingsSchema.parse(
+    JSON.parse(await artifacts.read(ref)),
+  );
+  if (JSON.stringify(saved) !== bytes)
+    throw new Error("research-need-binding-conflict");
   return ref;
 }
 
@@ -126,7 +149,9 @@ export async function readResearchNeedBindings(
   artifacts: Pick<GitArtifactStore, "read">,
   ref: ArtifactRef,
 ): Promise<ResearchNeedBindings> {
-  const binding = ResearchNeedBindingsSchema.parse(JSON.parse(await artifacts.read(ref)));
+  const binding = ResearchNeedBindingsSchema.parse(
+    JSON.parse(await artifacts.read(ref)),
+  );
   const record = ClaimExtractionRecordSchema.parse(
     JSON.parse(
       await artifacts.read({
@@ -156,7 +181,8 @@ export async function readResearchNeedBindings(
     throw new Error("research-need-source-mismatch");
   if (
     record.themeResult &&
-    record.themeResult !== `${binding.themeResult.commit}:${binding.themeResult.path}`
+    record.themeResult !==
+      `${binding.themeResult.commit}:${binding.themeResult.path}`
   )
     throw new Error("research-need-analysis-mismatch");
   for (const entry of binding.entries) {
@@ -169,6 +195,8 @@ export async function readResearchNeedBindings(
     )
       throw new Error("research-need-occurrence-mismatch");
     const expected = canonicalNeed({
+      // Recompute with the rules the saved entry was derived under.
+      derivation: entry.need.version === "canonical-theme-need-v2" ? 2 : 1,
       themeId: entry.themeId,
       claimRecordId: entry.claimRecordId,
       kind: claim.kind,

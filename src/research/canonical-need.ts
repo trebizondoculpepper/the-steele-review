@@ -34,7 +34,7 @@ const SpeakerSchema = z.looseObject({
 });
 export const CanonicalNeedSchema = z
   .object({
-    version: z.literal("canonical-theme-need-v1"),
+    version: z.enum(["canonical-theme-need-v1", "canonical-theme-need-v2"]),
     themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
     proposition: z
       .object({
@@ -101,6 +101,14 @@ export function canonicalNeed(input: {
   occurrence: unknown;
   /** Exact accepted extraction association, supplied by the validated analysis reader. */
   binding: z.infer<typeof NeedOccurrenceBindingSchema>;
+  /**
+   * Derivation rules (#828). Version 2 also scopes an accepted proposition
+   * with no entity, resolved date or attribution to its occurrence; such a
+   * need is labelled v2. Every other need is identical under both versions
+   * and keeps the v1 label, so its ID, and saved evidence for it, are
+   * unchanged. Saved bindings are checked with the version they recorded.
+   */
+  derivation?: 1 | 2;
 }): CanonicalNeed {
   const binding = NeedOccurrenceBindingSchema.parse(input.binding);
   const claim = SemanticClaimSchema.parse(input.claim);
@@ -161,16 +169,20 @@ export function canonicalNeed(input: {
     (fullClaim.data.entities.length > 0 ||
       fullClaim.data.dates.some((date) => !!date.value) ||
       !!attributed);
-  const contextual =
+  const baseContextual =
     !accepted ||
-    !semanticScope ||
     speaker?.kind === "unknown" ||
     speaker?.kind === "uncertain" ||
     candidateReasons(input.kind, [input.themeId], statement).length > 0 ||
     (input.kind === "quotation" && !attributed) ||
     unresolvedDate;
+  // Only version 2 adds the semantic-scope rule, and only a need it changes
+  // carries the v2 label.
+  const scopedByV2 =
+    (input.derivation ?? 2) === 2 && !baseContextual && !semanticScope;
+  const contextual = baseContextual || scopedByV2;
   return CanonicalNeedSchema.parse({
-    version: "canonical-theme-need-v1",
+    version: scopedByV2 ? "canonical-theme-need-v2" : "canonical-theme-need-v1",
     themeId: input.themeId,
     proposition: {
       statement,

@@ -176,7 +176,7 @@ it("preserves source qualifier appearance order rather than sorting or deduplica
 });
 
 it("does not infer shared scope from a full schema-4 wrapper around an unnamed generic proposition", () => {
-  const generic = (postId: string) => {
+  const generic = (postId: string, derivation?: 1 | 2) => {
     const text = "A payment funded an attack.";
     const source = {
       text,
@@ -215,6 +215,7 @@ it("does not infer shared scope from a full schema-4 wrapper around an unnamed g
     });
     return canonicalNeed({
       ...fixture(postId),
+      ...(derivation ? { derivation } : {}),
       claim,
       occurrence,
       binding: {
@@ -224,6 +225,19 @@ it("does not infer shared scope from a full schema-4 wrapper around an unnamed g
       },
     });
   };
+  // Version 2 scopes it and labels the need v2; version 1, used to check
+  // bindings saved earlier, reproduces the old unscoped v1 need exactly.
+  expect(generic("first").version).toBe("canonical-theme-need-v2");
+  expect(generic("first", 1).version).toBe("canonical-theme-need-v1");
+  expect(generic("first", 1).occurrenceScope).toBeUndefined();
+  expect(canonicalNeedId(generic("first", 1))).toBe(
+    canonicalNeedId(generic("second", 1)),
+  );
+  // A need the new rule does not change keeps the v1 label and ID.
+  expect(canonicalNeed(fixture()).version).toBe("canonical-theme-need-v1");
+  expect(canonicalNeedId(canonicalNeed({ ...fixture(), derivation: 1 }))).toBe(
+    canonicalNeedId(canonicalNeed(fixture())),
+  );
   expect(generic("first").occurrenceScope).toBeDefined();
   expect(canonicalNeedId(generic("first"))).not.toBe(
     canonicalNeedId(generic("second")),

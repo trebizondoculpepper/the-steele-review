@@ -1,6 +1,9 @@
 import { reportPartialResearch } from "../observability/research-warning.js";
 import { ConfigurationError } from "../controllers/configuration.js";
-import { captureResearchDiscovery, ResearchDiscoveryError } from "./discovery.js";
+import {
+  captureResearchDiscovery,
+  ResearchDiscoveryError,
+} from "./discovery.js";
 import { discoveryFromAdapterReport } from "./discovery-data.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import {
@@ -34,14 +37,20 @@ function reference({ repository, commit, path, sha256 }: ArtifactRef) {
   return { repository, commit, path, hash: `sha256:${sha256}` };
 }
 
-async function writeArtifact(store: GitArtifactStore, path: string, content: string) {
+async function writeArtifact(
+  store: GitArtifactStore,
+  path: string,
+  content: string,
+) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await store.write(path, content);
     } catch (error) {
-      if (
-        !(error instanceof ArtifactStoreError && error.code === "concurrent-update" && attempt < 5)
-      ) {
+      if (!(
+        error instanceof ArtifactStoreError &&
+        error.code === "concurrent-update" &&
+        attempt < 5
+      )) {
         throw error;
       }
     }
@@ -101,7 +110,9 @@ export async function runSonarResearch(input: {
       },
       invoke: async (capture) => {
         try {
-          return discoveryFromAdapterReport(await input.discover(input.request, capture));
+          return discoveryFromAdapterReport(
+            await input.discover(input.request, capture),
+          );
         } catch (error) {
           if (error instanceof SonarError)
             throw new ModelProviderError(
@@ -123,11 +134,15 @@ export async function runSonarResearch(input: {
       },
     });
     discoveryRef = captured.ref;
-    if (captured.partial) warnings = [outputLimitWarning(reference(captured.ref))];
+    if (captured.partial)
+      warnings = [outputLimitWarning(reference(captured.ref))];
     const cited = [
       ...captured.data.citations,
       ...captured.data.annotationUrls,
-      ...Array.from(captured.data.report.matchAll(/\]\((https?:\/\/[^\s)<>]+)\)/g), (m) => m[1]!),
+      ...Array.from(
+        captured.data.report.matchAll(/\]\((https?:\/\/[^\s)<>]+)\)/g),
+        (m) => m[1]!,
+      ),
     ];
     discovery = {
       model: captured.data.model,
@@ -142,7 +157,8 @@ export async function runSonarResearch(input: {
       error instanceof ConfigurationError ||
       (input.discover.liveTokens &&
         (error instanceof ArtifactStoreError ||
-          (error instanceof ResearchDiscoveryError && error.code === "archive-failed")))
+          (error instanceof ResearchDiscoveryError &&
+            error.code === "archive-failed")))
     ) {
       input.operations.yieldClaim(job.claim);
       throw error;
@@ -160,7 +176,8 @@ export async function runSonarResearch(input: {
             : error.code === "timeout"
               ? "timeout"
               : "provider-error"
-          : error instanceof ResearchDiscoveryError && error.code === "invalid-report"
+          : error instanceof ResearchDiscoveryError &&
+              error.code === "invalid-report"
             ? "invalid-report"
             : "provider-error",
     });
@@ -188,8 +205,10 @@ export async function runSonarResearch(input: {
     ),
   ];
   const gaps: string[] = warnings.map((w) => w.message);
-  if (!urls.length) gaps.push("The report did not provide any usable citation URLs.");
-  if (urls.length > 12) gaps.push("Source retrieval was limited to the first 12 URLs.");
+  if (!urls.length)
+    gaps.push("The report did not provide any usable citation URLs.");
+  if (urls.length > 12)
+    gaps.push("Source retrieval was limited to the first 12 URLs.");
   const citations: ResearchManifest["citations"] = [];
   const signal = AbortSignal.timeout(60_000);
   for (const [index, url] of urls.slice(0, 500).entries()) {
@@ -201,7 +220,8 @@ export async function runSonarResearch(input: {
     try {
       page = await input.fetcher.fetch(url, signal);
     } catch (error) {
-      const reason = error instanceof WebAdapterError ? error.code : "unavailable";
+      const reason =
+        error instanceof WebAdapterError ? error.code : "unavailable";
       citations.push(
         CitationRecordSchema.parse({
           url,
@@ -239,7 +259,9 @@ export async function runSonarResearch(input: {
     });
   }
   if (citations.some((entry) => entry.retrieval !== "archived")) {
-    gaps.push("Some sources could not be captured. See the individual retrieval outcomes.");
+    gaps.push(
+      "Some sources could not be captured. See the individual retrieval outcomes.",
+    );
   }
   if (citations.length) {
     gaps.push(
@@ -267,7 +289,9 @@ export async function runSonarResearch(input: {
     gaps,
     provider: {
       model: discovery.model,
-      ...(discovery.costUsd === undefined ? {} : { costUsd: discovery.costUsd }),
+      ...(discovery.costUsd === undefined
+        ? {}
+        : { costUsd: discovery.costUsd }),
     },
   });
   const manifestRef = await writeArtifact(

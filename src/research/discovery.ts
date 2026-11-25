@@ -3,8 +3,14 @@ import { AppliedResearchTokensSchema } from "../config/research-tokens.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
-import { OperationStoreError, type OperationStore } from "../controllers/operation-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
+import {
+  OperationStoreError,
+  type OperationStore,
+} from "../controllers/operation-store.js";
 import { replaySonarDiscovery } from "../controllers/sonar-discovery-replay.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { researchJobId, ResearchRequestSchema, writeOnce } from "./job.js";
@@ -86,7 +92,13 @@ export const DiscoveryResultSchema = z
 const FailureSchema = z
   .object({
     schemaVersion: z.literal(1),
-    code: z.enum(["credit-exhausted", "rate-limited", "unauthorised", "bad-request", "uncertain"]),
+    code: z.enum([
+      "credit-exhausted",
+      "rate-limited",
+      "unauthorised",
+      "bad-request",
+      "uncertain",
+    ]),
     definiteRejection: z.boolean(),
     status: z.number().int().min(400).max(599).optional(),
   })
@@ -97,7 +109,10 @@ const ref = (r: ArtifactRef) => ({
   path: r.path,
   hash: `sha256:${r.sha256}`,
 });
-const fromRef = (r: z.infer<typeof Ref>): ArtifactRef => ({ ...r, sha256: r.hash.slice(7) });
+const fromRef = (r: z.infer<typeof Ref>): ArtifactRef => ({
+  ...r,
+  sha256: r.hash.slice(7),
+});
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export class ResearchDiscoveryError extends Error {
   constructor(
@@ -137,11 +152,14 @@ function interpretDiscovery(
   completion: z.infer<typeof DiscoveryResultSchema>["completion"];
   data: DiscoveryData | undefined;
 } {
-  let validation: z.infer<typeof DiscoveryResultSchema>["validation"] = "invalid-json",
+  let validation: z.infer<typeof DiscoveryResultSchema>["validation"] =
+      "invalid-json",
     completion: z.infer<typeof DiscoveryResultSchema>["completion"] = "unknown",
     data: DiscoveryData | undefined;
   const bytes =
-    value.encoding === "base64" ? Buffer.from(stored, "base64") : Buffer.from(stored, "utf8");
+    value.encoding === "base64"
+      ? Buffer.from(stored, "base64")
+      : Buffer.from(stored, "utf8");
   if (
     (value.encoding === "base64" && bytes.toString("base64") !== stored) ||
     bytes.byteLength !== value.byteLength ||
@@ -164,19 +182,28 @@ function interpretDiscovery(
     };
   }
   if (value.representation === "provider-json") {
-    ({ validation, completion, data } = replaySonarDiscovery(body, value.processor.model));
+    ({ validation, completion, data } = replaySonarDiscovery(
+      body,
+      value.processor.model,
+    ));
   } else {
     // The compatibility representation is our neutral typed data, not a vendor envelope.
     try {
       const parsed = DiscoveryDataSchema.safeParse(JSON.parse(body));
-      validation = parsed.success && parsed.data.report.trim() ? "valid" : "invalid-schema";
+      validation =
+        parsed.success && parsed.data.report.trim()
+          ? "valid"
+          : "invalid-schema";
       if (parsed.success) data = parsed.data;
     } catch {
       // Returned bytes remain available even when the adapter return is malformed.
     }
   }
   if (value.transport !== "complete")
-    validation = value.transport === "incomplete" ? "transport-truncated" : "resource-limit";
+    validation =
+      value.transport === "incomplete"
+        ? "transport-truncated"
+        : "resource-limit";
   return { validation, completion, data };
 }
 
@@ -205,8 +232,12 @@ async function readDiscovery(
   lengthLimited: boolean,
 ) {
   try {
-    const result = DiscoveryResultSchema.parse(JSON.parse(await artifacts.read(reference)));
-    if (!acceptance.researchDiscoveryAccepted(result.discoveryId, ref(reference)))
+    const result = DiscoveryResultSchema.parse(
+      JSON.parse(await artifacts.read(reference)),
+    );
+    if (
+      !acceptance.researchDiscoveryAccepted(result.discoveryId, ref(reference))
+    )
       throw new ResearchDiscoveryError("quarantined");
     if (
       lengthLimited
@@ -231,12 +262,18 @@ async function readDiscovery(
       })
       .strict()
       .parse(JSON.parse(await artifacts.read(fromRef(result.input))));
-    const expected = discoveryIdentity(descriptor.request, descriptor.processor);
+    const expected = discoveryIdentity(
+      descriptor.request,
+      descriptor.processor,
+    );
     if (
       [descriptor, result, returned].some(
-        (x) => x.requestId !== expected.requestId || x.discoveryId !== expected.discoveryId,
+        (x) =>
+          x.requestId !== expected.requestId ||
+          x.discoveryId !== expected.discoveryId,
       ) ||
-      JSON.stringify(returned.processor) !== JSON.stringify(expected.processor) ||
+      JSON.stringify(returned.processor) !==
+        JSON.stringify(expected.processor) ||
       !result.fence
     )
       throw new ResearchDiscoveryError("archive-failed");
@@ -249,7 +286,10 @@ async function readDiscovery(
     const fence = JSON.parse(await artifacts.read(fromRef(result.fence)));
     if (fence.returnedHash !== result.returned.hash.slice(7))
       throw new ResearchDiscoveryError("archive-failed");
-    const parsed = interpretDiscovery(returned, await artifacts.read(fromRef(returned.body)));
+    const parsed = interpretDiscovery(
+      returned,
+      await artifacts.read(fromRef(returned.body)),
+    );
     if (
       parsed.validation !== (lengthLimited ? "length-limit" : "valid") ||
       returned.transport !== "complete" ||
@@ -279,7 +319,10 @@ async function savedDispatchIdentity(
   processor: DiscoveryProcessor,
 ) {
   const current = discoveryIdentity(request, processor);
-  const paths = await artifacts.list(`research-discovery/${current.requestId}`, 201);
+  const paths = await artifacts.list(
+    `research-discovery/${current.requestId}`,
+    201,
+  );
   if (paths.length > 200) throw new ResearchDiscoveryError("archive-failed");
   const candidates: ReturnType<typeof discoveryIdentity>[] = [];
   const withoutTokenLimit = (p: DiscoveryProcessor) => {
@@ -317,7 +360,8 @@ async function savedDispatchIdentity(
     if (
       saved.requestId !== identity.requestId ||
       saved.discoveryId !== identity.discoveryId ||
-      path !== `research-discovery/${identity.requestId}/${identity.discoveryId}/input.json` ||
+      path !==
+        `research-discovery/${identity.requestId}/${identity.discoveryId}/input.json` ||
       JSON.stringify(saved.request) !== JSON.stringify(current.request)
     )
       throw new ResearchDiscoveryError("archive-failed");
@@ -355,7 +399,11 @@ export async function captureResearchDiscovery(input: {
   reused: boolean;
 }> {
   const identity = input.reuseSavedAttempt
-    ? await savedDispatchIdentity(input.artifacts, input.request, input.processor)
+    ? await savedDispatchIdentity(
+        input.artifacts,
+        input.request,
+        input.processor,
+      )
     : discoveryIdentity(input.request, input.processor);
   const { requestId, discoveryId } = identity;
   const dir = `research-discovery/${requestId}/${discoveryId}`,
@@ -366,7 +414,11 @@ export async function captureResearchDiscovery(input: {
       if (
         exact &&
         saved.sha256 !==
-          hash(typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`)
+          hash(
+            typeof value === "string"
+              ? value
+              : `${JSON.stringify(value, null, 2)}\n`,
+          )
       )
         throw new ResearchDiscoveryError("archive-failed");
       return saved;
@@ -374,11 +426,16 @@ export async function captureResearchDiscovery(input: {
       throw new ResearchDiscoveryError("archive-failed");
     }
   };
-  const descriptor = await save(`${dir}/input.json`, { schemaVersion: 1, ...identity });
+  const descriptor = await save(`${dir}/input.json`, {
+    schemaVersion: 1,
+    ...identity,
+  });
   const read = async (path: string) => {
     try {
       const r = await input.artifacts.lookup(path);
-      return r ? { ref: r, value: JSON.parse(await input.artifacts.read(r)) } : undefined;
+      return r
+        ? { ref: r, value: JSON.parse(await input.artifacts.read(r)) }
+        : undefined;
     } catch {
       throw new ResearchDiscoveryError("archive-failed");
     }
@@ -395,7 +452,8 @@ export async function captureResearchDiscovery(input: {
       JSON.stringify(value.processor) !== JSON.stringify(identity.processor)
     )
       throw new ResearchDiscoveryError("archive-failed");
-    if (await read(`${dir}/quarantined.json`)) throw new ResearchDiscoveryError("quarantined");
+    if (await read(`${dir}/quarantined.json`))
+      throw new ResearchDiscoveryError("quarantined");
     const fence = await read(`${dir}/fenced.json`),
       fenced = !!fence && fence.value.returnedHash === returned.sha256;
     let parsed: ReturnType<typeof interpretDiscovery> = {
@@ -412,10 +470,17 @@ export async function captureResearchDiscovery(input: {
       }
       parsed = interpretDiscovery(value, body);
     }
-    if (parsed.validation === "valid" && (await read(`${dir}/adapter-rejected.json`)))
+    if (
+      parsed.validation === "valid" &&
+      (await read(`${dir}/adapter-rejected.json`))
+    )
       parsed.validation = "adapter-rejected";
     const { validation, completion, data } = parsed;
-    const outcome = !fenced ? "quarantined" : validation === "valid" ? "captured" : "invalid";
+    const outcome = !fenced
+      ? "quarantined"
+      : validation === "valid"
+        ? "captured"
+        : "invalid";
     const result = await save(
       `${dir}/result.json`,
       DiscoveryResultSchema.parse({
@@ -435,9 +500,11 @@ export async function captureResearchDiscovery(input: {
       throw new ResearchDiscoveryError("quarantined", { result, returned });
     try {
       if (held) input.operations.completeResearchDiscovery(held, ref(result));
-      else input.operations.reconcileResearchDiscovery(discoveryId, ref(result));
+      else
+        input.operations.reconcileResearchDiscovery(discoveryId, ref(result));
     } catch (error) {
-      const lost = error instanceof OperationStoreError && error.code === "not-owner";
+      const lost =
+        error instanceof OperationStoreError && error.code === "not-owner";
       if (held && lost)
         await save(`${dir}/quarantined.json`, {
           schemaVersion: 1,
@@ -462,7 +529,15 @@ export async function captureResearchDiscovery(input: {
       !!data?.report.trim();
     if ((outcome !== "captured" && !partial) || !data)
       throw new ResearchDiscoveryError("invalid-report", { result, returned });
-    return { data, ref: result, returned, requestId, discoveryId, reused, partial };
+    return {
+      data,
+      ref: result,
+      returned,
+      requestId,
+      discoveryId,
+      reused,
+      partial,
+    };
   };
   const returned = await read(`${dir}/returned.json`);
   if (returned) {
@@ -477,7 +552,8 @@ export async function captureResearchDiscovery(input: {
     (await input.artifacts.lookup(`${dir}/adapter-return.json`))
   )
     throw new ResearchDiscoveryError("quarantined");
-  if (await read(`${dir}/uncertain.json`)) throw new ResearchDiscoveryError("uncertain");
+  if (await read(`${dir}/uncertain.json`))
+    throw new ResearchDiscoveryError("uncertain");
   const previous = await read(`${dir}/failure.json`);
   if (previous) {
     const rejected = FailureSchema.safeParse(previous.value);
@@ -519,10 +595,18 @@ export async function captureResearchDiscovery(input: {
           ? (partial.body as string)
           : JSON.stringify(value);
     const encoding =
-      partial && "encoding" in partial && partial.encoding === "base64" ? "base64" : "utf8";
-    if (encoding === "base64" && body.length > Math.ceil((4 * 1024 * 1024) / 3) * 4)
+      partial && "encoding" in partial && partial.encoding === "base64"
+        ? "base64"
+        : "utf8";
+    if (
+      encoding === "base64" &&
+      body.length > Math.ceil((4 * 1024 * 1024) / 3) * 4
+    )
       throw new ResearchDiscoveryError("invalid-report");
-    const bytes = encoding === "base64" ? Buffer.from(body, "base64") : Buffer.from(body, "utf8");
+    const bytes =
+      encoding === "base64"
+        ? Buffer.from(body, "base64")
+        : Buffer.from(body, "utf8");
     if (
       bytes.byteLength > 4 * 1024 * 1024 ||
       (encoding === "base64" && bytes.toString("base64") !== body)
@@ -532,7 +616,8 @@ export async function captureResearchDiscovery(input: {
       `${dir}/${representation === "provider-json" ? (encoding === "base64" ? "response.base64" : "response.txt") : "adapter-return.json"}`,
       body,
     );
-    if (bodyRef.sha256 !== hash(body)) throw new ResearchDiscoveryError("archive-failed");
+    if (bodyRef.sha256 !== hash(body))
+      throw new ResearchDiscoveryError("archive-failed");
     captured = await save(
       `${dir}/returned.json`,
       {
@@ -548,7 +633,11 @@ export async function captureResearchDiscovery(input: {
         byteLength: bytes.byteLength,
         bodyHash: createHash("sha256").update(bytes).digest("hex"),
         ...(partial && "appliedTokens" in partial && partial.appliedTokens
-          ? { appliedTokens: AppliedResearchTokensSchema.parse(partial.appliedTokens) }
+          ? {
+              appliedTokens: AppliedResearchTokensSchema.parse(
+                partial.appliedTokens,
+              ),
+            }
           : {}),
       },
       true,
@@ -565,10 +654,15 @@ export async function captureResearchDiscovery(input: {
     if (!captured) await capture(value);
   } catch (error) {
     if (captured) {
-      if (error instanceof ResearchDiscoveryError && error.code === "archive-failed") throw error;
+      if (
+        error instanceof ResearchDiscoveryError &&
+        error.code === "archive-failed"
+      )
+        throw error;
       await save(`${dir}/adapter-rejected.json`, {
         schemaVersion: 1,
-        code: error instanceof ModelProviderError ? error.code : "adapter-rejected",
+        code:
+          error instanceof ModelProviderError ? error.code : "adapter-rejected",
       });
       // Interpretation below records invalid returned data; it is never a no-response retry.
     } else {
@@ -580,15 +674,26 @@ export async function captureResearchDiscovery(input: {
       }
       const code =
         error instanceof ModelProviderError &&
-        ["credit-exhausted", "rate-limited", "unauthorised", "bad-request"].includes(error.code)
-          ? (error.code as "credit-exhausted" | "rate-limited" | "unauthorised" | "bad-request")
+        [
+          "credit-exhausted",
+          "rate-limited",
+          "unauthorised",
+          "bad-request",
+        ].includes(error.code)
+          ? (error.code as
+              | "credit-exhausted"
+              | "rate-limited"
+              | "unauthorised"
+              | "bad-request")
           : "uncertain";
       const definiteRejection = code !== "uncertain";
       await save(`${dir}/${definiteRejection ? "failure" : "uncertain"}.json`, {
         schemaVersion: 1,
         code,
         definiteRejection,
-        ...(error instanceof ModelProviderError && error.status ? { status: error.status } : {}),
+        ...(error instanceof ModelProviderError && error.status
+          ? { status: error.status }
+          : {}),
       });
       try {
         if (definiteRejection) input.operations.yieldClaim(claim.claim);

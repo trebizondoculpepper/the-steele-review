@@ -3,7 +3,11 @@ import type { ArtifactReference } from "../content/artifact-reference.js";
 import type { DraftingBrief } from "../drafting/brief.js";
 import { DossierMetadataSchema, type DossierMetadata } from "./dossier.js";
 import type { SelectedEvidence } from "./applicability.js";
-import { ResearchEntrySchema, type EvidenceSource, type ResearchEntry } from "./research-entry.js";
+import {
+  ResearchEntrySchema,
+  type EvidenceSource,
+  type ResearchEntry,
+} from "./research-entry.js";
 import type { ResearchCandidate } from "./research-store.js";
 
 /**
@@ -102,7 +106,10 @@ export interface DossierProjection {
 
 function assertClaimId(id: string, kind: string): void {
   if (!CLAIM_ID.test(id)) {
-    throw new DossierBridgeError("invalid-claim-id", `${kind} is not a claim ID`);
+    throw new DossierBridgeError(
+      "invalid-claim-id",
+      `${kind} is not a claim ID`,
+    );
   }
 }
 
@@ -114,7 +121,12 @@ export function dossierCitationId(link: {
 }): string {
   const hash = createHash("sha256")
     .update(
-      JSON.stringify([link.entryId, link.revision, link.evidence.url, link.evidence.passage]),
+      JSON.stringify([
+        link.entryId,
+        link.revision,
+        link.evidence.url,
+        link.evidence.passage,
+      ]),
       "utf8",
     )
     .digest("hex");
@@ -141,15 +153,23 @@ function toDossierCitation(link: DossierCitationLink): DossierCitation {
     url: link.evidence.url,
     title: link.evidence.title,
     passage: link.evidence.passage,
-    ...(link.evidence.publishedAt === undefined ? {} : { sourceDate: link.evidence.publishedAt }),
+    ...(link.evidence.publishedAt === undefined
+      ? {}
+      : { sourceDate: link.evidence.publishedAt }),
     checkedAt: link.evidence.lastCheckedAt,
   };
 }
 
-function sameArtifact(a: ArtifactReference | undefined, b: ArtifactReference | undefined): boolean {
+function sameArtifact(
+  a: ArtifactReference | undefined,
+  b: ArtifactReference | undefined,
+): boolean {
   if (a === undefined || b === undefined) return a === b;
   return (
-    a.repository === b.repository && a.commit === b.commit && a.path === b.path && a.hash === b.hash
+    a.repository === b.repository &&
+    a.commit === b.commit &&
+    a.path === b.path &&
+    a.hash === b.hash
   );
 }
 
@@ -175,7 +195,9 @@ function sameProvenance(a: EvidenceSource, b: EvidenceSource): boolean {
  * contradicted) is backed by at least one external source. Otherwise it stays
  * a gap with a stated reason, so an unsupported claim never looks resolved.
  */
-export function buildDossierProjection(input: DossierProjectionInput): DossierProjection {
+export function buildDossierProjection(
+  input: DossierProjectionInput,
+): DossierProjection {
   const seenOccurrences = new Set<string>();
   for (const link of input.links) {
     assertClaimId(link.occurrenceClaimId, "occurrence claim");
@@ -193,7 +215,10 @@ export function buildDossierProjection(input: DossierProjectionInput): DossierPr
   for (const reference of input.references) {
     const key = `${reference.entryId}@${reference.revision}`;
     if (references.has(key)) {
-      throw new DossierBridgeError("duplicate-entry", `entry ${key} is supplied twice`);
+      throw new DossierBridgeError(
+        "duplicate-entry",
+        `entry ${key} is supplied twice`,
+      );
     }
     references.set(key, {
       ...reference,
@@ -224,9 +249,12 @@ export function buildDossierProjection(input: DossierProjectionInput): DossierPr
     );
 
     if (settled.length === 0) {
-      const unresolved = matched.find(({ claim }) => claim.finding === "unresolved");
+      const unresolved = matched.find(
+        ({ claim }) => claim.finding === "unresolved",
+      );
       const reason = unresolved
-        ? (unresolved.claim.unresolvedReason ?? "research entry left this claim unresolved")
+        ? (unresolved.claim.unresolvedReason ??
+          "research entry left this claim unresolved")
         : matched.some(({ claim }) => claim.finding === "unsupported")
           ? "no evidence was found either way"
           : "monitored material cannot independently confirm this assertion";
@@ -341,7 +369,9 @@ export function resolveDossier(input: ResolveDossierInput): ResolvedDossier {
     citations.set(link.citationId, link);
   }
 
-  const recorded = new Map(metadata.citations.map((citation) => [citation.id, citation]));
+  const recorded = new Map(
+    metadata.citations.map((citation) => [citation.id, citation]),
+  );
   for (const citation of metadata.citations) {
     const link = citations.get(citation.id);
     if (!link) {
@@ -390,7 +420,9 @@ export function resolveDossier(input: ResolveDossierInput): ResolvedDossier {
   for (const link of input.links) {
     assertClaimId(link.occurrenceClaimId, "occurrence claim");
     assertClaimId(link.normalisedClaimId, "normalised claim");
-    if (!metadata.claims.some((claim) => claim.claimId === link.occurrenceClaimId)) {
+    if (
+      !metadata.claims.some((claim) => claim.claimId === link.occurrenceClaimId)
+    ) {
       throw new DossierBridgeError(
         "unknown-claim",
         `link maps ${link.occurrenceClaimId}, which the dossier does not address`,
@@ -410,9 +442,14 @@ export function selectedEvidenceForOccurrence(
   dossier: ResolvedDossier,
   occurrenceClaimId: string,
 ): SelectedEvidence[] {
-  const claim = dossier.metadata.claims.find((entry) => entry.claimId === occurrenceClaimId);
+  const claim = dossier.metadata.claims.find(
+    (entry) => entry.claimId === occurrenceClaimId,
+  );
   if (!claim) {
-    throw new DossierBridgeError("unknown-claim", `dossier does not address ${occurrenceClaimId}`);
+    throw new DossierBridgeError(
+      "unknown-claim",
+      `dossier does not address ${occurrenceClaimId}`,
+    );
   }
   if (claim.status === "gap") return [];
   return claim.citations.map((id) => {
@@ -435,9 +472,14 @@ export function researchCandidates(
   dossier: ResolvedDossier,
   references: ResearchReference[],
 ): ResearchCandidate[] {
-  const normalised = new Set(dossier.links.map((link) => link.normalisedClaimId));
+  const normalised = new Set(
+    dossier.links.map((link) => link.normalisedClaimId),
+  );
   const byKey = new Map(
-    references.map((reference) => [`${reference.entryId}@${reference.revision}`, reference]),
+    references.map((reference) => [
+      `${reference.entryId}@${reference.revision}`,
+      reference,
+    ]),
   );
   const groups = new Map<string, { entryId: string; revision: number }>();
   for (const link of dossier.citations.values()) {
@@ -481,7 +523,10 @@ export function researchCandidates(
         score: 0,
         question: entry.question,
         matches: entry.addressedClaims
-          .filter((claim) => claim.claimId !== undefined && normalised.has(claim.claimId))
+          .filter(
+            (claim) =>
+              claim.claimId !== undefined && normalised.has(claim.claimId),
+          )
           .map((claim) => ({
             statement: claim.statement,
             ...(claim.claimId === undefined ? {} : { claimId: claim.claimId }),
@@ -508,7 +553,10 @@ export function traceBriefCitations(
   brief: Pick<DraftingBrief, "citations">,
 ): Array<{ citationId: string; briefCitationId: string }> {
   const byKey = new Map(
-    [...dossier.citations.values()].map((link) => [citationTraceKey(link), link.citationId]),
+    [...dossier.citations.values()].map((link) => [
+      citationTraceKey(link),
+      link.citationId,
+    ]),
   );
   const traced: Array<{ citationId: string; briefCitationId: string }> = [];
   for (const citation of brief.citations) {

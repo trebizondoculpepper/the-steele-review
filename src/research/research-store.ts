@@ -81,7 +81,11 @@ export interface ResearchSearchIndex {
     document: unknown,
     options?: { version?: number },
   ): Promise<unknown>;
-  search(index: string, query: unknown, options?: { size?: number }): Promise<SearchHit[]>;
+  search(
+    index: string,
+    query: unknown,
+    options?: { size?: number },
+  ): Promise<SearchHit[]>;
 }
 
 export class ResearchRevisionConflictError extends Error {
@@ -129,7 +133,11 @@ export interface ResearchCandidate {
 
 /** Stable entry ID from the normalised question. */
 export function researchEntryId(question: string): string {
-  const normalised = question.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  const normalised = question
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
   return `research-${createHash("sha256").update(normalised, "utf8").digest("hex").slice(0, 32)}`;
 }
 
@@ -155,7 +163,8 @@ function fromReference(ref: ArtifactReference): ArtifactRef {
   };
 }
 
-const serialise = (entry: ResearchEntry) => `${JSON.stringify(entry, null, 2)}\n`;
+const serialise = (entry: ResearchEntry) =>
+  `${JSON.stringify(entry, null, 2)}\n`;
 
 export class ResearchStore {
   constructor(
@@ -173,8 +182,15 @@ export class ResearchStore {
       found = { revision, ref };
     }
     if (!found) return undefined;
-    const entry = parseResearchEntry(JSON.parse(await this.artifacts.read(found.ref)));
-    return { entryId, revision: found.revision, artifact: toReference(found.ref), entry };
+    const entry = parseResearchEntry(
+      JSON.parse(await this.artifacts.read(found.ref)),
+    );
+    return {
+      entryId,
+      revision: found.revision,
+      artifact: toReference(found.ref),
+      entry,
+    };
   }
 
   /**
@@ -184,7 +200,10 @@ export class ResearchStore {
    * then indexed; indexing is idempotent and can be repeated with
    * {@link reindex}.
    */
-  async save(entryInput: unknown, expectedRevision: number): Promise<StoredResearchEntry> {
+  async save(
+    entryInput: unknown,
+    expectedRevision: number,
+  ): Promise<StoredResearchEntry> {
     const entry = parseResearchEntry(entryInput);
     const entryId = researchEntryId(entry.question);
     const current = await this.latest(entryId);
@@ -200,10 +219,16 @@ export class ResearchStore {
     if (revision > MAX_REVISIONS) throw new ResearchRevisionLimitError();
     let ref: ArtifactRef;
     try {
-      ref = await this.artifacts.write(revisionPath(entryId, revision), serialise(entry));
+      ref = await this.artifacts.write(
+        revisionPath(entryId, revision),
+        serialise(entry),
+      );
     } catch (error) {
       // A concurrent writer committed this revision first.
-      if (error instanceof ArtifactStoreError && error.code === "immutable-conflict") {
+      if (
+        error instanceof ArtifactStoreError &&
+        error.code === "immutable-conflict"
+      ) {
         throw new ResearchRevisionConflictError(revision);
       }
       throw error;
@@ -229,9 +254,13 @@ export class ResearchStore {
       revision: stored.revision,
       question: entry.question,
       statements: entry.addressedClaims.map((c) => c.statement),
-      claimIds: entry.addressedClaims.flatMap((c) => (c.claimId ? [c.claimId] : [])),
+      claimIds: entry.addressedClaims.flatMap((c) =>
+        c.claimId ? [c.claimId] : [],
+      ),
       findings: entry.addressedClaims.map((c) => c.finding),
-      evidenceUrls: entry.addressedClaims.flatMap((c) => c.evidence.map((e) => e.url)),
+      evidenceUrls: entry.addressedClaims.flatMap((c) =>
+        c.evidence.map((e) => e.url),
+      ),
       artifact: stored.artifact,
       createdAt: entry.provenance.createdAt,
     };
@@ -258,14 +287,24 @@ export class ResearchStore {
     const should: unknown[] = [];
     if (query.text?.trim()) {
       should.push({
-        multi_match: { query: query.text.slice(0, 2000), fields: ["question^2", "statements"] },
+        multi_match: {
+          query: query.text.slice(0, 2000),
+          fields: ["question^2", "statements"],
+        },
       });
     }
-    if (query.claimId) should.push({ term: { claimIds: { value: query.claimId, boost: 5 } } });
+    if (query.claimId)
+      should.push({ term: { claimIds: { value: query.claimId, boost: 5 } } });
     if (should.length === 0) return [];
     const hits = await this.index.search(
       this.indexName,
-      { bool: { filter: [{ term: { corpus: "research" } }], should, minimum_should_match: 1 } },
+      {
+        bool: {
+          filter: [{ term: { corpus: "research" } }],
+          should,
+          minimum_should_match: 1,
+        },
+      },
       { size: Math.max(1, Math.min(limit, MAX_RESULTS)) },
     );
     const candidates: ResearchCandidate[] = [];
@@ -274,7 +313,9 @@ export class ResearchStore {
       if (!indexed.success) continue; // not a research document: never mixed in
       let entry: ResearchEntry;
       try {
-        const content = await this.artifacts.read(fromReference(indexed.data.artifact));
+        const content = await this.artifacts.read(
+          fromReference(indexed.data.artifact),
+        );
         entry = parseResearchEntry(JSON.parse(content));
       } catch {
         continue; // index points at something Git cannot vouch for
@@ -293,7 +334,9 @@ export class ResearchStore {
           statement: c.statement,
           ...(c.claimId ? { claimId: c.claimId } : {}),
           finding: c.finding,
-          ...(c.unresolvedReason ? { unresolvedReason: c.unresolvedReason } : {}),
+          ...(c.unresolvedReason
+            ? { unresolvedReason: c.unresolvedReason }
+            : {}),
           evidence: c.evidence,
         }));
       candidates.push({
@@ -308,7 +351,9 @@ export class ResearchStore {
                 statement: c.statement,
                 ...(c.claimId ? { claimId: c.claimId } : {}),
                 finding: c.finding,
-                ...(c.unresolvedReason ? { unresolvedReason: c.unresolvedReason } : {}),
+                ...(c.unresolvedReason
+                  ? { unresolvedReason: c.unresolvedReason }
+                  : {}),
                 evidence: c.evidence,
               })),
         explanation: { ...entry.explanation, isEvidence: false },
@@ -322,4 +367,5 @@ export class ResearchStore {
 }
 
 /** Content hash helper re-exported for callers that pre-compute expectations. */
-export const researchContentHash = (entry: ResearchEntry) => `sha256:${sha256(serialise(entry))}`;
+export const researchContentHash = (entry: ResearchEntry) =>
+  `sha256:${sha256(serialise(entry))}`;

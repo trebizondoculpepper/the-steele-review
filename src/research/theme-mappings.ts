@@ -46,7 +46,10 @@ function fold(text: string): string {
  * Key for a proposal. The description is part of the key: "Mercury" the planet
  * and "Mercury" the toxic metal must not share a canonical mapping.
  */
-export function proposalMappingKey(proposal: string, description?: string): string {
+export function proposalMappingKey(
+  proposal: string,
+  description?: string,
+): string {
   return fold(`${proposal} ${fold(description ?? "")}`.trim());
 }
 
@@ -66,7 +69,9 @@ export const ThemeMappingSchema = z
     canonicalThemeId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
     decidedAt: z.iso.datetime({ offset: true }),
     /** Where the decision was first made. */
-    decidedBy: z.object({ publicationId: z.string(), postId: z.string() }).strict(),
+    decidedBy: z
+      .object({ publicationId: z.string(), postId: z.string() })
+      .strict(),
     rationale: z.string().min(1).max(1000),
     /** How the decision was made (#518 provenance); absent on older mappings. */
     method: z.enum(["embedding", "lexical", "manual"]).optional(),
@@ -120,9 +125,13 @@ function pathSegment(text: string): string {
 }
 
 /** Stable artifact path for one mapping, including its optional scope. */
-export function themeMappingPath(m: Pick<ThemeMapping, "key" | "scope">): string {
+export function themeMappingPath(
+  m: Pick<ThemeMapping, "key" | "scope">,
+): string {
   const scope =
-    m.scope === undefined ? "global" : `scope-${pathSegment(normaliseMappingKey(m.scope))}`;
+    m.scope === undefined
+      ? "global"
+      : `scope-${pathSegment(normaliseMappingKey(m.scope))}`;
   return `librarian/theme-mappings/${scope}/${pathSegment(normaliseMappingKey(m.key))}.json`;
 }
 
@@ -148,7 +157,10 @@ const serialise = (m: ThemeMapping) => `${JSON.stringify(m, null, 2)}\n`;
  */
 export class ThemeMappingCatalogue {
   constructor(
-    private readonly artifacts: Pick<GitArtifactStore, "lookup" | "read" | "revise" | "list">,
+    private readonly artifacts: Pick<
+      GitArtifactStore,
+      "lookup" | "read" | "revise" | "list"
+    >,
   ) {}
 
   /** Complete bounded title lookup; an incomplete catalogue is never reported as absence. */
@@ -156,15 +168,24 @@ export class ThemeMappingCatalogue {
     const out: PinnedThemeMapping[] = [];
     let count = 0;
     for (let after: string | undefined; ;) {
-      const page = await this.artifacts.list("librarian/theme-mappings", 1000, after);
+      const page = await this.artifacts.list(
+        "librarian/theme-mappings",
+        1000,
+        after,
+      );
       count += page.length;
       if (count > 20000) throw new Error("theme-title-catalogue-limit");
       for (const path of page) {
         const ref = await this.artifacts.lookup(path);
         if (!ref) throw new Error("theme-title-catalogue-changed");
-        const mapping = ThemeMappingSchema.parse(JSON.parse(await this.artifacts.read(ref)));
-        if (themeMappingPath(mapping) !== path) throw new Error("theme-title-catalogue-mismatch");
-        if (normaliseMappingKey(mapping.proposal) === normaliseMappingKey(title))
+        const mapping = ThemeMappingSchema.parse(
+          JSON.parse(await this.artifacts.read(ref)),
+        );
+        if (themeMappingPath(mapping) !== path)
+          throw new Error("theme-title-catalogue-mismatch");
+        if (
+          normaliseMappingKey(mapping.proposal) === normaliseMappingKey(title)
+        )
           out.push({ mapping, ref });
       }
       if (page.length < 1000) return out;
@@ -178,7 +199,9 @@ export class ThemeMappingCatalogue {
   }
 
   /** The current, reusable mapping with its exact version, for pinning. */
-  async current(query: ThemeMappingQuery): Promise<PinnedThemeMapping | undefined> {
+  async current(
+    query: ThemeMappingQuery,
+  ): Promise<PinnedThemeMapping | undefined> {
     const key = proposalMappingKey(query.proposal, query.description);
     const candidates: Array<Pick<ThemeMapping, "key" | "scope">> = [];
     if (query.scope !== undefined) candidates.push({ key, scope: query.scope });
@@ -200,7 +223,9 @@ export class ThemeMappingCatalogue {
   private async at(path: string): Promise<PinnedThemeMapping | undefined> {
     const ref = await this.artifacts.lookup(path);
     if (!ref) return undefined;
-    const parsed = ThemeMappingSchema.safeParse(JSON.parse(await this.artifacts.read(ref)));
+    const parsed = ThemeMappingSchema.safeParse(
+      JSON.parse(await this.artifacts.read(ref)),
+    );
     return parsed.success ? { mapping: parsed.data, ref } : undefined;
   }
 
@@ -209,7 +234,9 @@ export class ThemeMappingCatalogue {
    * wins: a concurrent or repeated record returns the stored one rather than
    * overwriting it. Changing a stored decision is a `correct`, never a record.
    */
-  async record(mapping: Omit<ThemeMapping, "schemaVersion" | "key">): Promise<ThemeMapping> {
+  async record(
+    mapping: Omit<ThemeMapping, "schemaVersion" | "key">,
+  ): Promise<ThemeMapping> {
     return (await this.recordPinned(mapping)).mapping;
   }
 
@@ -239,7 +266,11 @@ export class ThemeMappingCatalogue {
         return { mapping: payload, ref };
       } catch (error) {
         // Someone else changed the file first: re-read and decide again.
-        if (error instanceof ArtifactStoreError && error.code === "stale-revision") continue;
+        if (
+          error instanceof ArtifactStoreError &&
+          error.code === "stale-revision"
+        )
+          continue;
         throw error;
       }
     }
@@ -267,7 +298,10 @@ export class ThemeMappingCatalogue {
       ...current,
       ...(input.change.unresolved
         ? { status: "unresolved" as const }
-        : { canonicalThemeId: input.change.canonicalThemeId, status: undefined }),
+        : {
+            canonicalThemeId: input.change.canonicalThemeId,
+            status: undefined,
+          }),
       method: "manual",
       correction: { reason: input.reason, correctedAt: input.correctedAt },
     });

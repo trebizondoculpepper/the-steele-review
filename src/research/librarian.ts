@@ -1365,6 +1365,7 @@ export async function assessPostCoverage(input: {
   }
   const bindings = canonicalMode
     ? researchNeedBindings({
+        derivation: themeExecution ? 2 : 1,
         record: claimRecord,
         source: themes.artifact,
         themeResult: input.themeResult,
@@ -1861,7 +1862,8 @@ export async function assessPostCoverage(input: {
     input.themeResult,
     input.claimResult,
     () => ({
-      schemaVersion: (canonicalMode ? (themeExecution ? 4 : 3) : 2) as 2 | 3 | 4,
+      schemaVersion: (canonicalMode ? (themeExecution ? 4 : 3) : 2) as
+        2 | 3 | 4,
       dossiers: Object.fromEntries(
         [...planned].sort(([a], [b]) => a.localeCompare(b)),
       ),

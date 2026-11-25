@@ -2,7 +2,10 @@ import { reportPartialResearch } from "../observability/research-warning.js";
 import { ConfigurationError } from "../controllers/configuration.js";
 import { ArtifactStoreError } from "../controllers/artifact-store.js";
 import { canonicalNeedId } from "./canonical-need.js";
-import { loadRetainedResearch, readAcceptedResearchRecovery } from "./retained-research-source.js";
+import {
+  loadRetainedResearch,
+  readAcceptedResearchRecovery,
+} from "./retained-research-source.js";
 import { ArtifactReferenceSchema } from "../content/artifact-reference.js";
 import {
   captureResearchDiscovery,
@@ -14,7 +17,10 @@ import { citationUrls } from "./sonar.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadPromptFile } from "../prompt-files.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import type { OperationStore } from "../controllers/operation-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import { WebAdapterError } from "../controllers/research-web.js";
@@ -57,7 +63,9 @@ const SONAR_RESEARCH_PROMPT = loadPromptFile("research", "sonar-research-v1");
  * written under a known earlier wording stay readable and reusable.
  */
 export const RESEARCH_PROMPT_VERSION = SONAR_RESEARCH_PROMPT.version;
-const LEGACY_RESEARCH_PROMPT_VERSIONS: ReadonlySet<string> = new Set(["sonar-research-v1"]);
+const LEGACY_RESEARCH_PROMPT_VERSIONS: ReadonlySet<string> = new Set([
+  "sonar-research-v1",
+]);
 
 /** Bound on a retained report snapshot; larger values are rejected, not used. */
 export const MAX_SAVED_REPORT_CHARS = 2_000_000;
@@ -86,7 +94,9 @@ export const SavedReportSchema = z
     omittedCitations: z.number().int().min(0).optional(),
     discovery: ArtifactReferenceSchema.optional(),
     costUsd: z.number().nonnegative().optional(),
-    discoveryCompleteness: z.enum(["provider-original", "adapter-return-only"]).optional(),
+    discoveryCompleteness: z
+      .enum(["provider-original", "adapter-return-only"])
+      .optional(),
     retainedRecovery: RetainedResearchRecoverySchema.optional(),
     warnings: ResearchWarningsSchema.optional(),
   })
@@ -173,14 +183,20 @@ const BUNDLE_WINDOW = 400;
  * windows around words that appear in the findings, within this source's share
  * of the bundle budget. Purely local; no model is involved.
  */
-export function bundleExcerpt(text: string, findings: Finding[], sourceCount: number): string {
+export function bundleExcerpt(
+  text: string,
+  findings: Finding[],
+  sourceCount: number,
+): string {
   const budget = Math.max(
     1_500,
     Math.min(4_000, Math.floor(BUNDLE_SOURCE_CHARS / Math.max(1, sourceCount))),
   );
   if (text.length <= budget) return text;
   const words = new Set(
-    findings.flatMap((f) => f.statement.toLowerCase().match(/[a-z0-9]{5,}/g) ?? []).slice(0, 60),
+    findings
+      .flatMap((f) => f.statement.toLowerCase().match(/[a-z0-9]{5,}/g) ?? [])
+      .slice(0, 60),
   );
   const lower = text.toLowerCase();
   const hits: number[] = [];
@@ -199,7 +215,11 @@ export function bundleExcerpt(text: string, findings: Finding[], sourceCount: nu
   for (const h of hits) {
     if (used >= budget) break;
     const start = Math.max(end, h - BUNDLE_WINDOW / 2);
-    const stop = Math.min(text.length, start + BUNDLE_WINDOW, start + (budget - used));
+    const stop = Math.min(
+      text.length,
+      start + BUNDLE_WINDOW,
+      start + (budget - used),
+    );
     if (stop <= start) continue;
     parts.push(text.slice(start, stop));
     used += stop - start;
@@ -209,7 +229,11 @@ export function bundleExcerpt(text: string, findings: Finding[], sourceCount: nu
 }
 
 export interface BundleJudgement {
-  sources: (SupportJudgement & { index: number; relevance?: number; note?: string })[];
+  sources: (SupportJudgement & {
+    index: number;
+    relevance?: number;
+    note?: string;
+  })[];
   /** A short orientation for the writer. */
   brief?: string;
 }
@@ -223,30 +247,50 @@ export interface RunnerLimits {
 
 export type RunOutcome =
   | { status: "busy"; jobId: string }
-  | { status: "finished"; jobId: string; result: ResearchResult; reused: boolean };
+  | {
+      status: "finished";
+      jobId: string;
+      result: ResearchResult;
+      reused: boolean;
+    };
 
 export function findingsFor(request: ResearchRequest): Finding[] {
   if (request.canonicalNeeds)
     return request.claims.map((c) => ({
       id: c.claimRecordId,
       statement: JSON.stringify(
-        request.canonicalNeeds!.needs.find((n) => canonicalNeedId(n) === c.claimRecordId)!
-          .proposition,
+        request.canonicalNeeds!.needs.find(
+          (n) => canonicalNeedId(n) === c.claimRecordId,
+        )!.proposition,
       ),
     }));
   if (request.claims.length > 0)
-    return request.claims.map((c) => ({ id: c.claimRecordId, statement: c.statement }));
-  return [{ id: REQUEST_FINDING_ID, statement: request.question ?? request.subject ?? "" }];
+    return request.claims.map((c) => ({
+      id: c.claimRecordId,
+      statement: c.statement,
+    }));
+  return [
+    {
+      id: REQUEST_FINDING_ID,
+      statement: request.question ?? request.subject ?? "",
+    },
+  ];
 }
 
-export function researchPrompt(request: ResearchRequest): { system: string; user: string } {
+export function researchPrompt(request: ResearchRequest): {
+  system: string;
+  user: string;
+} {
   const lines: string[] = [];
   if (request.subject) lines.push(`Subject: ${request.subject}`);
   if (request.brief) lines.push(`Brief: ${request.brief}`);
   if (request.question) lines.push(`Question: ${request.question}`);
   if (request.claims.length > 0) {
-    lines.push("Claims to research (as made by the author; do not assume they are true):");
-    for (const c of findingsFor(request)) lines.push(`- [${c.id}] ${c.statement}`);
+    lines.push(
+      "Claims to research (as made by the author; do not assume they are true):",
+    );
+    for (const c of findingsFor(request))
+      lines.push(`- [${c.id}] ${c.statement}`);
   }
   return {
     system: SONAR_RESEARCH_PROMPT.instructions,
@@ -271,16 +315,23 @@ function retrievalOf(error: unknown): {
   return { retrieval: "inaccessible", reason: "unavailable" };
 }
 
-async function withDeadline<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withDeadline<T>(
+  ms: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
     return await Promise.race([
       run(controller.signal),
       new Promise<never>((_, reject) =>
-        controller.signal.addEventListener("abort", () => reject(new WebAdapterError("timeout")), {
-          once: true,
-        }),
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(new WebAdapterError("timeout")),
+          {
+            once: true,
+          },
+        ),
       ),
     ]);
   } finally {
@@ -309,7 +360,10 @@ export async function runResearchJob(input: {
   const now = input.now ?? (() => new Date());
   const submitted = ResearchRequestSchema.parse(input.request);
   if (!submitted.retainedRecovery) {
-    const recovered = await readAcceptedResearchRecovery({ ...input, request: submitted });
+    const recovered = await readAcceptedResearchRecovery({
+      ...input,
+      request: submitted,
+    });
     if (recovered) {
       reportPartialResearch(input.operations, recovered.result);
       return {
@@ -323,7 +377,8 @@ export async function runResearchJob(input: {
   const retained = submitted.retainedRecovery
     ? await loadRetainedResearch({ ...input, request: submitted })
     : undefined;
-  if (!retained && !input.sonar) throw new Error("research-discovery-capability-required");
+  if (!retained && !input.sonar)
+    throw new Error("research-discovery-capability-required");
   const opened = await openResearchJob({
     artifacts: input.artifacts,
     operations: input.operations,
@@ -334,13 +389,20 @@ export async function runResearchJob(input: {
   if (opened.status === "busy") return { status: "busy", jobId: opened.jobId };
   if (opened.status === "finished") {
     reportPartialResearch(input.operations, opened.existing);
-    return { status: "finished", jobId: opened.jobId, result: opened.existing, reused: true };
+    return {
+      status: "finished",
+      jobId: opened.jobId,
+      result: opened.existing,
+      reused: true,
+    };
   }
   const { jobId } = opened;
   // Keep the run lease alive through slow source processing; losing it means
   // another caller has already recorded this run as interrupted, so stop.
   const keepLease = () => input.operations.renew(opened.claim, opened.leaseMs);
-  const request = JSON.parse(await input.artifacts.read(opened.requestRef)) as ResearchRequest;
+  const request = JSON.parse(
+    await input.artifacts.read(opened.requestRef),
+  ) as ResearchRequest;
   const signal = input.signal ?? new AbortController().signal;
   const fail = async (failure: NonNullable<ResearchResult["failure"]>) => {
     const done = await finishResearchJob({
@@ -351,7 +413,12 @@ export async function runResearchJob(input: {
       failure,
       now,
     });
-    return { status: "finished" as const, jobId, result: done.result, reused: false };
+    return {
+      status: "finished" as const,
+      jobId,
+      result: done.result,
+      reused: false,
+    };
   };
 
   // Exhausted credit is an operational block, not a research result (#407):
@@ -380,12 +447,15 @@ export async function runResearchJob(input: {
   // recovery neither pays for the report again nor diverges from the pinned one.
   let report: Awaited<ReturnType<SonarClient["research"]>>;
   let discoveryRef: ArtifactRef | undefined;
-  let discoveryCompleteness: "provider-original" | "adapter-return-only" | undefined;
+  let discoveryCompleteness:
+    "provider-original" | "adapter-return-only" | undefined;
   let legacyDiscovery = false;
   let warnings: ResearchWarning[] = [];
   const savedReport = await input.artifacts.lookup(`${dir}/report.json`);
   if (savedReport) {
-    const saved = SavedReportSchema.safeParse(parseJson(await input.artifacts.read(savedReport)));
+    const saved = SavedReportSchema.safeParse(
+      parseJson(await input.artifacts.read(savedReport)),
+    );
     // A retained snapshot that is not this job's validated report is a
     // terminal operational failure: never reuse it, never refetch over it.
     const knownPrompt =
@@ -407,7 +477,10 @@ export async function runResearchJob(input: {
         JSON.stringify(saved.data.citations) !==
           JSON.stringify(
             citationUrls(
-              [...retained.retained.data.citations, ...retained.retained.data.annotationUrls],
+              [
+                ...retained.retained.data.citations,
+                ...retained.retained.data.annotationUrls,
+              ],
               Number.MAX_SAFE_INTEGER,
             ).slice(0, MAX_SAVED_CITATIONS),
           ))
@@ -417,7 +490,8 @@ export async function runResearchJob(input: {
     if (warnings.length) {
       if (
         !saved.data.discovery ||
-        JSON.stringify(warnings[0]!.discovery) !== JSON.stringify(saved.data.discovery)
+        JSON.stringify(warnings[0]!.discovery) !==
+          JSON.stringify(saved.data.discovery)
       )
         return fail("invalid-report");
       const partial = await readLengthLimitedResearchDiscovery(
@@ -425,19 +499,29 @@ export async function runResearchJob(input: {
         { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) },
         input.operations,
       );
-      if (partial.data.report !== saved.data.report || partial.data.model !== saved.data.model)
+      if (
+        partial.data.report !== saved.data.report ||
+        partial.data.model !== saved.data.model
+      )
         return fail("invalid-report");
     }
     legacyDiscovery = !saved.data.discovery;
     if (saved.data.discovery)
-      discoveryRef = { ...saved.data.discovery, sha256: saved.data.discovery.hash.slice(7) };
+      discoveryRef = {
+        ...saved.data.discovery,
+        sha256: saved.data.discovery.hash.slice(7),
+      };
     discoveryCompleteness = saved.data.discoveryCompleteness;
     report = {
       model: saved.data.model,
       report: saved.data.report,
       citations: saved.data.citations,
-      ...(saved.data.costUsd === undefined ? {} : { costUsd: saved.data.costUsd }),
-      ...(saved.data.omittedCitations ? { omittedCitations: saved.data.omittedCitations } : {}),
+      ...(saved.data.costUsd === undefined
+        ? {}
+        : { costUsd: saved.data.costUsd }),
+      ...(saved.data.omittedCitations
+        ? { omittedCitations: saved.data.omittedCitations }
+        : {}),
     } as typeof report;
   } else if (retained) {
     discoveryRef = {
@@ -447,7 +531,10 @@ export async function runResearchJob(input: {
     warnings = [outputLimitWarning(submitted.retainedRecovery!.discovery)];
     discoveryCompleteness = retained.retained.data.citationProvenance;
     const data = retained.retained.data;
-    const all = citationUrls([...data.citations, ...data.annotationUrls], Number.MAX_SAFE_INTEGER);
+    const all = citationUrls(
+      [...data.citations, ...data.annotationUrls],
+      Number.MAX_SAFE_INTEGER,
+    );
     report = {
       report: data.report,
       model: data.model,
@@ -506,7 +593,9 @@ export async function runResearchJob(input: {
         report: captured.data.report,
         model: captured.data.model,
         citations: kept,
-        ...(all.length > kept.length ? { omittedCitations: all.length - kept.length } : {}),
+        ...(all.length > kept.length
+          ? { omittedCitations: all.length - kept.length }
+          : {}),
         ...(captured.data.usage?.costUsd === undefined
           ? {}
           : { costUsd: captured.data.usage.costUsd }),
@@ -516,7 +605,8 @@ export async function runResearchJob(input: {
         error instanceof ConfigurationError ||
         (sonar.liveTokens &&
           (error instanceof ArtifactStoreError ||
-            (error instanceof ResearchDiscoveryError && error.code === "archive-failed")))
+            (error instanceof ResearchDiscoveryError &&
+              error.code === "archive-failed")))
       ) {
         input.operations.yieldClaim(opened.claim);
         throw error;
@@ -525,10 +615,17 @@ export async function runResearchJob(input: {
         input.operations.yieldClaim(opened.claim);
         return { status: "busy", jobId };
       }
-      if (error instanceof ResearchDiscoveryError && error.code === "invalid-report")
+      if (
+        error instanceof ResearchDiscoveryError &&
+        error.code === "invalid-report"
+      )
         return fail("invalid-report");
-      if (error instanceof ModelProviderError && error.code === "timeout") return fail("timeout");
-      if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+      if (error instanceof ModelProviderError && error.code === "timeout")
+        return fail("timeout");
+      if (
+        error instanceof ModelProviderError &&
+        error.code === "credit-exhausted"
+      ) {
         return creditBlocked();
       }
       return fail("provider-error");
@@ -553,9 +650,13 @@ export async function runResearchJob(input: {
       : {}),
     ...(discoveryCompleteness ? { discoveryCompleteness } : {}),
     ...(warnings.length ? { warnings } : {}),
-    ...(request.retainedRecovery ? { retainedRecovery: request.retainedRecovery } : {}),
+    ...(request.retainedRecovery
+      ? { retainedRecovery: request.retainedRecovery }
+      : {}),
     ...(report.costUsd === undefined ? {} : { costUsd: report.costUsd }),
-    ...(report.omittedCitations ? { omittedCitations: report.omittedCitations } : {}),
+    ...(report.omittedCitations
+      ? { omittedCitations: report.omittedCitations }
+      : {}),
   });
 
   // 2. Retrieve, archive and check each cited source within bounds.
@@ -573,7 +674,8 @@ export async function runResearchJob(input: {
         "Legacy report-only discovery lacks the original provider citation envelope and available usage metadata; it has not been reconstructed.",
       ]
     : [];
-  if (warnings.length && !request.retainedRecovery) gaps.push(warnings[0]!.message);
+  if (warnings.length && !request.retainedRecovery)
+    gaps.push(warnings[0]!.message);
   if (request.retainedRecovery)
     gaps.push(
       "The original provider report stopped at its output limit. Missing report text was not reconstructed; this recovery made no new discovery call.",
@@ -615,16 +717,24 @@ export async function runResearchJob(input: {
       );
       // The snapshot must be the source for this exact URL with bounded text;
       // anything else is invalid retained state, not a reason to refetch.
-      if (!saved.success || saved.data.url !== url) return fail("invalid-report");
+      if (!saved.success || saved.data.url !== url)
+        return fail("invalid-report");
       archived = savedSource;
       text = saved.data.text;
     } else {
       let page;
       try {
-        page = await withDeadline(limits.sourceTimeoutMs, (s) => input.fetcher.fetch(url, s));
+        page = await withDeadline(limits.sourceTimeoutMs, (s) =>
+          input.fetcher.fetch(url, s),
+        );
       } catch (error) {
         const { retrieval, reason } = retrievalOf(error);
-        citations.push({ url, retrieval, retrievalReason: reason, passages: [] });
+        citations.push({
+          url,
+          retrieval,
+          retrievalReason: reason,
+          passages: [],
+        });
         continue;
       }
       text = page.text.slice(0, limits.maxSourceChars);
@@ -639,12 +749,21 @@ export async function runResearchJob(input: {
     }
     // Judged after every source is archived, in one bundle call when the
     // judge offers one (#795); the slot keeps the citation order unchanged.
-    archivedSources.push({ slot: citations.length, url, text, archived, own: monitored(url) });
+    archivedSources.push({
+      slot: citations.length,
+      url,
+      text,
+      archived,
+      own: monitored(url),
+    });
     citations.push(undefined as never);
   }
 
   // 2b. Support: one bundle assessment, or (legacy judges) one call per source.
-  const judgements = new Map<number, SupportJudgement & { relevance?: number; note?: string }>();
+  const judgements = new Map<
+    number,
+    SupportJudgement & { relevance?: number; note?: string }
+  >();
   const failedJudgement = new Set<number>();
   let writerBrief: string | undefined;
   if (input.judge?.judgeBundle && archivedSources.length > 0) {
@@ -663,13 +782,20 @@ export async function runResearchJob(input: {
       );
       writerBrief = bundle.brief?.trim().slice(0, 2000) || undefined;
       for (const j of bundle.sources)
-        if (Number.isInteger(j.index) && j.index >= 0 && j.index < archivedSources.length)
+        if (
+          Number.isInteger(j.index) &&
+          j.index >= 0 &&
+          j.index < archivedSources.length
+        )
           judgements.set(j.index, j);
       // A source the assessment did not mention was judged irrelevant.
       for (let i = 0; i < archivedSources.length; i++)
         if (!judgements.has(i)) judgements.set(i, { passages: [] });
     } catch (error) {
-      if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+      if (
+        error instanceof ModelProviderError &&
+        error.code === "credit-exhausted"
+      ) {
         return creditBlocked();
       }
       for (let i = 0; i < archivedSources.length; i++) failedJudgement.add(i);
@@ -688,7 +814,10 @@ export async function runResearchJob(input: {
       } catch (error) {
         // A judge that ran out of credit must not leave the citation "not
         // checked" in a terminal result: stop the job, recoverably (#407).
-        if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+        if (
+          error instanceof ModelProviderError &&
+          error.code === "credit-exhausted"
+        ) {
           return creditBlocked();
         }
         failedJudgement.add(i);
@@ -709,21 +838,33 @@ export async function runResearchJob(input: {
       const source = normalise(text);
       // "monitored-source" is reserved for the configured host decision.
       const proposedType = judgement.sourceType?.slice(0, 100);
-      sourceType = proposedType === "monitored-source" ? undefined : proposedType;
+      sourceType =
+        proposedType === "monitored-source" ? undefined : proposedType;
       rationale = (judgement.rationale ?? judgement.note)?.slice(0, 2000);
       passages = judgement.passages
-        .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
+        .filter(
+          (p) => findingIds.has(p.findingId) && p.passage.trim().length > 0,
+        )
         .filter((p) => source.includes(normalise(p.passage)))
         .slice(0, 50)
-        .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
-      support = own ? "unverified" : passages.length > 0 ? "supported" : "unverified";
+        .map((p) => ({
+          claimRecordId: p.findingId,
+          passage: p.passage.trim().slice(0, 4000),
+        }));
+      support = own
+        ? "unverified"
+        : passages.length > 0
+          ? "supported"
+          : "unverified";
     } else if (own) {
       support = "unverified";
     } else if (failedJudgement.has(i)) {
       support = "not-checked";
     }
     const relevance =
-      judgement && "relevance" in judgement && Number.isInteger(judgement.relevance)
+      judgement &&
+      "relevance" in judgement &&
+      Number.isInteger(judgement.relevance)
         ? Math.max(1, Math.min(500, judgement.relevance!))
         : undefined;
     const note =
@@ -736,7 +877,8 @@ export async function runResearchJob(input: {
       ...(own
         ? {
             sourceType: "monitored-source",
-            confidenceRationale: "The claimant's own material; not independent support.",
+            confidenceRationale:
+              "The claimant's own material; not independent support.",
           }
         : {
             sourceType: sourceType ?? "web-page",
@@ -762,8 +904,10 @@ export async function runResearchJob(input: {
   }
 
   // 3. Gaps and outcome.
-  const count = (pred: (c: (typeof citations)[number]) => boolean) => citations.filter(pred).length;
-  if (citations.length === 0) gaps.push("The report cited no retrievable sources.");
+  const count = (pred: (c: (typeof citations)[number]) => boolean) =>
+    citations.filter(pred).length;
+  if (citations.length === 0)
+    gaps.push("The report cited no retrievable sources.");
   if (report.omittedCitations) {
     gaps.push(
       `${report.omittedCitations} further cited source(s) exceeded the manifest limit and were not recorded.`,
@@ -771,15 +915,22 @@ export async function runResearchJob(input: {
   }
   const notArchived = count((c) => c.retrieval !== "archived");
   if (notArchived > 0)
-    gaps.push(`${notArchived} cited source(s) could not be archived (see retrieval reasons).`);
-  const unchecked = count((c) => c.retrieval === "archived" && c.support !== "supported");
+    gaps.push(
+      `${notArchived} cited source(s) could not be archived (see retrieval reasons).`,
+    );
+  const unchecked = count(
+    (c) => c.retrieval === "archived" && c.support !== "supported",
+  );
   if (unchecked > 0)
-    gaps.push(`${unchecked} archived source(s) have no verified supporting passage.`);
+    gaps.push(
+      `${unchecked} archived source(s) have no verified supporting passage.`,
+    );
   for (const f of findings) {
     if (
       !citations.some(
         (c) =>
-          c.sourceType !== "monitored-source" && c.passages.some((p) => p.claimRecordId === f.id),
+          c.sourceType !== "monitored-source" &&
+          c.passages.some((p) => p.claimRecordId === f.id),
       )
     ) {
       gaps.push(`No verified supporting passage for finding ${f.id}.`);
@@ -796,9 +947,15 @@ export async function runResearchJob(input: {
     "",
     "Retrieval uses the public-page fetcher only: PDFs and redirecting URLs are recorded as unsupported, not followed.",
     "",
-    ...(gaps.length > 0 ? ["Gaps:", ...gaps.map((g) => `- ${g}`), ""] : ["No recorded gaps.", ""]),
+    ...(gaps.length > 0
+      ? ["Gaps:", ...gaps.map((g) => `- ${g}`), ""]
+      : ["No recorded gaps.", ""]),
   ].join("\n");
-  const noteRef = await writeOnce(input.artifacts, `${dir}/covering-note.md`, note);
+  const noteRef = await writeOnce(
+    input.artifacts,
+    `${dir}/covering-note.md`,
+    note,
+  );
 
   const ref = (r: ArtifactRef) => ({
     repository: r.repository,
@@ -828,7 +985,11 @@ export async function runResearchJob(input: {
     },
   });
   keepLease();
-  const manifestRef = await writeOnce(input.artifacts, `${dir}/manifest.json`, manifest);
+  const manifestRef = await writeOnce(
+    input.artifacts,
+    `${dir}/manifest.json`,
+    manifest,
+  );
   const done = await finishResearchJob({
     artifacts: input.artifacts,
     operations: input.operations,

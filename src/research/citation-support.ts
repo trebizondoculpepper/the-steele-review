@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import { ModelProviderError } from "../controllers/openrouter.js";
 import {
   CitationInventorySchema,
@@ -8,7 +11,12 @@ import {
   RetrievalOutcomeSchema,
 } from "./citation-inventory.js";
 import { writeOnce, type ResearchRequest } from "./job.js";
-import { BUNDLE_REPORT_CHARS, bundleExcerpt, findingsFor, type SupportJudge } from "./runner.js";
+import {
+  BUNDLE_REPORT_CHARS,
+  bundleExcerpt,
+  findingsFor,
+  type SupportJudge,
+} from "./runner.js";
 
 /**
  * Support assessment for staged research (#593): the handoff from retrieved
@@ -26,7 +34,12 @@ import { BUNDLE_REPORT_CHARS, bundleExcerpt, findingsFor, type SupportJudge } fr
  */
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    hash: z.string(),
+  })
   .strict();
 
 export const CitationSupportSchema = z
@@ -45,7 +58,11 @@ export const CitationSupportSchema = z
     relevanceRank: z.number().int().min(1).max(500).optional(),
     writerNote: z.string().min(1).max(500).optional(),
     passages: z
-      .array(z.object({ claimRecordId: z.string(), passage: z.string().max(4000) }).strict())
+      .array(
+        z
+          .object({ claimRecordId: z.string(), passage: z.string().max(4000) })
+          .strict(),
+      )
       .max(50),
   })
   .strict();
@@ -58,7 +75,11 @@ export const judgeIdentity = (judge?: SupportJudge) =>
   judge?.identity ?? (judge ? "unidentified" : "none");
 
 /** One verdict per source per judge identity: a prompt change never reuses an old verdict. */
-export const supportPath = (inventory: ArtifactRef, retrievalId: string, identity: string) =>
+export const supportPath = (
+  inventory: ArtifactRef,
+  retrievalId: string,
+  identity: string,
+) =>
   `${inventory.path.replace(/\/inventory\.json$/, "")}/support/${retrievalId}/${createHash("sha256").update(identity).digest("hex").slice(0, 32)}.json`;
 
 export type SupportStep =
@@ -82,30 +103,46 @@ export async function judgeCitationSupport(input: {
   const path = supportPath(input.inventory, input.retrievalId, identity);
   const saved = await input.artifacts.lookup(path);
   if (saved) {
-    const s = CitationSupportSchema.parse(JSON.parse(await input.artifacts.read(saved)));
+    const s = CitationSupportSchema.parse(
+      JSON.parse(await input.artifacts.read(saved)),
+    );
     if (s.judge === identity) return { kind: "judged", support: s.support };
   }
   const dir = input.inventory.path.replace(/\/inventory\.json$/, "");
-  const outcomeRef = await input.artifacts.lookup(`${dir}/retrievals/${input.retrievalId}.json`);
+  const outcomeRef = await input.artifacts.lookup(
+    `${dir}/retrievals/${input.retrievalId}.json`,
+  );
   if (!outcomeRef) return { kind: "not-archived" };
-  const outcome = RetrievalOutcomeSchema.parse(JSON.parse(await input.artifacts.read(outcomeRef)));
-  if (outcome.status !== "archived" || !outcome.snapshot) return { kind: "not-archived" };
+  const outcome = RetrievalOutcomeSchema.parse(
+    JSON.parse(await input.artifacts.read(outcomeRef)),
+  );
+  if (outcome.status !== "archived" || !outcome.snapshot)
+    return { kind: "not-archived" };
   const inventory = CitationInventorySchema.parse(
     JSON.parse(await input.artifacts.read(input.inventory)),
   );
-  const entry = inventory.entries.find((e) => e.retrievalId === input.retrievalId);
+  const entry = inventory.entries.find(
+    (e) => e.retrievalId === input.retrievalId,
+  );
   if (!entry?.retrievalKey || entry.retrievalKey !== outcome.retrievalKey) {
     return { kind: "not-archived" };
   }
-  const snapshot = await readCitationSnapshot(input.artifacts, outcome.snapshot);
-  if (snapshot.retrievalKey !== entry.retrievalKey) return { kind: "not-archived" };
+  const snapshot = await readCitationSnapshot(
+    input.artifacts,
+    outcome.snapshot,
+  );
+  if (snapshot.retrievalKey !== entry.retrievalKey)
+    return { kind: "not-archived" };
 
   const host = new URL(entry.retrievalKey).hostname.toLowerCase();
   const monitored = (input.monitoredHosts ?? []).some(
     (h) => host === h.toLowerCase() || host.endsWith(`.${h.toLowerCase()}`),
   );
   const record = async (
-    fields: Pick<CitationSupport, "support" | "passages" | "sourceType" | "rationale">,
+    fields: Pick<
+      CitationSupport,
+      "support" | "passages" | "sourceType" | "rationale"
+    >,
   ) => {
     await writeOnce(
       input.artifacts,
@@ -124,13 +161,20 @@ export async function judgeCitationSupport(input: {
   };
   if (!input.judge) {
     // Without a judge only the monitored-source decision is certain.
-    return monitored ? record({ support: "unverified", passages: [] }) : { kind: "not-checked" };
+    return monitored
+      ? record({ support: "unverified", passages: [] })
+      : { kind: "not-checked" };
   }
   const findings = findingsFor(input.request);
   const findingIds = new Set(findings.map((f) => f.id));
   try {
     const judgement = await input.judge.judge(
-      { findings, report: input.report, url: entry.retrievalKey, source: snapshot.text },
+      {
+        findings,
+        report: input.report,
+        url: entry.retrievalKey,
+        source: snapshot.text,
+      },
       input.signal ?? AbortSignal.timeout(120_000),
     );
     const source = normalise(snapshot.text);
@@ -138,16 +182,26 @@ export async function judgeCitationSupport(input: {
       .filter((p) => findingIds.has(p.findingId) && p.passage.trim().length > 0)
       .filter((p) => source.includes(normalise(p.passage)))
       .slice(0, 50)
-      .map((p) => ({ claimRecordId: p.findingId, passage: p.passage.trim().slice(0, 4000) }));
+      .map((p) => ({
+        claimRecordId: p.findingId,
+        passage: p.passage.trim().slice(0, 4000),
+      }));
     const proposed = judgement.sourceType?.slice(0, 100);
     return record({
       support: !monitored && passages.length > 0 ? "supported" : "unverified",
       passages,
-      ...(proposed && proposed !== "monitored-source" ? { sourceType: proposed } : {}),
-      ...(judgement.rationale ? { rationale: judgement.rationale.slice(0, 2000) } : {}),
+      ...(proposed && proposed !== "monitored-source"
+        ? { sourceType: proposed }
+        : {}),
+      ...(judgement.rationale
+        ? { rationale: judgement.rationale.slice(0, 2000) }
+        : {}),
     });
   } catch (error) {
-    if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+    if (
+      error instanceof ModelProviderError &&
+      error.code === "credit-exhausted"
+    ) {
       return { kind: "credit-exhausted" };
     }
     return { kind: "not-checked" };
@@ -184,7 +238,10 @@ export async function judgeBundleSupport(input: {
   judge: SupportJudge & Required<Pick<SupportJudge, "judgeBundle">>;
   monitoredHosts?: string[];
   signal?: AbortSignal;
-}): Promise<{ kind: "judged" | "not-checked" | "credit-exhausted"; judged: number }> {
+}): Promise<{
+  kind: "judged" | "not-checked" | "credit-exhausted";
+  judged: number;
+}> {
   const identity = judgeIdentity(input.judge);
   const dir = input.inventory.path.replace(/\/inventory\.json$/, "");
   const inventory = CitationInventorySchema.parse(
@@ -198,16 +255,27 @@ export async function judgeBundleSupport(input: {
     monitored: boolean;
   }[] = [];
   for (const retrievalId of input.retrievalIds) {
-    if (await input.artifacts.lookup(supportPath(input.inventory, retrievalId, identity))) continue;
-    const outcomeRef = await input.artifacts.lookup(`${dir}/retrievals/${retrievalId}.json`);
+    if (
+      await input.artifacts.lookup(
+        supportPath(input.inventory, retrievalId, identity),
+      )
+    )
+      continue;
+    const outcomeRef = await input.artifacts.lookup(
+      `${dir}/retrievals/${retrievalId}.json`,
+    );
     if (!outcomeRef) continue;
     const outcome = RetrievalOutcomeSchema.parse(
       JSON.parse(await input.artifacts.read(outcomeRef)),
     );
     if (outcome.status !== "archived" || !outcome.snapshot) continue;
     const entry = inventory.entries.find((e) => e.retrievalId === retrievalId);
-    if (!entry?.retrievalKey || entry.retrievalKey !== outcome.retrievalKey) continue;
-    const snapshot = await readCitationSnapshot(input.artifacts, outcome.snapshot);
+    if (!entry?.retrievalKey || entry.retrievalKey !== outcome.retrievalKey)
+      continue;
+    const snapshot = await readCitationSnapshot(
+      input.artifacts,
+      outcome.snapshot,
+    );
     if (snapshot.retrievalKey !== entry.retrievalKey) continue;
     const host = new URL(entry.retrievalKey).hostname.toLowerCase();
     pending.push({
@@ -239,14 +307,20 @@ export async function judgeBundleSupport(input: {
       input.signal ?? AbortSignal.timeout(180_000),
     );
   } catch (error) {
-    if (error instanceof ModelProviderError && error.code === "credit-exhausted") {
+    if (
+      error instanceof ModelProviderError &&
+      error.code === "credit-exhausted"
+    ) {
       return { kind: "credit-exhausted", judged: 0 };
     }
     return { kind: "not-checked", judged: 0 };
   }
   // The brief first: once any verdict is saved, a retry skips the call.
   const brief = bundle.brief?.trim().slice(0, 2000);
-  if (brief && !(await input.artifacts.lookup(bundleBriefPath(input.inventory, identity)))) {
+  if (
+    brief &&
+    !(await input.artifacts.lookup(bundleBriefPath(input.inventory, identity)))
+  ) {
     await writeOnce(
       input.artifacts,
       bundleBriefPath(input.inventory, identity),
@@ -261,7 +335,10 @@ export async function judgeBundleSupport(input: {
       .filter((x) => findingIds.has(x.findingId) && x.passage.trim().length > 0)
       .filter((x) => source.includes(normalise(x.passage)))
       .slice(0, 50)
-      .map((x) => ({ claimRecordId: x.findingId, passage: x.passage.trim().slice(0, 4000) }));
+      .map((x) => ({
+        claimRecordId: x.findingId,
+        passage: x.passage.trim().slice(0, 4000),
+      }));
     const proposed = j?.sourceType?.slice(0, 100);
     const note = j?.note?.trim().slice(0, 500);
     await writeOnce(
@@ -274,9 +351,12 @@ export async function judgeBundleSupport(input: {
         snapshot: p.snapshotRef,
         monitored: p.monitored,
         judge: identity,
-        support: !p.monitored && passages.length > 0 ? "supported" : "unverified",
+        support:
+          !p.monitored && passages.length > 0 ? "supported" : "unverified",
         passages,
-        ...(proposed && proposed !== "monitored-source" ? { sourceType: proposed } : {}),
+        ...(proposed && proposed !== "monitored-source"
+          ? { sourceType: proposed }
+          : {}),
         ...(note ? { rationale: note, writerNote: note } : {}),
         ...(j?.relevance !== undefined && Number.isInteger(j.relevance)
           ? { relevanceRank: Math.max(1, Math.min(500, j.relevance)) }
