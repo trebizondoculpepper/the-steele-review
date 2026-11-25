@@ -1112,7 +1112,11 @@ export async function assessPostCoverage(input: {
     ];
     let homeDossier: StoredDossier | undefined;
     let prior: DossierMetadata["claims"][number] | undefined;
-    for (const id of claim.periodScoped ? [] : mapped) {
+    // A period-scoped claim reuses saved coverage only when reassessing this
+    // same analysis (its own earlier coverage), never another post's.
+    for (const id of claim.periodScoped && savedMapping.size === 0
+      ? []
+      : mapped) {
       const d = existing.get(id);
       // Coverage may be stored under the canonical ID or the extracted (merged-away) one.
       const c = d?.metadata.claims.find(
