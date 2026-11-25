@@ -24,6 +24,7 @@ import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configu
  *                                                    and email subscribers (#789); anything else stays off
  *   STEELE_SUBSTACK_PUBLISH_FROM?                    required with publish-with-email: only approvals at
  *                                                    or after this ISO time are published (no backlog)
+ *   STEELE_SUBSTACK_SUBSCRIBER_EMAIL?                live setting: off (default, #895) or on; read before each delivery
  *   STEELE_SUBSTACK_PUBLISH_WITHOUT_EMAIL?           live setting (env or STEELE_CONFIG_PATH): comma-separated
  *                                                    publicationId/postId pairs published without email (#388)
  *   STEELE_SUBSTACK_BYLINE_ID?                       explicit destination byline id (digits)
@@ -35,7 +36,7 @@ import { draftDeliveryConfiguration } from "../publishing/draft-delivery-configu
  * Never logs the origin, the session or response bodies.
  */
 import { readFile } from "node:fs/promises";
-import { publishWithoutEmailFromConfiguration } from "../config/publish-email-policy.js";
+import { emailPolicyFromConfiguration } from "../config/publish-email-policy.js";
 import { hostname } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
@@ -168,7 +169,7 @@ async function main(): Promise<number> {
         ? new SubstackPublishDestination(client, {
             name: c.STEELE_PUBLISHER_DESTINATION,
             publishFrom: c.STEELE_SUBSTACK_PUBLISH_FROM!,
-            withoutEmail: publishWithoutEmailFromConfiguration(),
+            emailPolicy: emailPolicyFromConfiguration(),
             ...(c.STEELE_SUBSTACK_BYLINE_ID
               ? { bylineId: c.STEELE_SUBSTACK_BYLINE_ID }
               : {}),
