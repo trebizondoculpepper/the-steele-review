@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as restate from "@restatedev/restate-sdk";
 import * as clients from "@restatedev/restate-sdk-clients";
-import { RestateContainer, RestateTestEnvironment } from "@restatedev/restate-sdk-testcontainers";
+import {
+  RestateContainer,
+  RestateTestEnvironment,
+} from "@restatedev/restate-sdk-testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { GitArtifactStore } from "../../src/controllers/artifact-store.js";
 import { saveBatch, toBatch } from "../../src/corpus-refinement/batch.js";
@@ -35,17 +38,36 @@ describe("mapping dispositions (#861)", () => {
         confidence: "high",
         rationale: "same claim",
       },
-      { recordId: "c1", decision: "unmapped", reason: "second opinion ignored" },
+      {
+        recordId: "c1",
+        decision: "unmapped",
+        reason: "second opinion ignored",
+      },
       { recordId: "c2", decision: "unmapped", reason: "new-idea" },
-      { recordId: "c3", decision: "mapped", catalogueId: "no-such-entry", confidence: "high" },
-      { recordId: "c4", decision: "mapped", catalogueId: ENTRY, confidence: "low" },
+      {
+        recordId: "c3",
+        decision: "mapped",
+        catalogueId: "no-such-entry",
+        confidence: "high",
+      },
+      {
+        recordId: "c4",
+        decision: "mapped",
+        catalogueId: ENTRY,
+        confidence: "low",
+      },
       // c5: no decision at all.
     ];
     const out = dispose([...records, records[0]!], decisions, SEED_CATALOGUE, {
       minConfidence: "medium",
     });
     expect(out.mapped).toEqual([
-      { id: "c1", catalogueId: ENTRY, confidence: "high", rationale: "same claim" },
+      {
+        id: "c1",
+        catalogueId: ENTRY,
+        confidence: "high",
+        rationale: "same claim",
+      },
     ]);
     expect(out.unmapped).toEqual([
       { id: "c2", reason: "new-idea" },
@@ -75,12 +97,44 @@ const classifier: MappingClassifier = {
     }
     return input.map((r, i): ClassifierDecision =>
       i % 2 === 0
-        ? { recordId: r.id, decision: "mapped", catalogueId: ENTRY, confidence: "high" }
+        ? {
+            recordId: r.id,
+            decision: "mapped",
+            catalogueId: ENTRY,
+            confidence: "high",
+          }
         : { recordId: r.id, decision: "unmapped", reason: "new-idea" },
     );
   },
 };
-const plainRef = (r: { repository: string; commit: string; path: string; sha256: string }) => ({
+// Per-record classifier (#860): one outbound request per record.
+const oneCalls: string[] = [];
+let failOneOnce: string | undefined;
+const perRecord: MappingClassifier = {
+  version: "fixture-one-v1",
+  async classify() {
+    throw new Error("the block must use classifyOne when it is offered");
+  },
+  async classifyOne(record) {
+    oneCalls.push(record.id);
+    if (failOneOnce === record.id) {
+      failOneOnce = undefined;
+      throw new Error("synthetic provider outage");
+    }
+    return {
+      recordId: record.id,
+      decision: "mapped",
+      catalogueId: ENTRY,
+      confidence: "high",
+    };
+  },
+};
+const plainRef = (r: {
+  repository: string;
+  commit: string;
+  path: string;
+  sha256: string;
+}) => ({
   repository: r.repository,
   commit: r.commit,
   path: r.path,
@@ -89,7 +143,10 @@ const plainRef = (r: { repository: string; commit: string; path: string; sha256:
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "mapping-block-"));
-  artifacts = new GitArtifactStore({ repoPath: dir, repository: "corpus-test" });
+  artifacts = new GitArtifactStore({
+    repoPath: dir,
+    repository: "corpus-test",
+  });
   await artifacts.initialise();
   catalogueRef = plainRef(
     await artifacts.write(
@@ -102,7 +159,8 @@ beforeAll(async () => {
     lookup: (path: string) => artifacts.lookup(path),
     write: async (path: string, content: string) => {
       const saved = await artifacts.write(path, content);
-      if (crashAfterSave.delete(path)) throw new Error("synthetic save failure");
+      if (crashAfterSave.delete(path))
+        throw new Error("synthetic save failure");
       return saved;
     },
   };
@@ -125,8 +183,27 @@ beforeAll(async () => {
         ),
     },
   });
+  const one = restate.service({
+    name: "MappingBlockOneTest",
+    handlers: {
+      map: async (
+        ctx: restate.Context,
+        req: { runId: string; batch: StageRef },
+      ) =>
+        runMappingBlock(
+          ctx,
+          { artifacts: store, classifier: perRecord },
+          {
+            runId: req.runId,
+            batch: req.batch,
+            catalogue: catalogueRef,
+            settings: { minConfidence: "medium" },
+          },
+        ),
+    },
+  });
   env = await RestateTestEnvironment.start(
-    { services: [service], serviceEndpointAccess: "docker-host" },
+    { services: [service, one], serviceEndpointAccess: "docker-host" },
     () => new RestateContainer("1.8.1"),
   );
   ingress = clients.connect({ url: env.baseUrl() });
@@ -140,7 +217,11 @@ const run = async (runId: string, ids: string[]) => {
   const batch = toBatch({
     runId,
     mode: "archive",
-    claims: ids.map((id) => ({ id, statement: `Statement ${id}.`, post: "pub/post" })),
+    claims: ids.map((id) => ({
+      id,
+      statement: `Statement ${id}.`,
+      post: "pub/post",
+    })),
   }).batch;
   const ref = plainRef(await saveBatch(artifacts, batch));
   const out = await ingress
@@ -153,19 +234,33 @@ const run = async (runId: string, ids: string[]) => {
       name: "MappingBlockTest",
     })
     .map({ runId, batch: ref });
-  const read = async (r: StageRef) => JSON.parse(await artifacts.read(r as never));
-  return { ref, out, mapped: await read(out.mapped), unmapped: await read(out.unmapped) };
+  const read = async (r: StageRef) =>
+    JSON.parse(await artifacts.read(r as never));
+  return {
+    ref,
+    out,
+    mapped: await read(out.mapped),
+    unmapped: await read(out.unmapped),
+  };
 };
 
 describe("the mapping block in Restate (#861)", { timeout: 120_000 }, () => {
   it("routes a mixed batch to mapped and unmapped outputs, carrying source references", async () => {
-    const { ref, mapped, unmapped } = await run("map-mixed", ["c1", "c2", "c3"]);
-    expect(mapped.records.map((r: { source: { recordId: string } }) => r.source.recordId)).toEqual([
+    const { ref, mapped, unmapped } = await run("map-mixed", [
       "c1",
+      "c2",
       "c3",
     ]);
+    expect(
+      mapped.records.map(
+        (r: { source: { recordId: string } }) => r.source.recordId,
+      ),
+    ).toEqual(["c1", "c3"]);
     expect(unmapped.records).toEqual([
-      { source: { batch: ref, recordId: "c2", post: "pub/post" }, reason: "new-idea" },
+      {
+        source: { batch: ref, recordId: "c2", post: "pub/post" },
+        reason: "new-idea",
+      },
     ]);
     expect(mapped.records[0]).toMatchObject({
       catalogueId: ENTRY,
@@ -190,7 +285,9 @@ describe("the mapping block in Restate (#861)", { timeout: 120_000 }, () => {
     const { mapped, unmapped } = await run("map-retry", ["c1", "c2"]);
     expect(classifyCalls).toBe(before + 1);
     expect([mapped.records.length, unmapped.records.length]).toEqual([1, 1]);
-    expect(await artifacts.list("corpus-refinement/map-retry/mapping", 10)).toHaveLength(2);
+    expect(
+      await artifacts.list("corpus-refinement/map-retry/mapping", 10),
+    ).toHaveLength(2);
   });
 
   it("retries a provider failure instead of calling the records unmapped", async () => {
@@ -198,25 +295,72 @@ describe("the mapping block in Restate (#861)", { timeout: 120_000 }, () => {
     const before = classifyCalls;
     const { mapped, unmapped } = await run("map-provider", ["c1", "c2"]);
     expect(classifyCalls).toBe(before + 2);
-    expect(unmapped.records.map((r: { reason: string }) => r.reason)).toEqual(["new-idea"]);
+    expect(unmapped.records.map((r: { reason: string }) => r.reason)).toEqual([
+      "new-idea",
+    ]);
     expect(mapped.records).toHaveLength(1);
   });
 
   it("fails terminally on a pinned catalogue that is not valid JSON", async () => {
     const broken = plainRef(
-      await artifacts.write("corpus-refinement/catalogue/broken.json", "{not json"),
+      await artifacts.write(
+        "corpus-refinement/catalogue/broken.json",
+        "{not json",
+      ),
     );
     const batch = plainRef(
       await saveBatch(
         artifacts,
-        toBatch({ runId: "map-broken", mode: "archive", claims: [{ id: "c1", statement: "S." }] })
-          .batch,
+        toBatch({
+          runId: "map-broken",
+          mode: "archive",
+          claims: [{ id: "c1", statement: "S." }],
+        }).batch,
       ),
     );
     await expect(
       ingress
-        .serviceClient<{ map: (r: unknown) => Promise<unknown> }>({ name: "MappingBlockTest" })
+        .serviceClient<{ map: (r: unknown) => Promise<unknown> }>({
+          name: "MappingBlockTest",
+        })
         .map({ runId: "map-broken", batch, catalogue: broken }),
     ).rejects.toThrow(/pinned catalogue is not usable/);
+  });
+});
+
+describe("per-record classification steps (#860)", { timeout: 120_000 }, () => {
+  it("runs one journaled step per unique record and retries only the failed one", async () => {
+    const batch = toBatch({
+      runId: "one-860",
+      mode: "archive",
+      claims: ["a", "b", "a", "c"].map((id) => ({
+        id,
+        statement: `Statement ${id}.`,
+      })),
+    }).batch;
+    // Duplicate IDs are refused by the batch schema, so use unique ones.
+    batch.records = batch.records.filter(
+      (r, i, all) => all.findIndex((x) => x.id === r.id) === i,
+    );
+    const ref = plainRef(await saveBatch(artifacts, batch));
+    oneCalls.length = 0;
+    failOneOnce = "b";
+    const out = await ingress
+      .serviceClient<{
+        map: (r: {
+          runId: string;
+          batch: StageRef;
+        }) => Promise<{ mapped: StageRef }>;
+      }>({ name: "MappingBlockOneTest" })
+      .map({ runId: "one-860", batch: ref });
+    // "a" was journaled before "b" failed, so the retry does not call it again.
+    expect(oneCalls).toEqual(["a", "b", "b", "c"]);
+    const mapped = JSON.parse(await artifacts.read(out.mapped as never));
+    expect(mapped.classifier).toBe("fixture-one-v1");
+    expect(
+      mapped.records.map(
+        (r: { source: { recordId: string } }) => r.source.recordId,
+      ),
+    ).toEqual(["a", "b", "c"]);
   });
 });
