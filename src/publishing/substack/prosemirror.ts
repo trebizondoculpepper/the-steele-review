@@ -311,12 +311,25 @@ export function documentText(node: unknown): string {
  */
 export function bodyFingerprint(doc: unknown): string {
   const links: string[] = [];
+  // Footnotes (#811): where each anchor sits in the text, and which text
+  // each numbered footnote holds, so a dropped, moved or renumbered anchor
+  // never matches.
+  const footnotes: unknown[] = [];
+  let seen = 0;
   const walk = (n: unknown) => {
     if (!n || typeof n !== "object") return;
     const o = n as {
+      type?: string;
+      text?: unknown;
+      attrs?: { number?: unknown };
       marks?: { type?: string; attrs?: { href?: unknown } }[];
       content?: unknown;
     };
+    if (o.type === "text" && typeof o.text === "string") seen += o.text.length;
+    if (o.type === "footnoteAnchor")
+      footnotes.push(["anchor", o.attrs?.number, seen]);
+    if (o.type === "footnote")
+      footnotes.push(["footnote", o.attrs?.number, documentText(o)]);
     for (const m of o.marks ?? []) {
       if (m.type === "link" && typeof m.attrs?.href === "string")
         links.push(m.attrs.href);
@@ -324,9 +337,11 @@ export function bodyFingerprint(doc: unknown): string {
     if (Array.isArray(o.content)) for (const c of o.content) walk(c);
   };
   walk(doc);
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify([documentText(doc), links]))
-    .digest("hex")}`;
+  // Documents without footnotes keep their earlier fingerprint.
+  const parts = footnotes.length
+    ? [documentText(doc), links, footnotes]
+    : [documentText(doc), links];
+  return `sha256:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
 }
 
 /**
@@ -402,6 +417,9 @@ export function withNativeFootnotes(doc: { type: "doc"; content: PmNode[] }): {
       }
       return { ...node, content: out as PmText[] };
     }
+    // Quotations are verbatim source text: a "[7]" there is the source's own
+    // reference, never one of the article's citations.
+    if (node.type === "blockquote") return node;
     if ("content" in node && Array.isArray(node.content))
       return { ...node, content: node.content.map(convert) } as PmNode;
     return node;

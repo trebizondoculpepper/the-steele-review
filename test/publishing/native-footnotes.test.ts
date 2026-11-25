@@ -106,4 +106,38 @@ describe("native Substack footnotes (#811)", () => {
     ).content[0]!.content[0]!.text += " edited";
     expect(bodyFingerprint(edited)).not.toBe(bodyFingerprint(doc));
   });
+
+  it("fingerprints anchor positions and numbering, not only the text", () => {
+    const doc = convert(ARTICLE);
+    const dropped = structuredClone(doc);
+    const first = dropped.content[0] as { content: { type: string }[] };
+    first.content = first.content.filter((n) => n.type !== "footnoteAnchor");
+    expect(bodyFingerprint(dropped)).not.toBe(bodyFingerprint(doc));
+    const swapped = structuredClone(doc);
+    const anchors = (
+      swapped.content[1] as {
+        content: { type: string; attrs?: { number: number } }[];
+      }
+    ).content.filter((n) => n.type === "footnoteAnchor");
+    [anchors[0]!.attrs!.number, anchors[1]!.attrs!.number] = [
+      anchors[1]!.attrs!.number,
+      anchors[0]!.attrs!.number,
+    ];
+    expect(bodyFingerprint(swapped)).not.toBe(bodyFingerprint(doc));
+    // Unrelated attribute normalisation by Substack still matches.
+    const normalised = structuredClone(doc);
+    (normalised.content[0] as { attrs?: unknown }).attrs = { textAlign: null };
+    expect(bodyFingerprint(normalised)).toBe(bodyFingerprint(doc));
+  });
+
+  it("leaves a source's own [n] inside a quotation alone", () => {
+    const quoted = ARTICLE.replace(
+      "## Sources",
+      '> "The earlier report [7] said so." (2023-05-01, https://pub.example.com/p/earlier)\n\n## Sources',
+    );
+    const doc = convert(quoted);
+    const quote = doc.content.find((n) => n.type === "blockquote");
+    expect(JSON.stringify(quote)).toContain("[7]");
+    expect(JSON.stringify(quote)).not.toContain("footnoteAnchor");
+  });
 });
