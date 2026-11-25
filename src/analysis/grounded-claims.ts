@@ -119,8 +119,9 @@ const ModelClaimSchema = z
         attribution: z.string().min(1).max(2000).optional(),
       })
       .strict(),
-    // Always recorded for new extractions, so its absence marks an older claim (#889).
-    reportingPeriod: ReportingPeriodSchema.default({ dependsOnPeriod: false }),
+    // Never defaulted: an omitted classification stays unknown, so the claim is
+    // handled like an older claim (#889) rather than as not period-dependent.
+    reportingPeriod: ReportingPeriodSchema.optional(),
     themeIds: z.array(z.string()).max(30),
   })
   .strict();

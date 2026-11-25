@@ -79,8 +79,9 @@ const ModelClaimSchema = z
     qualifiers: z.array(z.string()).default([]),
     entities: z.array(z.string()).default([]),
     dates: z.array(DateMentionSchema).default([]),
-    // Always recorded for new extractions, so its absence marks an older claim (#889).
-    reportingPeriod: ReportingPeriodSchema.default({ dependsOnPeriod: false }),
+    // Never defaulted: an omitted classification stays unknown, so the claim is
+    // handled like an older claim (#889) rather than as not period-dependent.
+    reportingPeriod: ReportingPeriodSchema.optional(),
   })
   .strict();
 const ModelOutputSchema = z

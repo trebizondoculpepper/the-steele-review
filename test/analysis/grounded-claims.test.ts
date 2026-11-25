@@ -767,7 +767,7 @@ describe("reporting periods through the grounded extractor (#889)", () => {
       all.find((c) => c.statement.startsWith(s))!.reportingPeriod;
     expect(by("Over 90%")).toEqual({ dependsOnPeriod: true, text: "2019" });
     expect(by("Geoengineering")).toEqual({ dependsOnPeriod: true });
-    expect(by("Perhaps")).toEqual({ dependsOnPeriod: false });
+    expect(by("Perhaps")).toBeUndefined();
     expect(DEFAULT_GROUNDED_CLAIM_PROMPT.version).toMatch(
       /^analysis-grounded-claims-v7-/,
     );
