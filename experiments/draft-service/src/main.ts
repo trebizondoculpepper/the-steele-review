@@ -113,6 +113,18 @@ const server = createServer(async (req, res) => {
     let r;
     if (req.method === "POST" && url.pathname === "/v1/drafts") {
       r = await service.deliver(platform, await readJson(req));
+    } else if (req.method === "GET" && url.pathname === "/v1/preflight") {
+      // Read-only destination access check; never creates anything.
+      const dest = destination();
+      try {
+        await dest.preflight();
+        status = 200;
+        return send(res, 200, { status: "ok", destination: dest.identity });
+      } catch (e) {
+        const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "unavailable";
+        status = 503;
+        return send(res, 503, { status: "not-ready", destination: dest.identity, error: `destination-${code}` });
+      }
     } else if (req.method === "GET" && url.pathname === "/v1/deliveries") {
       status = 200;
       return send(res, 200, { deliveries: service.list(platform, Number(url.searchParams.get("limit") ?? 20)) });

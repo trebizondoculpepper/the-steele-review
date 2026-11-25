@@ -33,6 +33,8 @@ export interface DraftDestination {
   findByTitle(title: string, signal?: AbortSignal): Promise<DraftReadback[]>;
   /** Editor link for an authorised caller. */
   editorUrl(id: string): string;
+  /** Read-only access check: lists at most one draft and creates nothing. */
+  preflight(signal?: AbortSignal): Promise<void>;
 }
 
 export class SubstackDraftDestination implements DraftDestination {
@@ -74,6 +76,10 @@ export class SubstackDraftDestination implements DraftDestination {
 
   editorUrl(id: string): string {
     return `${this.origin}/publish/post/${id}`;
+  }
+
+  async preflight(signal?: AbortSignal): Promise<void> {
+    await this.client.listDrafts({ limit: 1 }, signal);
   }
 }
 
@@ -130,5 +136,8 @@ export class FakeDraftDestination implements DraftDestination {
   }
   editorUrl(id: string): string {
     return `https://fake.invalid/publish/post/${id}`;
+  }
+  async preflight(): Promise<void> {
+    this.load();
   }
 }
