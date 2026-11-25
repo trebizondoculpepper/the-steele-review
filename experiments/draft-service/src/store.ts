@@ -89,9 +89,13 @@ export class DeliveryStore {
     this.db.prepare("UPDATE deliveries SET state = ?, error = ?, updated_at = ? WHERE request_id = ?").run(state, error, now, requestId);
   }
 
-  list(limit: number): DeliveryRecord[] {
+  /** One platform's most recently updated deliveries; the platform filter applies before the limit. */
+  list(platform: string, limit: number): DeliveryRecord[] {
+    const bounded = Math.min(Math.max(Number.isFinite(limit) ? Math.trunc(limit) : 20, 1), 100);
     return (
-      this.db.prepare("SELECT * FROM deliveries ORDER BY updated_at DESC LIMIT ?").all(Math.min(Math.max(limit, 1), 100)) as Record<string, unknown>[]
+      this.db
+        .prepare("SELECT * FROM deliveries WHERE platform = ? ORDER BY updated_at DESC LIMIT ?")
+        .all(platform, bounded) as Record<string, unknown>[]
     ).map(toRecord);
   }
 

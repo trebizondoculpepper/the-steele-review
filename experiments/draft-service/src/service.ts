@@ -259,8 +259,7 @@ export class DraftService {
 
   list(callerPlatform: string, limit: number) {
     return this.store
-      .list(limit)
-      .filter((r) => r.platform === callerPlatform)
+      .list(callerPlatform, limit)
       .map(({ requestId, state, draftId, createAttempts, updatedAt, error, receiptId }) => ({
         requestId,
         state,

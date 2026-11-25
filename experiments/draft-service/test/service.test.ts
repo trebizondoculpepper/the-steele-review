@@ -221,3 +221,24 @@ test("Substack readback without explicit published and email fields is not evide
   const dest = new SubstackDraftDestination({ origin: "https://example.substack.com", session: async () => "s", fetch: fetchStub });
   await assert.rejects(dest.read("7"), /invalid-response/);
 });
+
+test("each platform's delivery list is filtered before the limit is applied", async () => {
+  const { service, fake } = setup();
+  const mastraAttempt = "mastra-20261126T101500Z-0000";
+  await service.deliver("mastra", {
+    ...request(),
+    requestId: `exp-911:mastra:${mastraAttempt}`,
+    platform: "mastra",
+    attempt: mastraAttempt,
+    title: `[exp-911 mastra ${mastraAttempt}] Mastra review`,
+    article: `${mastraAttempt}/article@sha256:${"b".repeat(64)}`,
+  });
+  for (let i = 0; i < 3; i++) {
+    const a = `n8n-20261126T10150${i}Z-000${i}`;
+    await service.deliver("n8n", request({ requestId: `exp-911:n8n:${a}`, attempt: a, title: `[exp-911 n8n ${a}] r`, article: `${a}/article@sha256:${"b".repeat(64)}` }));
+  }
+  assert.equal(fake.count(), 4);
+  const mastra = service.list("mastra", 2);
+  assert.equal(mastra.length, 1, "older Mastra delivery is still listed despite newer n8n deliveries");
+  assert.equal(service.list("n8n", 2).length, 2);
+});
