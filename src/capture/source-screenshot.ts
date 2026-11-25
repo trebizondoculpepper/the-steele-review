@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { CredentialProvider } from "../config/credentials.js";
 import { z } from "zod";
 import {
   sha256,
@@ -232,18 +233,24 @@ const PREPARE_SCRIPT =
  */
 export function browserlessRenderer(config: {
   endpoint: string;
-  token?: string;
+  /**
+   * Live credential provider, read at each request (SECURITY.md): a rotated
+   * token takes effect immediately, and an unreadable one fails closed.
+   */
+  token?: CredentialProvider;
   timeoutMs?: number;
   fetch?: typeof fetch;
 }): ScreenshotRenderer {
-  const endpoint = new URL("/screenshot", config.endpoint);
-  if (config.token) endpoint.searchParams.set("token", config.token);
+  const base = new URL("/screenshot", config.endpoint);
   const timeoutMs = config.timeoutMs ?? 30_000;
   return {
     name: "browserless-chromium",
     async render(url, signal) {
       if (new URL(url).protocol !== "https:")
         throw new Error("screenshot: https only");
+      const endpoint = new URL(base);
+      // Read now; a failed read throws, so the capture is recorded unavailable.
+      if (config.token) endpoint.searchParams.set("token", config.token());
       const deadline = AbortSignal.timeout(timeoutMs + 5_000);
       const response = await (config.fetch ?? fetch)(endpoint, {
         method: "POST",

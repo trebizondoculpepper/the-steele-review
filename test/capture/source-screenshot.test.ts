@@ -184,4 +184,31 @@ describe("optional source screenshot (#892)", () => {
     ).toBe(false);
     expect(body!.addStyleTag.length).toBeGreaterThan(0);
   });
+
+  it("reads the browser token at each request and fails closed when it cannot", async () => {
+    const seen: string[] = [];
+    let token = "first";
+    const r = browserlessRenderer({
+      endpoint: "http://browser:3000",
+      token: () => {
+        if (token === "unreadable") throw new Error("config unreadable");
+        return token;
+      },
+      fetch: (async (url: URL) => {
+        seen.push(url.searchParams.get("token")!);
+        return new Response(PNG);
+      }) as never,
+    });
+    await r.render(post.url);
+    token = "rotated";
+    await r.render(post.url);
+    expect(seen).toEqual(["first", "rotated"]);
+    token = "unreadable";
+    const out = await captureSourceScreenshot(post, { renderer: r, artifacts });
+    expect(out.record).toMatchObject({
+      status: "unavailable",
+      reason: "render-failed",
+    });
+    expect(seen).toHaveLength(2);
+  });
 });
