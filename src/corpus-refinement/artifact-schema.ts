@@ -48,7 +48,9 @@ const Ideas = z.object({
       id: z.string().min(1),
       claimIds: Ids,
       statement: z.string().optional(),
-      evidence: z.array(z.object({ claimId: z.string(), quote: z.string() })).optional(),
+      evidence: z
+        .array(z.object({ claimId: z.string(), quote: z.string() }))
+        .optional(),
     }),
   ),
   ...ModelFields,
@@ -72,7 +74,12 @@ const Underlying = z.object({
   ),
   /** The exact catalogue version the proposals were made against (#852). */
   catalogue: z
-    .object({ repository: z.string(), commit: z.string(), path: z.string(), sha256: z.string() })
+    .object({
+      repository: z.string(),
+      commit: z.string(),
+      path: z.string(),
+      sha256: z.string(),
+    })
     .optional(),
   ...ModelFields,
 });
@@ -82,6 +89,7 @@ const Rejected = z.object({
   sent: z.number().int().min(0),
   unplaced: Ids,
   issues: z.array(Issue),
+  allRejected: z.literal(true).optional(),
 });
 
 const Ref = z
@@ -97,7 +105,9 @@ const RejectedClaims = z.object({
   kind: z.literal("corpus-rejected-claims"),
   runId: z.string(),
   // Provenance is required: a batch without its exact sources is not usable (#855).
-  sources: z.object({ batch: Ref, ideas: Ref, rejected: z.array(Ref) }).strict(),
+  sources: z
+    .object({ batch: Ref, ideas: Ref, rejected: z.array(Ref) })
+    .strict(),
   entries: z.array(
     z.looseObject({
       claimId: z.string(),
@@ -114,7 +124,9 @@ const RejectedClaims = z.object({
       output: Ref,
     }),
   ),
-  technical: z.array(z.looseObject({ stage: z.string(), reason: z.string(), output: Ref })),
+  technical: z.array(
+    z.looseObject({ stage: z.string(), reason: z.string(), output: Ref }),
+  ),
 });
 
 const PAYLOADS = {
@@ -141,7 +153,9 @@ export class CorpusArtifactError extends Error {
     readonly runId: string,
     readonly reason: string,
   ) {
-    super(`corpus-refinement: saved ${stage} for ${runId} is not usable (${reason})`);
+    super(
+      `corpus-refinement: saved ${stage} for ${runId} is not usable (${reason})`,
+    );
     this.name = "CorpusArtifactError";
   }
 }
@@ -178,10 +192,12 @@ export function readStageArtifact<S extends CorpusRefinementOutput>(
   if (e.schemaVersion !== 1) return fail("schema-version-mismatch");
   if (e.stage !== expected.stage) return fail("stage-mismatch");
   if (e.runId !== expected.runId) return fail("run-mismatch");
-  if (typeof e.identity !== "string" || !e.identity) return fail("identity-missing");
+  if (typeof e.identity !== "string" || !e.identity)
+    return fail("identity-missing");
   if (expected.identity !== undefined && e.identity !== expected.identity)
     return fail("identity-mismatch");
   const value = PAYLOADS[expected.stage].safeParse(e.value);
-  if (!value.success) return fail(`payload:${value.error.issues[0]?.path.join(".") || "root"}`);
+  if (!value.success)
+    return fail(`payload:${value.error.issues[0]?.path.join(".") || "root"}`);
   return { identity: e.identity, value: value.data as StagePayloads[S] };
 }

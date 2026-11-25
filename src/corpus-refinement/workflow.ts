@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import * as restate from "@restatedev/restate-sdk";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import {
+  allCandidatesRejected,
   CorpusRefinementInputSchema,
   corpusRefinementPath,
   type CorpusRefinementInput,
@@ -16,16 +20,32 @@ import {
   groupingReport,
 } from "./contracts.js";
 import { checkClaimCoverage } from "./steps/check-claim-coverage.js";
-import { claimsToIdeasSpec, mapClaimsToIdeas } from "./steps/map-claims-to-ideas.js";
+import {
+  claimsToIdeasSpec,
+  mapClaimsToIdeas,
+} from "./steps/map-claims-to-ideas.js";
 import {
   ideasToUnderlyingSpec,
   mapIdeasToUnderlyingIdeas,
 } from "./steps/map-ideas-to-underlying-ideas.js";
 import { runModelStage } from "./model-step.js";
-import { CorpusArtifactError, readStageArtifact, type StagePayloads } from "./artifact-schema.js";
+import {
+  CorpusArtifactError,
+  readStageArtifact,
+  type StagePayloads,
+} from "./artifact-schema.js";
 import { UnderlyingCatalogueSchema } from "./catalogue.js";
-import { collectRejectedClaims, type RejectedClaimsBatch } from "./rejected-claims.js";
-import { BatchError, readBatch, saveBatch, stepInput, toBatch } from "./batch.js";
+import {
+  collectRejectedClaims,
+  type RejectedClaimsBatch,
+} from "./rejected-claims.js";
+import {
+  BatchError,
+  readBatch,
+  saveBatch,
+  stepInput,
+  toBatch,
+} from "./batch.js";
 import type { ExtractionModelProvider } from "../analysis/extraction.js";
 
 /**
@@ -41,7 +61,10 @@ export interface CorpusRefinementLogic {
   /** Version of the stage logic; part of every artifact's identity. */
   version: string;
   checkCoverage(input: CorpusRefinementInput): Promise<CoverageResult>;
-  mapClaimsToIdeas(input: CorpusRefinementInput, coverage: CoverageResult): Promise<IdeasResult>;
+  mapClaimsToIdeas(
+    input: CorpusRefinementInput,
+    coverage: CoverageResult,
+  ): Promise<IdeasResult>;
   mapIdeasToUnderlying(ideas: IdeasResult): Promise<UnderlyingResult>;
 }
 
@@ -128,7 +151,11 @@ export function corpusRefinementWorkflow(deps: {
     return plain(
       await deps.artifacts.write(
         path,
-        JSON.stringify({ schemaVersion: 1, stage: name, runId, identity, value }, null, 2),
+        JSON.stringify(
+          { schemaVersion: 1, stage: name, runId, identity, value },
+          null,
+          2,
+        ),
       ),
     );
   };
@@ -138,9 +165,18 @@ export function corpusRefinementWorkflow(deps: {
     runId: string,
     stage: S,
   ): Promise<StagePayloads[S]> =>
-    (await guarded(async () => readStageArtifact(await read(ref), { runId, stage }))).value;
+    (
+      await guarded(async () =>
+        readStageArtifact(await read(ref), { runId, stage }),
+      )
+    ).value;
   /** The exact version of a handed-off artifact, for the next stage's identity. */
-  const key = (ref: StageRef) => [ref.repository, ref.commit, ref.path, ref.sha256];
+  const key = (ref: StageRef) => [
+    ref.repository,
+    ref.commit,
+    ref.path,
+    ref.sha256,
+  ];
 
   return restate.workflow({
     name: "CorpusRefinement",
@@ -150,10 +186,13 @@ export function corpusRefinementWorkflow(deps: {
         raw: CorpusRefinementInput,
       ): Promise<CorpusRefinementResult> => {
         const parsed = CorpusRefinementInputSchema.safeParse(raw);
-        if (!parsed.success) throw new restate.TerminalError("corpus-refinement: invalid input");
+        if (!parsed.success)
+          throw new restate.TerminalError("corpus-refinement: invalid input");
         const input = parsed.data;
         if (ctx.key !== input.runId)
-          throw new restate.TerminalError("corpus-refinement: run ID does not match the key");
+          throw new restate.TerminalError(
+            "corpus-refinement: run ID does not match the key",
+          );
 
         // Pinned batch input (#856): the exact records are saved before any
         // step consumes them, then read back validated. Every step works from
@@ -168,17 +207,28 @@ export function corpusRefinementWorkflow(deps: {
           }),
         );
         const batch = await ctx.run("read-batch", () =>
-          guarded(() => readBatch(deps.artifacts, batchRef as ArtifactRef, input.runId)),
+          guarded(() =>
+            readBatch(deps.artifacts, batchRef as ArtifactRef, input.runId),
+          ),
         );
         const work = stepInput(batch, submitted.parameters);
         const batchPin = { batch: key(batchRef) };
 
         const coverage = await ctx.run("check-coverage", () =>
-          stage(work.runId, "check-coverage", batchPin, () => logic.checkCoverage(work)),
+          stage(work.runId, "check-coverage", batchPin, () =>
+            logic.checkCoverage(work),
+          ),
         );
         let ideas: StageRef;
         let underlying: StageRef;
-        const rejected: { stage: CorpusRefinementRejected; artifact: StageRef }[] = [];
+        const rejected: {
+          stage: CorpusRefinementRejected;
+          artifact: StageRef;
+        }[] = [];
+        /** Stages whose candidates were all rejected (#901), reported with the result. */
+        const allRejected: (
+          "map-claims-to-ideas" | "map-ideas-to-underlying"
+        )[] = [];
         let rejectedClaims: StageRef | undefined;
         /** Records a mapper was given that no accepted output contains (#857). */
         const unplaced = (sent: string[], placed: string[]) => {
@@ -199,7 +249,11 @@ export function corpusRefinementWorkflow(deps: {
           const coverageValue = await ctx.run("map-claims-to-ideas:input", () =>
             load(coverage, input.runId, "check-coverage"),
           );
-          const mapped = await runModelStage(ctx, provider, claimsToIdeasSpec(work, coverageValue));
+          const mapped = await runModelStage(
+            ctx,
+            provider,
+            claimsToIdeasSpec(work, coverageValue),
+          );
           ideas = await ctx.run("map-claims-to-ideas", () =>
             stage(
               input.runId,
@@ -230,7 +284,11 @@ export function corpusRefinementWorkflow(deps: {
               stage(
                 input.runId,
                 "map-claims-to-ideas-rejected",
-                { accepted: key(ideas), prompt: mapped.promptVersion, model: mapped.model },
+                {
+                  accepted: key(ideas),
+                  prompt: mapped.promptVersion,
+                  model: mapped.model,
+                },
                 async (): Promise<RejectedOutput> => ({
                   from: "map-claims-to-ideas",
                   sent: sentClaims.length,
@@ -239,13 +297,19 @@ export function corpusRefinementWorkflow(deps: {
                     mapped.accepted.flatMap((i) => i.claimIds),
                   ),
                   issues: mapped.issues,
+                  ...(allCandidatesRejected(mapped)
+                    ? { allRejected: true as const }
+                    : {}),
                 }),
               ),
             ),
           });
+          if (allCandidatesRejected(mapped))
+            allRejected.push("map-claims-to-ideas");
           // Only the accepted output is routed to the second mapper.
-          const ideasValue = await ctx.run("map-ideas-to-underlying:input", () =>
-            load(ideas, input.runId, "map-claims-to-ideas"),
+          const ideasValue = await ctx.run(
+            "map-ideas-to-underlying:input",
+            () => load(ideas, input.runId, "map-claims-to-ideas"),
           );
           // The reviewed catalogue, read at its pinned version only (#852).
           // The workflow never writes it: proposals are saved for review.
@@ -300,7 +364,11 @@ export function corpusRefinementWorkflow(deps: {
               stage(
                 input.runId,
                 "map-ideas-to-underlying-rejected",
-                { accepted: key(underlying), prompt: grouped.promptVersion, model: grouped.model },
+                {
+                  accepted: key(underlying),
+                  prompt: grouped.promptVersion,
+                  model: grouped.model,
+                },
                 async (): Promise<RejectedOutput> => ({
                   from: "map-ideas-to-underlying",
                   sent: ideasValue.ideas.length,
@@ -309,10 +377,15 @@ export function corpusRefinementWorkflow(deps: {
                     grouped.accepted.flatMap((g) => g.ideaIds),
                   ),
                   issues: grouped.issues,
+                  ...(allCandidatesRejected(grouped)
+                    ? { allRejected: true as const }
+                    : {}),
                 }),
               ),
             ),
           });
+          if (allCandidatesRejected(grouped))
+            allRejected.push("map-ideas-to-underlying");
           // Reject handler (#855): one named save of the run's rejected claims,
           // built from the saved rejected outputs by exact reference.
           const groupedIdeas = grouped.accepted.flatMap((g) => g.ideaIds);
@@ -352,12 +425,21 @@ export function corpusRefinementWorkflow(deps: {
               "map-claims-to-ideas",
               { ...batchPin, coverage: key(coverage) },
               async () =>
-                logic.mapClaimsToIdeas(work, await load(coverage, work.runId, "check-coverage")),
+                logic.mapClaimsToIdeas(
+                  work,
+                  await load(coverage, work.runId, "check-coverage"),
+                ),
             ),
           );
           underlying = await ctx.run("map-ideas-to-underlying", () =>
-            stage(input.runId, "map-ideas-to-underlying", { ideas: key(ideas) }, async () =>
-              logic.mapIdeasToUnderlying(await load(ideas, input.runId, "map-claims-to-ideas")),
+            stage(
+              input.runId,
+              "map-ideas-to-underlying",
+              { ideas: key(ideas) },
+              async () =>
+                logic.mapIdeasToUnderlying(
+                  await load(ideas, input.runId, "map-claims-to-ideas"),
+                ),
             ),
           );
         }
@@ -370,6 +452,7 @@ export function corpusRefinementWorkflow(deps: {
           ],
           ...(rejected.length ? { rejected } : {}),
           ...(rejectedClaims ? { rejectedClaims } : {}),
+          ...(allRejected.length ? { allRejected } : {}),
         };
       },
     },
