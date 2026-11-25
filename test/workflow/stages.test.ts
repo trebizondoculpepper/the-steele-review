@@ -352,6 +352,9 @@ describe("article stages composed (#243)", () => {
     // The timed-out job is recorded as a failed job; claims it would have
     // covered rely only on evidence the dossier already saved, with provenance.
     expect(record.jobs.map((j: { outcome: string }) => j.outcome)).toEqual(["failed"]);
+    // The pinned outcome stands, but the reused proof's manifest is kept, so
+    // archived evidence keeps its provenance for the writer (#891 review).
+    expect(record.jobs[0].manifest).toBeDefined();
     const treaty = record.claims.find((c: { statement: string }) => /treaty/i.test(c.statement));
     expect(treaty).toMatchObject({
       status: "evidence-found",
