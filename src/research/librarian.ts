@@ -1,12 +1,19 @@
 import { loadPromptFile } from "../prompt-files.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { parseThemeProposalResult, type ThemeProposalResult } from "../analysis/theme-proposals.js";
+import { reportingPeriodExclusion } from "./reporting-period.js";
+import {
+  parseThemeProposalResult,
+  type ThemeProposalResult,
+} from "../analysis/theme-proposals.js";
 import { canonicalOf } from "../analysis/claim-equivalence.js";
 import { ThemeMappingCatalogue } from "./theme-mappings.js";
 import { listCanonicalThemes, ThemeStore } from "./theme-store.js";
 import { ClaimExtractionRecordSchema } from "../analysis/grounded-claims.js";
-import type { ArtifactRef, GitArtifactStore } from "../controllers/artifact-store.js";
+import type {
+  ArtifactRef,
+  GitArtifactStore,
+} from "../controllers/artifact-store.js";
 import {
   DossierStore,
   StaleDossierError,
@@ -147,7 +154,10 @@ export class EmbeddingShortlister implements ThemeShortlister {
     dossiers: DossierSummary[],
   ): Promise<Shortlist> {
     if (this.embedder.vectorSpace !== this.expectedVectorSpace) {
-      return new LexicalShortlister("incompatible vector space").shortlist(theme, dossiers);
+      return new LexicalShortlister("incompatible vector space").shortlist(
+        theme,
+        dossiers,
+      );
     }
     if (dossiers.length === 0) return { method: "embedding", candidates: [] };
     let vectors: number[][];
@@ -157,16 +167,25 @@ export class EmbeddingShortlister implements ThemeShortlister {
         ...dossiers.map((d) => `${d.title}. ${d.scope}`),
       ]);
     } catch {
-      return new LexicalShortlister("embedding unavailable").shortlist(theme, dossiers);
+      return new LexicalShortlister("embedding unavailable").shortlist(
+        theme,
+        dossiers,
+      );
     }
     const width = vectors[0]?.length ?? 0;
     const valid =
       Array.isArray(vectors) &&
       vectors.length === dossiers.length + 1 &&
       width > 0 &&
-      vectors.every((v) => Array.isArray(v) && v.length === width && v.every(Number.isFinite));
+      vectors.every(
+        (v) =>
+          Array.isArray(v) && v.length === width && v.every(Number.isFinite),
+      );
     if (!valid)
-      return new LexicalShortlister("embedding response invalid").shortlist(theme, dossiers);
+      return new LexicalShortlister("embedding response invalid").shortlist(
+        theme,
+        dossiers,
+      );
     const [q, ...rest] = vectors;
     const candidates = dossiers
       .map((d, i) => ({ ...d, score: cosine(q, rest[i]) }))
@@ -181,18 +200,27 @@ export interface ThemeEquivalenceJudge {
   decide(
     theme: { title: string; description: string },
     shortlist: Shortlist,
-  ): Promise<{ themeId: string; rationale: string } | { themeId: null; rationale: string }>;
+  ): Promise<
+    | { themeId: string; rationale: string }
+    | { themeId: null; rationale: string }
+  >;
 }
 
 /** Threshold judge: the best candidate when its score clears the method's bar, else a new dossier. */
 export class ThresholdJudge implements ThemeEquivalenceJudge {
   constructor(private readonly bars = { embedding: 0.85, lexical: 0.5 }) {}
-  async decide(theme: { title: string; description: string }, shortlist: Shortlist) {
+  async decide(
+    theme: { title: string; description: string },
+    shortlist: Shortlist,
+  ) {
     // A dossier with the identical title is the same theme for this default judge;
     // a judge that understands meaning may still reject a homonym.
     const same = (x: string) => x.normalize("NFKC").trim().toLowerCase();
-    const identical = shortlist.candidates.find((c) => same(c.title) === same(theme.title));
-    if (identical) return { themeId: identical.themeId, rationale: "identical title" };
+    const identical = shortlist.candidates.find(
+      (c) => same(c.title) === same(theme.title),
+    );
+    if (identical)
+      return { themeId: identical.themeId, rationale: "identical title" };
     const best = shortlist.candidates[0];
     if (best && best.score >= this.bars[shortlist.method]) {
       return {
@@ -213,7 +241,10 @@ export function newDossierId(title: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
     .replace(/-+$/, "");
-  const hash = createHash("sha256").update(title.trim().toLowerCase()).digest("hex").slice(0, 8);
+  const hash = createHash("sha256")
+    .update(title.trim().toLowerCase())
+    .digest("hex")
+    .slice(0, 8);
   return `${slug || "theme"}-${hash}`;
 }
 
@@ -231,7 +262,12 @@ export const CoverageStatusSchema = z.enum([
 export type CoverageStatus = z.infer<typeof CoverageStatusSchema>;
 
 const Ref = z
-  .object({ repository: z.string(), commit: z.string(), path: z.string(), hash: z.string() })
+  .object({
+    repository: z.string(),
+    commit: z.string(),
+    path: z.string(),
+    hash: z.string(),
+  })
   .strict();
 
 export const CoverageRecordSchema = z
@@ -269,7 +305,9 @@ export const CoverageRecordSchema = z
           status: CoverageStatusSchema,
           reused: z.boolean(),
           jobIds: z.array(z.string()),
-          citations: z.array(z.object({ url: z.string(), passage: z.string() }).strict()),
+          citations: z.array(
+            z.object({ url: z.string(), passage: z.string() }).strict(),
+          ),
           evidenceFrom: z
             .object({ dossier: Ref, citationIds: z.array(z.string()) })
             .strict()
@@ -340,9 +378,13 @@ interface AcceptedClaim {
    * from these, so a later claim merge cannot change a request's identity.
    */
   extracted: { claimRecordId: string; statement: string }[];
+  /** Why the claim is left out of the eligible research set (#889), if it is. */
+  excluded?: string;
 }
 
-function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): AcceptedClaim[] {
+function acceptedClaims(
+  record: z.infer<typeof ClaimExtractionRecordSchema>,
+): AcceptedClaim[] {
   // Versions 2 and 3 share the accepted/candidate contract; version 1 is legacy.
   if (record.schemaVersion < 2) return [];
   const seen = new Map<string, AcceptedClaim>();
@@ -350,10 +392,16 @@ function acceptedClaims(record: z.infer<typeof ClaimExtractionRecordSchema>): Ac
     const parsed = ClaimText.safeParse(c.claim);
     if (!c.claimRecordId || !parsed.success) continue;
     const prior = seen.get(c.claimRecordId);
-    const proposalIds = [...new Set([...(prior?.proposalIds ?? []), ...c.themeIds])];
+    const proposalIds = [
+      ...new Set([...(prior?.proposalIds ?? []), ...c.themeIds]),
+    ];
+    const excluded = prior?.excluded ?? reportingPeriodExclusion(c.claim);
     seen.set(c.claimRecordId, {
+      ...(excluded ? { excluded } : {}),
       key: c.claimRecordId,
-      extracted: [{ claimRecordId: c.claimRecordId, statement: parsed.data.statement }],
+      extracted: [
+        { claimRecordId: c.claimRecordId, statement: parsed.data.statement },
+      ],
       claimRecordId: c.claimRecordId,
       statement: parsed.data.statement,
       proposalIds,
@@ -369,11 +417,19 @@ function assess(
   manifest: ResearchManifest | undefined,
 ): Map<
   string,
-  { status: CoverageStatus; citations: { url: string; passage: string }[]; reason?: string }
+  {
+    status: CoverageStatus;
+    citations: { url: string; passage: string }[];
+    reason?: string;
+  }
 > {
   const out = new Map<
     string,
-    { status: CoverageStatus; citations: { url: string; passage: string }[]; reason?: string }
+    {
+      status: CoverageStatus;
+      citations: { url: string; passage: string }[];
+      reason?: string;
+    }
   >();
   for (const claim of claims) {
     if (job.status === "not-commissioned") {
@@ -471,7 +527,8 @@ export function mergeCoverage(
     // Never let a later failed or unsupported assessment erase evidence another
     // assessment has already saved for the same claim.
     const saved = coverage.get(claim.claimRecordId);
-    if (saved?.status === "covered" && claim.status !== "evidence-found") continue;
+    if (saved?.status === "covered" && claim.status !== "evidence-found")
+      continue;
     if (!saved && coverage.size >= MAX_DOSSIER_ENTRIES) {
       overflow.push(claim.claimRecordId);
       continue;
@@ -520,7 +577,9 @@ export function mergeCoverage(
       : []),
     ...[...coverage.values()]
       .filter((c) => c.status === "gap")
-      .map((c) => `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000)),
+      .map((c) =>
+        `${c.claimId}: ${c.status === "gap" ? c.reason : ""}`.slice(0, 1000),
+      ),
   ].slice(0, 200);
   return {
     ...metadata,
@@ -534,7 +593,12 @@ export function mergeCoverage(
 /** Theme mappings saved by an earlier assessment of exactly this analysis. */
 type RequestPlanEntry =
   | { mode: "full" }
-  | { mode: "targeted"; batches: string[][]; question?: string; promptVersion?: string };
+  | {
+      mode: "targeted";
+      batches: string[][];
+      question?: string;
+      promptVersion?: string;
+    };
 const RequestPlanEntries = z.record(
   z.string(),
   z.union([
@@ -569,7 +633,9 @@ const OrderedRequestPlanSchema = z
       });
   });
 const RequestPlanSchema = z.union([
-  z.object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries }).strict(),
+  z
+    .object({ schemaVersion: z.literal(1), dossiers: RequestPlanEntries })
+    .strict(),
   OrderedRequestPlanSchema,
 ]);
 type RequestPlan = z.infer<typeof RequestPlanSchema>;
@@ -585,7 +651,8 @@ function commissioningOrder(groups: string[], history: string[][]): string[] {
   for (const sequence of sequences) {
     let next = 0;
     for (const id of recorded) if (sequence[next] === id) next++;
-    if (next !== sequence.length) throw new Error("research-plan-order-conflict");
+    if (next !== sequence.length)
+      throw new Error("research-plan-order-conflict");
   }
   return [...recorded, ...groups.filter((id) => !recorded.includes(id))];
 }
@@ -608,8 +675,13 @@ async function retainedPlan(
     .slice(0, 32);
   const path = `librarian/request-plans/${post.publicationId}/${post.postId}/${key}.json`;
   const existing = await artifacts.lookup(path);
-  if (existing) return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
-  const ref = await writeOnce(artifacts, path, OrderedRequestPlanSchema.parse(proposed()));
+  if (existing)
+    return RequestPlanSchema.parse(JSON.parse(await artifacts.read(existing)));
+  const ref = await writeOnce(
+    artifacts,
+    path,
+    OrderedRequestPlanSchema.parse(proposed()),
+  );
   return RequestPlanSchema.parse(JSON.parse(await artifacts.read(ref)));
 }
 
@@ -630,22 +702,32 @@ async function priorMappings(
   for (const path of paths) {
     const ref = await artifacts.lookup(path);
     if (!ref) continue;
-    const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+    const parsed = CoverageRecordSchema.safeParse(
+      JSON.parse(await artifacts.read(ref)),
+    );
     if (!parsed.success) continue;
     const r = parsed.data;
-    const same = (a: { commit: string; path: string; hash: string }, b: ArtifactRef) =>
-      a.commit === b.commit && a.path === b.path && a.hash === `sha256:${b.sha256}`;
-    if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult)) continue;
+    const same = (
+      a: { commit: string; path: string; hash: string },
+      b: ArtifactRef,
+    ) =>
+      a.commit === b.commit &&
+      a.path === b.path &&
+      a.hash === `sha256:${b.sha256}`;
+    if (!same(r.themeResult, themeResult) || !same(r.claimResult, claimResult))
+      continue;
     commissioningOrders?.push([
       ...new Set(r.jobs.filter((j) => j.pass === 1).map((j) => j.dossierId)),
     ]);
-    for (const m of r.mappings) if (!out.has(m.proposalId)) out.set(m.proposalId, m);
+    for (const m of r.mappings)
+      if (!out.has(m.proposalId)) out.set(m.proposalId, m);
     for (const j of r.jobs) {
       jobIds?.add(j.jobId);
       if (j.targetedClaims && targetedBatches) {
         const batches = targetedBatches.get(j.dossierId) ?? [];
         const key = JSON.stringify(j.targetedClaims);
-        if (!batches.some((b) => JSON.stringify(b) === key)) batches.push(j.targetedClaims);
+        if (!batches.some((b) => JSON.stringify(b) === key))
+          batches.push(j.targetedClaims);
         targetedBatches.set(j.dossierId, batches);
       }
     }
@@ -676,7 +758,10 @@ async function saveDossier(
       body: `# ${title}\n\nDossier maintained by the librarian.`,
     };
     try {
-      return await store.save({ ...base, metadata: update(base.metadata) }, current?.ref);
+      return await store.save(
+        { ...base, metadata: update(base.metadata) },
+        current?.ref,
+      );
     } catch (error) {
       if (error instanceof StaleDossierError && attempt < 3) continue;
       throw error;
@@ -702,7 +787,10 @@ export async function readCoverageAnalysis(
   const claimRecord = ClaimExtractionRecordSchema.parse(
     JSON.parse(await artifacts.read(claimResult)),
   );
-  const post = { publicationId: themes.post.publicationId, postId: themes.post.postId };
+  const post = {
+    publicationId: themes.post.publicationId,
+    postId: themes.post.postId,
+  };
   if (
     claimRecord.post.publicationId !== post.publicationId ||
     claimRecord.post.postId !== post.postId
@@ -713,10 +801,14 @@ export async function readCoverageAnalysis(
     claimRecord.themeResult &&
     claimRecord.themeResult !== `${themeResult.commit}:${themeResult.path}`
   ) {
-    throw new Error("claim result was extracted against a different theme result");
+    throw new Error(
+      "claim result was extracted against a different theme result",
+    );
   }
   if (claimRecord.sourceVersion !== themes.sourceVersion) {
-    throw new Error("theme and claim results describe different source versions");
+    throw new Error(
+      "theme and claim results describe different source versions",
+    );
   }
   return { themes, claimRecord, post };
 }
@@ -726,8 +818,14 @@ export async function readCoverageAnalysis(
  * carries its configured disambiguation, so research concerns the intended
  * person and not a namesake; other themes are named by title as before.
  */
-function researchSubject(p: { title: string; description?: string; origin?: string }): string {
-  return p.origin === "source-author" && p.description ? `${p.title} (${p.description})` : p.title;
+function researchSubject(p: {
+  title: string;
+  description?: string;
+  origin?: string;
+}): string {
+  return p.origin === "source-author" && p.description
+    ? `${p.title} (${p.description})`
+    : p.title;
 }
 
 export async function assessPostCoverage(input: {
@@ -738,7 +836,10 @@ export async function assessPostCoverage(input: {
   shortlister: ThemeShortlister;
   judge?: ThemeEquivalenceJudge;
   /** Claims whose remaining gap could materially change the writer's account. */
-  consequential?: (claim: { claimRecordId: string; statement: string }) => boolean;
+  consequential?: (claim: {
+    claimRecordId: string;
+    statement: string;
+  }) => boolean;
   now?: () => Date;
   /**
    * Job IDs the workflow already journaled for this analysis (#658). A run
@@ -772,12 +873,18 @@ export async function assessPostCoverage(input: {
     const d = await dossiers.current(id);
     if (!d) continue;
     existing.set(id, d);
-    summaries.push({ themeId: id, title: d.metadata.title, scope: d.metadata.scope });
+    summaries.push({
+      themeId: id,
+      title: d.metadata.title,
+      scope: d.metadata.scope,
+    });
   }
   // Canonical themes exist without research (#528): an established theme with
   // no dossier yet is still a mapping target, so it is never duplicated.
   const established = new Set(existing.keys());
-  for (const theme of await listCanonicalThemes(new ThemeStore(input.artifacts))) {
+  for (const theme of await listCanonicalThemes(
+    new ThemeStore(input.artifacts),
+  )) {
     established.add(theme.id);
     if (existing.has(theme.id)) continue;
     summaries.push({
@@ -817,9 +924,16 @@ export async function assessPostCoverage(input: {
     const kept = savedMapping.get(p.id);
     if (kept) {
       dossierFor.set(p.id, kept.dossierId);
-      titles.set(kept.dossierId, existing.get(kept.dossierId)?.metadata.title ?? p.title);
-      if (!subjects.has(kept.dossierId)) subjects.set(kept.dossierId, researchSubject(p));
-      mappings.push({ ...kept, created: kept.created && !existing.has(kept.dossierId) });
+      titles.set(
+        kept.dossierId,
+        existing.get(kept.dossierId)?.metadata.title ?? p.title,
+      );
+      if (!subjects.has(kept.dossierId))
+        subjects.set(kept.dossierId, researchSubject(p));
+      mappings.push({
+        ...kept,
+        created: kept.created && !existing.has(kept.dossierId),
+      });
       // Coverage from before canonical themes existed still establishes one.
       await themeStore.ensure({
         id: kept.dossierId,
@@ -861,7 +975,11 @@ export async function assessPostCoverage(input: {
     const decision = await judge.decide(p, shortlist);
     let dossierId = decision.themeId ?? newDossierId(p.title);
     // A rejected equivalence must never land in the existing dossier it rejected.
-    for (let n = 2; decision.themeId === null && established.has(dossierId); n++) {
+    for (
+      let n = 2;
+      decision.themeId === null && established.has(dossierId);
+      n++
+    ) {
       dossierId = newDossierId(`${p.title}#${n}`);
     }
     if (!subjects.has(dossierId)) subjects.set(dossierId, researchSubject(p));
@@ -895,7 +1013,10 @@ export async function assessPostCoverage(input: {
         decidedBy: { publicationId: post.publicationId, postId: post.postId },
         rationale: decision.rationale.slice(0, 1000),
         method: shortlist.method,
-        source: { themeResult: toRef(input.themeResult), proposalId: p.id.slice(0, 200) },
+        source: {
+          themeResult: toRef(input.themeResult),
+          proposalId: p.id.slice(0, 200),
+        },
       });
       const winner = recorded.mapping;
       // Pin exactly the stored version this post's coverage now depends on.
@@ -940,7 +1061,22 @@ export async function assessPostCoverage(input: {
   const outcomes = new Map<string, CoverageRecord["claims"][number]>();
   const groups = new Map<string, AcceptedClaim[]>();
   for (const claim of claims) {
-    const home = claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
+    const home =
+      claim.proposalIds.map((id) => dossierFor.get(id)).find(Boolean) ?? null;
+    // Not eligible for research (#889): recorded with its reason, never commissioned.
+    if (claim.excluded) {
+      outcomes.set(claim.key, {
+        claimRecordId: claim.claimRecordId,
+        statement: claim.statement,
+        dossierId: home,
+        status: "not-commissioned",
+        reused: false,
+        jobIds: [],
+        citations: [],
+        reason: claim.excluded,
+      });
+      continue;
+    }
     if (!home) {
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
@@ -957,7 +1093,9 @@ export async function assessPostCoverage(input: {
     // Reuse evidence from any dossier this claim is mapped to, home first.
     const mapped = [
       ...new Set(
-        claim.proposalIds.map((id) => dossierFor.get(id)).filter((x): x is string => Boolean(x)),
+        claim.proposalIds
+          .map((id) => dossierFor.get(id))
+          .filter((x): x is string => Boolean(x)),
       ),
     ];
     let homeDossier: StoredDossier | undefined;
@@ -975,7 +1113,9 @@ export async function assessPostCoverage(input: {
       }
     }
     if (homeDossier && prior?.status === "covered") {
-      const cites = homeDossier.metadata.citations.filter((c) => prior.citations.includes(c.id));
+      const cites = homeDossier.metadata.citations.filter((c) =>
+        prior.citations.includes(c.id),
+      );
       outcomes.set(claim.key, {
         claimRecordId: claim.claimRecordId,
         statement: claim.statement,
@@ -985,7 +1125,10 @@ export async function assessPostCoverage(input: {
         jobIds: [],
         citations: cites.map((c) => ({ url: c.url, passage: c.passage })),
         // The exact dossier version the reused evidence was read from.
-        evidenceFrom: { dossier: toRef(homeDossier.ref), citationIds: prior.citations },
+        evidenceFrom: {
+          dossier: toRef(homeDossier.ref),
+          citationIds: prior.citations,
+        },
       });
     }
     // Every claim stays in its dossier's group, so the request for this
@@ -1019,7 +1162,14 @@ export async function assessPostCoverage(input: {
     targeted = false,
     question?: string,
   ) => {
-    const request = buildRequest(dossierId, group, pass, previousJobId, targeted, question);
+    const request = buildRequest(
+      dossierId,
+      group,
+      pass,
+      previousJobId,
+      targeted,
+      question,
+    );
     return commissionAndAssess(
       dossierId,
       group,
@@ -1034,8 +1184,15 @@ export async function assessPostCoverage(input: {
    */
   function boundedClaims<T extends { claimRecordId: string }>(all: T[]) {
     const claims = all.slice(0, MAX_CLAIMS_PER_REQUEST);
-    const omitted = all.slice(MAX_CLAIMS_PER_REQUEST).map((c) => c.claimRecordId);
-    return { claims, ...(omitted.length ? { omittedClaimRecordIds: omitted.slice(0, 500) } : {}) };
+    const omitted = all
+      .slice(MAX_CLAIMS_PER_REQUEST)
+      .map((c) => c.claimRecordId);
+    return {
+      claims,
+      ...(omitted.length
+        ? { omittedClaimRecordIds: omitted.slice(0, 500) }
+        : {}),
+    };
   }
   function buildRequest(
     dossierId: string,
@@ -1061,7 +1218,8 @@ export async function assessPostCoverage(input: {
           })),
       ),
       question: targeted
-        ? (question ?? THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
+        ? (question ??
+          THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId))
         : pass === 1
           ? `What do independent, authoritative sources establish about these claims concerning ${subjects.get(dossierId)}?`
           : "Targeted follow-up: find primary or authoritative sources that directly address these specific claims, which an earlier search could not support.",
@@ -1099,7 +1257,9 @@ export async function assessPostCoverage(input: {
         path: m.path,
         sha256: m.hash.replace(/^sha256:/, ""),
       };
-      manifest = ResearchManifestSchema.parse(JSON.parse(await input.artifacts.read(manifestRef)));
+      manifest = ResearchManifestSchema.parse(
+        JSON.parse(await input.artifacts.read(manifestRef)),
+      );
     }
     jobs.push({
       jobId: job.jobId,
@@ -1140,7 +1300,9 @@ export async function assessPostCoverage(input: {
     const saved = existing.get(dossierId);
     const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
     const fullRequestedBefore = chunks(sortedAll).some((g) =>
-      priorJobIds.has(researchJobId(buildRequest(dossierId, g, 1, undefined, false))),
+      priorJobIds.has(
+        researchJobId(buildRequest(dossierId, g, 1, undefined, false)),
+      ),
     );
     if (saved && saved.metadata.claims.length > 0 && !fullRequestedBefore) {
       const replay = priorTargeted.get(dossierId);
@@ -1150,7 +1312,10 @@ export async function assessPostCoverage(input: {
       planned.set(dossierId, {
         mode: "targeted",
         batches: replay ?? chunks(needs).map((g) => g.map((c) => c.key)),
-        question: THEME_ENHANCEMENT.instructions.replaceAll("{{theme}}", dossierId),
+        question: THEME_ENHANCEMENT.instructions.replaceAll(
+          "{{theme}}",
+          dossierId,
+        ),
         promptVersion: THEME_ENHANCEMENT.version,
       });
     } else {
@@ -1164,14 +1329,17 @@ export async function assessPostCoverage(input: {
     input.claimResult,
     () => ({
       schemaVersion: 2,
-      dossiers: Object.fromEntries([...planned].sort(([a], [b]) => a.localeCompare(b))),
+      dossiers: Object.fromEntries(
+        [...planned].sort(([a], [b]) => a.localeCompare(b)),
+      ),
       order: commissioningOrder(
         [...groups.keys()].filter((id) => planned.has(id)),
         priorOrders,
       ),
     }),
   );
-  const order = plan.schemaVersion === 2 ? plan.order : Object.keys(plan.dossiers);
+  const order =
+    plan.schemaVersion === 2 ? plan.order : Object.keys(plan.dossiers);
   for (const dossierId of order) {
     const entry = plan.dossiers[dossierId]!;
     const all = groups.get(dossierId);
@@ -1182,8 +1350,11 @@ export async function assessPostCoverage(input: {
     if (entry.mode === "targeted") {
       const byKey = new Map(all.map((c) => [c.key, c]));
       for (const batch of entry.batches) {
-        const group = batch.map((k) => byKey.get(k)).filter((c): c is AcceptedClaim => !!c);
-        if (group.length > 0) await enhanceGroup(dossierId, group, entry.question);
+        const group = batch
+          .map((k) => byKey.get(k))
+          .filter((c): c is AcceptedClaim => !!c);
+        if (group.length > 0)
+          await enhanceGroup(dossierId, group, entry.question);
       }
     } else {
       const sortedAll = [...all].sort((a, b) => a.key.localeCompare(b.key));
@@ -1205,7 +1376,8 @@ export async function assessPostCoverage(input: {
         reused: false,
         jobIds: [],
         citations: [],
-        reason: "not part of this analysis's retained research plan; reassess as a new analysis",
+        reason:
+          "not part of this analysis's retained research plan; reassess as a new analysis",
       });
     }
   }
@@ -1217,7 +1389,11 @@ export async function assessPostCoverage(input: {
     return list.length ? [list] : [];
   }
 
-  async function enhanceGroup(dossierId: string, group: AcceptedClaim[], question?: string) {
+  async function enhanceGroup(
+    dossierId: string,
+    group: AcceptedClaim[],
+    question?: string,
+  ) {
     const targeted = await run(dossierId, group, 1, undefined, true, question);
     for (const claim of group) {
       // Replaying the identical request must not replace evidence found since.
@@ -1272,8 +1448,14 @@ export async function assessPostCoverage(input: {
         // second pass is recorded as such rather than hidden behind pass 1.
         ...(a.status === "evidence-found"
           ? { status: a.status, citations: a.citations, reason: undefined }
-          : a.status === "pending" || a.status === "research-failed" || a.status === "claimant-only"
-            ? { status: a.status, citations: [], reason: `second pass: ${a.reason ?? a.status}` }
+          : a.status === "pending" ||
+              a.status === "research-failed" ||
+              a.status === "claimant-only"
+            ? {
+                status: a.status,
+                citations: [],
+                reason: `second pass: ${a.reason ?? a.status}`,
+              }
             : {}),
       });
     }
@@ -1329,7 +1511,10 @@ export async function assessPostCoverage(input: {
     }
   }
   for (const [id, d] of existing) {
-    if (!byDossier.has(id) && [...outcomes.values()].some((o) => o.dossierId === id)) {
+    if (
+      !byDossier.has(id) &&
+      [...outcomes.values()].some((o) => o.dossierId === id)
+    ) {
       dossierRefs.push({ dossierId: id, ref: toRef(d.ref) });
     }
   }
@@ -1349,7 +1534,9 @@ export async function assessPostCoverage(input: {
       return reason ? { ...rest, reason } : rest;
     }),
     jobs,
-    dossiers: dossierRefs.sort((a, b) => a.dossierId.localeCompare(b.dossierId)),
+    dossiers: dossierRefs.sort((a, b) =>
+      a.dossierId.localeCompare(b.dossierId),
+    ),
     ...(unsaved.length > 0 ? { unsavedDossiers: unsaved.sort() } : {}),
     assessedAt: now,
   });
@@ -1371,7 +1558,9 @@ export async function assessPostCoverage(input: {
     record,
   );
   // An unchanged reassessment maps to an earlier record; return what is stored there.
-  const stored = CoverageRecordSchema.parse(JSON.parse(await input.artifacts.read(ref)));
+  const stored = CoverageRecordSchema.parse(
+    JSON.parse(await input.artifacts.read(ref)),
+  );
   if (saveError) throw saveError;
   return { record: stored, ref };
 }
@@ -1395,13 +1584,16 @@ export interface RankedResearchRequest {
  * never re-requested.
  */
 /** The original commissioning order, kept for analyses planned before ranking (#533). */
-export function originalOrder(requests: ResearchRequest[]): RankedResearchRequest[] {
+export function originalOrder(
+  requests: ResearchRequest[],
+): RankedResearchRequest[] {
   return requests.map((request, i) => ({
     request,
     jobId: researchJobId(request),
     rank: i + 1,
     claimsNeedingEvidence: request.claims.length,
-    rationale: "planned before ranking existed; the original commissioning order is kept",
+    rationale:
+      "planned before ranking existed; the original commissioning order is kept",
   }));
 }
 
@@ -1423,11 +1615,18 @@ export async function retainedOrdering(
     .slice(0, 32);
   const path = `librarian/research-ordering/${post.publicationId}/${post.postId}/${key}.json`;
   const Saved = z
-    .object({ schemaVersion: z.literal(1), ordering: z.enum(["ranked", "original"]) })
+    .object({
+      schemaVersion: z.literal(1),
+      ordering: z.enum(["ranked", "original"]),
+    })
     .strict();
   const existing = await artifacts.lookup(path);
-  if (existing) return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
-  const ref = await writeOnce(artifacts, path, { schemaVersion: 1, ordering: await decide() });
+  if (existing)
+    return Saved.parse(JSON.parse(await artifacts.read(existing))).ordering;
+  const ref = await writeOnce(artifacts, path, {
+    schemaVersion: 1,
+    ordering: await decide(),
+  });
   return Saved.parse(JSON.parse(await artifacts.read(ref))).ordering;
 }
 
@@ -1456,7 +1655,9 @@ export async function analysedBefore(
     for (const path of paths) {
       const ref = await artifacts.lookup(path);
       if (!ref) continue;
-      const parsed = CoverageRecordSchema.safeParse(JSON.parse(await artifacts.read(ref)));
+      const parsed = CoverageRecordSchema.safeParse(
+        JSON.parse(await artifacts.read(ref)),
+      );
       if (!parsed.success) throw new Error("analysis history record invalid");
       const r = parsed.data;
       const exact = (saved: z.infer<typeof Ref>, supplied: ArtifactRef) =>
@@ -1464,7 +1665,11 @@ export async function analysedBefore(
         saved.commit === supplied.commit &&
         saved.path === supplied.path &&
         saved.hash === `sha256:${supplied.sha256}`;
-      if (exact(r.themeResult, themeResult) && exact(r.claimResult, claimResult)) return true;
+      if (
+        exact(r.themeResult, themeResult) &&
+        exact(r.claimResult, claimResult)
+      )
+        return true;
     }
     if (paths.length < 1000) return false;
     after = paths.at(-1);
@@ -1472,9 +1677,15 @@ export async function analysedBefore(
   throw new Error("analysis history scan incomplete");
 }
 
-export function rankResearchRequests(requests: ResearchRequest[]): RankedResearchRequest[] {
+export function rankResearchRequests(
+  requests: ResearchRequest[],
+): RankedResearchRequest[] {
   return requests
-    .map((request) => ({ request, jobId: researchJobId(request), n: request.claims.length }))
+    .map((request) => ({
+      request,
+      jobId: researchJobId(request),
+      n: request.claims.length,
+    }))
     .sort((a, b) => b.n - a.n || a.jobId.localeCompare(b.jobId))
     .map((r, i) => ({
       request: r.request,
@@ -1506,7 +1717,11 @@ export async function saveResearchSelection(
   // fewer remaining gaps gets its own record, never an earlier one's.
   const key = createHash("sha256")
     .update(
-      JSON.stringify([toRef(themeResult), toRef(claimResult), ranked.map((r) => r.jobId).sort()]),
+      JSON.stringify([
+        toRef(themeResult),
+        toRef(claimResult),
+        ranked.map((r) => r.jobId).sort(),
+      ]),
     )
     .digest("hex")
     .slice(0, 32);
@@ -1579,7 +1794,11 @@ export async function readResearchSelection(
     throw new Error("research selection binding mismatch");
   return saved.candidates.map((candidate, index) => {
     const request = byId.get(candidate.jobId);
-    if (!request || candidate.rank !== index + 1 || candidate.origin !== request.origin)
+    if (
+      !request ||
+      candidate.rank !== index + 1 ||
+      candidate.origin !== request.origin
+    )
       throw new Error("research selection candidate mismatch");
     return request;
   });

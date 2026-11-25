@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadAnalysisPrompt } from "./analysis-prompt.js";
 import {
+  ReportingPeriodSchema,
   ClaimTypeSchema,
   DateMentionSchema,
   InvalidClaimError,
@@ -38,7 +39,10 @@ export interface ExtractionModelProvider {
       /** Per-call, allowlisted adapter evidence; never raw provider response data. */
       onCompletion?: (metadata: ModelCompletionMetadata) => void;
       /** Await durable private capture before the adapter returns or validates text limits. */
-      onOutput?: (text: string, metadata: ModelCompletionMetadata) => Promise<void>;
+      onOutput?: (
+        text: string,
+        metadata: ModelCompletionMetadata,
+      ) => Promise<void>;
     },
     signal: AbortSignal,
   ): Promise<string>;
@@ -56,7 +60,14 @@ export interface ExtractionPrompt {
   instructions: string;
 }
 
-export const DEFAULT_EXTRACTION_PROMPT = loadAnalysisPrompt("claim-extraction-v1");
+// v2 adds the reporting period (#889); v1 stays for reproducing older runs.
+export const DEFAULT_EXTRACTION_PROMPT = loadAnalysisPrompt(
+  "claim-extraction-v2",
+);
+/** The previous extraction prompt, kept so older runs can be reproduced exactly. */
+export const CLAIM_EXTRACTION_PROMPT_V1 = loadAnalysisPrompt(
+  "claim-extraction-v1",
+);
 
 const ModelClaimSchema = z
   .object({
@@ -67,9 +78,13 @@ const ModelClaimSchema = z
     qualifiers: z.array(z.string()).default([]),
     entities: z.array(z.string()).default([]),
     dates: z.array(DateMentionSchema).default([]),
+    // Always recorded for new extractions, so its absence marks an older claim (#889).
+    reportingPeriod: ReportingPeriodSchema.default({ dependsOnPeriod: false }),
   })
   .strict();
-const ModelOutputSchema = z.object({ claims: z.array(z.unknown()).max(500) }).strict();
+const ModelOutputSchema = z
+  .object({ claims: z.array(z.unknown()).max(500) })
+  .strict();
 
 export type ExtractionFailure =
   | "provider-failed"
@@ -82,7 +97,11 @@ export type ExtractionFailure =
 export interface RejectedClaim {
   /** Position in the model's claim list. */
   index: number;
-  reason: "malformed-claim" | "passage-not-found" | "ambiguous-passage" | "invalid-claim";
+  reason:
+    | "malformed-claim"
+    | "passage-not-found"
+    | "ambiguous-passage"
+    | "invalid-claim";
 }
 
 export type ExtractionResult =
@@ -201,10 +220,18 @@ export type PassageMatch =
  * and dashes only). A recovered match returns the unchanged source text and
  * its offsets; anything else stays absent, and repeated matches ambiguous.
  */
-export function recoverPassage(text: string, passage: string, occurrence?: number): PassageMatch {
+export function recoverPassage(
+  text: string,
+  passage: string,
+  occurrence?: number,
+): PassageMatch {
   const exact = locatePassage(text, passage, occurrence);
   if (typeof exact !== "string")
-    return { ...exact, method: "exact", text: text.slice(exact.start, exact.end) };
+    return {
+      ...exact,
+      method: "exact",
+      text: text.slice(exact.start, exact.end),
+    };
   if (exact === "ambiguous") return "ambiguous";
   const source = normaliseWithMap(text);
   const wanted = normaliseWithMap(passage).norm;
@@ -243,29 +270,41 @@ export class ClaimExtractor {
     // Snapshot the prompt so later mutation by the caller cannot change the
     // instructions or the recorded prompt version mid-life.
     const prompt = config.prompt ?? DEFAULT_EXTRACTION_PROMPT;
-    this.prompt = Object.freeze({ version: prompt.version, instructions: prompt.instructions });
+    this.prompt = Object.freeze({
+      version: prompt.version,
+      instructions: prompt.instructions,
+    });
     this.maxResponseChars = config.maxResponseChars ?? 200_000;
     this.maxSourceChars = config.maxSourceChars ?? 200_000;
     this.maxAttempts = Math.max(1, Math.min(config.maxAttempts ?? 2, 5));
     this.timeoutMs = config.timeoutMs ?? 5 * 60 * 1000;
     this.now = config.now ?? (() => new Date());
-    if (!this.prompt.version.trim()) throw new Error("prompt version is required");
+    if (!this.prompt.version.trim())
+      throw new Error("prompt version is required");
   }
 
-  async extract(source: ClaimSource, signal?: AbortSignal): Promise<ExtractionResult> {
+  async extract(
+    source: ClaimSource,
+    signal?: AbortSignal,
+  ): Promise<ExtractionResult> {
     if (source.text.length > this.maxSourceChars) {
       return { status: "failed", reason: "source-too-large", attempts: 0 };
     }
     const deadline = Date.now() + this.timeoutMs;
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const stopReason = (): ExtractionFailure => (signal?.aborted ? "cancelled" : "timeout");
+    const stopReason = (): ExtractionFailure =>
+      signal?.aborted ? "cancelled" : "timeout";
     const { message } = fenceSource(source.text);
     let lastFailure: ExtractionFailure = "provider-failed";
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       if (combined.aborted)
-        return { status: "failed", reason: stopReason(), attempts: attempt - 1 };
+        return {
+          status: "failed",
+          reason: stopReason(),
+          attempts: attempt - 1,
+        };
       let raw: string;
       try {
         raw = await raceAbort(
@@ -280,7 +319,8 @@ export class ClaimExtractor {
           combined,
         );
       } catch {
-        if (combined.aborted) return { status: "failed", reason: stopReason(), attempts: attempt };
+        if (combined.aborted)
+          return { status: "failed", reason: stopReason(), attempts: attempt };
         lastFailure = "provider-failed";
         continue;
       }
@@ -301,10 +341,18 @@ export class ClaimExtractor {
       }
       return this.buildClaims(output.claims, source, attempt);
     }
-    return { status: "failed", reason: lastFailure, attempts: this.maxAttempts };
+    return {
+      status: "failed",
+      reason: lastFailure,
+      attempts: this.maxAttempts,
+    };
   }
 
-  private buildClaims(items: unknown[], source: ClaimSource, attempts: number): ExtractionResult {
+  private buildClaims(
+    items: unknown[],
+    source: ClaimSource,
+    attempts: number,
+  ): ExtractionResult {
     const extraction = {
       modelVersion: this.config.provider.modelVersion,
       promptVersion: this.prompt.version,
@@ -315,10 +363,17 @@ export class ClaimExtractor {
     const seen = new Set<string>();
     items.forEach((item, index) => {
       const parsed = ModelClaimSchema.safeParse(item);
-      if (!parsed.success) return rejected.push({ index, reason: "malformed-claim" });
-      const located = locatePassage(source.text, parsed.data.passage, parsed.data.occurrence);
-      if (located === "absent") return rejected.push({ index, reason: "passage-not-found" });
-      if (located === "ambiguous") return rejected.push({ index, reason: "ambiguous-passage" });
+      if (!parsed.success)
+        return rejected.push({ index, reason: "malformed-claim" });
+      const located = locatePassage(
+        source.text,
+        parsed.data.passage,
+        parsed.data.occurrence,
+      );
+      if (located === "absent")
+        return rejected.push({ index, reason: "passage-not-found" });
+      if (located === "ambiguous")
+        return rejected.push({ index, reason: "ambiguous-passage" });
       try {
         const claim = createClaim(
           {
@@ -330,6 +385,7 @@ export class ClaimExtractor {
             qualifiers: parsed.data.qualifiers,
             entities: parsed.data.entities,
             dates: parsed.data.dates,
+            reportingPeriod: parsed.data.reportingPeriod,
             extraction,
           },
           source,
@@ -358,7 +414,9 @@ export class ClaimExtractor {
 }
 
 /** Accept bare JSON or one fenced JSON block; anything else is malformed. */
-function parseModelOutput(raw: string): z.infer<typeof ModelOutputSchema> | undefined {
+function parseModelOutput(
+  raw: string,
+): z.infer<typeof ModelOutputSchema> | undefined {
   let body = raw.trim();
   // Strip one surrounding code fence with plain string operations (no
   // backtracking regex over attacker-influenced text).
