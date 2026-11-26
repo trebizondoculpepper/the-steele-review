@@ -74,7 +74,7 @@
         200
       ],
       "parameters": {
-        "jsCode": "const s = $('Start poll').first().json;\nreturn [{ json: { ...s, httpStatus: $json.statusCode ?? null, body: typeof $json.data === 'string' ? $json.data : '' // full text response: the body is in `data` } }];"
+        "jsCode": "// With a full text response, n8n puts the body in `data`.\nconst s = $('Start poll').first().json;\nreturn [{ json: { ...s, httpStatus: $json.statusCode ?? null, body: typeof $json.data === 'string' ? $json.data : '' } }];"
       }
     },
     {
