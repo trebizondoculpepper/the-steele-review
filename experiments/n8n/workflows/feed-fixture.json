@@ -1,0 +1,114 @@
+{
+  "id": "SteeleExpFeedFixtr",
+  "name": "Feed: ingest a test fixture",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Fixture request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/feed/fixture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-feed-fixture"
+    },
+    {
+      "id": "start",
+      "name": "Prepare fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Controlled test path (#914): feeds a supplied document through the same ingest as the real poll,\n// under an isolated 'fixture-*' subscription, so tests never touch the real feed's state.\nconst body = $json.body ?? {};\nconst subscription = String(body.subscription ?? '');\nif (!/^fixture-[a-z0-9-]{1,40}$/.test(subscription)) throw new Error('invalid-request: subscription must be fixture-*');\nif (typeof body.xml !== 'string') throw new Error('invalid-request: xml must be a string');\nreturn [{ json: { subscription, publicationHost: 'saveusnow.substack.com', pollId: `n8n-${$execution.id}`, startedAt: new Date().toISOString(),\n  httpStatus: Number.isInteger(body.httpStatus) ? body.httpStatus : 200, body: body.xml } }];"
+      }
+    },
+    {
+      "id": "ing",
+      "name": "Ingest",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpFeedIngst",
+        "options": {}
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Fixture request": {
+      "main": [
+        [
+          {
+            "node": "Prepare fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare fixture": {
+      "main": [
+        [
+          {
+            "node": "Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Test-only: ingests a supplied feed document under an isolated fixture-* subscription."
+  },
+  "pinData": {}
+}

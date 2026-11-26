@@ -1,0 +1,147 @@
+{
+  "id": "SteeleExpFeedSelct",
+  "name": "Feed: select one post for capture",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Select request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/feed/select",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-feed-select"
+    },
+    {
+      "id": "val",
+      "name": "Validate URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// https://<host>/p/<slug>, optionally with a trailing slash, query or fragment. No userinfo or port.\n// (The Code node sandbox has no URL class, so this is a strict pattern.)\nconst postSlug = (link, host) => {\n  const m = /^https:\\/\\/([A-Za-z0-9.-]+)\\/p\\/([a-z0-9-]{1,200})\\/?(?:[?#][^\\s]*)?$/.exec(String(link).trim());\n  return m && m[1].toLowerCase() === host ? m[2] : null;\n};\n// Validate an operator-selected post URL; only posts on the allowed publication are accepted.\nconst host = 'saveusnow.substack.com';\nconst body = $json.body ?? {};\nconst subscription = body.subscription === undefined ? 'saveusnow' : String(body.subscription);\nif (!/^(saveusnow|fixture-[a-z0-9-]{1,40})$/.test(subscription)) throw new Error('invalid-request: unknown subscription');\nconst slug = postSlug(String(body.url ?? ''), host);\nif (!slug) throw new Error('wrong-publication: not a post URL on the allowed publication');\nreturn [{ json: { subscription, canonicalUrl: `https://${host}/p/${slug}`, slug } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "sel",
+      "name": "Record selection",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_feed.select_item($1, $2, $3) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.subscription, $json.canonicalUrl, $json.slug] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Selected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.result }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        400
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.error?.message ?? $json.error } }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Select request": {
+      "main": [
+        [
+          {
+            "node": "Validate URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate URL": {
+      "main": [
+        [
+          {
+            "node": "Record selection",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record selection": {
+      "main": [
+        [
+          {
+            "node": "Selected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Agent- and operator-callable manual path: queues one post (for example an older one) for capture. Discovery only: it fetches nothing."
+  },
+  "pinData": {}
+}

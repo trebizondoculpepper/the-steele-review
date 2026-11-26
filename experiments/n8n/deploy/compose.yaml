@@ -18,7 +18,7 @@ services:
       GENERIC_TIMEZONE: UTC
       TZ: UTC
       N8N_EDITOR_BASE_URL: ${STEELE_EXP_N8N_URL:?set the private URL}
-      WEBHOOK_URL: ${STEELE_EXP_N8N_URL}
+      N8N_WEBHOOK_URL: ${STEELE_EXP_N8N_URL}
       # Served over the private network without TLS.
       N8N_SECURE_COOKIE: "false"
       # Storage: a dedicated database and restricted role on the existing PostgreSQL service.
@@ -48,8 +48,13 @@ services:
       N8N_TEMPLATES_ENABLED: "false"
       N8N_PERSONALIZATION_ENABLED: "false"
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      # Code nodes may use only Node's crypto module (feed fingerprints); no other modules.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
       N8N_PUBLIC_API_SWAGGERUI_DISABLED: "true"
     volumes:
       - ${STEELE_EXP_N8N_DATA:?set the data directory}:/home/node/.n8n
       - ${STEELE_EXP_N8N_SECRETS:?set the secrets directory}:/run/secrets-n8n:ro
+    # Memory-backed scratch space for imports (never the container's disk-backed layer).
+    tmpfs:
+      - /run/import:mode=0700,uid=1000,gid=1000,size=16m
     mem_limit: 1g

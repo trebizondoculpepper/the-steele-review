@@ -1,0 +1,147 @@
+{
+  "id": "SteeleExpFeedStats",
+  "name": "Feed: status",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Status request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "steele-exp/feed/status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-feed-status"
+    },
+    {
+      "id": "val",
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const s = String(($json.query ?? {}).subscription ?? 'saveusnow');\nif (!/^(saveusnow|fixture-[a-z0-9-]{1,40})$/.test(s)) throw new Error('invalid-request: unknown subscription');\nreturn [{ json: { subscription: s } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "q",
+      "name": "Read status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_feed.status($1) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.subscription] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.result }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        400
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.error?.message ?? $json.error } }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Status request": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Read status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read status": {
+      "main": [
+        [
+          {
+            "node": "Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Read-only: last poll, last failure, item counts, the capture queue and recent items."
+  },
+  "pinData": {}
+}
