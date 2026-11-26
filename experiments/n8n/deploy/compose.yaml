@@ -52,6 +52,4 @@ services:
     volumes:
       - ${STEELE_EXP_N8N_DATA:?set the data directory}:/home/node/.n8n
       - ${STEELE_EXP_N8N_SECRETS:?set the secrets directory}:/run/secrets-n8n:ro
-      # Workflow definitions from Git, imported with n8n's CLI by deploy.sh.
-      - ../workflows:/workflows:ro
     mem_limit: 1g

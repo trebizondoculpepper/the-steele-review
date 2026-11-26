@@ -32,8 +32,18 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
 - **Rollback:**
   1. Revert the pin and redeploy.
   2. If a schema migration ran, also restore the database backup.
-- **Workflow from the command line:** run these on the host, inside the container (`docker compose ... exec n8n`):
-  - `n8n execute --id <id>`;
-  - `n8n export:workflow --id <id>`.
+- **Workflow from the command line:** run these on the host, inside the container: `docker compose ... exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n <command> </dev/null`.
+  - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
+  - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
+- **Inspection:** n8n's public API (`/api/v1/workflows`, `/api/v1/executions?includeData=true`) with a read-only scoped API key. The key is kept in the host's private secrets. Execution records show each node's inputs, outputs and errors.
+
+## Setup evidence (#913, 2026-11-26)
+
+- `SteeleExpSmoke01` was created from Git, executed, changed in Git (`revision: 2`), redeployed and executed again. Its output was read back through the API.
+- `SteeleExpError01` fails on purpose. Its execution is recorded as `error`, with the node's message, and the CLI exits with 1.
+- Run history survived a container restart.
+- The interface answers only on the private-network address; the LAN address does not answer.
+- About 410 MB RSS when idle.
+- Note: n8n 2.49 warns that PostgreSQL 16 gets compatibility support only and recommends 17 or newer.
 
 Actual hosts, addresses and credentials are recorded in the private operations project, not here.

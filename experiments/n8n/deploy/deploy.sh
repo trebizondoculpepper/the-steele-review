@@ -19,6 +19,10 @@ dir="$1"; rev="$2"; cd "$dir"
 compose=(docker compose --env-file stack.env -f src/n8n/deploy/compose.yaml)
 "${compose[@]}" up -d --wait >/dev/null
 # Create or update every workflow from its Git definition (stable IDs make re-import an update).
-"${compose[@]}" exec -T n8n n8n import:workflow --separate --input=/workflows 2>&1 | grep -v '^$' | tail -3
+# Copied in fresh on every deploy: a bind mount would keep pointing at the swapped-out src.
+"${compose[@]}" exec -T n8n rm -rf /tmp/workflows </dev/null
+"${compose[@]}" cp src/n8n/workflows n8n:/tmp/workflows >/dev/null
+# The CLI starts its own n8n process, so it needs a task broker port distinct from the server's.
+"${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n import:workflow --separate --input=/tmp/workflows </dev/null 2>&1 | grep -E 'Importing|imported|rror' || true
 echo "deployed steele-exp-n8n workflows from $rev"
 REMOTE
