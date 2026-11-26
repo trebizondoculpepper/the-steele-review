@@ -1,4 +1,4 @@
-// Static checks of the Git-defined workflows (run: node --test experiments/n8n/test/*.test.mjs).
+// Static checks of the Git-defined workflows (run: node --test experiments/n8n/test/*.test.ts).
 // They catch what n8n would otherwise only report at run time: Code nodes that do not
 // parse, broken connections, duplicate IDs, and published IDs with no definition.
 import { test } from "node:test";
@@ -8,7 +8,16 @@ import { fileURLToPath } from "node:url";
 
 const dir = fileURLToPath(new URL("../workflows/", import.meta.url));
 const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-const workflows = files.map((f) => ({ file: f, wf: JSON.parse(readFileSync(dir + f, "utf8")) }));
+interface WorkflowNode {
+  name: string;
+  parameters: { jsCode?: unknown };
+}
+interface Workflow {
+  id: string;
+  nodes: WorkflowNode[];
+  connections: Record<string, { main: { node: string }[][] }>;
+}
+const workflows: { file: string; wf: Workflow }[] = files.map((f) => ({ file: f, wf: JSON.parse(readFileSync(dir + f, "utf8")) as Workflow }));
 
 test("every workflow has a unique, stable ID", () => {
   const ids = workflows.map(({ wf }) => wf.id);

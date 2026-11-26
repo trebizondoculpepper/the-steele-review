@@ -54,4 +54,7 @@ services:
     volumes:
       - ${STEELE_EXP_N8N_DATA:?set the data directory}:/home/node/.n8n
       - ${STEELE_EXP_N8N_SECRETS:?set the secrets directory}:/run/secrets-n8n:ro
+    # Memory-backed scratch space for imports (never the container's disk-backed layer).
+    tmpfs:
+      - /run/import:mode=0700,uid=1000,gid=1000,size=16m
     mem_limit: 1g

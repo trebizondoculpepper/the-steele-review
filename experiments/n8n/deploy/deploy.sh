@@ -18,6 +18,7 @@ set -euo pipefail
 dir="$1"; rev="$2"; cd "$dir"
 compose=(docker compose --env-file stack.env -f src/n8n/deploy/compose.yaml)
 "${compose[@]}" up -d --wait >/dev/null
+"${compose[@]}" exec -T n8n sh -c 'grep -q " /run/import tmpfs " /proc/mounts' </dev/null || { echo "no tmpfs at /run/import; refusing to import credentials" >&2; exit 1; }
 cli=("${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n)
 # Apply the experiment's own schema (idempotent SQL) to its dedicated database.
 set -a; . ./stack.env; set +a
@@ -27,8 +28,9 @@ for f in src/n8n/sql/*.sql; do
     -U "$STEELE_EXP_N8N_DB_USER" -d "$STEELE_EXP_N8N_DB_NAME" <"$f" >/dev/null
 done
 # The workflows' Postgres credential is built here from the private secrets and streamed into n8n's
-# importer, which encrypts it; it never exists in Git or as a file outside the container's tmpfs.
-python3 - <<'PY' | "${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n sh -c 'umask 077; cat >/tmp/cred.json; n8n import:credentials --input=/tmp/cred.json >/tmp/cred.log 2>&1; rc=$?; rm -f /tmp/cred.json; [ $rc = 0 ] || tail -5 /tmp/cred.log >&2; exit $rc'
+# importer, which encrypts it. The plaintext only ever exists in a memory-backed tmpfs inside the
+# container (compose.yaml), and is removed on exit, interruption or failure.
+python3 - <<'PY' | "${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n sh -c 'set -u; f=/run/import/cred.json; trap "rm -f $f /run/import/cred.log" EXIT INT TERM HUP; umask 077; cat >"$f"; n8n import:credentials --input="$f" >/run/import/cred.log 2>&1 || { tail -5 /run/import/cred.log >&2; exit 1; }'
 import json, os
 print(json.dumps([{"id": "SteeleExpPgFeed01", "name": "steele-exp feed postgres", "type": "postgres",
   "data": {"host": os.environ["STEELE_EXP_N8N_DB_HOST"], "port": int(os.environ.get("STEELE_EXP_N8N_DB_PORT", "5432")),

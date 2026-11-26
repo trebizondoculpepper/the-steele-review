@@ -6,7 +6,7 @@ The n8n half of the clean-slate n8n versus Mastra comparison. The contract is `d
 
 - `deploy/compose.yaml`: the separately named stack `steele-exp-n8n`. n8n is pinned by version and digest (2.49.7, multi-arch, runs on linux/arm64). Every host-specific value comes from the host's private `stack.env`.
 - `deploy/deploy.sh`: copies only Git-tracked files to the host, starts or updates the stack, then imports every workflow in `workflows/` with n8n's own CLI.
-- `test/`: static checks of the workflow definitions. Run `node --test experiments/n8n/test/*.test.mjs` before deploying. They check that Code nodes parse, connections and published IDs are valid, and no private addresses or passwords appear.
+- `test/`: static checks of the workflow definitions. Run `node --test experiments/n8n/test/*.test.ts` before deploying. They check that Code nodes parse, connections and published IDs are valid, and no private addresses or passwords appear.
 - `workflows/`: workflow definitions, one JSON file each, with stable IDs, so a re-import updates a workflow rather than duplicating it. These files are the source of truth. Canvas edits that are not exported back to Git are lost on the next deploy.
 
 ## Feed discovery (#914)
