@@ -59,7 +59,10 @@ test("versions: identical content is reused, changed content adds a version, and
   assert.notEqual(b.version, a.version);
   s.close();
   s = store(dir); // restart storage
-  assert.equal((await s.listVersions("substack:saveusnow:42")).length, 2);
+  const page1 = await s.listVersions("substack:saveusnow:42", 1, 0);
+  const page2 = await s.listVersions("substack:saveusnow:42", 1, 1);
+  assert.deepEqual([page1.total, page1.versions.length, page2.versions.length], [2, 1, 1]);
+  assert.notEqual(page1.versions[0]!.version, page2.versions[0]!.version, "paging reaches every version");
   const older = await s.read(a.version);
   assert.equal(older.bundle.text, "First version.", "the exact earlier content, without refetching");
   assert.equal(sourceVersionId(older.bundle), a.version);
@@ -83,11 +86,8 @@ test("retained versions cannot be modified or deleted", async () => {
   const s = store(dir);
   const r = await capturePost(`https://${HOST}/p/a-post`, cfg(fakeSubstack({ transcript: ["Keep me."] })));
   const { version } = await s.save(r.bundle, { ...r, captureMeta: {} }, "2026-11-26T00:00:00.000Z");
-  const { createClient } = await import("@libsql/client");
-  const raw = createClient({ url: `file:${join(dir, "sources.db")}` });
-  await assert.rejects(raw.execute({ sql: "UPDATE source_versions SET bundle_bytes = 'x' WHERE version = ?", args: [version] }), /immutable/);
-  await assert.rejects(raw.execute({ sql: "DELETE FROM source_versions WHERE version = ?", args: [version] }), /immutable/);
-  raw.close();
+  assert.deepEqual(await s.verifyImmutable(version), { updateRefused: true, deleteRefused: true });
+  assert.equal((await s.read(version)).bundle.text, "Keep me.");
 });
 
 test("honest partial content: no transcript falls back to labelled article text; nothing usable is warned; restricted posts are refused", async () => {
@@ -100,4 +100,11 @@ test("honest partial content: no transcript falls back to labelled article text;
   await assert.rejects(capturePost(`https://${HOST}/p/a-post`, cfg(fakeSubstack({ transcript: ["x"], audience: "only_paid" }))), /restricted/);
   await assert.rejects(capturePost(`https://${HOST}/p/missing`, cfg(fakeSubstack({ transcript: ["x"] }))), /post-not-found/);
   await assert.rejects(capturePost("https://evil.example/p/a-post", cfg(fakeSubstack({ transcript: ["x"] }))), /wrong-publication/);
+});
+
+test("a transcript whose segments are all blank falls back to article text with a warning", async () => {
+  const r = await capturePost(`https://${HOST}/p/a-post`, cfg(fakeSubstack({ transcript: ["  ", ""], body: "<p>Article body</p>" })));
+  assert.equal(r.bundle.textSource, "article-html");
+  assert.equal(r.bundle.text, "Article body");
+  assert.ok(r.warnings.includes("supplied-transcript-unusable"));
 });

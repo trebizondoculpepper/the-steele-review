@@ -129,10 +129,10 @@ const Summary = z.object({
 
 export const listVersionsWorkflow = readOnly(
   "list-versions",
-  "Read-only: every retained version of one source item (#920).",
-  z.object({ item: z.string().max(100) }),
-  z.object({ versions: z.array(Summary) }),
-  async (i: any) => ({ versions: await versions.listVersions(i.item) }),
+  "Read-only: one page of a source item's retained versions, newest first; page with offset until offset + versions.length reaches total (#920).",
+  z.object({ item: z.string().max(100), limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0) }),
+  z.object({ versions: z.array(Summary), total: z.number(), offset: z.number() }),
+  async (i: any) => versions.listVersions(i.item, i.limit, i.offset),
 );
 
 export const readVersionWorkflow = readOnly(

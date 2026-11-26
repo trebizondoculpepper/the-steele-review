@@ -172,11 +172,14 @@ export async function capturePost(postUrl: string, cfg: CaptureConfig): Promise<
       try {
         const t = await boundedText(cdn, cfg);
         const segs = t.status === 200 ? Segments.safeParse(JSON.parse(t.body)) : undefined;
-        if (segs?.success) {
-          text = segs.data
-            .map((s) => s.text.trim())
-            .filter(Boolean)
-            .join("\n");
+        const joined = segs?.success
+          ? segs.data
+              .map((s) => s.text.trim())
+              .filter(Boolean)
+              .join("\n")
+          : "";
+        if (joined) {
+          text = joined;
           textSource = "supplied-transcript";
           rawTranscript = t.body;
           mediaUploadId = upload.transcription.media_upload_id ?? upload.id ?? mediaUploadId;

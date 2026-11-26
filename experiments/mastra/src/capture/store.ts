@@ -134,13 +134,37 @@ export class VersionStore {
     return out;
   }
 
-  async listVersions(item: string, limit = 50): Promise<VersionSummary[]> {
+  /** One page of an item's versions, newest first; `total` makes every version reachable by paging. */
+  async listVersions(item: string, limit = 50, offset = 0): Promise<{ versions: VersionSummary[]; total: number; offset: number }> {
     await this.init();
+    const total = Number((await this.db.execute({ sql: "SELECT COUNT(*) AS n FROM source_versions WHERE item = ?", args: [item] })).rows[0]?.n ?? 0);
+    const start = Math.max(Math.trunc(offset) || 0, 0);
     const r = await this.db.execute({
-      sql: "SELECT * FROM source_versions WHERE item = ? ORDER BY captured_at DESC LIMIT ?",
-      args: [item, bound(limit, 100)],
+      sql: "SELECT * FROM source_versions WHERE item = ? ORDER BY captured_at DESC, version LIMIT ? OFFSET ?",
+      args: [item, bound(limit, 100), start],
     });
-    return r.rows.map(summary);
+    return { versions: r.rows.map(summary), total, offset: start };
+  }
+
+  /**
+   * Self-check that the database itself refuses changes to a retained
+   * version. Attempts an update and a delete inside this owner and reports
+   * whether each was refused; neither can succeed while the triggers exist.
+   */
+  async verifyImmutable(version: string): Promise<{ updateRefused: boolean; deleteRefused: boolean }> {
+    await this.init();
+    const refused = async (sql: string) => {
+      try {
+        await this.db.execute({ sql, args: [version] });
+        return false;
+      } catch (e) {
+        return /immutable/.test(String(e));
+      }
+    };
+    return {
+      updateRefused: await refused("UPDATE source_versions SET bundle_bytes = bundle_bytes || '' WHERE version = ?"),
+      deleteRefused: await refused("DELETE FROM source_versions WHERE version = ?"),
+    };
   }
 
   /** Reads one version from storage, never from the source; verifies its hash. */
