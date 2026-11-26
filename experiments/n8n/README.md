@@ -66,6 +66,9 @@ This is one bounded writing step, following the contract's "Writing step" (`doc/
 
   A started live call counts even if it is interrupted.
 - **Live switch:** `STEELE_EXP_N8N_LIVE_MODEL_ENABLED` in the private `stack.env`, default 0, is copied into `steele_wr.settings` on deploy.
+  - **Applying a change:** a change to `stack.env` takes effect only when you redeploy. Mastra works the same way, because its container reads those variables only when it is recreated.
+  - **Why not read `stack.env` at run time:** that would mean letting workflow code read environment variables (`N8N_BLOCK_ENV_ACCESS_IN_NODE=false`), which would also expose other values such as the owner's password hash.
+  - **Turning live off:** set it to 0 and deploy.
 - **OpenRouter credential:** for now it always holds a placeholder. How the live call should read the canonical key without a second persisted copy is an open design question on #916. It must be settled before the live call in #923.
 - **Interruptions:** a `calling` attempt older than its call window (live 130 s, fake 75 s) was interrupted. A live call becomes `provider-uncertain` and is never resent; a fake call becomes `interrupted-fake-call`.
 - **Source load failures:** if the pinned source can't be loaded, saved progress still wins, and model output that is already saved is validated without it. A pending attempt stops as `source-unavailable` and can be retried. Only a missing or corrupt version fails it.
