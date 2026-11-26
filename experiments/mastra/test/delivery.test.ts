@@ -210,3 +210,11 @@ test("after an earlier definite failure, a later lost response is recorded as un
   const [record] = await h.attempts.deliveries(10);
   assert.equal(record!.status, "uncertain");
 });
+
+test("a partial readback is not evidence of an unpublished, no-email draft", async () => {
+  const h = await scriptedHarness();
+  const article = await h.write();
+  const partial = { titleMatches: true } as unknown as typeof okReadback;
+  const s = scripted([{ status: "created", draftId: "7", readback: partial }, { status: "existing", readback: partial }]);
+  assert.equal((await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s.client, sleep: noSleep }, article)).status, "unverified");
+});

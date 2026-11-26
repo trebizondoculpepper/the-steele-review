@@ -99,7 +99,9 @@ export async function deliverArticle(
     await sleep(500 * i);
   }
   // Success requires explicit readback evidence: the expected title, unpublished, no email.
-  const verified = (r: DraftResponse | undefined) => Boolean(r?.readback && r.readback.titleMatches && !r.readback.published && !r.readback.emailSent);
+  // Strict booleans: a partial or malformed readback is not evidence.
+  const verified = (r: DraftResponse | undefined) =>
+    r?.readback?.titleMatches === true && r.readback.published === false && r.readback.emailSent === false;
   if (last && SETTLED_OK.has(last.status) && !verified(last)) {
     try {
       const fresh = await deps.client.status(request.requestId);
