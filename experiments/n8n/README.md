@@ -92,6 +92,10 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
   6. A restricted post was refused with 422 `restricted`, and nothing was saved.
 - **Pinned comparison post 226395148**, captured live in n8n: `substack:saveusnow:226395148@sha256:440cb7fd…2d9b`, from the supplied transcript, 12,358 characters, no warnings. This is **identical to the version the Mastra track captured**, so both platforms derive the same ID from the same content.
 - **Signed links:** none in any stored execution of the live capture (11 executions scanned).
+- **Mixed batch through the scheduled queue:** the pinned post and a post that doesn't exist were queued together. One run recorded both outcomes:
+  - the pinned post was reused (2 observations) and left the queue;
+  - the missing post left the queue as `post-not-found`, after 1 attempt.
+- **Queue generations:** a stale acknowledgement left a re-queued item queued, and the current one cleared it.
 
 ## Feed evidence (#914, 2026-11-26, fixture subscription `fixture-t2`)
 

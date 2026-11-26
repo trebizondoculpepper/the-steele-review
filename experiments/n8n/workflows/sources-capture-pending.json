@@ -83,7 +83,7 @@
         200
       ],
       "parameters": {
-        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, generation: req.generation, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
+        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, generation: req.generation, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : String(r.message).slice(0, 500), result: r } };",
         "mode": "runOnceForEachItem"
       }
     },
