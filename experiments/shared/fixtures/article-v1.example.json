@@ -1,0 +1,12 @@
+{
+  "title": "What the patents in this recording do and do not show",
+  "subtitle": "A summary and critique of the argument",
+  "summary": "The speaker argues that patents and technical standards prove a coordinated plan to track and harm the public. The recording moves from describing a patent filing to concluding that its technology is already being deployed for that purpose.",
+  "critique": [
+    { "point": "A patent filing is presented as evidence that the technology is in use.", "category": "asserted", "why_it_matters": "A patent records a claimed invention; it does not show that anything was built or deployed." },
+    { "point": "Patents describe inventions and are publicly searchable.", "category": "established", "why_it_matters": "This is general knowledge and supports neither side of the specific claim." },
+    { "point": "The named standard is said to include a tracking capability.", "category": "not-checked", "why_it_matters": "This is a specific factual claim that would need the standard itself to confirm or refute." }
+  ],
+  "conclusion": "The argument rests on assertion rather than shown evidence. Its specific factual claims would need checking before they could be accepted.",
+  "warnings": ["The source is a machine transcript and may contain errors."]
+}

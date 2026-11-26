@@ -2,6 +2,7 @@
 #   STEELE_EXP_MASTRA_BIND   host address:port to publish on. PRIVATE INTERFACE ONLY: Studio
 #                            and the API have no login (#930), so this bind is the access control.
 #   STEELE_EXP_MASTRA_DATA     host directory for persistent LibSQL storage
+#   STEELE_EXP_MASTRA_MODEL_CONFIG_DIR  canonical model provider configuration directory (mounted read-only)
 name: steele-exp-mastra
 services:
   mastra:
@@ -13,8 +14,16 @@ services:
       STEELE_EXP_MASTRA_DB: file:/data/mastra.db
       STEELE_EXP_MASTRA_FEED_DB: file:/data/feed.db
       STEELE_EXP_MASTRA_SOURCES_DB: file:/data/sources.db
+      STEELE_EXP_MASTRA_ARTICLES_DB: file:/data/articles.db
+      # Live model calls stay off unless the private stack.env enables them (#921).
+      STEELE_EXP_MASTRA_LIVE_MODEL_ENABLED: ${STEELE_EXP_MASTRA_LIVE_MODEL_ENABLED:-0}
+      STEELE_EXP_MASTRA_MAX_LIVE_CALLS: ${STEELE_EXP_MASTRA_MAX_LIVE_CALLS:-1}
+      STEELE_EXP_MASTRA_LIVE_BUDGET_USD: ${STEELE_EXP_MASTRA_LIVE_BUDGET_USD:-0.05}
+      STEELE_EXP_MASTRA_MODEL_KEY_FILE: /run/model/key.toml
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
+      # Canonical model provider configuration, read-only; never copied.
+      - ${STEELE_EXP_MASTRA_MODEL_CONFIG_DIR:?set the model provider configuration directory}:/run/model:ro
     mem_limit: 768m
     read_only: true
     tmpfs:

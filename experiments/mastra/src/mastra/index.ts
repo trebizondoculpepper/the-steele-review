@@ -13,6 +13,7 @@ import {
   listVersionsWorkflow,
   readVersionWorkflow,
 } from "./workflows/capture.js";
+import { listAttemptsWorkflow, readArticleWorkflow, retryWritingWorkflow, startWritingWorkflow } from "./workflows/writing.js";
 
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
@@ -41,6 +42,10 @@ export const mastra = new Mastra({
     "read-version": readVersionWorkflow,
     "export-version": exportVersionWorkflow,
     "import-version": importVersionWorkflow,
+    "start-writing": startWritingWorkflow,
+    "retry-writing": retryWritingWorkflow,
+    "list-attempts": listAttemptsWorkflow,
+    "read-article": readArticleWorkflow,
   },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
