@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS steele_feed.items (
 -- Bounded capture retries (#915): attempts since the item was last queued, and when the last one ran.
 ALTER TABLE steele_feed.items ADD COLUMN IF NOT EXISTS capture_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE steele_feed.items ADD COLUMN IF NOT EXISTS last_capture_attempt_at timestamptz;
+-- Queue generation: bumped every time an item is queued (new, edited or selected). A capture's
+-- acknowledgement clears the queue only for the generation it processed, so an edit recorded while a
+-- capture is running stays queued.
+ALTER TABLE steele_feed.items ADD COLUMN IF NOT EXISTS capture_generation integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS steele_feed.polls (
   poll_id       text PRIMARY KEY,
@@ -91,7 +95,8 @@ BEGIN
       UPDATE steele_feed.items SET post_id = coalesce(v_item->>'postId', post_id), source_item = coalesce(v_item->>'sourceItem', source_item),
              title = coalesce(v_item->>'title',''), published_at = (v_item->>'publishedAt')::timestamptz, medium = v_item->>'medium',
              fingerprint = v_item->>'fingerprint', last_seen_at = v_now, change_count = change_count + 1,
-             needs_capture = true, capture_error = NULL, capture_attempts = 0, last_capture_attempt_at = NULL
+             needs_capture = true, capture_error = NULL, capture_attempts = 0, last_capture_attempt_at = NULL,
+             capture_generation = capture_generation + 1
        WHERE subscription = p_subscription AND canonical_url = v_item->>'canonicalUrl';
       v_changed := v_changed || jsonb_build_array(v_item->>'canonicalUrl');
     ELSE
@@ -125,7 +130,8 @@ BEGIN
   VALUES (p_subscription, p_canonical_url, p_slug, 'unknown', 'manual', 'selected', v_now, v_now, true)
   ON CONFLICT (subscription, canonical_url) DO UPDATE
     SET status = 'selected', needs_capture = true, capture_error = NULL, last_seen_at = v_now,
-        capture_attempts = 0, last_capture_attempt_at = NULL
+        capture_attempts = 0, last_capture_attempt_at = NULL,
+        capture_generation = steele_feed.items.capture_generation + 1
   RETURNING (xmax = 0) INTO v_created;
   RETURN jsonb_build_object('subscription', p_subscription, 'canonicalUrl', p_canonical_url, 'created', v_created, 'needsCapture', true);
 END $$;

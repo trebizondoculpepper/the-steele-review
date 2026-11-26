@@ -55,7 +55,7 @@
         200
       ],
       "parameters": {
-        "jsCode": "const list = $json.result ?? [];\nreturn list.map((i) => ({ json: { store: 'live', url: i.canonicalUrl, publicationHost: 'saveusnow.substack.com' } }));"
+        "jsCode": "const list = $json.result ?? [];\nreturn list.map((i) => ({ json: { store: 'live', url: i.canonicalUrl, generation: i.generation, publicationHost: 'saveusnow.substack.com' } }));"
       }
     },
     {
@@ -83,7 +83,7 @@
         200
       ],
       "parameters": {
-        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
+        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, generation: req.generation, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
         "mode": "runOnceForEachItem"
       }
     },
@@ -98,9 +98,9 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT steele_src.capture_outcome($1, $2::boolean, $3::boolean, $4) AS result",
+        "query": "SELECT steele_src.capture_outcome($1, $2::integer, $3::boolean, $4::boolean, $5) AS result",
         "options": {
-          "queryReplacement": "={{ [$json.url, $json.ok, $json.permanent, $json.error] }}"
+          "queryReplacement": "={{ [$json.url, $json.generation, $json.ok, $json.permanent, $json.error] }}"
         }
       },
       "credentials": {

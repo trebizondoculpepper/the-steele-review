@@ -92,3 +92,13 @@ test("restricted and foreign posts come out of the fetch node as failures, and b
   const built = (await run(nodeCode("sources-capture.json", "Build bundle"), restricted.json)) as { json: unknown };
   assert.deepEqual(built.json, restricted.json, "a failure reaches the end of the one path unchanged");
 });
+
+test("an invalid numeric character reference keeps the article text and adds a warning", async () => {
+  const post = { id: 8, slug: "entities", title: "E", type: "newsletter", audience: "everyone", body_html: "<p>Before &#x110000; caf&#233; after</p>" };
+  const fetched = (await run(nodeCode("sources-capture.json", "Fetch post"), {
+    store: "fixture-test", url: "https://example.substack.com/p/entities", publicationHost: "example.substack.com", fixturePost: post,
+  })) as { json: unknown };
+  const built = (await run(nodeCode("sources-capture.json", "Build bundle"), fetched.json)) as { json: { bundleBytes: string; warnings: string[] } };
+  assert.equal((JSON.parse(built.json.bundleBytes) as { text: string }).text, "Before &#x110000; café after");
+  assert.deepEqual(built.json.warnings, ["article-html-invalid-character-reference"]);
+});
