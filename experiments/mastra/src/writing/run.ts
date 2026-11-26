@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { VersionStore } from "../capture/store.js";
 import { ModelError, type WritingModel } from "./model.js";
 import { loadWritingPrompt, renderUser, type WritingPrompt } from "./prompt.js";
-import { ArticleSchema, lengthGuidance, renderArticle } from "./render.js";
+import { ArticleSchema, lengthGuidance, renderArticle, unsupportedMarkdown } from "./render.js";
 import type { AttemptStore } from "./store.js";
 
 /**
@@ -90,6 +90,8 @@ export async function modelPhase(deps: WritingDeps, attempt: string) {
     throw new StopError("interrupted-fake-call");
   }
   if (a.status === "pending") {
+    // Live permission is rechecked at the call boundary, not only at creation.
+    if (a.mode === "live" && !deps.limits.liveEnabled) return stop(deps, attempt, "live-model-disabled");
     const prompt = deps.prompt ?? loadWritingPrompt();
     if (prompt.identity !== a.promptIdentity) return stop(deps, attempt, "prompt-changed-since-attempt-created");
     const v = await deps.versions.read(a.sourceVersion);
@@ -135,6 +137,8 @@ export async function savePhase(deps: WritingDeps, attempt: string) {
   const checked = ArticleSchema.safeParse(parsed);
   if (!checked.success) return stop(deps, attempt, `invalid-model-output: ${checked.error.issues[0]?.path.join(".") || "schema"}`);
   const article = checked.data;
+  const unsupported = unsupportedMarkdown(article);
+  if (unsupported) return stop(deps, attempt, `invalid-model-output: unsupported-markdown (${unsupported})`);
   const length = lengthGuidance(article);
   // Advisory only: added while within the article's 10-warning limit; the counts are always recorded.
   if (length.warning && !article.warnings.includes(length.warning) && article.warnings.length < 10) article.warnings.push(length.warning);

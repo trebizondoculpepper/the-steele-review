@@ -196,3 +196,44 @@ test("the advisory length warning never pushes warnings past the article limit",
   const saved = await savePhase(deps, attempt);
   assert.equal(saved.warnings!.length, 10);
 });
+
+test("a pending live attempt is refused once live mode is switched off", async () => {
+  const live = (mode: "fake" | "live") => (mode === "live" ? { mode: "live" as const, id: "l", complete: async (s: string, u: string) => new FakeModel().complete(s, u) } : new FakeModel());
+  const { deps, old } = await setup(live);
+  const attempt = await createAttempt(deps, old, "live");
+  deps.limits.liveEnabled = false;
+  await pinPhase(deps, attempt);
+  await assert.rejects(modelPhase(deps, attempt), (e: unknown) => e instanceof StopError && e.reason === "live-model-disabled");
+  assert.equal((await deps.attempts.liveLedger()).liveCallsStarted, 0);
+});
+
+test("the key file is read as TOML: comments are ignored", async () => {
+  const { OpenRouterModel } = await import("../src/writing/model.js");
+  const { writeFileSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "key-"));
+  const file = join(dir, "key.toml");
+  writeFileSync(file, '# OPENROUTER_API_KEY = "sk-or-old-xxxxxxxxxxxxxxxxxxxxxx"\nOPENROUTER_API_KEY = "sk-or-current-yyyyyyyyyyyyyyyyyy" # active\n');
+  let sent = "";
+  const model = new OpenRouterModel(file, (async (_u: unknown, init: RequestInit) => {
+    sent = String((init.headers as Record<string, string>).authorization);
+    return Response.json({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }], usage: {} });
+  }) as unknown as typeof fetch);
+  await model.complete("s", "u");
+  assert.equal(sent, "Bearer sk-or-current-yyyyyyyyyyyyyyyyyy");
+});
+
+test("unsupported Markdown in model output is refused before saving", async () => {
+  const html = () => ({
+    mode: "fake" as const,
+    id: "html",
+    complete: async (s: string, u: string) => {
+      const r = await new FakeModel().complete(s, u);
+      return { ...r, raw: JSON.stringify({ ...JSON.parse(r.raw), summary: "Text <script>x</script>" }) };
+    },
+  });
+  const { deps, old } = await setup(html);
+  const attempt = await createAttempt(deps, old, "fake");
+  await pinPhase(deps, attempt);
+  await modelPhase(deps, attempt);
+  await assert.rejects(savePhase(deps, attempt), (e: unknown) => e instanceof StopError && e.reason === "invalid-model-output: unsupported-markdown (html)");
+});

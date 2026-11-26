@@ -30,6 +30,29 @@ const LABEL: Record<Article["critique"][number]["category"], string> = {
   "not-checked": "Not checked",
 };
 
+/**
+ * Model text fields are prose. Anything the draft service's converter would
+ * reject (raw HTML, images, code, tables, quotes, extra headings, rules or
+ * non-https links) is refused before the article is saved.
+ */
+export function unsupportedMarkdown(a: Article): string | null {
+  const fields = [a.title, a.subtitle ?? "", a.summary, a.conclusion, ...a.warnings, ...a.critique.flatMap((c) => [c.point, c.why_it_matters])];
+  for (const f of fields) {
+    if (/<\/?[a-zA-Z][^>]*>/.test(f)) return "html";
+    if (/!\[/.test(f)) return "image";
+    if (/```|`/.test(f)) return "code";
+    if (/\]\((?!https:\/\/)/.test(f)) return "non-https-link";
+    for (const line of f.split("\n")) {
+      const t = line.trimStart();
+      if (/^#{1,6}\s/.test(t)) return "heading";
+      if (t.startsWith(">")) return "blockquote";
+      if (t.startsWith("|")) return "table";
+      if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(t)) return "rule";
+    }
+  }
+  return null;
+}
+
 /** Deterministic Markdown per the contract's rendering rules. */
 export function renderArticle(article: Article): string {
   const a = ArticleSchema.parse(article);
