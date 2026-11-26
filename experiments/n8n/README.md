@@ -85,6 +85,30 @@ This is one bounded writing step, following the contract's "Writing step" (`doc/
 
 Each run's trace is visible in n8n's execution history and in the webhook result. It shows the source version and hash, the prompt identity, the mode and model, and the outcome.
 
+## Delivery (#917)
+
+Delivery follows the contract's "Delivery request" section and uses the shared draft service from #912. Substack authentication and conversion stay inside that service. The state is in the `steele_dl` schema (`sql/004-delivery.sql`).
+
+- **The request:**
+  - It is built only from the immutable saved article and its pinned source version.
+  - Its ID is `exp-911:n8n:<attempt>`. A same-attempt retry sends the same ID with an identical payload, while a fresh attempt gets a new ID and, deliberately, a new labelled draft.
+  - The title label is `[exp-911 n8n <attempt>] `, so n8n and Mastra never share a delivery ID.
+- **The loop:** `Delivery: deliver one article` runs each try as a native HTTP Request step, visible in the execution history:
+  - **Bounded tries:** at most 3.
+  - **Reconcile first:** an unanswered or uncertain create is reconciled through the service's reconcile operation, never re-created.
+  - **No retries for refusals:** `conflict`, `invalid` and `forbidden` are never retried.
+  - **Strict readback:** success requires the expected title, unpublished, and no email sent. If that readback is missing, one fresh readback is requested; otherwise the result is `unverified`.
+- **The record:** the outcome, draft ID, receipt, readback and every try go to `steele_dl.deliveries`. The private editor link is never returned or stored.
+- **Switches:** real delivery is off unless `STEELE_EXP_N8N_DELIVERY_ENABLED=1` in the private `stack.env`. The service URL also comes from there.
+- **Platform token:** like the model key, it is currently a placeholder. The mechanism is the open question on #916.
+
+| Operation | How |
+|---|---|
+| deliver | `POST /webhook/steele-exp/delivery/deliver` `{"articleId", "target"?: "service"\|"fake", "scenario"?, "mutate"?}` |
+| read back | `POST /webhook/steele-exp/delivery/browse` `{"op": "list"\|"read", "requestId"?}` |
+
+**Test double:** `Test double: draft service` serves the draft service's operations, statuses and HTTP codes. Its state is in the database, so it survives restarts. It can be told to lose the response after creating (`lost-response`) or to answer `uncertain` first (`uncertain-once`), and a changed payload produces `conflict`. n8n path parameters need a webhook-ID prefix, so the double takes the request ID as a query parameter; the real service's routes are used exactly as they are.
+
 ## Storage and state
 
 - Workflows, credentials, run history (inputs, outputs and errors of every execution, kept for 14 days) and users live in a dedicated PostgreSQL database and restricted role on the existing PostgreSQL service. That role cannot connect to any other database.
@@ -114,6 +138,20 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
   - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
   - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
 - **Inspection:** n8n's public API (`/api/v1/workflows`, `/api/v1/executions?includeData=true`) with a read-only scoped API key. The key is kept in the host's private secrets. Execution records show each node's inputs, outputs and errors.
+
+## Delivery evidence (#917, 2026-11-26, test double only)
+
+| Case | Result |
+|---|---|
+| Normal | `created`, readback verified (title matches, unpublished, no email), one try |
+| Same delivery repeated | `existing`, same draft and receipt; the double recorded one create |
+| Same request ID, changed payload | `conflict`, no retry |
+| Response lost after creation | `unreachable`, then reconcile gave `existing`; no second create |
+| `uncertain` first | reconcile gave `existing` |
+| Re-delivery after restarting n8n (and the double) | `existing`, the same draft |
+| Real target while delivery is disabled | 409 `delivery-disabled` |
+
+Across all runs, every request ID created exactly one draft. `test/delivery.test.ts` covers the loop's rules: the bound of 3 tries, reconcile before re-create, no retries for refusals, strict readback, and no editor link in results.
 
 ## Writing evidence (#916, 2026-11-26; fake model only, no paid calls)
 
