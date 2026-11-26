@@ -21,7 +21,7 @@
     },
     {
       "id": "h2",
-      "name": "POST /v1/deliveries/:id/reconcile",
+      "name": "POST reconcile",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -30,15 +30,15 @@
       ],
       "parameters": {
         "httpMethod": "POST",
-        "path": "steele-exp/fake-draft/v1/deliveries/:id/reconcile",
+        "path": "steele-exp/fake-draft/v1/reconcile",
         "responseMode": "responseNode",
         "options": {}
       },
-      "webhookId": "steele-exp-fake-draft-v1-deliveries-id-reconcile"
+      "webhookId": "steele-exp-fake-draft-v1-reconcile"
     },
     {
       "id": "h3",
-      "name": "GET /v1/deliveries/:id",
+      "name": "GET status",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -47,11 +47,11 @@
       ],
       "parameters": {
         "httpMethod": "GET",
-        "path": "steele-exp/fake-draft/v1/deliveries/:id",
+        "path": "steele-exp/fake-draft/v1/status",
         "responseMode": "responseNode",
         "options": {}
       },
-      "webhookId": "steele-exp-fake-draft-v1-deliveries-id"
+      "webhookId": "steele-exp-fake-draft-v1-status"
     },
     {
       "id": "r1",
@@ -113,7 +113,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Test double of the draft service: route, request ID and payload. A missing bearer token is refused.\nconst item = $json;\nconst auth = String(item.headers?.authorization ?? '');\nconst path = String($('Route').first().json.route);\nif (!/^Bearer \\S+$/.test(auth)) return [{ json: { route: 'unauthorised' } }];\nconst id = item.params?.id ? decodeURIComponent(item.params.id) : (item.body?.requestId ?? '');\nreturn [{ json: { route: path, requestId: String(id), payload: path === 'deliver' ? item.body : null, platform: 'n8n' } }];"
+        "jsCode": "// Test double of the draft service: route, request ID and payload. A missing bearer token is refused.\nconst item = $json;\nconst auth = String(item.headers?.authorization ?? '');\nconst path = String($('Route').first().json.route);\nif (!/^Bearer \\S+$/.test(auth)) return [{ json: { route: 'unauthorised' } }];\nconst id = path === 'deliver' ? (item.body?.requestId ?? '') : (item.query?.id ?? '');\nreturn [{ json: { route: path, requestId: String(id), payload: path === 'deliver' ? item.body : null, platform: 'n8n' } }];"
       }
     },
     {
@@ -190,7 +190,7 @@
         ]
       ]
     },
-    "POST /v1/deliveries/:id/reconcile": {
+    "POST reconcile": {
       "main": [
         [
           {
@@ -201,7 +201,7 @@
         ]
       ]
     },
-    "GET /v1/deliveries/:id": {
+    "GET status": {
       "main": [
         [
           {

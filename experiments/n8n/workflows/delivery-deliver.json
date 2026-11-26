@@ -69,7 +69,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "// The exact request for one saved article (built from storage), and the delivery's starting state.\nconst crypto = require('crypto');\nconst input = $('Delivery request').first().json;\nconst row = $('Build request').first().json;\nconst fail = (status, reason) => [{ json: { action: 'finish', stopped: { status, reason }, articleId: input.articleId } }];\nif (!row.request) return fail('not-found', 'article-not-found');\nconst target = input.target === 'fake' ? 'fake' : 'service';\nlet baseUrl;\nif (target === 'fake') baseUrl = 'http://127.0.0.1:5678/webhook/steele-exp/fake-draft';\nelse {\n  if (row.enabled !== '1') return fail('disabled', 'delivery-disabled');\n  if (!/^https?:\\/\\/[^\\s/?#]+$/.test(String(row.url ?? ''))) return fail('disabled', 'draft-service-url-not-configured');\n  baseUrl = row.url;\n}\nconst request = { ...row.request };\n// Test-only: a changed payload under the same request ID, to prove the service refuses it (fake target only).\nif (target === 'fake' && input.mutate === 'title') request.title = `${request.title} (changed)`;\nconst payloadSha256 = crypto.createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');\nreturn [{ json: { action: null, articleId: input.articleId, target, baseUrl, request, requestId: request.requestId, payloadSha256,\n  tries: 0, mustReconcile: false, maybeCreated: false, readbackTried: false, last: null, history: [] } }];"
+        "jsCode": "// The exact request for one saved article (built from storage), and the delivery's starting state.\nconst crypto = require('crypto');\nconst input = $('Delivery request').first().json;\nconst row = $('Build request').first().json;\nconst fail = (status, reason) => [{ json: { action: 'finish', stopped: { status, reason }, articleId: input.articleId } }];\nif (!row.request) return fail('not-found', 'article-not-found');\nconst target = input.target === 'fake' ? 'fake' : 'service';\nlet baseUrl;\nif (target === 'fake') baseUrl = 'http://127.0.0.1:5678/webhook/steele-exp/fake-draft';\nelse {\n  if (row.enabled !== '1') return fail('disabled', 'delivery-disabled');\n  if (!/^https?:\\/\\/[^\\s/?#]+$/.test(String(row.url ?? ''))) return fail('disabled', 'draft-service-url-not-configured');\n  baseUrl = row.url;\n}\nconst request = { ...row.request };\n// Test-only: a changed payload under the same request ID, to prove the service refuses it (fake target only).\nif (target === 'fake' && input.mutate === 'title') request.title = `${request.title} (changed)`;\nconst payloadSha256 = crypto.createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');\n// The real service's routes; the test double serves the same operations on fixed n8n webhook paths\n// (n8n path parameters need a webhook-ID prefix), taking the request ID as a query parameter.\nconst id = encodeURIComponent(request.requestId);\nconst urls = target === 'fake'\n  ? { deliver: `${baseUrl}/v1/drafts`, reconcile: `${baseUrl}/v1/reconcile?id=${id}`, status: `${baseUrl}/v1/status?id=${id}` }\n  : { deliver: `${baseUrl}/v1/drafts`, reconcile: `${baseUrl}/v1/deliveries/${id}/reconcile`, status: `${baseUrl}/v1/deliveries/${id}?refresh=1` };\nreturn [{ json: { action: null, articleId: input.articleId, target, urls, request, requestId: request.requestId, payloadSha256,\n  tries: 0, mustReconcile: false, maybeCreated: false, readbackTried: false, last: null, history: [] } }];"
       }
     },
     {
@@ -188,7 +188,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.baseUrl }}/v1/drafts",
+        "url": "={{ $json.urls.deliver }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -230,7 +230,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.baseUrl }}/v1/deliveries/{{ encodeURIComponent($json.requestId) }}/reconcile",
+        "url": "={{ $json.urls.reconcile }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -269,7 +269,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ $json.baseUrl }}/v1/deliveries/{{ encodeURIComponent($json.requestId) }}?refresh=1",
+        "url": "={{ $json.urls.status }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
