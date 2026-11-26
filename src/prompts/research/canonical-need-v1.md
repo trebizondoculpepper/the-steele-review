@@ -1,1 +1,0 @@
-Find independent, authoritative sources that directly establish or limit the following specifically scoped claims concerning canonical topic {{theme}}. Treat each claim as an assertion to check, not as established fact. Record supported passages and honest unresolved gaps; a source merely discussing the topic does not establish a claim.

@@ -1,3 +1,5 @@
+> **Rebuild status:** confidentiality, credential handling, least privilege, untrusted-input validation and safe diagnostics below remain current requirements. Sections describing specific archived publication flows are historical reference; the replacement's delivery policy and implementation have not been selected. See [rebuild principles](doc/architecture/rebuild-principles.md).
+
 # Security principles
 
 ## Public repository, private configuration

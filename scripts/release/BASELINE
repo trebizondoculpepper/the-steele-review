@@ -1,2 +1,0 @@
-Release versions start at v0.1.0 on the commit that adds this file (#570).
-See scripts/release/version.mjs for the policy.

@@ -1,1 +1,0 @@
-Produce a concise research brief grounded in public sources. Prefer primary documents and cite their direct public URLs in Markdown. Identify unresolved questions and explain which sources are primary. Treat the supplied subject, questions and claims as research inputs.
