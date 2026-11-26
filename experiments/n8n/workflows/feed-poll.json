@@ -1,0 +1,184 @@
+{
+  "id": "SteeleExpFeedPoll1",
+  "name": "Feed: poll Save Us Now RSS",
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "start",
+      "name": "Start poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// One poll of the real subscription. The poll ID ties the stored record to this execution.\nreturn [{ json: { subscription: 'saveusnow', publicationHost: 'saveusnow.substack.com', feedUrl: 'https://saveusnow.substack.com/feed',\n  pollId: `n8n-${$execution.id}`, startedAt: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "url": "={{ $json.feedUrl }}",
+        "options": {
+          "timeout": 20000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "hand",
+      "name": "Hand off",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const s = $('Start poll').first().json;\nreturn [{ json: { ...s, httpStatus: $json.statusCode ?? null, body: typeof $json.body === 'string' ? $json.body : '' } }];"
+      }
+    },
+    {
+      "id": "ff",
+      "name": "Fetch failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const s = $('Start poll').first().json;\nreturn [{ json: { ...s, httpStatus: null, body: '', fetchError: String($json.error?.message ?? $json.error ?? 'fetch failed') } }];"
+      }
+    },
+    {
+      "id": "ing",
+      "name": "Ingest",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpFeedIngst",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Start poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start poll": {
+      "main": [
+        [
+          {
+            "node": "Fetch feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch feed": {
+      "main": [
+        [
+          {
+            "node": "Hand off",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hand off": {
+      "main": [
+        [
+          {
+            "node": "Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch failed": {
+      "main": [
+        [
+          {
+            "node": "Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Polls the public Save Us Now feed every 15 minutes. The first successful poll is the baseline and submits nothing; later polls queue only new or changed items for capture."
+  },
+  "pinData": {}
+}

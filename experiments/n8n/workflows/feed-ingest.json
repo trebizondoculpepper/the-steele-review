@@ -1,0 +1,263 @@
+{
+  "id": "SteeleExpFeedIngst",
+  "name": "Feed: ingest one observation (sub-workflow)",
+  "nodes": [
+    {
+      "id": "in",
+      "name": "Feed input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "check",
+      "name": "Check response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Validate the fetched response before parsing: a failed or truncated fetch must never become an observation.\nconst i = $json;\nif (i.fetchError) throw new Error(`feed-unavailable: ${String(i.fetchError).slice(0, 300)}`);\nif (i.httpStatus !== 200) throw new Error(`feed-unavailable: feed returned HTTP ${i.httpStatus}`);\nif (typeof i.body !== 'string' || i.body.length === 0) throw new Error('invalid-feed: empty response');\nif (i.body.length > 5000000) throw new Error('invalid-feed: feed is too large');\nreturn [{ json: { feedXml: i.body } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "xml",
+      "name": "Parse XML",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "mode": "xmlToJson",
+        "dataPropertyName": "feedXml",
+        "options": {
+          "explicitArray": false,
+          "mergeAttrs": true,
+          "ignoreAttrs": false,
+          "trim": true,
+          "normalize": false
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "norm",
+      "name": "Normalise items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Normalise RSS items to the experiment's feed identity (same rules as the Mastra track, #919).\nconst input = $('Feed input').first().json;\nconst host = input.publicationHost;\nconst publication = host.split('.')[0];\nconst crypto = require('crypto');\nconst channel = $json.rss && $json.rss.channel;\nif (!channel || typeof channel !== 'object') throw new Error('invalid-feed: not an RSS channel');\nconst raw = channel.item === undefined ? [] : Array.isArray(channel.item) ? channel.item : [channel.item];\n// A larger feed is refused rather than truncated, so a baseline never silently omits items.\nif (raw.length > 500) throw new Error('invalid-feed: feed has more than 500 items');\nconst text = (v) => (v == null ? '' : typeof v === 'object' ? String(v._ ?? '') : String(v));\nconst seen = new Set();\nconst items = [];\nfor (const it of raw) {\n  let url;\n  try { url = new URL(text(it.link).trim()); } catch { throw new Error('invalid-feed: item link is not a URL'); }\n  const m = /^\\/p\\/([a-z0-9-]{1,200})\\/?$/.exec(url.pathname);\n  if (url.protocol !== 'https:' || url.hostname !== host || url.username || url.password || !m)\n    throw new Error('wrong-publication: item is not a post on the allowed publication');\n  const slug = m[1];\n  const canonicalUrl = `https://${host}/p/${slug}`;\n  if (seen.has(canonicalUrl)) continue; // first occurrence wins\n  seen.add(canonicalUrl);\n  const enc = it.enclosure && typeof it.enclosure === 'object' ? it.enclosure : null;\n  const enclosureUrl = enc ? String(enc.url ?? '') : '';\n  const type = enc ? String(enc.type ?? '') : '';\n  const postId = (/^https:\\/\\/api\\.substack\\.com\\/feed\\/podcast\\/(\\d{1,15})\\//.exec(enclosureUrl) || [])[1] ?? null;\n  const medium = type.startsWith('audio/') ? 'audio' : type.startsWith('video/') ? 'video' : enc ? 'unknown' : 'written';\n  const d = it.pubDate ? new Date(text(it.pubDate)) : null;\n  const item = {\n    canonicalUrl, slug, postId,\n    sourceItem: postId ? `substack:${publication}:${postId}` : null,\n    title: text(it.title).trim().slice(0, 500),\n    publishedAt: d && !Number.isNaN(d.getTime()) ? d.toISOString() : null,\n    medium,\n  };\n  item.fingerprint = 'sha256:' + crypto.createHash('sha256')\n    .update(JSON.stringify([item.canonicalUrl, item.postId, item.title, item.publishedAt, item.medium, enclosureUrl, text(it.description), text(it['content:encoded'])]))\n    .digest('hex');\n  items.push(item);\n}\nreturn [{ json: { ...input, body: undefined, items } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "rec",
+      "name": "Record observation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_feed.record_observation($1, $2, $3::timestamptz, $4::integer, $5::jsonb) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.subscription, $json.pollId, $json.startedAt, $json.httpStatus, JSON.stringify($json.items)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "res",
+      "name": "Observation result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: $json.result }];"
+      }
+    },
+    {
+      "id": "fail",
+      "name": "Failure details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        440
+      ],
+      "parameters": {
+        "jsCode": "// Collect the failure of any stage, so it is recorded as a failed poll and the run ends in error.\nconst input = $('Feed input').first().json;\nconst message = String($json.error?.message ?? $json.error ?? 'unknown failure').slice(0, 1000);\nreturn [{ json: { subscription: input.subscription, pollId: input.pollId, startedAt: input.startedAt, httpStatus: input.httpStatus ?? null, error: message } }];"
+      }
+    },
+    {
+      "id": "recf",
+      "name": "Record failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        440
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_feed.record_failure($1, $2, $3::timestamptz, $4::integer, $5) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.subscription, $json.pollId, $json.startedAt, $json.httpStatus, $json.error] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "stop",
+      "name": "Poll failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        440
+      ],
+      "parameters": {
+        "errorMessage": "={{ $('Failure details').first().json.error }}"
+      }
+    }
+  ],
+  "connections": {
+    "Feed input": {
+      "main": [
+        [
+          {
+            "node": "Check response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check response": {
+      "main": [
+        [
+          {
+            "node": "Parse XML",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse XML": {
+      "main": [
+        [
+          {
+            "node": "Normalise items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise items": {
+      "main": [
+        [
+          {
+            "node": "Record observation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record observation": {
+      "main": [
+        [
+          {
+            "node": "Observation result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure details": {
+      "main": [
+        [
+          {
+            "node": "Record failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record failure": {
+      "main": [
+        [
+          {
+            "node": "Poll failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Validates, parses and normalises one fetched feed, then records it atomically (baseline, new, changed, unchanged) or records the failure. Never fetches posts or writes articles."
+  },
+  "pinData": {}
+}
