@@ -108,14 +108,45 @@ export class AttemptStore {
     return row ? toAttempt(row) : undefined;
   }
 
-  /** Durably records that a model call is about to be sent. Returns false if one was already started. */
-  async beginModelCall(attempt: string, now: string): Promise<boolean> {
+  /**
+   * Durably records that a model call is about to be sent. For a live
+   * attempt, the call-count limit and budget are checked and the call is
+   * reserved in the same write transaction, so concurrent starts cannot both
+   * pass. Returns why it refused, or "started".
+   */
+  async beginModelCall(
+    attempt: string,
+    now: string,
+    live?: { maxCalls: number; budgetUsd: number; estimateUsd: number },
+  ): Promise<"started" | "already-started" | "call-limit" | "budget"> {
     await this.init();
-    const r = await this.db.execute({
-      sql: "UPDATE attempts SET status = 'calling', model_started_at = ?, updated_at = ? WHERE attempt = ? AND status = 'pending' AND model_started_at IS NULL",
-      args: [now, now, attempt],
-    });
-    return r.rowsAffected === 1;
+    const tx = await this.db.transaction("write");
+    try {
+      const row = (await tx.execute({ sql: "SELECT mode, status, model_started_at FROM attempts WHERE attempt = ?", args: [attempt] })).rows[0];
+      if (!row || row.status !== "pending" || row.model_started_at !== null) {
+        await tx.rollback();
+        return "already-started";
+      }
+      if (row.mode === "live" && live) {
+        const l = (
+          await tx.execute("SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS cost FROM attempts WHERE mode = 'live' AND model_started_at IS NOT NULL")
+        ).rows[0];
+        if (Number(l?.n ?? 0) >= live.maxCalls) {
+          await tx.rollback();
+          return "call-limit";
+        }
+        if (Number(l?.cost ?? 0) + live.estimateUsd > live.budgetUsd) {
+          await tx.rollback();
+          return "budget";
+        }
+      }
+      await tx.execute({ sql: "UPDATE attempts SET status = 'calling', model_started_at = ?, updated_at = ? WHERE attempt = ?", args: [now, now, attempt] });
+      await tx.commit();
+      return "started";
+    } catch (e) {
+      await tx.rollback().catch(() => undefined);
+      throw e;
+    }
   }
 
   async saveModelOutput(

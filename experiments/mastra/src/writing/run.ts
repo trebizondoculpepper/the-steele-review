@@ -28,6 +28,9 @@ export interface WritingDeps {
   now?: () => Date;
 }
 
+/** Model calls in flight in this process. A `calling` attempt absent from here was interrupted by a restart. */
+const inFlight = new Set<string>();
+
 export class StopError extends Error {
   readonly reason: string;
   constructor(reason: string) {
@@ -79,23 +82,28 @@ export async function modelPhase(deps: WritingDeps, attempt: string) {
   let called = false;
   if (a.status === "failed") throw new StopError(a.error ?? "failed");
   if (a.status === "calling") {
+    // Still running here: report it without touching the attempt.
+    if (inFlight.has(attempt)) throw new StopError("model-call-in-progress");
     // The process stopped mid-call. A live call may have been charged: never resend it.
     if (a.mode === "live") return stop(deps, attempt, "provider-uncertain");
     await deps.attempts.fail(attempt, "interrupted-fake-call", stamp(deps));
     throw new StopError("interrupted-fake-call");
   }
   if (a.status === "pending") {
-    if (a.mode === "live") {
-      const ledger = await deps.attempts.liveLedger();
-      if (ledger.liveCallsStarted >= deps.limits.maxLiveCalls) return stop(deps, attempt, "budget-exceeded: live call limit reached");
-      if (ledger.reportedCostUsd + deps.limits.estimatedLiveCallUsd > deps.limits.liveBudgetUsd) return stop(deps, attempt, "budget-exceeded: live budget");
-    }
     const prompt = deps.prompt ?? loadWritingPrompt();
     if (prompt.identity !== a.promptIdentity) return stop(deps, attempt, "prompt-changed-since-attempt-created");
     const v = await deps.versions.read(a.sourceVersion);
     const user = renderUser(prompt.userTemplate, { title: v.bundle.title, medium: v.bundle.medium, publishedAt: v.bundle.publishedAt, text: v.bundle.text });
-    if (!(await deps.attempts.beginModelCall(attempt, stamp(deps)))) throw new StopError("model-call-already-started");
+    const begun = await deps.attempts.beginModelCall(
+      attempt,
+      stamp(deps),
+      a.mode === "live" ? { maxCalls: deps.limits.maxLiveCalls, budgetUsd: deps.limits.liveBudgetUsd, estimateUsd: deps.limits.estimatedLiveCallUsd } : undefined,
+    );
+    if (begun === "call-limit") return stop(deps, attempt, "budget-exceeded: live call limit reached");
+    if (begun === "budget") return stop(deps, attempt, "budget-exceeded: live budget");
+    if (begun !== "started") throw new StopError("model-call-already-started");
     called = true;
+    inFlight.add(attempt);
     try {
       const out = await deps.model(a.mode).complete(prompt.system, user);
       await deps.attempts.saveModelOutput(
@@ -105,6 +113,8 @@ export async function modelPhase(deps: WritingDeps, attempt: string) {
       );
     } catch (e) {
       return stop(deps, attempt, e instanceof ModelError ? e.code : "provider-error");
+    } finally {
+      inFlight.delete(attempt);
     }
     a = await load(deps, attempt);
   }
@@ -126,7 +136,8 @@ export async function savePhase(deps: WritingDeps, attempt: string) {
   if (!checked.success) return stop(deps, attempt, `invalid-model-output: ${checked.error.issues[0]?.path.join(".") || "schema"}`);
   const article = checked.data;
   const length = lengthGuidance(article);
-  if (length.warning && !article.warnings.includes(length.warning)) article.warnings.push(length.warning);
+  // Advisory only: added while within the article's 10-warning limit; the counts are always recorded.
+  if (length.warning && !article.warnings.includes(length.warning) && article.warnings.length < 10) article.warnings.push(length.warning);
   const markdown = renderArticle(article);
   const articleId = `${attempt}/article@sha256:${createHash("sha256").update(markdown).digest("hex")}`;
   await deps.attempts.saveArticle(

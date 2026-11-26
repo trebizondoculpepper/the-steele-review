@@ -150,3 +150,49 @@ test("a version with no usable text stops before any model call", async () => {
   const attempt = await createAttempt(deps, empty.version, "fake");
   await assert.rejects(pinPhase(deps, attempt), (e: unknown) => e instanceof StopError && e.reason === "no-usable-text");
 });
+
+test("concurrent live starts reserve the single live call atomically", async () => {
+  let liveCalls = 0;
+  const slow = (mode: "fake" | "live") =>
+    mode === "live"
+      ? { mode: "live" as const, id: "slow", complete: async (s: string, u: string) => (liveCalls++, await new Promise((r) => setTimeout(r, 30)), new FakeModel().complete(s, u)) }
+      : new FakeModel();
+  const { deps, old } = await setup(slow);
+  const [a1, a2] = [await createAttempt(deps, old, "live"), await createAttempt(deps, old, "live")];
+  await Promise.all([pinPhase(deps, a1), pinPhase(deps, a2)]);
+  const results = await Promise.allSettled([modelPhase(deps, a1), modelPhase(deps, a2)]);
+  assert.equal(liveCalls, 1);
+  assert.equal(results.filter((r) => r.status === "rejected").length, 1);
+});
+
+test("a retry during an active call does not fail the running attempt", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const blocking = () => ({ mode: "fake" as const, id: "blocking", complete: async (s: string, u: string) => (await gate, new FakeModel().complete(s, u)) });
+  const { deps, old } = await setup(blocking);
+  const attempt = await createAttempt(deps, old, "fake");
+  await pinPhase(deps, attempt);
+  const running = modelPhase(deps, attempt);
+  await new Promise((r) => setTimeout(r, 10));
+  await assert.rejects(modelPhase(deps, attempt), (e: unknown) => e instanceof StopError && e.reason === "model-call-in-progress");
+  release();
+  await running;
+  assert.equal((await savePhase(deps, attempt)).alreadySaved, false);
+});
+
+test("the advisory length warning never pushes warnings past the article limit", async () => {
+  const tenWarnings = () => ({
+    mode: "fake" as const,
+    id: "ten",
+    complete: async (s: string, u: string) => {
+      const r = await new FakeModel().complete(s, u);
+      return { ...r, raw: JSON.stringify({ ...JSON.parse(r.raw), warnings: Array.from({ length: 10 }, (_, i) => `w${i}`) }) };
+    },
+  });
+  const { deps, old } = await setup(tenWarnings);
+  const attempt = await createAttempt(deps, old, "fake");
+  await pinPhase(deps, attempt);
+  await modelPhase(deps, attempt);
+  const saved = await savePhase(deps, attempt);
+  assert.equal(saved.warnings!.length, 10);
+});
