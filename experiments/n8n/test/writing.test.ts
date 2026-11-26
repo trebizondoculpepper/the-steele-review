@@ -100,3 +100,22 @@ test("the fake call window outlasts the slowest fake call (60 s)", () => {
   assert.equal(runPlan(attempt({ status: "calling", mode: "fake", secondsSinceCallStarted: 70 }))[0]!.json.reason, "model-call-in-progress");
   assert.equal(runPlan(attempt({ status: "calling", mode: "fake", secondsSinceCallStarted: 76 }))[0]!.json.reason, "interrupted-fake-call");
 });
+
+test("the trace carries the pinned source's text source and warnings on every path", () => {
+  const pinned = { sha256: "h", warnings: ["text-is-article-description-not-transcript"],
+    bundle: { text: "words", title: "T", medium: "video", textSource: "article-html", publishedAt: null } };
+  for (const status of ["model-done", "saved"]) {
+    const t = (runPlan(attempt({ status, article_id: "x" }), pinned)[0]!.json as unknown as { trace: Record<string, unknown> }).trace;
+    assert.deepEqual([t.textSource, t.sourceWarnings], ["article-html", ["text-is-article-description-not-transcript"]]);
+  }
+});
+
+const loadFailed = wf.nodes.find((n) => n.name === "Load failed")!.parameters.jsCode!;
+const mapLoadError = (message: string) =>
+  (new Function("$json", "$execution", loadFailed)({ error: { message } }, { id: "42" }) as { json: { loadError: string } }[])[0]!.json.loadError;
+
+test("source-load errors are categorised; dependency details never pass through", () => {
+  assert.equal(mapLoadError("not-found: no source version x [line 4]"), "not-found: no source version x");
+  assert.equal(mapLoadError("connect ECONNREFUSED 192.168.1.2:5432"), "source-unavailable (execution 42)");
+  assert.equal(mapLoadError("password authentication failed for user \"steele\""), "source-unavailable (execution 42)");
+});
