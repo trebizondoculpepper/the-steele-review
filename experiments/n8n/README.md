@@ -50,6 +50,36 @@ These follow the contract's canonical `source-bundle-v1` and the required operat
 - **Fetch failures and evidence findings:** fetch failures (`post-not-found`, `restricted`, `post-unavailable` and so on) save nothing and return an error code. Evidence findings are warnings stored with the version.
 - **Article HTML:** the Mastra track converts article HTML with the `html-to-text` library, and n8n uses a small converter in the Code node. So article-only posts can differ in whitespace between the platforms. The pinned comparison post uses its transcript, and #923 starts both platforms from one exported version anyway.
 
+## Writing (#916)
+
+This is one bounded writing step, following the contract's "Writing step" (`doc/experiments/n8n-vs-mastra.md`). The state is in the `steele_wr` schema (`sql/003-writing.sql`).
+
+- **Pinning:**
+  - An attempt is pinned to one retained source version and one prompt identity for its whole life.
+  - `deploy.sh` loads `experiments/shared/prompts/*.md` into an append-only table, byte for byte, keyed by `summary-critique-v1@sha256:<hash of the file>`, which is the same identity as the Mastra track. The database rechecks the hash, and the run rechecks it before use.
+  - The source is loaded from storage by `Sources: load a pinned version`. It is verified and never refetched.
+- **One model call:** each attempt makes at most one call. A fake model in a Code node is the default (`valid`, `malformed`, `partial`, `slow`). The live model goes through OpenRouter with the pinned `deepseek/deepseek-v4.1-flash` and the contract's parameters, via a native HTTP Request node: 120 s timeout, no redirects, no automatic retry.
+- **Starting a call:** a call starts only through `steele_wr.begin_model_call`, which marks it started. For live calls it also atomically checks:
+  - the live switch;
+  - the per-platform limit (1 call);
+  - the budget (USD 0.05, with a USD 0.01 pre-check estimate).
+
+  A started live call counts even if it is interrupted.
+- **Live switch:** `STEELE_EXP_N8N_LIVE_MODEL_ENABLED` in the private `stack.env`, default 0, is copied into `steele_wr.settings` on deploy. The OpenRouter credential holds the key from the canonical model-provider file only while the switch is on. Otherwise every deploy overwrites it with a placeholder.
+- **Interruptions:** a `calling` attempt older than its call window (live 130 s, fake 45 s) was interrupted. A live call becomes `provider-uncertain` and is never resent; a fake call becomes `interrupted-fake-call`.
+- **Outcomes:**
+  - Output is validated against `article-v1`, unsupported Markdown is refused, and the article is rendered deterministically. The shared fixture renders exactly, and word counts match the Mastra track.
+  - The article is saved immutably as `<attempt>/article@sha256:<hex of the Markdown>`.
+  - Invalid output fails visibly as `invalid-model-output: …`, keeping the raw output and usage. It is not retried.
+
+| Operation | How |
+|---|---|
+| `startRun` / `rerun` | `POST /webhook/steele-exp/writing/start` `{"version", "store"?, "mode"?: "fake"\|"live", "fakeBehaviour"?, "rerunOf"?}`. This always creates a new attempt ID; an older version is allowed. |
+| `retryRun` | `POST /webhook/steele-exp/writing/retry` `{"attempt"}` resumes the same attempt. Saved model output is reused and never re-charged, and a saved article is returned as it is. |
+| read back | `POST /webhook/steele-exp/writing/browse` with one of these ops:<br>- `listAttempts`, which includes the live ledger;<br>- `readAttempt`: the pinned source and prompt, model, usage, cost, timings and error;<br>- `readArticle`: the Markdown and JSON. |
+
+Each run's trace is visible in n8n's execution history and in the webhook result. It shows the source version and hash, the prompt identity, the mode and model, and the outcome.
+
 ## Storage and state
 
 - Workflows, credentials, run history (inputs, outputs and errors of every execution, kept for 14 days) and users live in a dedicated PostgreSQL database and restricted role on the existing PostgreSQL service. That role cannot connect to any other database.
@@ -79,6 +109,19 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
   - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
   - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
 - **Inspection:** n8n's public API (`/api/v1/workflows`, `/api/v1/executions?includeData=true`) with a read-only scoped API key. The key is kept in the host's private secrets. Execution records show each node's inputs, outputs and errors.
+
+## Writing evidence (#916, 2026-11-26; fake model only, no paid calls)
+
+- **Prompt:** loaded as `summary-critique-v1@sha256:b4475949…bd1c`, the same identity as the Mastra track.
+- **Start and retry:** a start on the pinned post saved an article, and the trace shows the source version, its hash, 12,358 characters and the prompt identity. A retry returned the same article with `alreadySaved: true` and made no new model call.
+- **Rerun on an older version:** with `rerunOf`, it got a new attempt ID. The article came from the older fixture version, with title `Fixture review of Fixture, first version` and source `…e5ef18660597`.
+- **Malformed output:** `invalid-model-output: not JSON` (422). A retry stayed failed with no new call, and the raw output and usage were kept.
+- **Partial output:** `invalid-model-output: critique`.
+- **Live while disabled:** refused with 409 `live-model-disabled`. An unknown version returned 404.
+- **Interruption:** a slow fake call was interrupted by restarting n8n. The retry reported `interrupted-fake-call`, and further retries never called the model again.
+- **Live ledger:** 0 live calls started.
+- **Tests:** `test/writing.test.ts` covers the shared article fixture rendering exactly, refusals, word counts, and the Plan node's decisions: in progress, `provider-uncertain` for an interrupted live call, reuse, and source limits.
+- **Live call:** the single live call for this platform is reserved for the bounded comparison (#923).
 
 ## Source evidence (#915, 2026-11-26)
 
