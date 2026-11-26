@@ -1,0 +1,170 @@
+{
+  "id": "SteeleExpWrRetry1",
+  "name": "Writing: retry an attempt",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Retry request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/writing/retry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-writing-retry"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const b = $json.body ?? {};\nconst attempt = String(b.attempt ?? '');\nif (!/^n8n-\\d{8}T\\d{6}Z-[0-9a-f]{4}$/.test(attempt)) throw new Error('invalid-request: attempt must be an attempt ID');\nreturn [{ json: { attempt } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "run",
+      "name": "Run attempt",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpWrRun0001",
+        "options": {}
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nreturn [{ json: { ...r, httpStatus: r.status === 'saved' ? 200 : r.status === 'failed' ? 422 : 409 } }];"
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const m = String($json.error?.message ?? $json.error).replace(/ \\[line \\d+\\]$/, '');\nreturn [{ json: { httpStatus: m.startsWith('not-found') ? 404 : m.startsWith('live-model-disabled') ? 409 : 400, error: m } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Retry request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Run attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run attempt": {
+      "main": [
+        [
+          {
+            "node": "Shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "retryRun: POST {attempt}. Resumes the same attempt: saved model output is reused (never re-charged); a saved article is returned as is."
+  },
+  "pinData": {}
+}

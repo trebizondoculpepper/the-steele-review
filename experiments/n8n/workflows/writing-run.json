@@ -1,0 +1,569 @@
+{
+  "id": "SteeleExpWrRun0001",
+  "name": "Writing: run one attempt (sub-workflow)",
+  "nodes": [
+    {
+      "id": "in",
+      "name": "Attempt",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "ctx",
+      "name": "Read attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_wr.attempt_context($1) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.attempt] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "pin",
+      "name": "Pinned version",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// The attempt and its pinned prompt, read from storage. The source version is loaded next, by the\n// Sources sub-workflow, from storage only (never refetched) and verified against its ID.\nconst ctx = $json.result;\nif (!ctx) return [{ json: { missing: true } }];\nreturn [{ json: { store: ctx.store, version: ctx.source_version } }];"
+      }
+    },
+    {
+      "id": "load",
+      "name": "Load pinned source",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpSrcLoad01",
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "loadf",
+      "name": "Load failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        500
+      ],
+      "parameters": {
+        "jsCode": "// Only explicitly safe validation errors pass through. Anything else (a database or network error) can\n// carry private connection details, so it becomes a bounded category with this execution as reference.\nconst m = String($json.error?.message ?? $json.error ?? '').replace(/ \\[line \\d+\\]$/, '');\nconst safe = /^(not-found|hash-mismatch|invalid-bundle|invalid-request): [\\w .,@:'()-]{0,200}$/.test(m);\nreturn [{ json: { loadError: safe ? m : `source-unavailable (execution ${$execution.id})` } }];"
+      }
+    },
+    {
+      "id": "plan",
+      "name": "Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Decides this run's single action from the stored attempt state, so every step is idempotent:\n// call the model once, reuse saved output, or stop. Source and model text stay data, never instructions.\nconst crypto = require('crypto');\nconst ctx = $('Read attempt').first().json.result;\nconst pinned = $json;\nconst loaded = pinned.bundle ? { sourceSha256: pinned.sha256, sourceChars: pinned.bundle.text.length, sourceTitle: pinned.bundle.title,\n  medium: pinned.bundle.medium, textSource: pinned.bundle.textSource, sourceWarnings: pinned.warnings ?? [] } : {};\nconst base = ctx ? { attempt: ctx.attempt, mode: ctx.mode, fakeBehaviour: ctx.fake_behaviour,\n  trace: { sourceVersion: ctx.source_version, store: ctx.store, promptIdentity: ctx.prompt_identity, ...loaded } } : {};\nconst stop = (reason) => [{ json: { ...base, action: 'stop', reason } }];\nconst fail = (reason) => [{ json: { ...base, action: 'fail', reason } }];\nif (!ctx) return [{ json: { action: 'stop', reason: 'unknown-attempt' } }];\nif (ctx.status === 'saved') return [{ json: { ...base, action: 'done', articleId: ctx.article_id } }];\nif (ctx.status === 'failed') return stop(ctx.error ?? 'failed');\nif (ctx.status === 'model-done') return [{ json: { ...base, action: 'validate' } }];\nif (ctx.status === 'calling') {\n  // A call cannot outlive its window: live 120 s timeout, fake at most 60 s ('slow'), each plus a margin.\n  // Older than that, the run that made it was interrupted. A live call may have been charged: never resent.\n  const limit = ctx.mode === 'live' ? 130 : 75;\n  if (Number(ctx.secondsSinceCallStarted) < limit) return stop('model-call-in-progress');\n  return fail(ctx.mode === 'live' ? 'provider-uncertain' : 'interrupted-fake-call');\n}\n// pending: check the pinned input, then prepare the one call. A source that cannot be loaded right now\n// stops the run with the attempt still pending (retry later); only a missing or corrupt version fails it.\nif (pinned.loadError) return /^(not-found|hash-mismatch|invalid-bundle)/.test(pinned.loadError) ? fail(pinned.loadError) : stop(`source-unavailable: ${pinned.loadError}`);\nconst text = pinned.bundle.text;\nif (!text.trim()) return fail('no-usable-text');\nif (text.length > 60000) return fail('source-too-large');\nconst prompt = String(ctx.promptContent);\nif (crypto.createHash('sha256').update(prompt, 'utf8').digest('hex') !== ctx.promptSha256) return fail('prompt-integrity');\nconst id = (/^id:\\s*(\\S+)/m.exec(prompt) || [])[1];\nconst system = ((/^# System\\n([\\s\\S]*?)\\n# User\\n/m.exec(prompt) || [])[1] || '').trim();\nconst userTemplate = ((/^# User\\n([\\s\\S]*)$/m.exec(prompt) || [])[1] || '').trim();\nif (!id || !system || !userTemplate || `${id}@sha256:${ctx.promptSha256}` !== ctx.prompt_identity) return fail('prompt-malformed');\nconst b = pinned.bundle;\nconst values = { 'source.title': b.title, 'source.medium': b.medium, 'source.publishedAt': b.publishedAt ?? 'unknown', 'source.text': b.text };\nlet unknown = null;\n// Values are inserted as data inside the prompt's <source> block; a source cannot close that block early.\nconst user = userTemplate.replace(/\\{\\{(source\\.[a-zA-Z]+)\\}\\}/g, (m, k) => {\n  if (!(k in values)) { unknown = k; return m; }\n  return String(values[k]).replaceAll('</source>', '<\\\\/source>');\n});\nif (unknown) return fail(`prompt-malformed: unknown placeholder ${unknown}`);\nconst requestBody = { model: 'deepseek/deepseek-v4.1-flash', temperature: 0.2, max_tokens: 2000, response_format: { type: 'json_object' },\n  reasoning: { enabled: false }, usage: { include: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] };\nreturn [{ json: { ...base, action: 'call', requestBody } }];"
+      }
+    },
+    {
+      "id": "begin",
+      "name": "Begin call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN $2::boolean THEN steele_wr.begin_model_call($1, $3) ELSE 'not-calling' END AS begun",
+        "options": {
+          "queryReplacement": "={{ [$json.attempt ?? '', $json.action === 'call', $execution.id] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const plan = $('Plan').first().json;\nconst begun = $json.begun;\nif (plan.action !== 'call') return [{ json: { ...plan, route: plan.action } }];\nif (begun === 'started') return [{ json: { ...plan, route: plan.mode } }];\nif (begun === 'already-started') return [{ json: { ...plan, route: 'stop', reason: 'model-call-already-started' } }];\nreturn [{ json: { ...plan, route: 'fail', reason: begun } }];"
+      }
+    },
+    {
+      "id": "sw",
+      "name": "By route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1400,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-fake",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "fake",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fake"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-live",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "live",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "live"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      }
+    },
+    {
+      "id": "fake",
+      "name": "Fake model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// The fake model: deterministic and free. It never describes real content.\nconst plan = $json;\nconst user = plan.requestBody.messages[1].content;\nconst title = ((/Title: (.*)/.exec(user) || [])[1] || 'the source').slice(0, 60);\nconst article = {\n  title: `Fixture review of ${title}`.slice(0, 120),\n  summary: `Fixture summary. The source is titled \"${title}\". This text is produced by the fake model for control proofs and never describes real content.`,\n  critique: [\n    { point: 'Fixture point one.', category: 'asserted', why_it_matters: 'Fixture reason one.' },\n    { point: 'Fixture point two.', category: 'not-checked', why_it_matters: 'Fixture reason two.' },\n    { point: 'Fixture point three.', category: 'established', why_it_matters: 'Fixture reason three.' },\n  ],\n  conclusion: 'Fixture conclusion.',\n  warnings: ['Produced by the fake model.'],\n};\n// 'slow' holds the call open, so a run can be interrupted mid-call in tests.\nif (plan.fakeBehaviour === 'slow') await new Promise((r) => setTimeout(r, 60000));\nconst raw = plan.fakeBehaviour === 'malformed' ? 'this is not JSON'\n  : plan.fakeBehaviour === 'partial' ? JSON.stringify({ ...article, critique: [] }) : JSON.stringify(article);\nreturn [{ json: { attempt: plan.attempt, model: 'fake/summary-critique-v1', raw, usage: { promptTokens: 0, completionTokens: 0, costUsd: 0, provider: 'fake' }, costUsd: 0, finishReason: 'stop' } }];"
+      }
+    },
+    {
+      "id": "live",
+      "name": "OpenRouter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SteeleExpOpenRtr01",
+          "name": "steele-exp openrouter"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "prov",
+      "name": "Read provider response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Maps the provider's answer. Only a readable 2xx body is model output; nothing here is retried.\nconst plan = $('Route').first().json;\nconst r = $json;\nconst failWith = (reason) => [{ json: { attempt: plan.attempt, failReason: reason } }];\nif (r.statusCode === 401 || r.statusCode === 403) return failWith(`unauthorised: provider returned ${r.statusCode}`);\nif (r.statusCode === 429) return failWith('rate-limited: provider rate limit');\nif (!(r.statusCode >= 200 && r.statusCode < 300)) return failWith(`provider-error: provider returned ${r.statusCode}`);\nconst body = typeof r.body === 'string' ? (() => { try { return JSON.parse(r.body); } catch { return null; } })() : r.body;\nif (!body || typeof body !== 'object') return failWith('provider-uncertain: unreadable provider response');\nconst u = body.usage || {};\nconst cost = typeof u.cost === 'number' ? u.cost : null;\nreturn [{ json: { attempt: plan.attempt, model: body.model ?? 'deepseek/deepseek-v4.1-flash', raw: body.choices?.[0]?.message?.content ?? '',\n  usage: { promptTokens: u.prompt_tokens ?? null, completionTokens: u.completion_tokens ?? null, costUsd: cost, provider: body.provider ?? null },\n  costUsd: cost, finishReason: body.choices?.[0]?.finish_reason ?? null } }];"
+      }
+    },
+    {
+      "id": "unc",
+      "name": "Provider uncertain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        500
+      ],
+      "parameters": {
+        "jsCode": "// No response (timeout or lost connection): the request may have been accepted and charged. Never resent.\nconst plan = $('Route').first().json;\nreturn [{ json: { attempt: plan.attempt, failReason: 'provider-uncertain: no response from the model provider' } }];"
+      }
+    },
+    {
+      "id": "save",
+      "name": "Save model output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2000,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN $7::boolean THEN steele_wr.save_model_output($1, $2, $3, $4::jsonb, $5::numeric, $6) END AS saved, $3::text AS raw, $8::text AS fail_reason",
+        "options": {
+          "queryReplacement": "={{ $json.failReason ? [$json.attempt, null, null, null, null, null, false, $json.failReason] : [$json.attempt, $json.model, $json.raw, JSON.stringify($json.usage), $json.costUsd, $json.finishReason, true, null] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "val",
+      "name": "Validate and render",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ---- shared: article-v1 rules (doc/experiments/n8n-vs-mastra.md \"Writing step\") ----\nconst ARTICLE_KEYS = ['conclusion', 'critique', 'subtitle', 'summary', 'title', 'warnings'];\nconst LABEL = { asserted: 'Asserted by the author', established: 'Widely established', 'not-checked': 'Not checked' };\n// Validates against article-v1 (strict keys, trimmed lengths) and returns the trimmed article, or a reason.\nconst checkArticle = (a) => {\n  const str = (v, min, max) => typeof v === 'string' && v.trim().length >= min && v.trim().length <= max;\n  if (!a || typeof a !== 'object' || Array.isArray(a)) return { error: 'schema' };\n  const extra = Object.keys(a).find((k) => !ARTICLE_KEYS.includes(k));\n  if (extra) return { error: extra };\n  if (!str(a.title, 1, 120)) return { error: 'title' };\n  if (a.subtitle !== undefined && !str(a.subtitle, 0, 200)) return { error: 'subtitle' };\n  if (!str(a.summary, 1, 2500)) return { error: 'summary' };\n  if (!Array.isArray(a.critique) || a.critique.length < 3 || a.critique.length > 8) return { error: 'critique' };\n  for (let i = 0; i < a.critique.length; i++) {\n    const c = a.critique[i];\n    if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some((k) => !['point', 'category', 'why_it_matters'].includes(k))) return { error: `critique.${i}` };\n    if (!str(c.point, 1, 600)) return { error: `critique.${i}.point` };\n    if (!['asserted', 'established', 'not-checked'].includes(c.category)) return { error: `critique.${i}.category` };\n    if (!str(c.why_it_matters, 1, 600)) return { error: `critique.${i}.why_it_matters` };\n  }\n  if (!str(a.conclusion, 1, 1200)) return { error: 'conclusion' };\n  if (!Array.isArray(a.warnings) || a.warnings.length > 10 || !a.warnings.every((w) => str(w, 0, 300))) return { error: 'warnings' };\n  const article = { title: a.title.trim(), summary: a.summary.trim(),\n    critique: a.critique.map((c) => ({ point: c.point.trim(), category: c.category, why_it_matters: c.why_it_matters.trim() })),\n    conclusion: a.conclusion.trim(), warnings: a.warnings.map((w) => w.trim()) };\n  if (a.subtitle !== undefined) article.subtitle = a.subtitle.trim();\n  return { article };\n};\n// Model text is prose: anything the draft service's converter would reject is refused before saving.\nconst unsupportedMarkdown = (a) => {\n  const fields = [a.title, a.subtitle ?? '', a.summary, a.conclusion, ...a.warnings, ...a.critique.flatMap((c) => [c.point, c.why_it_matters])];\n  for (const f of fields) {\n    if (/<\\/?[a-zA-Z][^>]*>/.test(f)) return 'html';\n    if (/!\\[/.test(f)) return 'image';\n    if (/```|`/.test(f)) return 'code';\n    if (/\\]\\((?!https:\\/\\/)/.test(f)) return 'non-https-link';\n    for (const line of f.split('\\n')) {\n      const t = line.trimStart();\n      if (/^#{1,6}\\s/.test(t)) return 'heading';\n      if (t.startsWith('>')) return 'blockquote';\n      if (t.startsWith('|')) return 'table';\n      if (/^(-{3,}|\\*{3,}|_{3,})\\s*$/.test(t)) return 'rule';\n    }\n  }\n  return null;\n};\n// Deterministic Markdown per the contract's rendering rules.\nconst renderArticle = (a) => {\n  const parts = [a.summary.trim(), '## Problems with the argument',\n    a.critique.map((c) => `- **${LABEL[c.category]}:** ${c.point.trim()} Why it matters: ${c.why_it_matters.trim()}`).join('\\n'),\n    a.conclusion.trim()];\n  const warnings = a.warnings.map((w) => w.trim()).filter(Boolean);\n  if (warnings.length) parts.push(`*Note: ${warnings.join(' ')}*`);\n  return `${parts.join('\\n\\n')}\\n`;\n};\nconst words = (s) => s.replace(/[*_#`>[\\]()-]/g, ' ').split(/\\s+/).filter(Boolean).length;\n// Advisory length guidance: counts and a warning, never a rejection.\nconst lengthGuidance = (a) => {\n  const summaryWords = words(a.summary), conclusionWords = words(a.conclusion);\n  return { summaryWords, conclusionWords, warning: summaryWords < 120 || summaryWords > 250 || conclusionWords > 120 ? 'length-outside-guidance' : null };\n};\n// ---- end shared ----\n// Validates, renders and identifies the article, or explains the failure. Runs for every route.\nconst crypto = require('crypto');\nconst r = $('Route').first().json;\nconst out = (o) => [{ json: { attempt: r.attempt, trace: r.trace, ...o } }];\nif (r.route === 'stop') return out({ outcome: 'stop', reason: r.reason });\nif (r.route === 'done') return out({ outcome: 'done', articleId: r.articleId });\nif (r.route === 'fail') return out({ outcome: 'fail', reason: r.reason });\nlet raw;\nif (r.route === 'validate') raw = $('Read attempt').first().json.result.raw_output;\nelse {\n  if ($json.fail_reason) return out({ outcome: 'fail', reason: $json.fail_reason });\n  if ($json.saved !== true) return out({ outcome: 'stop', reason: 'model-output-not-saved' });\n  raw = $json.raw;\n}\nlet parsed;\ntry { parsed = JSON.parse(raw); } catch { return out({ outcome: 'fail', reason: 'invalid-model-output: not JSON' }); }\nconst checked = checkArticle(parsed);\nif (checked.error) return out({ outcome: 'fail', reason: `invalid-model-output: ${checked.error}` });\nconst article = checked.article;\nconst unsupported = unsupportedMarkdown(article);\nif (unsupported) return out({ outcome: 'fail', reason: `invalid-model-output: unsupported-markdown (${unsupported})` });\nconst length = lengthGuidance(article);\nif (length.warning && !article.warnings.includes(length.warning) && article.warnings.length < 10) article.warnings.push(length.warning);\nconst markdown = renderArticle(article);\nconst articleId = `${r.attempt}/article@sha256:${crypto.createHash('sha256').update(markdown, 'utf8').digest('hex')}`;\n// The source's own evidence limitations (for example, a recording's description used instead of a\n// transcript) are kept with the saved article, from the pinned version, not from the model.\nconst src = r.trace ?? {};\nreturn out({ outcome: 'save', articleId, title: article.title, subtitle: article.subtitle ?? null, markdown,\n  articleJson: { ...article, lengthGuidance: length, source: { version: src.sourceVersion ?? null, textSource: src.textSource ?? null,\n    medium: src.medium ?? null, warnings: src.sourceWarnings ?? [] } } });"
+      }
+    },
+    {
+      "id": "rec",
+      "name": "Record outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2400,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE $1 WHEN 'fail' THEN steele_wr.fail_attempt($2, $3) WHEN 'save' THEN steele_wr.save_article($4, $2, $5, $6, $7, $8::jsonb) ELSE jsonb_build_object('attempt', $2) END AS outcome",
+        "options": {
+          "queryReplacement": "={{ [$json.outcome, $json.attempt ?? '', $json.reason ?? null, $json.articleId ?? null, $json.title ?? null, $json.subtitle ?? null, $json.markdown ?? null, $json.articleJson ? JSON.stringify($json.articleJson) : null] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "res",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// The run's visible result: outcome, article, and the trace of exactly what was used.\nconst v = $('Validate and render').first().json;\nconst o = $json.outcome ?? {};\nconst status = v.outcome === 'save' || v.outcome === 'done' ? 'saved' : v.outcome === 'fail' ? 'failed' : 'stopped';\nreturn [{ json: { attempt: v.attempt, status, articleId: o.articleId ?? v.articleId ?? null, alreadySaved: o.alreadySaved ?? v.outcome === 'done',\n  error: v.outcome === 'fail' || v.outcome === 'stop' ? v.reason : null, trace: v.trace ?? null } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Attempt": {
+      "main": [
+        [
+          {
+            "node": "Read attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read attempt": {
+      "main": [
+        [
+          {
+            "node": "Pinned version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinned version": {
+      "main": [
+        [
+          {
+            "node": "Load pinned source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load pinned source": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load failed": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan": {
+      "main": [
+        [
+          {
+            "node": "Begin call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Begin call": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "By route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "By route": {
+      "main": [
+        [
+          {
+            "node": "Fake model",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OpenRouter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate and render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fake model": {
+      "main": [
+        [
+          {
+            "node": "Save model output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter": {
+      "main": [
+        [
+          {
+            "node": "Read provider response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider uncertain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read provider response": {
+      "main": [
+        [
+          {
+            "node": "Save model output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Provider uncertain": {
+      "main": [
+        [
+          {
+            "node": "Save model output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save model output": {
+      "main": [
+        [
+          {
+            "node": "Validate and render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and render": {
+      "main": [
+        [
+          {
+            "node": "Record outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record outcome": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "One bounded writing attempt: the pinned source version and prompt, one model call (fake or live, budget-checked) or reuse of saved output, then article-v1 validation, deterministic Markdown and an immutable saved article. No research, judge or correction loop."
+  },
+  "pinData": {}
+}

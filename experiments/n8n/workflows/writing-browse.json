@@ -1,0 +1,178 @@
+{
+  "id": "SteeleExpWrBrowse1",
+  "name": "Writing: browse attempts and articles",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Browse request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/writing/browse",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-writing-browse"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const b = $json.body ?? {};\nconst op = String(b.op ?? '');\nif (!['listAttempts', 'readAttempt', 'readArticle'].includes(op)) throw new Error('invalid-request: op must be listAttempts, readAttempt or readArticle');\nif (op === 'readAttempt' && typeof b.attempt !== 'string') throw new Error('invalid-request: readAttempt needs attempt');\nif (op === 'readArticle' && typeof b.articleId !== 'string') throw new Error('invalid-request: readArticle needs articleId');\nreturn [{ json: { op, attempt: b.attempt ?? null, articleId: b.articleId ?? null, limit: Number.isInteger(b.limit) ? b.limit : 20 } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "q",
+      "name": "Read",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE $1 WHEN 'listAttempts' THEN steele_wr.list_attempts($4::integer) WHEN 'readAttempt' THEN steele_wr.read_attempt($2) ELSE steele_wr.read_article($3) END AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.op, $json.attempt, $json.articleId, $json.limit] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const r = $json.result;\nif (r === null || r === undefined) return [{ json: { httpStatus: 404, error: 'not-found' } }];\nreturn [{ json: { httpStatus: 200, ...r } }];"
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const m = String($json.error?.message ?? $json.error).replace(/ \\[line \\d+\\]$/, '');\nreturn [{ json: { httpStatus: m.startsWith('not-found') ? 404 : m.startsWith('live-model-disabled') ? 409 : 400, error: m } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Browse request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Read",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read": {
+      "main": [
+        [
+          {
+            "node": "Shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "listAttempts (with the live ledger), readAttempt (status, pinned source and prompt, model, usage, cost, timings, error) and readArticle (the saved Markdown and JSON), read from storage."
+  },
+  "pinData": {}
+}
