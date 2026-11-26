@@ -17,6 +17,8 @@ interface Workflow {
   nodes: WorkflowNode[];
   connections: Record<string, { main: { node: string }[][] }>;
 }
+// n8n runs every Code node inside an async function, so top-level await is allowed.
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...args: string[]) => unknown;
 const workflows: { file: string; wf: Workflow }[] = files.map((f) => ({ file: f, wf: JSON.parse(readFileSync(dir + f, "utf8")) as Workflow }));
 
 test("every workflow has a unique, stable ID", () => {
@@ -36,7 +38,7 @@ for (const { file, wf } of workflows) {
     const names = new Set(wf.nodes.map((n) => n.name));
     for (const n of wf.nodes)
       if (typeof n.parameters.jsCode === "string")
-        assert.doesNotThrow(() => new Function("$", "$json", "$execution", "require", n.parameters.jsCode), `${n.name} does not parse`);
+        assert.doesNotThrow(() => new AsyncFunction("$", "$json", "$execution", "require", n.parameters.jsCode), `${n.name} does not parse`);
     for (const [from, c] of Object.entries(wf.connections)) {
       assert.ok(names.has(from), `connection from unknown node ${from}`);
       for (const out of c.main) for (const t of out) assert.ok(names.has(t.node), `connection to unknown node ${t.node}`);

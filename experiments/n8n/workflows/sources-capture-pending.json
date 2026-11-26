@@ -1,0 +1,182 @@
+{
+  "id": "SteeleExpSrcCapPnd",
+  "name": "Sources: capture pending feed items",
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "q",
+      "name": "Read queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_src.pending_capture(3) AS result",
+        "options": {
+          "queryReplacement": "={{ [] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "split",
+      "name": "Pending items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const list = $json.result ?? [];\nreturn list.map((i) => ({ json: { store: 'live', url: i.canonicalUrl, generation: i.generation, publicationHost: 'saveusnow.substack.com' } }));"
+      }
+    },
+    {
+      "id": "cap",
+      "name": "Capture",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpSrcCaptur",
+        "options": {}
+      }
+    },
+    {
+      "id": "done",
+      "name": "Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, generation: req.generation, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : String(r.message).slice(0, 500), result: r } };",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "clr",
+      "name": "Update queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_src.capture_outcome($1, $2::integer, $3::boolean, $4::boolean, $5) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.url, $json.generation, $json.ok, $json.permanent, $json.error] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Read queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read queue": {
+      "main": [
+        [
+          {
+            "node": "Pending items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending items": {
+      "main": [
+        [
+          {
+            "node": "Capture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Update queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Captures up to 3 items queued by feed discovery (#914) every 15 minutes, untried items first; a transient failure is retried at most 5 times, then the item leaves the queue as retries-exhausted. Discovery and capture stay separate."
+  },
+  "pinData": {}
+}
