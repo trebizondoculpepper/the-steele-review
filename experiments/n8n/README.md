@@ -8,6 +8,28 @@ The n8n half of the clean-slate n8n versus Mastra comparison. The contract is `d
 - `deploy/deploy.sh`: copies only Git-tracked files to the host, starts or updates the stack, then imports every workflow in `workflows/` with n8n's own CLI.
 - `workflows/`: workflow definitions, one JSON file each, with stable IDs, so a re-import updates a workflow rather than duplicating it. These files are the source of truth. Canvas edits that are not exported back to Git are lost on the next deploy.
 
+## Feed discovery (#914)
+
+The rules are the same as the Mastra track's (#919). The state lives in the `steele_feed` schema of the experiment database (`sql/001-feed.sql`). One atomic PostgreSQL function owns each transition.
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `Feed: poll Save Us Now RSS` (`SteeleExpFeedPoll1`) | Schedule, every 15 min | Fetches the public feed, with no redirects and a 20 s timeout, and hands it to ingest. |
+| `Feed: ingest one observation` (`SteeleExpFeedIngst`) | Sub-workflow | Checks the response (HTTP 200, non-empty, 5 MB or less), parses the XML and normalises each item. It then records the result atomically, or records the failure and ends the run in error. |
+| `Feed: select one post for capture` (`SteeleExpFeedSelct`) | `POST /webhook/steele-exp/feed/select` `{"url": ...}` | The manual and agent path: queues one post on the publication, such as an older one. It fetches nothing. |
+| `Feed: status` (`SteeleExpFeedStats`) | `GET /webhook/steele-exp/feed/status` | Read-only. Returns the last poll, the last failure, counts, the capture queue and recent items. |
+| `Feed: ingest a test fixture` (`SteeleExpFeedFixtr`) | `POST /webhook/steele-exp/feed/fixture` `{"subscription":"fixture-…","xml":...}` | Runs the same ingest under an isolated `fixture-*` subscription, so tests never touch the real feed's state. |
+
+- **Baseline:** the first successful poll of a subscription is its baseline. Every item then present is stored as `baseline` and nothing is queued.
+- **New and edited items:** after the baseline, a new item is queued for capture (`needs_capture`). An item whose metadata fingerprint changes is queued again, and its `change_count` goes up.
+- **Unchanged feed:** an unchanged feed only refreshes `last_seen_at`, and a repeated poll ID is a no-op.
+- **Overlapping polls:** an advisory lock means two overlapping polls can't both take the baseline.
+- **Identity:** each item is identified by its canonical URL, `https://<publication>/p/<slug>`. The numeric post ID and `substack:<publication>:<id>` are recorded when the feed reveals them; audio enclosures reveal them. Capture (#915) pins the definitive ID.
+- **Inspection:** every poll is visible in two places:
+  - in n8n's execution history, with each node's input, output and error;
+  - as a row in `steele_feed.polls`, with outcome, counts and error.
+- **Access:** the webhooks are unauthenticated. Like the interface, they are reachable only on the private network (#930).
+
 ## Storage and state
 
 - Workflows, credentials, run history (inputs, outputs and errors of every execution, kept for 14 days) and users live in a dedicated PostgreSQL database and restricted role on the existing PostgreSQL service. That role cannot connect to any other database.
@@ -37,6 +59,20 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
   - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
   - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
 - **Inspection:** n8n's public API (`/api/v1/workflows`, `/api/v1/executions?includeData=true`) with a read-only scoped API key. The key is kept in the host's private secrets. Execution records show each node's inputs, outputs and errors.
+
+## Feed evidence (#914, 2026-11-26, fixture subscription `fixture-t2`)
+
+1. **Baseline:** 2 items, 0 queued.
+2. **Unchanged:** 0 new, 0 changed.
+3. **New and edited:** 1 new (`gamma`) and 1 changed (`alpha`), both queued.
+4. **Unchanged again:** 0 new, 0 changed.
+5. **Malformed XML:** a failed poll, `invalid-feed: not an RSS channel`.
+6. **Link from another host:** a failed poll, `wrong-publication`.
+7. **HTTP 503:** a failed poll, `feed-unavailable`.
+8. **Selection:**
+   - Selecting `…/p/older-post?utm_source=x` stores the canonical URL and queues it.
+   - A URL with userinfo pointing at another host is rejected with 400.
+   - Selecting a known item marks it `selected` and queues it again.
 
 ## Setup evidence (#913, 2026-11-26)
 
