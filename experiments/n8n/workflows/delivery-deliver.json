@@ -1,0 +1,550 @@
+{
+  "id": "SteeleExpDlvr0001",
+  "name": "Delivery: deliver one article (sub-workflow)",
+  "nodes": [
+    {
+      "id": "in",
+      "name": "Delivery request",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "build",
+      "name": "Build request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_dl.build_request($1) AS request, steele_wr.setting('draft_service_url', '') AS url, steele_wr.setting('delivery_enabled', '0') AS enabled",
+        "options": {
+          "queryReplacement": "={{ [$json.articleId ?? ''] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "scn",
+      "name": "Fake scenario",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH s AS (INSERT INTO steele_fake.scenarios SELECT $1, $2 WHERE $3::boolean ON CONFLICT (request_id) DO UPDATE SET scenario = excluded.scenario RETURNING 1) SELECT count(*) AS scenario_set FROM s",
+        "options": {
+          "queryReplacement": "={{ [$json.request?.requestId ?? '', $('Delivery request').first().json.scenario ?? 'normal', $('Delivery request').first().json.target === 'fake' && !!$json.request] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "prep",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// The exact request for one saved article (built from storage), and the delivery's starting state.\nconst crypto = require('crypto');\nconst input = $('Delivery request').first().json;\nconst row = $('Build request').first().json;\nconst fail = (status, reason) => [{ json: { action: 'finish', stopped: { status, reason }, articleId: input.articleId } }];\nif (!row.request) return fail('not-found', 'article-not-found');\nconst target = input.target === 'fake' ? 'fake' : 'service';\nlet baseUrl;\nif (target === 'fake') baseUrl = 'http://127.0.0.1:5678/webhook/steele-exp/fake-draft';\nelse {\n  if (row.enabled !== '1') return fail('disabled', 'delivery-disabled');\n  if (!/^https?:\\/\\/[^\\s/?#]+$/.test(String(row.url ?? ''))) return fail('disabled', 'draft-service-url-not-configured');\n  baseUrl = row.url;\n}\nconst request = { ...row.request };\n// Test-only: a changed payload under the same request ID, to prove the service refuses it (fake target only).\nif (target === 'fake' && input.mutate === 'title') request.title = `${request.title} (changed)`;\nconst payloadSha256 = crypto.createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');\n// The real service's routes; the test double serves the same operations on fixed n8n webhook paths\n// (n8n path parameters need a webhook-ID prefix), taking the request ID as a query parameter.\nconst id = encodeURIComponent(request.requestId);\nconst urls = target === 'fake'\n  ? { deliver: `${baseUrl}/v1/drafts`, reconcile: `${baseUrl}/v1/reconcile?id=${id}`, status: `${baseUrl}/v1/status?id=${id}` }\n  : { deliver: `${baseUrl}/v1/drafts`, reconcile: `${baseUrl}/v1/deliveries/${id}/reconcile`, status: `${baseUrl}/v1/deliveries/${id}?refresh=1` };\nreturn [{ json: { action: null, articleId: input.articleId, target, urls, request, requestId: request.requestId, payloadSha256,\n  tries: 0, mustReconcile: false, maybeCreated: false, readbackTried: false, last: null, history: [] } }];"
+      }
+    },
+    {
+      "id": "next",
+      "name": "Next step",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const MAX_TRIES = 3;\nconst s = $json;\nif (s.action === 'finish' && s.stopped) return [{ json: s }];\nconst SETTLED_OK = ['created', 'existing'];\nconst NEVER_RETRY = ['conflict', 'invalid', 'forbidden', 'not-found', 'unauthorised'];\nconst verified = (r) => r?.readback?.titleMatches === true && r.readback.published === false && r.readback.emailSent === false;\nconst last = s.last;\nconst settled = last && (SETTLED_OK.includes(last.status) || NEVER_RETRY.includes(last.status));\nlet action;\nif (settled || s.tries >= MAX_TRIES) {\n  // A settled success without strict readback evidence gets one fresh readback through the service.\n  action = last && SETTLED_OK.includes(last.status) && !verified(last) && !s.readbackTried ? 'status' : 'finish';\n} else action = s.mustReconcile ? 'reconcile' : 'deliver';\nreturn [{ json: { ...s, action } }];"
+      }
+    },
+    {
+      "id": "sw",
+      "name": "By action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-deliver",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "deliver",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "deliver"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-reconcile",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "reconcile",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "reconcile"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-status",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "finish"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "name": "Deliver",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.urls.deliver }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SteeleExpDraftSv01",
+          "name": "steele-exp draft service"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "rc",
+      "name": "Reconcile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.urls.reconcile }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SteeleExpDraftSv01",
+          "name": "steele-exp draft service"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "st",
+      "name": "Readback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        500
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.urls.status }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SteeleExpDraftSv01",
+          "name": "steele-exp draft service"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "rec",
+      "name": "Record try",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Reads one answer from the draft service. No usable answer means the request may have been acted on.\nconst s = $('Next step').last().json;\nconst r = $json;\nlet body = null;\n// A full text response puts the body in 'data' in n8n 2.49 (observed); 'body' is accepted too.\nconst text = typeof r.data === 'string' ? r.data : typeof r.body === 'string' ? r.body : null;\nif (!r.error && text !== null) { try { body = JSON.parse(text); } catch { body = null; } }\nconst answered = body && typeof body === 'object' && typeof body.status === 'string';\nconst httpStatus = r.statusCode ?? null;\nconst next = { ...s, history: [...s.history] };\nconst sleep = (ms) => new Promise((res) => setTimeout(res, ms));\nif (s.action === 'status') {\n  next.readbackTried = true;\n  next.history.push({ try: s.history.length + 1, action: 'readback', status: answered ? body.status : 'unreachable', httpStatus });\n  if (answered && body.readback) next.last = { ...s.last, readback: body.readback, draftId: body.draftId ?? s.last.draftId, receiptId: body.receiptId ?? s.last.receiptId };\n  return [{ json: next }];\n}\nnext.tries = s.tries + 1;\nif (!answered) {\n  next.history.push({ try: next.tries, action: s.action, status: 'unreachable', httpStatus });\n  next.last = null; next.maybeCreated = true; next.mustReconcile = true;\n  await sleep(500 * next.tries);\n  return [{ json: next }];\n}\nconst resp = { status: body.status, httpStatus, draftId: body.draftId ?? null, receiptId: body.receiptId ?? null,\n  editorUrl: body.editorUrl ?? null, readback: body.readback ?? null, error: body.error ?? null };\nnext.history.push({ try: next.tries, action: s.action, status: resp.status, httpStatus });\nnext.last = resp;\n// The service never recorded the request, so a create is safe.\nif (s.action === 'reconcile' && resp.status === 'not-found') { next.mustReconcile = false; next.maybeCreated = false; next.last = null; return [{ json: next }]; }\nif (resp.status === 'uncertain') next.maybeCreated = true;\nif (resp.status === 'failed') next.maybeCreated = false;\nnext.mustReconcile = resp.status === 'uncertain';\nif (!['created', 'existing', 'conflict', 'invalid', 'forbidden', 'not-found', 'unauthorised'].includes(resp.status)) await sleep(500 * next.tries);\nreturn [{ json: next }];"
+      }
+    },
+    {
+      "id": "out",
+      "name": "Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// The delivery's outcome. created/existing count only with strict readback evidence; an unanswered\n// create stays 'uncertain' (reconcile later, never re-create blindly).\nconst s = $json;\nif (s.stopped) return [{ json: { record: false, articleId: s.articleId, status: s.stopped.status, error: s.stopped.reason } }];\nconst SETTLED_OK = ['created', 'existing'];\nconst verified = (r) => r?.readback?.titleMatches === true && r.readback.published === false && r.readback.emailSent === false;\nconst last = s.last;\nconst status = last && SETTLED_OK.includes(last.status) ? (verified(last) ? last.status : 'unverified')\n  : s.maybeCreated ? 'uncertain' : (last?.status ?? 'unreachable');\nreturn [{ json: { record: true, requestId: s.requestId, articleId: s.articleId, target: s.target, payloadSha256: s.payloadSha256, status,\n  draftId: last?.draftId ?? null, receiptId: last?.receiptId ?? null, readback: last?.readback ?? null,\n  history: s.history, error: last?.error ?? null, source: s.request.source, article: s.request.article } }];"
+      }
+    },
+    {
+      "id": "save",
+      "name": "Record delivery",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1400,
+        700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN $11::boolean THEN steele_dl.record($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10) END AS result",
+        "options": {
+          "queryReplacement": "={{ $json.record ? [$json.requestId, $json.articleId, $json.target, $json.payloadSha256, $json.status, $json.draftId, $json.receiptId, JSON.stringify($json.readback), JSON.stringify($json.history), $json.error, true] : ['', '', 'fake', '', '', null, null, null, '[]', null, false] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "res",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// The run's visible result. The private editor link is not returned here; it stays with the service.\nconst o = $('Outcome').first().json;\nconst ok = ['created', 'existing'].includes(o.status);\nreturn [{ json: { httpStatus: ok ? 200 : o.status === 'not-found' ? 404 : o.status === 'disabled' ? 409 : 502, ...o, record: undefined,\n  recorded: $json.result ?? null } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Delivery request": {
+      "main": [
+        [
+          {
+            "node": "Build request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build request": {
+      "main": [
+        [
+          {
+            "node": "Fake scenario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fake scenario": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "Next step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next step": {
+      "main": [
+        [
+          {
+            "node": "By action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "By action": {
+      "main": [
+        [
+          {
+            "node": "Deliver",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Readback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver": {
+      "main": [
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Readback": {
+      "main": [
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record try",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record try": {
+      "main": [
+        [
+          {
+            "node": "Next step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Record delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record delivery": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Delivers one saved article to the shared draft service (or its test double): request ID exp-911:n8n:<attempt>, the immutable article and its pinned source; at most 3 tries, reconciliation before any re-create, and strict readback (unpublished, no email) before success."
+  },
+  "pinData": {}
+}

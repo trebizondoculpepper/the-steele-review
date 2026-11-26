@@ -1,0 +1,305 @@
+{
+  "id": "SteeleExpFakeDraft",
+  "name": "Test double: draft service",
+  "nodes": [
+    {
+      "id": "h1",
+      "name": "POST /v1/drafts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/fake-draft/v1/drafts",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-fake-draft-v1-drafts"
+    },
+    {
+      "id": "h2",
+      "name": "POST reconcile",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/fake-draft/v1/reconcile",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-fake-draft-v1-reconcile"
+    },
+    {
+      "id": "h3",
+      "name": "GET status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "steele-exp/fake-draft/v1/status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-fake-draft-v1-status"
+    },
+    {
+      "id": "r1",
+      "name": "Route deliver",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        100
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { route: 'deliver', ...$json } }];"
+      }
+    },
+    {
+      "id": "r2",
+      "name": "Route reconcile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { route: 'reconcile', ...$json } }];"
+      }
+    },
+    {
+      "id": "r3",
+      "name": "Route status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        500
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { route: 'status', ...$json } }];"
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "req",
+      "name": "Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Test double of the draft service: route, request ID and payload. A missing bearer token is refused.\nconst item = $json;\nconst auth = String(item.headers?.authorization ?? '');\nconst path = String($('Route').first().json.route);\nif (!/^Bearer \\S+$/.test(auth)) return [{ json: { route: 'unauthorised' } }];\nconst id = path === 'deliver' ? (item.body?.requestId ?? '') : (item.query?.id ?? '');\nreturn [{ json: { route: path, requestId: String(id), payload: path === 'deliver' ? item.body : null, platform: 'n8n' } }];"
+      }
+    },
+    {
+      "id": "q",
+      "name": "Handle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN $1 = 'unauthorised' THEN NULL ELSE steele_fake.handle($1, $2, $3::jsonb, $4) END AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.route, $json.requestId ?? '', $json.payload ? JSON.stringify($json.payload) : null, $json.platform ?? null] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const r = $json.result ?? { httpStatus: 401, body: { status: 'unauthorised' } };\n// lost-response: the draft was created, but the caller gets an unusable answer.\nreturn [{ json: { code: r.httpStatus, text: r.lost ? 'upstream connection lost' : JSON.stringify(r.body) } }];"
+      }
+    },
+    {
+      "id": "resp",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.text }}",
+        "options": {
+          "responseCode": "={{ $json.code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "content-type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "POST /v1/drafts": {
+      "main": [
+        [
+          {
+            "node": "Route deliver",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST reconcile": {
+      "main": [
+        [
+          {
+            "node": "Route reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET status": {
+      "main": [
+        [
+          {
+            "node": "Route status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route deliver": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route reconcile": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route status": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request": {
+      "main": [
+        [
+          {
+            "node": "Handle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle": {
+      "main": [
+        [
+          {
+            "node": "Shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveExecutionProgress": false
+  },
+  "meta": {
+    "description": "Test double of experiments/draft-service for delivery tests: the same routes, statuses and HTTP codes, with scenarios (normal, lost-response, uncertain-once) and database-backed state that survives restarts. Never contacts Substack."
+  },
+  "pinData": {}
+}
