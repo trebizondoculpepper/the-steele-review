@@ -42,3 +42,20 @@ test("the result never carries the private editor link", () => {
   const o = outcome({ ...base, tries: 1, last: { status: "created", readback: ok, editorUrl: "https://private.example/draft" } });
   assert.equal(JSON.stringify(o).includes("private.example"), false);
 });
+
+// Record try reads the HTTP Request node's full-response output; n8n 2.49 puts a text body in 'data'.
+const recordTry = (state: State, response: State) =>
+  new Function("$", "$json", "setTimeout", `return (async () => { ${js("Record try")} })()`)(
+    () => ({ last: () => ({ json: state }) }), response, (f: () => void) => f(),
+  ) as Promise<{ json: State }[]>;
+
+test("Record try reads the answer from the HTTP node's text body, in either field", async () => {
+  const s = { ...base, action: "deliver" };
+  const body = JSON.stringify({ status: "created", draftId: "d1", receiptId: "r1", readback: ok });
+  for (const response of [{ statusCode: 201, data: body }, { statusCode: 201, body }]) {
+    const n = (await recordTry(s, response))[0]!.json as { last: { status: string; draftId: string } };
+    assert.deepEqual([n.last.status, n.last.draftId], ["created", "d1"]);
+  }
+  const lost = (await recordTry(s, { statusCode: 502, data: "upstream connection lost" }))[0]!.json as { mustReconcile: boolean; maybeCreated: boolean };
+  assert.deepEqual([lost.mustReconcile, lost.maybeCreated], [true, true]);
+});
