@@ -22,7 +22,7 @@ import { createAttempt, modelPhase, pinPhase, savePhase, StopError, type Writing
  */
 
 const env = process.env;
-const attempts = new AttemptStore(env.STEELE_EXP_MASTRA_ARTICLES_DB ?? "file:./.data/articles.db");
+export const attempts = new AttemptStore(env.STEELE_EXP_MASTRA_ARTICLES_DB ?? "file:./.data/articles.db");
 const deps: WritingDeps = {
   attempts,
   versions,

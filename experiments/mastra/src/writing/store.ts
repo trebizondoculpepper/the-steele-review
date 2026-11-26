@@ -78,6 +78,9 @@ export class AttemptStore {
               article_id TEXT PRIMARY KEY, attempt TEXT NOT NULL UNIQUE, source_version TEXT NOT NULL,
               title TEXT NOT NULL, subtitle TEXT, markdown TEXT NOT NULL, article_json TEXT NOT NULL,
               prompt_identity TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL)`,
+            `CREATE TABLE IF NOT EXISTS deliveries (
+              request_id TEXT PRIMARY KEY, article_id TEXT NOT NULL, status TEXT NOT NULL,
+              draft_id TEXT, receipt_id TEXT, detail TEXT NOT NULL, first_at TEXT NOT NULL, updated_at TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 1)`,
             `CREATE TRIGGER IF NOT EXISTS articles_immutable BEFORE UPDATE ON articles BEGIN SELECT RAISE(ABORT, 'articles are immutable'); END`,
             `CREATE TRIGGER IF NOT EXISTS articles_no_delete BEFORE DELETE ON articles BEGIN SELECT RAISE(ABORT, 'articles are immutable'); END`,
           ],
@@ -189,6 +192,23 @@ export class AttemptStore {
       await tx.rollback();
       throw e;
     }
+  }
+
+  /** Latest delivery outcome per request ID (#922); the draft service remains the source of truth. */
+  async recordDelivery(d: { requestId: string; articleId: string; status: string; draftId: string | null; receiptId: string | null; detail: string }, now: string) {
+    await this.init();
+    await this.db.execute({
+      sql: `INSERT INTO deliveries (request_id, article_id, status, draft_id, receipt_id, detail, first_at, updated_at) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(request_id) DO UPDATE SET status = excluded.status, draft_id = COALESCE(excluded.draft_id, draft_id),
+              receipt_id = COALESCE(excluded.receipt_id, receipt_id), detail = excluded.detail, updated_at = excluded.updated_at, tries = tries + 1`,
+      args: [d.requestId, d.articleId, d.status, d.draftId, d.receiptId, d.detail, now, now],
+    });
+  }
+
+  async deliveries(limit: number): Promise<Record<string, unknown>[]> {
+    await this.init();
+    const r = await this.db.execute({ sql: "SELECT * FROM deliveries ORDER BY updated_at DESC LIMIT ?", args: [Math.min(Math.max(Math.trunc(limit) || 20, 1), 100)] });
+    return r.rows.map((row) => ({ ...row, detail: JSON.parse(String(row.detail)) }));
   }
 
   async article(articleId: string): Promise<SavedArticle | undefined> {

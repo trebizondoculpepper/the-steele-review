@@ -20,10 +20,16 @@ services:
       STEELE_EXP_MASTRA_MAX_LIVE_CALLS: ${STEELE_EXP_MASTRA_MAX_LIVE_CALLS:-1}
       STEELE_EXP_MASTRA_LIVE_BUDGET_USD: ${STEELE_EXP_MASTRA_LIVE_BUDGET_USD:-0.05}
       STEELE_EXP_MASTRA_MODEL_KEY_FILE: /run/model/key.toml
+      # Delivery to the shared draft service (#922): off unless the private stack.env enables it.
+      STEELE_EXP_MASTRA_DELIVERY_ENABLED: ${STEELE_EXP_MASTRA_DELIVERY_ENABLED:-0}
+      STEELE_EXP_MASTRA_DRAFT_SERVICE_URL: ${STEELE_EXP_MASTRA_DRAFT_SERVICE_URL:?set the private draft service URL}
+      STEELE_EXP_MASTRA_DRAFT_TOKEN_FILE: /run/draft-service/token
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
       # Canonical model provider configuration, read-only; never copied.
       - ${STEELE_EXP_MASTRA_MODEL_CONFIG_DIR:?set the model provider configuration directory}:/run/model:ro
+      # Mastra's own draft-service token (the service stores only its hash).
+      - ${STEELE_EXP_MASTRA_DRAFT_TOKEN:?set the draft service token file}:/run/draft-service/token:ro
     mem_limit: 768m
     read_only: true
     tmpfs:
