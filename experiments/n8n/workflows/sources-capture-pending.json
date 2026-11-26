@@ -1,0 +1,182 @@
+{
+  "id": "SteeleExpSrcCapPnd",
+  "name": "Sources: capture pending feed items",
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "q",
+      "name": "Read queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_src.pending_capture(3) AS result",
+        "options": {
+          "queryReplacement": "={{ [] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "split",
+      "name": "Pending items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const list = $json.result ?? [];\nreturn list.map((i) => ({ json: { store: 'live', url: i.canonicalUrl, publicationHost: 'saveusnow.substack.com' } }));"
+      }
+    },
+    {
+      "id": "cap",
+      "name": "Capture",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpSrcCaptur",
+        "options": {}
+      }
+    },
+    {
+      "id": "done",
+      "name": "Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Clear the queue after success; a permanent failure leaves the queue with its reason; a transient one stays queued.\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, clear: r.ok === true || r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "clr",
+      "name": "Update queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_src.capture_done($1, $2) FROM (SELECT 1) one WHERE $3::boolean",
+        "options": {
+          "queryReplacement": "={{ [$json.url, $json.error, $json.clear] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Read queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read queue": {
+      "main": [
+        [
+          {
+            "node": "Pending items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending items": {
+      "main": [
+        [
+          {
+            "node": "Capture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Update queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Captures up to 3 items queued by feed discovery (#914) every 15 minutes, oldest first. Discovery and capture stay separate."
+  },
+  "pinData": {}
+}

@@ -1,0 +1,178 @@
+{
+  "id": "SteeleExpSrcImport",
+  "name": "Sources: import an exported version",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Import request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/sources/import",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-sources-import"
+    },
+    {
+      "id": "ver",
+      "name": "Verify export",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// ---- shared: source-bundle-v1 canonical form (doc/experiments/n8n-vs-mastra.md) ----\nconst crypto = require('crypto');\n// RFC 8785 for the value shapes a bundle holds: keys sorted by UTF-16 code units, no whitespace.\nconst canonicalize = (v) => {\n  if (v === null || typeof v === 'string' || typeof v === 'boolean') return JSON.stringify(v);\n  if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error('canonicalize: non-finite number'); return JSON.stringify(v); }\n  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';\n  if (typeof v === 'object') {\n    const e = Object.entries(v).filter(([, x]) => x !== undefined);\n    e.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));\n    return '{' + e.map(([k, x]) => JSON.stringify(k) + ':' + canonicalize(x)).join(',') + '}';\n  }\n  throw new Error('canonicalize: unsupported ' + typeof v);\n};\nconst sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');\nconst BUNDLE_KEYS = ['audience', 'author', 'item', 'mediaUploadId', 'medium', 'postId', 'publishedAt', 'schema', 'slug', 'text', 'textSource', 'title', 'updatedAt', 'url'];\nconst strOrNull = (v) => v === null || typeof v === 'string';\n// The same shape rules as the Mastra track's SourceBundleSchema; anything else is refused.\nconst validateBundle = (b) => {\n  const ok = b && typeof b === 'object' && !Array.isArray(b)\n    && JSON.stringify(Object.keys(b).sort()) === JSON.stringify(BUNDLE_KEYS)\n    && b.schema === 'source-bundle-v1'\n    && typeof b.item === 'string' && /^substack:[a-z0-9-]+:\\d{1,15}$/.test(b.item)\n    && typeof b.postId === 'string' && /^\\d{1,15}$/.test(b.postId)\n    && typeof b.slug === 'string' && /^[a-z0-9-]{1,200}$/.test(b.slug)\n    && typeof b.url === 'string' && /^https:\\/\\/[a-z0-9.-]+\\/p\\/[a-z0-9-]{1,200}$/.test(b.url)\n    && typeof b.title === 'string' && b.title.length <= 1000\n    && strOrNull(b.publishedAt) && strOrNull(b.updatedAt) && strOrNull(b.author)\n    && ['audio', 'video', 'written', 'unknown'].includes(b.medium)\n    && typeof b.audience === 'string' && strOrNull(b.mediaUploadId)\n    && ['supplied-transcript', 'article-html'].includes(b.textSource)\n    && typeof b.text === 'string' && b.text.length <= 2000000;\n  if (!ok) throw new Error('invalid-bundle: not a valid source-bundle-v1');\n  return b;\n};\n// Parses stored or imported bytes and proves they are canonical and match the version ID.\nconst verifyBytes = (bytes, version) => {\n  let b;\n  try { b = JSON.parse(bytes); } catch { throw new Error('hash-mismatch: bundle bytes are not JSON'); }\n  validateBundle(b);\n  if (canonicalize(b) !== bytes) throw new Error('hash-mismatch: bundle bytes are not canonical');\n  const hex = sha256(bytes);\n  if (version !== undefined && version !== `${b.item}@sha256:${hex}`) throw new Error('hash-mismatch: bytes do not reproduce the version ID');\n  return { bundle: b, sha256: hex, version: `${b.item}@sha256:${hex}` };\n};\n// ---- end shared ----\n// importVersion: accepted only if the exported bytes are canonical and reproduce the version ID.\nconst b = $json.body ?? {};\nconst store = b.store === undefined ? 'live' : String(b.store);\nif (!/^(live|fixture-[a-z0-9-]{1,40})$/.test(store)) throw new Error('invalid-request: unknown store');\nconst e = b.export;\nif (!e || e.schema !== 'source-version-export-v1' || typeof e.bundleBytes !== 'string' || typeof e.version !== 'string')\n  throw new Error('invalid-export: not a source-version-export-v1 document');\nconst v = verifyBytes(e.bundleBytes, e.version);\nconst str = (x) => (typeof x === 'string' ? x : null);\nreturn [{ json: { store, item: v.bundle.item, sha256: v.sha256, bundleBytes: e.bundleBytes, rawPost: str(e.rawPost), rawTranscript: str(e.rawTranscript),\n  captureMeta: { ...(e.captureMeta && typeof e.captureMeta === 'object' ? e.captureMeta : {}), importedAt: new Date().toISOString(), importedBy: 'n8n' },\n  warnings: Array.isArray(e.warnings) ? e.warnings.map(String) : [], textSource: v.bundle.textSource, textChars: v.bundle.text.length } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "save",
+      "name": "Save version",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_src.save_version($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10::integer) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.store, $json.item, $json.sha256, $json.bundleBytes, $json.rawPost, $json.rawTranscript, JSON.stringify($json.captureMeta), JSON.stringify($json.warnings), $json.textSource, $json.textChars] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "done",
+      "name": "Imported",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { httpStatus: 200, ...$json.result } }];"
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        420
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { ok: false, httpStatus: 400, message: String($json.error?.message ?? $json.error) } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Import request": {
+      "main": [
+        [
+          {
+            "node": "Verify export",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify export": {
+      "main": [
+        [
+          {
+            "node": "Save version",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save version": {
+      "main": [
+        [
+          {
+            "node": "Imported",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Imported": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "importVersion: POST {export} from exportVersion (either platform). Rejected unless the recomputed hash matches its version ID; an identical version is reused."
+  },
+  "pinData": {}
+}

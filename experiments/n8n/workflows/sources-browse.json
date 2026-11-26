@@ -1,0 +1,186 @@
+{
+  "id": "SteeleExpSrcBrowse",
+  "name": "Sources: browse retained versions",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Browse request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/sources/browse",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-sources-browse"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const b = $json.body ?? {};\nconst op = String(b.op ?? '');\nif (!['listItems', 'listVersions', 'readVersion', 'exportVersion'].includes(op)) throw new Error('invalid-request: op must be listItems, listVersions, readVersion or exportVersion');\nconst store = b.store === undefined ? 'live' : String(b.store);\nif (!/^(live|fixture-[a-z0-9-]{1,40})$/.test(store)) throw new Error('invalid-request: unknown store');\nconst item = b.item === undefined ? null : String(b.item);\nconst version = b.version === undefined ? null : String(b.version);\nif (op === 'listVersions' && !item) throw new Error('invalid-request: listVersions needs item');\nif ((op === 'readVersion' || op === 'exportVersion') && !version) throw new Error(`invalid-request: ${op} needs version`);\nconst int = (v, d) => (Number.isInteger(v) ? v : d);\nreturn [{ json: { op, store, item, version, limit: int(b.limit, op === 'listItems' ? 20 : 50), offset: int(b.offset, 0) } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "q",
+      "name": "Read store",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE $1 WHEN 'listItems' THEN steele_src.list_items($2, $5::integer) WHEN 'listVersions' THEN steele_src.list_versions($2, $3, $5::integer, $6::integer) ELSE steele_src.read_version($2, $4) END AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.op, $json.store, $json.item, $json.version, $json.limit, $json.offset] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Verify and shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// ---- shared: source-bundle-v1 canonical form (doc/experiments/n8n-vs-mastra.md) ----\nconst crypto = require('crypto');\n// RFC 8785 for the value shapes a bundle holds: keys sorted by UTF-16 code units, no whitespace.\nconst canonicalize = (v) => {\n  if (v === null || typeof v === 'string' || typeof v === 'boolean') return JSON.stringify(v);\n  if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error('canonicalize: non-finite number'); return JSON.stringify(v); }\n  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';\n  if (typeof v === 'object') {\n    const e = Object.entries(v).filter(([, x]) => x !== undefined);\n    e.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));\n    return '{' + e.map(([k, x]) => JSON.stringify(k) + ':' + canonicalize(x)).join(',') + '}';\n  }\n  throw new Error('canonicalize: unsupported ' + typeof v);\n};\nconst sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');\nconst BUNDLE_KEYS = ['audience', 'author', 'item', 'mediaUploadId', 'medium', 'postId', 'publishedAt', 'schema', 'slug', 'text', 'textSource', 'title', 'updatedAt', 'url'];\nconst strOrNull = (v) => v === null || typeof v === 'string';\n// The same shape rules as the Mastra track's SourceBundleSchema; anything else is refused.\nconst validateBundle = (b) => {\n  const ok = b && typeof b === 'object' && !Array.isArray(b)\n    && JSON.stringify(Object.keys(b).sort()) === JSON.stringify(BUNDLE_KEYS)\n    && b.schema === 'source-bundle-v1'\n    && typeof b.item === 'string' && /^substack:[a-z0-9-]+:\\d{1,15}$/.test(b.item)\n    && typeof b.postId === 'string' && /^\\d{1,15}$/.test(b.postId)\n    && typeof b.slug === 'string' && /^[a-z0-9-]{1,200}$/.test(b.slug)\n    && typeof b.url === 'string' && /^https:\\/\\/[a-z0-9.-]+\\/p\\/[a-z0-9-]{1,200}$/.test(b.url)\n    && typeof b.title === 'string' && b.title.length <= 1000\n    && strOrNull(b.publishedAt) && strOrNull(b.updatedAt) && strOrNull(b.author)\n    && ['audio', 'video', 'written', 'unknown'].includes(b.medium)\n    && typeof b.audience === 'string' && strOrNull(b.mediaUploadId)\n    && ['supplied-transcript', 'article-html'].includes(b.textSource)\n    && typeof b.text === 'string' && b.text.length <= 2000000;\n  if (!ok) throw new Error('invalid-bundle: not a valid source-bundle-v1');\n  return b;\n};\n// Parses stored or imported bytes and proves they are canonical and match the version ID.\nconst verifyBytes = (bytes, version) => {\n  let b;\n  try { b = JSON.parse(bytes); } catch { throw new Error('hash-mismatch: bundle bytes are not JSON'); }\n  validateBundle(b);\n  if (canonicalize(b) !== bytes) throw new Error('hash-mismatch: bundle bytes are not canonical');\n  const hex = sha256(bytes);\n  if (version !== undefined && version !== `${b.item}@sha256:${hex}`) throw new Error('hash-mismatch: bytes do not reproduce the version ID');\n  return { bundle: b, sha256: hex, version: `${b.item}@sha256:${hex}` };\n};\n// ---- end shared ----\n// Shapes the stored result; a read or export is re-verified against its version ID before it is returned.\nconst req = $('Validate request').first().json;\nconst r = $json.result;\nif (req.op === 'listItems') return [{ json: { httpStatus: 200, items: r } }];\nif (req.op === 'listVersions') return [{ json: { httpStatus: 200, ...r } }];\nif (!r) return [{ json: { httpStatus: 404, error: 'not-found: no such source version' } }];\nconst v = verifyBytes(r.bundleBytes, req.version);\nif (req.op === 'readVersion')\n  return [{ json: { httpStatus: 200, ...r, bundleBytes: undefined, bundle: v.bundle, verified: true } }];\nreturn [{ json: { httpStatus: 200, schema: 'source-version-export-v1', version: r.version, bundleBytes: r.bundleBytes,\n  captureMeta: r.captureMeta, warnings: r.warnings, rawPost: r.rawPost, rawTranscript: r.rawTranscript } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        420
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { ok: false, httpStatus: 400, message: String($json.error?.message ?? $json.error) } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Browse request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Read store",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read store": {
+      "main": [
+        [
+          {
+            "node": "Verify and shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify and shape": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "listItems, listVersions (paged), readVersion and exportVersion, read from storage only (never refetched). Reads and exports are re-verified against their version ID."
+  },
+  "pinData": {}
+}

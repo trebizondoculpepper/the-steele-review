@@ -1,0 +1,114 @@
+{
+  "id": "SteeleExpSrcLoadHk",
+  "name": "Sources: load a pinned version (test)",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Load request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/sources/load",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-sources-load"
+    },
+    {
+      "id": "map",
+      "name": "Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const b = $json.body ?? {};\nreturn [{ json: { store: b.store, version: b.version } }];"
+      }
+    },
+    {
+      "id": "load",
+      "name": "Load pinned version",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpSrcLoad01",
+        "options": {}
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Load request": {
+      "main": [
+        [
+          {
+            "node": "Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request": {
+      "main": [
+        [
+          {
+            "node": "Load pinned version",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load pinned version": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Shows exactly what the next step (writing, #916) receives for a pinned version: POST {version, store?}."
+  },
+  "pinData": {}
+}

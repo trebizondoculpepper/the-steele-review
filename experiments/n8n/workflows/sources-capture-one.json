@@ -1,0 +1,146 @@
+{
+  "id": "SteeleExpSrcCapOne",
+  "name": "Sources: capture one post",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Capture request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/sources/capture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-sources-capture"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// https://<host>/p/<slug>, optionally with a trailing slash, query or fragment. No userinfo or port.\nconst postSlug = (link, host) => {\n  const m = /^https:\\/\\/([A-Za-z0-9.-]+)\\/p\\/([a-z0-9-]{1,200})\\/?(?:[?#][^\\s]*)?$/.exec(String(link).trim());\n  return m && m[1].toLowerCase() === host ? m[2] : null;\n};\nconst body = $json.body ?? {};\nconst store = body.store === undefined ? 'live' : String(body.store);\nif (!/^(live|fixture-[a-z0-9-]{1,40})$/.test(store)) throw new Error('invalid-request: unknown store');\nconst host = 'saveusnow.substack.com';\nif (!postSlug(String(body.url ?? ''), host)) throw new Error('wrong-publication: not a post URL on the allowed publication');\nconst out = { store, url: String(body.url), publicationHost: host };\n// Test fixtures stand in for the network, and only for isolated fixture-* stores.\nif (store.startsWith('fixture-')) {\n  if (typeof body.fixturePost !== 'object' || body.fixturePost === null) throw new Error('invalid-request: fixture stores need fixturePost');\n  out.fixturePost = body.fixturePost; out.fixtureTranscript = body.fixtureTranscript ?? null;\n}\nreturn [{ json: out }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "cap",
+      "name": "Capture",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        440,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpSrcCaptur",
+        "options": {}
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        400
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { ok: false, httpStatus: 400, message: String($json.error?.message ?? $json.error) } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Capture request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Capture",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "Agent- and operator-callable capture of one post on the allowed publication: POST {url}. Returns the new or reused source version."
+  },
+  "pinData": {}
+}
