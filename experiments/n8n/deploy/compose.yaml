@@ -1,0 +1,57 @@
+# Separately named n8n experiment stack (#913). Real values are supplied privately
+# through the host's stack.env (mode 600); nothing here names a host, address or secret.
+#   STEELE_EXP_N8N_BIND        host address:port to publish on. PRIVATE INTERFACE ONLY.
+#   STEELE_EXP_N8N_URL         the URL the owner uses (for links n8n renders)
+#   STEELE_EXP_N8N_DATA        host directory for n8n's local state (config, binary data)
+#   STEELE_EXP_N8N_SECRETS     host directory holding encryption.key and postgres.password
+#   STEELE_EXP_N8N_DB_HOST / _DB_NAME / _DB_USER   the dedicated PostgreSQL database and role
+#   STEELE_EXP_N8N_OWNER_EMAIL / _OWNER_PASSWORD_HASH   instance owner, managed by environment
+name: steele-exp-n8n
+services:
+  n8n:
+    # Pinned by version and digest (multi-arch, verified on linux/arm64).
+    image: docker.n8n.io/n8nio/n8n:2.49.7@sha256:17a3e5a8c5e2a7440cc757f5392d57b50eefdfd46eac4532a7dea9bf2735d9ae
+    restart: unless-stopped
+    ports:
+      - "${STEELE_EXP_N8N_BIND:?set a private bind address}:5678"
+    environment:
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+      N8N_EDITOR_BASE_URL: ${STEELE_EXP_N8N_URL:?set the private URL}
+      WEBHOOK_URL: ${STEELE_EXP_N8N_URL}
+      # Served over the private network without TLS.
+      N8N_SECURE_COOKIE: "false"
+      # Storage: a dedicated database and restricted role on the existing PostgreSQL service.
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${STEELE_EXP_N8N_DB_HOST:?set the database host}
+      DB_POSTGRESDB_PORT: ${STEELE_EXP_N8N_DB_PORT:-5432}
+      DB_POSTGRESDB_DATABASE: ${STEELE_EXP_N8N_DB_NAME:?set the database name}
+      DB_POSTGRESDB_USER: ${STEELE_EXP_N8N_DB_USER:?set the database role}
+      DB_POSTGRESDB_PASSWORD_FILE: /run/secrets-n8n/postgres.password
+      N8N_ENCRYPTION_KEY_FILE: /run/secrets-n8n/encryption.key
+      # Instance owner provisioned from the private environment (no in-app setup step).
+      N8N_INSTANCE_OWNER_MANAGED_BY_ENV: "true"
+      N8N_INSTANCE_OWNER_EMAIL: ${STEELE_EXP_N8N_OWNER_EMAIL:?set the owner email}
+      N8N_INSTANCE_OWNER_FIRST_NAME: Experiment
+      N8N_INSTANCE_OWNER_LAST_NAME: Owner
+      N8N_INSTANCE_OWNER_PASSWORD_HASH: ${STEELE_EXP_N8N_OWNER_PASSWORD_HASH:?set the owner password bcrypt hash}
+      # Run history: keep inputs, outputs and errors of every execution for two weeks.
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: all
+      EXECUTIONS_DATA_SAVE_ON_ERROR: all
+      EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS: "true"
+      EXECUTIONS_DATA_SAVE_ON_PROGRESS: "true"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      # No outbound telemetry, templates or version checks; no environment access from nodes.
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_PUBLIC_API_SWAGGERUI_DISABLED: "true"
+    volumes:
+      - ${STEELE_EXP_N8N_DATA:?set the data directory}:/home/node/.n8n
+      - ${STEELE_EXP_N8N_SECRETS:?set the secrets directory}:/run/secrets-n8n:ro
+      # Workflow definitions from Git, imported with n8n's CLI by deploy.sh.
+      - ../workflows:/workflows:ro
+    mem_limit: 1g
