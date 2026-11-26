@@ -81,10 +81,14 @@ test("a post without a transcript keeps its article text and says so", async () 
   assert.deepEqual(built.json.warnings, ["text-is-article-description-not-transcript"]);
 });
 
-test("restricted and foreign posts are refused by the fetch node", async () => {
+test("restricted and foreign posts come out of the fetch node as failures, and build passes them through", async () => {
   const fetch = nodeCode("sources-capture.json", "Fetch post");
-  await assert.rejects(run(fetch, { store: "fixture-test", url: "https://example.substack.com/p/x", publicationHost: "example.substack.com",
-    fixturePost: { id: 1, slug: "x", audience: "only_paid" } }), /^Error: restricted/);
-  await assert.rejects(run(fetch, { store: "fixture-test", url: "https://evil.example.com/p/x", publicationHost: "example.substack.com",
-    fixturePost: { id: 1, slug: "x" } }), /^Error: wrong-publication/);
+  const restricted = (await run(fetch, { store: "fixture-test", url: "https://example.substack.com/p/x", publicationHost: "example.substack.com",
+    fixturePost: { id: 1, slug: "x", audience: "only_paid" } })) as { json: { failed: { code: string; permanent: boolean; httpStatus: number } } };
+  assert.deepEqual([restricted.json.failed.code, restricted.json.failed.permanent, restricted.json.failed.httpStatus], ["restricted", true, 422]);
+  const foreign = (await run(fetch, { store: "fixture-test", url: "https://evil.example.com/p/x", publicationHost: "example.substack.com",
+    fixturePost: { id: 1, slug: "x" } })) as { json: { failed: { code: string } } };
+  assert.equal(foreign.json.failed.code, "wrong-publication");
+  const built = (await run(nodeCode("sources-capture.json", "Build bundle"), restricted.json)) as { json: unknown };
+  assert.deepEqual(built.json, restricted.json, "a failure reaches the end of the one path unchanged");
 });
