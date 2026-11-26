@@ -35,3 +35,24 @@ How discovery works:
 - **Allowed sources:** only the publication host is allowed (`STEELE_EXP_MASTRA_PUBLICATION_HOST`), plus an optional fixture host for bounded tests.
 - **Scope:** discovery never fetches posts and never starts writing or delivery.
 - **Tests:** `npm test` checks a controlled fixture feed: baseline, unchanged polls, new and edited items, failures, host allowlisting and manual selection.
+
+## Retained source versions (#920)
+
+| Workflow | Contract operation |
+|---|---|
+| `capture-source` `{"url": …}` | `capture`: fetch one public post and save it as an immutable version. Identical content reuses the existing version. |
+| `capture-pending` `{"limit": 1–10}` | Captures items discovery marked as needing capture (new, edited or selected), then clears each flag at the fingerprint that was captured. |
+| `list-sources` | `listItems`: each item with its latest version and version count. |
+| `list-versions` `{"item": …}` | `listVersions`: every retained version of one item. |
+| `read-version` `{"version": …}` | `readVersion`: metadata and usable text, read from storage, never from the source. |
+| `export-version` / `import-version` | `exportVersion` / `importVersion`: an import is rejected unless the recomputed hash matches. |
+
+- **Text:** usable text is Substack's supplied transcript when one exists. It is fetched once, and its signed link is never kept. Otherwise the text is the article's plain text. If a post has neither, the version is still saved, with empty text and a `no-usable-text` warning. There is no paid transcription.
+- **Medium:** comes from the post endpoint. An uploaded video is `video`, even when the feed shows an audio enclosure.
+- **Storage:** versions are stored by `VersionStore` in their own LibSQL file (`STEELE_EXP_MASTRA_SOURCES_DB`), together with:
+  - the canonical bundle bytes;
+  - the original post JSON, with signed links removed;
+  - the transcript JSON;
+  - the capture metadata.
+- **Immutability:** database triggers refuse any update or delete of a version.
+- **Hashing:** the version ID is `<item>@sha256:<hash of the canonical bundle>`, and the tests reproduce the shared fixture's hash.

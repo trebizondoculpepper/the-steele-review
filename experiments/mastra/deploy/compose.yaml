@@ -12,6 +12,7 @@ services:
     environment:
       STEELE_EXP_MASTRA_DB: file:/data/mastra.db
       STEELE_EXP_MASTRA_FEED_DB: file:/data/feed.db
+      STEELE_EXP_MASTRA_SOURCES_DB: file:/data/sources.db
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
     mem_limit: 768m

@@ -20,7 +20,7 @@ Out of scope: research, assessor or judge stages, correction loops, multi-agent 
 - **Usable text:** comes from Substack's own transcript. It is used when the post's upload has `transcription.status = "transcribed"` and the post's audience is `everyone`. The transcript JSON is fetched once from the `transcription.cdn_url` on the Substack CDN.
   - The CDN URL is signed, so it is an ephemeral credential. Use it for that one fetch and never store or log it.
   - On 25 November 2026 the three newest posts had transcripts of 2,169, 2,709 and 2,578 words.
-- **Original medium:** `audio`. The retained text is a transcript, so the article must not describe watching or seeing anything.
+- **Original medium:** decided per post from the post endpoint, not the feed. A post with a `videoUpload` is `video`, even when the feed shows a derived `audio/mpeg` enclosure. The pinned comparison post (226395148) is an uploaded MP4 video, so its original medium is `video`. The retained text is a transcript either way, so the article must not describe watching or seeing anything.
 - **No usable text:** if a post has neither article text nor a supplied transcript, the run stops with the outcome `no-usable-text`, recorded as a warning. Paid transcription isn't added.
 - **Comparison post (pinned for #923):** `https://saveusnow.substack.com/p/if-you-go-to-the-patents-and-the`, Substack post ID `226395148`. It was published on 25 November 2026, is about 15.6 minutes of audio, and has a 2,169-word supplied transcript.
   - The source version is pinned by content hash, not by URL. #923 records the hash, and both platforms must start from that same hash.

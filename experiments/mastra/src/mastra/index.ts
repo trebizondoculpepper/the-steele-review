@@ -4,6 +4,15 @@ import { PinoLogger } from "@mastra/loggers";
 import { MastraStorageExporter, Observability } from "@mastra/observability";
 import { helloWorkflow } from "./workflows/hello.js";
 import { feedStatusWorkflow, pollFeedWorkflow, selectFeedItemWorkflow } from "./workflows/feed.js";
+import {
+  captureSourceWorkflow,
+  capturePendingWorkflow,
+  exportVersionWorkflow,
+  importVersionWorkflow,
+  listSourcesWorkflow,
+  listVersionsWorkflow,
+  readVersionWorkflow,
+} from "./workflows/capture.js";
 
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
@@ -25,6 +34,13 @@ export const mastra = new Mastra({
     "poll-feed": pollFeedWorkflow,
     "select-feed-item": selectFeedItemWorkflow,
     "feed-status": feedStatusWorkflow,
+    "capture-source": captureSourceWorkflow,
+    "capture-pending": capturePendingWorkflow,
+    "list-sources": listSourcesWorkflow,
+    "list-versions": listVersionsWorkflow,
+    "read-version": readVersionWorkflow,
+    "export-version": exportVersionWorkflow,
+    "import-version": importVersionWorkflow,
   },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
