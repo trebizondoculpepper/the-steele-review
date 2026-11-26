@@ -30,8 +30,9 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
 - **Start or stop:** on the host, run `docker compose --env-file stack.env -f src/n8n/deploy/compose.yaml start` (or `stop`).
 - **Update n8n:** change the pinned tag and digest in `compose.yaml` in a reviewed PR, then deploy. Back up the database first, because n8n migrates its schema on startup.
 - **Rollback:**
-  1. Revert the pin and redeploy.
-  2. If a schema migration ran, also restore the database backup.
+  1. Stop n8n.
+  2. If the update ran a schema migration, restore the pre-update database backup while n8n stays stopped.
+  3. Revert the pin and redeploy.
 - **Workflow from the command line:** run these on the host, inside the container: `docker compose ... exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n <command> </dev/null`.
   - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
   - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
