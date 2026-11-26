@@ -22,7 +22,7 @@ cli=("${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n)
 # Apply the experiment's own schema (idempotent SQL) to its dedicated database.
 set -a; . ./stack.env; set +a
 for f in src/n8n/sql/*.sql; do
-  docker run --rm -i -e PGPASSWORD="$(cat secrets/postgres.password)" postgres:16-alpine \
+  docker run --rm -i -e PGOPTIONS=-cclient_min_messages=warning -e PGPASSWORD="$(cat secrets/postgres.password)" postgres:16-alpine \
     psql -q -v ON_ERROR_STOP=1 -h "$STEELE_EXP_N8N_DB_HOST" -p "${STEELE_EXP_N8N_DB_PORT:-5432}" \
     -U "$STEELE_EXP_N8N_DB_USER" -d "$STEELE_EXP_N8N_DB_NAME" <"$f" >/dev/null
 done

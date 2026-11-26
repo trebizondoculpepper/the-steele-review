@@ -18,7 +18,7 @@ services:
       GENERIC_TIMEZONE: UTC
       TZ: UTC
       N8N_EDITOR_BASE_URL: ${STEELE_EXP_N8N_URL:?set the private URL}
-      WEBHOOK_URL: ${STEELE_EXP_N8N_URL}
+      N8N_WEBHOOK_URL: ${STEELE_EXP_N8N_URL}
       # Served over the private network without TLS.
       N8N_SECURE_COOKIE: "false"
       # Storage: a dedicated database and restricted role on the existing PostgreSQL service.
