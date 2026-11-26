@@ -1,16 +1,19 @@
 # Mastra track of the n8n versus Mastra experiment (#918).
+# Build context: experiments/ (this track plus the shared contract files).
 # Build on the target architecture (linux/arm64): LibSQL ships native binaries.
 FROM node:22.23.4-bookworm-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
+COPY mastra/package.json mastra/package-lock.json mastra/tsconfig.json ./
 RUN npm ci --no-audit --no-fund
-COPY src ./src
+COPY mastra/src ./src
 RUN npx tsc --noEmit && npx mastra build --studio
 
 FROM node:22.23.4-bookworm-slim
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=4111 MASTRA_STUDIO_PATH=/app/studio MASTRA_SKIP_DOTENV=1
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=4111 MASTRA_STUDIO_PATH=/app/studio MASTRA_SKIP_DOTENV=1 STEELE_EXP_SHARED_DIR=/shared
 WORKDIR /app
 COPY --from=build /app/.mastra/output ./
+# Shared prompts, schemas and fixtures, exactly as committed (#911).
+COPY shared /shared
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 4111

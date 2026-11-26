@@ -49,6 +49,14 @@ The article is rendered to Markdown with this layout, in this order:
 
 Rendering is deterministic code, not a second model call. Each platform implements it natively, and a shared fixture defines the expected Markdown.
 
+Rendering rules, identical on both platforms:
+- The output has these parts in this order, separated by one blank line: the summary paragraph(s); the heading `## Problems with the argument`; one bullet per critique point; the conclusion; and, only if there are warnings, a closing `*Note: …*` paragraph.
+- Each bullet reads `- **<Label>:** <point> Why it matters: <why_it_matters>`. The labels are `Asserted by the author`, `Widely established` and `Not checked`.
+- The note joins all warnings with single spaces.
+- Every text field is trimmed, and the output ends with a single newline.
+- Only Markdown the draft service accepts is used: paragraphs, `##` headings, bullet lists, and bold or italic text.
+- The shared fixture [`article-v1.example.json`](../../experiments/shared/fixtures/article-v1.example.json) must render to exactly [`article-v1.example.md`](../../experiments/shared/fixtures/article-v1.example.md).
+
 The prompt's word limits (summary 120–250 words, conclusion ≤ 120) are advisory. Both platforms count words the same way (whitespace-separated tokens after removing Markdown punctuation), record the counts with the article, and add a `length-outside-guidance` warning when a limit is missed. They do not reject the output, so the comparison can report length differences.
 
 Model output that fails schema validation is a visible failure (`invalid-model-output`). It keeps the raw response and its usage, and it is not automatically retried. A deliberate fresh attempt can be started instead.

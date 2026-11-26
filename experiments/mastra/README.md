@@ -56,3 +56,28 @@ How discovery works:
   - the capture metadata.
 - **Immutability:** database triggers refuse any update or delete of a version.
 - **Hashing:** the version ID is `<item>@sha256:<hash of the canonical bundle>`, and the tests reproduce the shared fixture's hash.
+
+## Summary and critique (#921)
+
+| Workflow | Use |
+|---|---|
+| `start-writing` `{"version": …, "mode": "fake" \| "live"}` | Starts a new attempt pinned to that exact retained version. It is also the deliberate rerun, including on an older version: every start gets a fresh attempt ID, `mastra-<UTC>-<hex>`. |
+| `retry-writing` `{"attempt": …}` | Resumes an interrupted attempt. Saved model output is reused and never paid for twice. |
+| `list-attempts` | Shows each attempt's status, pinned version, model, prompt identity, usage, cost and stopping reason, plus the live call ledger. |
+| `read-article` `{"article": …}` | Returns the saved Markdown, the structured output and its provenance. |
+
+- **Steps:** every run shows `pin-source`, then `write`, then `save-article`.
+- **Prompt:** the shared `experiments/shared/prompts/summary-critique-v1.md`, loaded at run time. Its identity is `summary-critique-v1@sha256:<file hash>`.
+- **Validation and rendering:** output is validated against `article-v1` and rendered with the contract's rules. The shared fixture pair pins the expected Markdown.
+- **Model:** fake by default. A live call to `deepseek/deepseek-v4.1-flash` needs all of:
+  - `STEELE_EXP_MASTRA_LIVE_MODEL_ENABLED=1` in the private stack configuration;
+  - `mode: "live"` in the request;
+  - room within `STEELE_EXP_MASTRA_MAX_LIVE_CALLS` (default 1) and `STEELE_EXP_MASTRA_LIVE_BUDGET_USD` (default 0.05).
+- **Live call safety:** a live call is recorded as started before it is sent, and it is never resent. An interruption or timeout stops the attempt as `provider-uncertain`.
+- **Stopping reasons:**
+  - `no-usable-text`, `source-too-large`;
+  - `invalid-model-output: …` (the raw output is kept);
+  - `provider-uncertain`, `provider-error`;
+  - `budget-exceeded: …`, `live-model-disabled`;
+  - `prompt-changed-since-attempt-created`.
+- **Storage:** attempts and immutable articles are kept by `AttemptStore` (`STEELE_EXP_MASTRA_ARTICLES_DB`). The model key is read from the canonical provider configuration, mounted read-only, on each call.
