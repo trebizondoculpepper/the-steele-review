@@ -24,7 +24,7 @@ const SERVICE = fileURLToPath(new URL("../../draft-service/", import.meta.url));
 const TOKEN = "t".repeat(48);
 
 async function startService(dir: string, port: number): Promise<ChildProcess> {
-  const child = spawn(process.execPath, ["src/main.ts"], {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/main.ts"], {
     cwd: SERVICE,
     env: {
       ...process.env,
@@ -217,4 +217,26 @@ test("a partial readback is not evidence of an unpublished, no-email draft", asy
   const partial = { titleMatches: true } as unknown as typeof okReadback;
   const s = scripted([{ status: "created", draftId: "7", readback: partial }, { status: "existing", readback: partial }]);
   assert.equal((await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s.client, sleep: noSleep }, article)).status, "unverified");
+});
+
+test("an unreadable response body is treated as no answer and reconciled", async () => {
+  const h = await harness();
+  try {
+    const article = await h.write();
+    let truncated = false;
+    const truncating = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const res = await fetch(input, init);
+      if (!truncated && init?.method === "POST" && String(input).endsWith("/v1/drafts")) {
+        truncated = true;
+        return new Response('{"status":"crea', { status: res.status, headers: { "content-type": "application/json" } });
+      }
+      return res;
+    }) as typeof fetch;
+    const out = await deliverArticle({ attempts: h.attempts, versions: h.versions, client: h.client(truncating), sleep: noSleep }, article);
+    assert.deepEqual(out.history.map((x) => [x.action, x.status]), [["deliver", "unreachable"], ["reconcile", "existing"]]);
+    assert.equal(out.status, "existing");
+    assert.equal(h.drafts(), 1);
+  } finally {
+    h.service.kill("SIGTERM");
+  }
 });

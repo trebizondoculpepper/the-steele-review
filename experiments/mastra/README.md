@@ -91,6 +91,6 @@ How discovery works:
 
 - **Draft only:** the result is an unpublished, editable Substack draft with no email. There is no publishing or announcement step, and Substack authentication and conversion stay inside the draft service.
 - **Retries:** a retry of the same attempt sends the same ID and payload. A fresh attempt is deliberately a new, separately labelled draft.
-- **Unclear outcomes:** an `uncertain` or unreachable outcome is reconciled through the service and never resent. A `conflict`, `invalid` or `forbidden` response is never retried. A definite `failed` is retried with the same ID, up to 3 tries in all.
+- **Unclear outcomes:** an `uncertain` or unreachable outcome is reconciled through the service and never resent. A `conflict`, `invalid` or `forbidden` response is never retried. Within one `deliver-article` run there are at most 3 tries; a definite `failed` is retried with the same ID inside that bound. Each further run is a deliberate operator action, and every run is recorded (`list-deliveries` shows its tries).
 - **Switch:** delivery is refused unless `STEELE_EXP_MASTRA_DELIVERY_ENABLED=1` in the private stack configuration. The service URL and Mastra's own token file also come from private configuration; the draft service stores only the token's hash.
 - **Tests:** `test/delivery.test.ts` runs the real `experiments/draft-service` locally with its fake destination. To run it, install that package's dependencies first: `npm ci` in `experiments/draft-service`.

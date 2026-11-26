@@ -67,8 +67,16 @@ export class DraftServiceClient {
     } catch {
       throw new DraftServiceUnreachable();
     }
-    const json = (await res.json().catch(() => ({}))) as Omit<DraftResponse, "httpStatus">;
-    return { httpStatus: res.status, ...json, status: json.status ?? `http-${res.status}` };
+    // A body that cannot be read or lacks a status is no answer at all: the
+    // service may have acted, so the caller must reconcile, never trust it.
+    let json: Omit<DraftResponse, "httpStatus">;
+    try {
+      json = (await res.json()) as Omit<DraftResponse, "httpStatus">;
+    } catch {
+      throw new DraftServiceUnreachable();
+    }
+    if (!json || typeof json !== "object" || typeof json.status !== "string") throw new DraftServiceUnreachable();
+    return { ...json, httpStatus: res.status };
   }
 
   deliver(req: DraftRequest) {
