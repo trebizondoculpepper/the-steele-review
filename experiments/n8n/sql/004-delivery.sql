@@ -6,7 +6,7 @@
 CREATE SCHEMA IF NOT EXISTS steele_dl;
 
 CREATE TABLE IF NOT EXISTS steele_dl.deliveries (
-  request_id     text PRIMARY KEY CHECK (request_id ~ '^exp-911:n8n:n8n-\d{8}T\d{6}Z-[0-9a-f]{4}$'),
+  request_id     text NOT NULL CHECK (request_id ~ '^exp-911:n8n:n8n-\d{8}T\d{6}Z-[0-9a-f]{4}$'),
   article_id     text NOT NULL REFERENCES steele_wr.articles (article_id),
   target         text NOT NULL CHECK (target IN ('service','fake')),
   payload_sha256 text NOT NULL,
@@ -17,8 +17,20 @@ CREATE TABLE IF NOT EXISTS steele_dl.deliveries (
   history        jsonb NOT NULL,
   error          text,
   first_at       timestamptz NOT NULL,
-  updated_at     timestamptz NOT NULL
+  updated_at     timestamptz NOT NULL,
+  -- One record per destination: a test-double delivery can never merge into a real one, or the reverse.
+  PRIMARY KEY (target, request_id)
 );
+-- Migration for databases created when the key was request_id alone.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+             WHERE c.conname = 'deliveries_pkey' AND c.conrelid = 'steele_dl.deliveries'::regclass
+             GROUP BY c.oid HAVING count(*) = 1) THEN
+    ALTER TABLE steele_dl.deliveries DROP CONSTRAINT deliveries_pkey;
+    ALTER TABLE steele_dl.deliveries ADD PRIMARY KEY (target, request_id);
+  END IF;
+END $$;
 
 -- The exact request for one saved article, from storage only. Same shape and labelling as the contract.
 CREATE OR REPLACE FUNCTION steele_dl.build_request(p_article_id text) RETURNS jsonb LANGUAGE sql STABLE AS $$
@@ -42,10 +54,10 @@ CREATE OR REPLACE FUNCTION steele_dl.record(p_request_id text, p_article_id text
   p_status text, p_draft_id text, p_receipt_id text, p_readback jsonb, p_history jsonb, p_error text) RETURNS jsonb LANGUAGE sql AS $$
   INSERT INTO steele_dl.deliveries (request_id, article_id, target, payload_sha256, status, draft_id, receipt_id, readback, history, error, first_at, updated_at)
   VALUES (p_request_id, p_article_id, p_target, p_payload_sha256, p_status, p_draft_id, p_receipt_id, p_readback, p_history, p_error, clock_timestamp(), clock_timestamp())
-  ON CONFLICT (request_id) DO UPDATE SET status = excluded.status, draft_id = coalesce(excluded.draft_id, steele_dl.deliveries.draft_id),
+  ON CONFLICT (target, request_id) DO UPDATE SET status = excluded.status, draft_id = coalesce(excluded.draft_id, steele_dl.deliveries.draft_id),
     receipt_id = coalesce(excluded.receipt_id, steele_dl.deliveries.receipt_id), readback = coalesce(excluded.readback, steele_dl.deliveries.readback),
     history = steele_dl.deliveries.history || excluded.history, error = excluded.error, updated_at = clock_timestamp()
-  RETURNING jsonb_build_object('requestId', request_id, 'status', status, 'draftId', draft_id, 'receiptId', receipt_id, 'tries', jsonb_array_length(history));
+  RETURNING jsonb_build_object('requestId', request_id, 'target', target, 'status', status, 'draftId', draft_id, 'receiptId', receipt_id, 'tries', jsonb_array_length(history));
 $$;
 
 CREATE OR REPLACE FUNCTION steele_dl.list(p_limit integer) RETURNS jsonb LANGUAGE sql STABLE AS $$
@@ -54,8 +66,12 @@ CREATE OR REPLACE FUNCTION steele_dl.list(p_limit integer) RETURNS jsonb LANGUAG
              'receiptId', receipt_id, 'readback', readback, 'tries', jsonb_array_length(history), 'error', error, 'updatedAt', updated_at) x
     FROM steele_dl.deliveries ORDER BY updated_at DESC LIMIT least(greatest(coalesce(p_limit, 20), 1), 50)) s;
 $$;
+-- Every destination's record for one request ID, each with its own target, status, draft and receipt.
+DROP FUNCTION IF EXISTS steele_dl.read(text);
 CREATE OR REPLACE FUNCTION steele_dl.read(p_request_id text) RETURNS jsonb LANGUAGE sql STABLE AS $$
-  SELECT to_jsonb(d) FROM steele_dl.deliveries d WHERE request_id = p_request_id;
+  SELECT CASE WHEN count(*) = 0 THEN NULL ELSE jsonb_build_object('requestId', p_request_id,
+    'records', jsonb_agg(to_jsonb(d) ORDER BY d.target)) END
+  FROM steele_dl.deliveries d WHERE request_id = p_request_id;
 $$;
 
 -- ---------------------------------------------------------------------------------------------------
