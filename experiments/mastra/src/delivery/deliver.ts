@@ -68,6 +68,8 @@ export async function deliverArticle(
   const history: DeliveryOutcome["history"] = [];
   let last: DraftResponse | undefined;
   let mustReconcile = false;
+  // True once a create may have reached the destination without a settled answer.
+  let maybeCreated = false;
   for (let i = 1; i <= MAX_DELIVERY_TRIES; i++) {
     const action: "deliver" | "reconcile" = mustReconcile ? "reconcile" : "deliver";
     try {
@@ -75,25 +77,49 @@ export async function deliverArticle(
     } catch (e) {
       if (!(e instanceof DraftServiceUnreachable)) throw e;
       history.push({ try: i, action, status: "unreachable", httpStatus: null });
+      last = undefined;
+      maybeCreated = true;
       // The request may have reached the service: reconcile before anything else.
       mustReconcile = true;
       await sleep(500 * i);
       continue;
     }
     history.push({ try: i, action, status: last.status, httpStatus: last.httpStatus });
-    if (SETTLED_OK.has(last.status) || NEVER_RETRY.has(last.status)) break;
+    // Checked before the terminal statuses: the service never recorded the request, so a create is safe.
     if (action === "reconcile" && last.status === "not-found") {
-      // The service never recorded the request: a create is safe.
       mustReconcile = false;
+      maybeCreated = false;
       continue;
     }
+    if (SETTLED_OK.has(last.status) || NEVER_RETRY.has(last.status)) break;
+    if (last.status === "uncertain") maybeCreated = true;
+    if (last.status === "failed") maybeCreated = false;
     // uncertain: reconcile; failed (definitely not created): a same-ID retry may create.
     mustReconcile = last.status === "uncertain";
     await sleep(500 * i);
   }
+  // Success requires explicit readback evidence: the expected title, unpublished, no email.
+  const verified = (r: DraftResponse | undefined) => Boolean(r?.readback && r.readback.titleMatches && !r.readback.published && !r.readback.emailSent);
+  if (last && SETTLED_OK.has(last.status) && !verified(last)) {
+    try {
+      const fresh = await deps.client.status(request.requestId);
+      history.push({ try: history.length + 1, action: "reconcile", status: `readback:${fresh.status}`, httpStatus: fresh.httpStatus });
+      if (verified(fresh)) last = { ...last, readback: fresh.readback, draftId: fresh.draftId ?? last.draftId, receiptId: fresh.receiptId ?? last.receiptId };
+    } catch {
+      history.push({ try: history.length + 1, action: "reconcile", status: "readback:unreachable", httpStatus: null });
+    }
+  }
+  const status =
+    last && SETTLED_OK.has(last.status)
+      ? verified(last)
+        ? last.status
+        : "unverified"
+      : maybeCreated
+        ? "uncertain"
+        : (last?.status ?? "unreachable");
   const outcome: DeliveryOutcome = {
     requestId: request.requestId,
-    status: last?.status ?? "unreachable",
+    status,
     draftId: last?.draftId ?? null,
     receiptId: last?.receiptId ?? null,
     editorUrl: last?.editorUrl ?? null,

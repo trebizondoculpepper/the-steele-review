@@ -78,7 +78,8 @@ export class DraftServiceClient {
   reconcile(requestId: string) {
     return this.call("POST", `/v1/deliveries/${encodeURIComponent(requestId)}/reconcile`);
   }
+  /** Status with a fresh destination readback for a created draft. */
   status(requestId: string) {
-    return this.call("GET", `/v1/deliveries/${encodeURIComponent(requestId)}`);
+    return this.call("GET", `/v1/deliveries/${encodeURIComponent(requestId)}?refresh=1`);
   }
 }

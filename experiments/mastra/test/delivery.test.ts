@@ -156,3 +156,57 @@ test("a definite destination failure is retried with the same ID and creates exa
     h.service.kill("SIGTERM");
   }
 });
+
+/** A scripted client: each call returns the next scripted response, or throws to simulate an unreachable service. */
+function scripted(steps: (Partial<import("../src/delivery/client.js").DraftResponse> | "unreachable")[]) {
+  const { DraftServiceUnreachable } = require_client();
+  const calls: string[] = [];
+  const next = (kind: string) => {
+    calls.push(kind);
+    const s = steps.shift();
+    if (s === undefined) throw new Error("script exhausted");
+    if (s === "unreachable") throw new DraftServiceUnreachable();
+    return Promise.resolve({ httpStatus: 200, status: "?", ...s });
+  };
+  return { calls, client: { deliver: () => next("deliver"), reconcile: () => next("reconcile"), status: () => next("status") } as unknown as DraftServiceClient };
+}
+let clientModule: typeof import("../src/delivery/client.js");
+const require_client = () => clientModule;
+
+async function scriptedHarness() {
+  clientModule = await import("../src/delivery/client.js");
+  const h = await harness();
+  h.service.kill("SIGTERM");
+  return h;
+}
+const okReadback = { titleMatches: true, published: false, emailSent: false };
+
+test("success without explicit safe readback is reported as unverified", async () => {
+  const h = await scriptedHarness();
+  const article = await h.write();
+  const s = scripted([{ status: "existing", draftId: "7", readback: undefined }, { status: "existing", draftId: "7" }]);
+  const out = await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s.client, sleep: noSleep }, article);
+  assert.equal(out.status, "unverified");
+  assert.deepEqual(s.calls, ["deliver", "status"]);
+  const s2 = scripted([{ status: "existing", draftId: "7", readback: { ...okReadback, published: true } }, { status: "existing", readback: { ...okReadback, published: true } }]);
+  assert.equal((await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s2.client, sleep: noSleep }, article)).status, "unverified");
+});
+
+test("reconciliation not-found leads to a safe create rather than stopping", async () => {
+  const h = await scriptedHarness();
+  const article = await h.write();
+  const s = scripted(["unreachable", { status: "not-found", httpStatus: 404 }, { status: "created", httpStatus: 201, draftId: "9", readback: okReadback }]);
+  const out = await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s.client, sleep: noSleep }, article);
+  assert.deepEqual(s.calls, ["deliver", "reconcile", "deliver"]);
+  assert.equal(out.status, "created");
+});
+
+test("after an earlier definite failure, a later lost response is recorded as uncertain", async () => {
+  const h = await scriptedHarness();
+  const article = await h.write();
+  const s = scripted([{ status: "failed", httpStatus: 502 }, "unreachable", "unreachable"]);
+  const out = await deliverArticle({ attempts: h.attempts, versions: h.versions, client: s.client, sleep: noSleep }, article);
+  assert.equal(out.status, "uncertain");
+  const [record] = await h.attempts.deliveries(10);
+  assert.equal(record!.status, "uncertain");
+});
