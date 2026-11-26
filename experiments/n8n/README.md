@@ -31,6 +31,25 @@ The rules are the same as the Mastra track's (#919). The state lives in the `ste
   - as a row in `steele_feed.polls`, with outcome, counts and error.
 - **Access:** the webhooks are unauthenticated. Like the interface, they are reachable only on the private network (#930).
 
+## Retained source versions (#915)
+
+These follow the contract's canonical `source-bundle-v1` and the required operations (`doc/experiments/n8n-vs-mastra.md`). The state is in the `steele_src` schema (`sql/002-sources.sql`).
+
+- **Immutable rows:** a version row is never updated or deleted, and database triggers enforce this. A second trigger checks that the stored bytes hash to the stored `sha256`, and the version ID must equal `<item>@sha256:<sha256>`. Capturing identical content again reuses the version and counts the observation.
+- **Store column:** `store` separates the live store from isolated `fixture-*` test stores.
+- **Signed transcript link:** it is used for exactly one request inside the `Fetch post` Code node, through `this.helpers.httpRequest`. Nothing that node outputs contains it, so neither n8n's execution history nor the retained post JSON does; signed URLs are replaced with `[signed-url-removed]`.
+
+| Operation | How |
+|---|---|
+| `capture` | `POST /webhook/steele-exp/sources/capture` `{"url": ...}`. Also runs every 15 min for items queued by discovery: up to 3, oldest first. Permanent failures leave the queue with their reason. |
+| `listItems`, `listVersions`, `readVersion`, `exportVersion` | `POST /webhook/steele-exp/sources/browse` `{"op": ..., "item"/"version"/"limit"/"offset": ...}`. Reads come from storage only and are re-verified against the version ID. |
+| `importVersion` | `POST /webhook/steele-exp/sources/import` `{"export": ...}`. Rejected unless the canonical bytes reproduce the version ID. |
+| load for writing | Sub-workflow `SteeleExpSrcLoad01`: the writer's first step (#916) loads a pinned version, which may be an older one, from storage, verified, without refetching. `POST /webhook/steele-exp/sources/load` shows exactly what that step receives. |
+
+- **How usable text is obtained:** the supplied transcript is used when the post's upload has `transcription.status = "transcribed"`. Otherwise it is the plain text of `body_html`, with the warning `text-is-article-description-not-transcript` for audio and video. With neither, the text is empty and the warning is `no-usable-text`. There is no paid transcription.
+- **Fetch failures and evidence findings:** fetch failures (`post-not-found`, `restricted`, `post-unavailable` and so on) save nothing and return an error code. Evidence findings are warnings stored with the version.
+- **Article HTML:** the Mastra track converts article HTML with the `html-to-text` library, and n8n uses a small converter in the Code node. So article-only posts can differ in whitespace between the platforms. The pinned comparison post uses its transcript, and #923 starts both platforms from one exported version anyway.
+
 ## Storage and state
 
 - Workflows, credentials, run history (inputs, outputs and errors of every execution, kept for 14 days) and users live in a dedicated PostgreSQL database and restricted role on the existing PostgreSQL service. That role cannot connect to any other database.
@@ -60,6 +79,19 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
   - Commands: `execute --id <id>`, `export:workflow --id <id>`, `list:workflow`.
   - The CLI starts a second n8n process, so it needs its own task-broker port. Without `</dev/null`, `exec` swallows the rest of a piped script.
 - **Inspection:** n8n's public API (`/api/v1/workflows`, `/api/v1/executions?includeData=true`) with a read-only scoped API key. The key is kept in the host's private secrets. Execution records show each node's inputs, outputs and errors.
+
+## Source evidence (#915, 2026-11-26)
+
+- **Contract tests** (`test/sources.test.ts`): the Code nodes' own JavaScript, taken from the Git-defined workflows, turns a synthetic post and its transcript into the shared `source-bundle-v1` fixture byte for byte, with hash `a1a937de…`. A tampered byte is rejected.
+- **Fixture store `fixture-s1`:**
+  1. Captured version 1, then an edited version 2, then version 1 again, which was reused with 2 observations.
+  2. Restarted n8n.
+  3. `listItems` and `listVersions` showed both versions, and `readVersion` returned both texts verified.
+  4. Loading the older version returned its exact original text.
+  5. Its export was imported into another store under the same ID; a tampered export was refused (400 `hash-mismatch`). A missing version returned 404.
+  6. A restricted post was refused with 422 `restricted`, and nothing was saved.
+- **Pinned comparison post 226395148**, captured live in n8n: `substack:saveusnow:226395148@sha256:440cb7fd…2d9b`, from the supplied transcript, 12,358 characters, no warnings. This is **identical to the version the Mastra track captured**, so both platforms derive the same ID from the same content.
+- **Signed links:** none in any stored execution of the live capture (11 executions scanned).
 
 ## Feed evidence (#914, 2026-11-26, fixture subscription `fixture-t2`)
 
