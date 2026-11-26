@@ -75,6 +75,8 @@ STEELE_EXP_HOST=<host> STEELE_EXP_DIR=<stack dir> experiments/n8n/deploy/deploy.
    - A URL with userinfo pointing at another host is rejected with 400.
    - Selecting a known item marks it `selected` and queues it again.
 
+Real feed: the scheduled poll `n8n-265` (12:49 UTC) took the baseline of 20 items, all marked `baseline` and none queued. The feed was read only; no posts were fetched.
+
 ## Setup evidence (#913, 2026-11-26)
 
 - `SteeleExpSmoke01` was created from Git, executed, changed in Git (`revision: 2`), redeployed and executed again. Its output was read back through the API.
