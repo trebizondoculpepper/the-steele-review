@@ -41,7 +41,7 @@ These follow the contract's canonical `source-bundle-v1` and the required operat
 
 | Operation | How |
 |---|---|
-| `capture` | `POST /webhook/steele-exp/sources/capture` `{"url": ...}`. Also runs every 15 min for items queued by discovery: up to 3, oldest first. Permanent failures leave the queue with their reason. |
+| `capture` | `POST /webhook/steele-exp/sources/capture` `{"url": ...}`. Also runs every 15 min for items queued by discovery: up to 3, untried items first, then the least recently tried, so a failing item can't starve later ones. Permanent failures leave the queue with their reason. A temporary failure is retried at most 5 times, then the item leaves the queue as `retries-exhausted: <last error>`; the feed status lists these under `captureFailures`. A later edit or a manual selection queues the item again with a fresh budget. |
 | `listItems`, `listVersions`, `readVersion`, `exportVersion` | `POST /webhook/steele-exp/sources/browse` `{"op": ..., "item"/"version"/"limit"/"offset": ...}`. Reads come from storage only and are re-verified against the version ID. |
 | `importVersion` | `POST /webhook/steele-exp/sources/import` `{"export": ...}`. Rejected unless the canonical bytes reproduce the version ID. |
 | load for writing | Sub-workflow `SteeleExpSrcLoad01`: the writer's first step (#916) loads a pinned version, which may be an older one, from storage, verified, without refetching. `POST /webhook/steele-exp/sources/load` shows exactly what that step receives. |

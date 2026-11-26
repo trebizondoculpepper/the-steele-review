@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS steele_feed.items (
   PRIMARY KEY (subscription, canonical_url)
 );
 
+-- Bounded capture retries (#915): attempts since the item was last queued, and when the last one ran.
+ALTER TABLE steele_feed.items ADD COLUMN IF NOT EXISTS capture_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE steele_feed.items ADD COLUMN IF NOT EXISTS last_capture_attempt_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS steele_feed.polls (
   poll_id       text PRIMARY KEY,
   subscription  text NOT NULL,
@@ -87,7 +91,7 @@ BEGIN
       UPDATE steele_feed.items SET post_id = coalesce(v_item->>'postId', post_id), source_item = coalesce(v_item->>'sourceItem', source_item),
              title = coalesce(v_item->>'title',''), published_at = (v_item->>'publishedAt')::timestamptz, medium = v_item->>'medium',
              fingerprint = v_item->>'fingerprint', last_seen_at = v_now, change_count = change_count + 1,
-             needs_capture = true, capture_error = NULL
+             needs_capture = true, capture_error = NULL, capture_attempts = 0, last_capture_attempt_at = NULL
        WHERE subscription = p_subscription AND canonical_url = v_item->>'canonicalUrl';
       v_changed := v_changed || jsonb_build_array(v_item->>'canonicalUrl');
     ELSE
@@ -120,7 +124,8 @@ BEGIN
   INSERT INTO steele_feed.items (subscription, canonical_url, slug, medium, fingerprint, status, first_seen_at, last_seen_at, needs_capture)
   VALUES (p_subscription, p_canonical_url, p_slug, 'unknown', 'manual', 'selected', v_now, v_now, true)
   ON CONFLICT (subscription, canonical_url) DO UPDATE
-    SET status = 'selected', needs_capture = true, capture_error = NULL, last_seen_at = v_now
+    SET status = 'selected', needs_capture = true, capture_error = NULL, last_seen_at = v_now,
+        capture_attempts = 0, last_capture_attempt_at = NULL
   RETURNING (xmax = 0) INTO v_created;
   RETURN jsonb_build_object('subscription', p_subscription, 'canonicalUrl', p_canonical_url, 'created', v_created, 'needsCapture', true);
 END $$;
@@ -134,8 +139,11 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
     'lastPoll', (SELECT to_jsonb(p) - 'subscription' FROM steele_feed.polls p WHERE subscription = p_subscription ORDER BY finished_at DESC LIMIT 1),
     'lastFailure', (SELECT to_jsonb(p) - 'subscription' FROM steele_feed.polls p WHERE subscription = p_subscription AND outcome = 'failed' ORDER BY finished_at DESC LIMIT 1),
     'counts', (SELECT jsonb_object_agg(status, n) FROM (SELECT status, count(*) n FROM steele_feed.items WHERE subscription = p_subscription GROUP BY status) s),
-    'pendingCapture', coalesce((SELECT jsonb_agg(jsonb_build_object('canonicalUrl', canonical_url, 'status', status, 'title', title, 'lastSeenAt', last_seen_at) ORDER BY last_seen_at)
+    'pendingCapture', coalesce((SELECT jsonb_agg(jsonb_build_object('canonicalUrl', canonical_url, 'status', status, 'title', title, 'lastSeenAt', last_seen_at,
+                                  'captureAttempts', capture_attempts, 'lastCaptureError', capture_error) ORDER BY last_seen_at)
                                 FROM steele_feed.items WHERE subscription = p_subscription AND needs_capture), '[]'::jsonb),
+    'captureFailures', coalesce((SELECT jsonb_agg(jsonb_build_object('canonicalUrl', canonical_url, 'error', capture_error, 'attempts', capture_attempts))
+                                FROM steele_feed.items WHERE subscription = p_subscription AND NOT needs_capture AND capture_error IS NOT NULL), '[]'::jsonb),
     'recentItems', coalesce((SELECT jsonb_agg(x) FROM (SELECT jsonb_build_object('canonicalUrl', canonical_url, 'title', title, 'status', status, 'publishedAt', published_at, 'medium', medium, 'changeCount', change_count) x
                                 FROM steele_feed.items WHERE subscription = p_subscription ORDER BY published_at DESC NULLS LAST LIMIT 10) r), '[]'::jsonb));
 $$;

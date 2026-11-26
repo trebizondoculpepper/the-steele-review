@@ -114,18 +114,33 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
   FROM steele_src.versions v WHERE store = p_store AND version = p_version;
 $$;
 
--- Capture queue hand-off from discovery (#914): the oldest pending live items.
+-- Capture queue hand-off from discovery (#914). Items never tried come first, then the least recently
+-- tried, so an item that keeps failing cannot starve the ones queued after it.
 CREATE OR REPLACE FUNCTION steele_src.pending_capture(p_limit integer)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
-  SELECT coalesce(jsonb_agg(jsonb_build_object('canonicalUrl', canonical_url, 'status', status) ORDER BY last_seen_at), '[]'::jsonb)
+  SELECT coalesce(jsonb_agg(jsonb_build_object('canonicalUrl', canonical_url, 'status', status, 'attempts', capture_attempts)), '[]'::jsonb)
   FROM (SELECT * FROM steele_feed.items WHERE subscription = 'saveusnow' AND needs_capture
-        ORDER BY last_seen_at LIMIT least(greatest(coalesce(p_limit, 3), 1), 10)) i;
+        ORDER BY last_capture_attempt_at NULLS FIRST, last_seen_at LIMIT least(greatest(coalesce(p_limit, 3), 1), 10)) i;
 $$;
 
--- Clears the queue flag after a successful capture, or records a permanent failure (the item leaves
--- the queue with its reason kept; a later edit or manual selection queues it again).
-CREATE OR REPLACE FUNCTION steele_src.capture_done(p_canonical_url text, p_error text)
-RETURNS void LANGUAGE sql AS $$
-  UPDATE steele_feed.items SET needs_capture = false, capture_error = p_error
-   WHERE subscription = 'saveusnow' AND canonical_url = p_canonical_url;
-$$;
+-- Records one capture attempt's outcome. Success clears the queue flag. A permanent failure (the post is
+-- gone, restricted or not on the publication) leaves the queue with its reason. A transient failure stays
+-- queued until MAX_ATTEMPTS (5) is reached, then leaves the queue as 'retries-exhausted: <last error>'.
+-- A later edit or manual selection queues the item again with a fresh budget.
+DROP FUNCTION IF EXISTS steele_src.capture_done(text, text);
+CREATE OR REPLACE FUNCTION steele_src.capture_outcome(p_canonical_url text, p_ok boolean, p_permanent boolean, p_error text)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE v_attempts integer; v_queued boolean;
+BEGIN
+  UPDATE steele_feed.items SET
+    capture_attempts = CASE WHEN p_ok THEN 0 ELSE capture_attempts + 1 END,
+    last_capture_attempt_at = clock_timestamp(),
+    needs_capture = NOT (p_ok OR p_permanent OR capture_attempts + 1 >= 5),
+    capture_error = CASE WHEN p_ok THEN NULL
+                         WHEN p_permanent THEN left(p_error, 500)
+                         WHEN capture_attempts + 1 >= 5 THEN left('retries-exhausted: ' || p_error, 500)
+                         ELSE left(p_error, 500) END
+   WHERE subscription = 'saveusnow' AND canonical_url = p_canonical_url
+  RETURNING capture_attempts, needs_capture INTO v_attempts, v_queued;
+  RETURN jsonb_build_object('canonicalUrl', p_canonical_url, 'attempts', v_attempts, 'stillQueued', v_queued);
+END $$;

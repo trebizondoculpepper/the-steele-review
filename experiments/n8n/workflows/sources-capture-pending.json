@@ -83,7 +83,7 @@
         200
       ],
       "parameters": {
-        "jsCode": "// Clear the queue after success; a permanent failure leaves the queue with its reason; a transient one stays queued.\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, clear: r.ok === true || r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
+        "jsCode": "// Every attempt's outcome is recorded; the database applies the retry bound (5 transient failures).\nconst r = $json; const req = $('Pending items').item.json;\nreturn { json: { url: req.url, ok: r.ok === true, permanent: r.permanent === true, error: r.ok ? null : `${r.code}: ${r.message}`.slice(0, 500), result: r } };",
         "mode": "runOnceForEachItem"
       }
     },
@@ -98,9 +98,9 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT steele_src.capture_done($1, $2) FROM (SELECT 1) one WHERE $3::boolean",
+        "query": "SELECT steele_src.capture_outcome($1, $2::boolean, $3::boolean, $4) AS result",
         "options": {
-          "queryReplacement": "={{ [$json.url, $json.error, $json.clear] }}"
+          "queryReplacement": "={{ [$json.url, $json.ok, $json.permanent, $json.error] }}"
         }
       },
       "credentials": {
@@ -176,7 +176,7 @@
     "callerPolicy": "workflowsFromSameOwner"
   },
   "meta": {
-    "description": "Captures up to 3 items queued by feed discovery (#914) every 15 minutes, oldest first. Discovery and capture stay separate."
+    "description": "Captures up to 3 items queued by feed discovery (#914) every 15 minutes, untried items first; a transient failure is retried at most 5 times, then the item leaves the queue as retries-exhausted. Discovery and capture stay separate."
   },
   "pinData": {}
 }
