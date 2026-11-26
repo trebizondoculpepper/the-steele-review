@@ -1,1 +1,0 @@
-Which underlying idea does this claim assert? An underlying idea is an allegation that can recur across objects, technologies or events. Match on the idea itself, not on shared topic words. The labels describe allegations, not facts.

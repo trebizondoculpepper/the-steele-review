@@ -23,6 +23,12 @@ compose=(docker compose --env-file stack.env -f src/n8n/deploy/compose.yaml)
 "${compose[@]}" exec -T n8n rm -rf /tmp/workflows </dev/null
 "${compose[@]}" cp src/n8n/workflows n8n:/tmp/workflows >/dev/null
 # The CLI starts its own n8n process, so it needs a task broker port distinct from the server's.
-"${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n import:workflow --separate --input=/tmp/workflows </dev/null 2>&1 | grep -E 'Importing|imported|rror' || true
+log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+if ! "${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n import:workflow --separate --input=/tmp/workflows </dev/null >"$log" 2>&1; then
+  grep -vE 'Warning|^\s*$' "$log" | tail -20 >&2
+  echo "workflow import FAILED; the running instance may hold stale workflows" >&2
+  exit 1
+fi
+grep -E 'Importing|imported' "$log" || true
 echo "deployed steele-exp-n8n workflows from $rev"
 REMOTE

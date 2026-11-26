@@ -1,3 +1,5 @@
+> **Historical architecture:** the implementation described below was archived on 25 November 2026. For the replacement, start with [confirmed rebuild principles](rebuild-principles.md). Earlier designs remain reference material; they are not a replacement platform selection or a statement of current deployment.
+
 # The Steele Review architecture
 
 The Steele Review monitors selected Substack publications, archives and indexes their content, and automatically publishes evidence-based criticism to a separate Substack publication. Historical coverage helps explain recurring themes, changing narratives, and inconsistencies in specific claims.

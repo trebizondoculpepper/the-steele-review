@@ -1,6 +1,0 @@
-# pdb-managed prose. `pdb rules` writes RULES.md and `pdb onboard --install`
-# rewrites the coordination block in AGENTS.md in a fixed shape. Formatting
-# them would be undone at the next regeneration, so they are excluded from
-# `vp fmt` / `npm run check` instead of being reformatted.
-RULES.md
-AGENTS.md
