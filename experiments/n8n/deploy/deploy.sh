@@ -45,10 +45,12 @@ ON CONFLICT (identity) DO NOTHING;
 SELECT 1 / (SELECT count(*) FROM steele_wr.prompts WHERE identity = :'name' || '@sha256:' || :'sha')::integer;
 SQL
 done
-# The live switch and limits (off unless the private stack.env enables them).
-psqlx -v live="${STEELE_EXP_N8N_LIVE_MODEL_ENABLED:-0}" -v calls="${STEELE_EXP_N8N_MAX_LIVE_CALLS:-1}" -v budget="${STEELE_EXP_N8N_LIVE_BUDGET_USD:-0.05}" >/dev/null <<'SQL'
+# The live-model and delivery switches, limits and the private draft service URL (off unless the private
+# stack.env enables them).
+psqlx -v live="${STEELE_EXP_N8N_LIVE_MODEL_ENABLED:-0}" -v calls="${STEELE_EXP_N8N_MAX_LIVE_CALLS:-1}" -v budget="${STEELE_EXP_N8N_LIVE_BUDGET_USD:-0.05}" \
+  -v delivery="${STEELE_EXP_N8N_DELIVERY_ENABLED:-0}" -v dsurl="${STEELE_EXP_N8N_DRAFT_SERVICE_URL:-}" >/dev/null <<'SQL'
 INSERT INTO steele_wr.settings VALUES ('live_enabled', :'live'), ('max_live_calls', :'calls'), ('live_budget_usd', :'budget'),
-  ('estimated_live_call_usd', '0.01')
+  ('estimated_live_call_usd', '0.01'), ('delivery_enabled', :'delivery'), ('draft_service_url', :'dsurl')
 ON CONFLICT (key) DO UPDATE SET value = excluded.value;
 SQL
 # The workflows' Postgres credential is built here from the private secrets and streamed into n8n's
@@ -63,7 +65,11 @@ print(json.dumps([{"id": "SteeleExpPgFeed01", "name": "steele-exp feed postgres"
   # OpenRouter (#916): always a placeholder. How the live call reads the canonical key without a second
   # persisted copy is an open design question on #916; until it is decided no real key enters n8n.
   {"id": "SteeleExpOpenRtr01", "name": "steele-exp openrouter", "type": "httpHeaderAuth",
-   "data": {"name": "Authorization", "value": "Bearer live-key-not-configured"}}]))
+   "data": {"name": "Authorization", "value": "Bearer live-key-not-configured"}},
+  # Draft service (#917): n8n's own platform token. Also a placeholder until the same question is decided;
+  # the test double only checks that a bearer token is present.
+  {"id": "SteeleExpDraftSv01", "name": "steele-exp draft service", "type": "httpHeaderAuth",
+   "data": {"name": "Authorization", "value": "Bearer draft-token-not-configured"}}]))
 PY
 # Create or update every workflow from its Git definition (stable IDs make re-import an update).
 # Copied in fresh on every deploy: a bind mount would keep pointing at the swapped-out src.

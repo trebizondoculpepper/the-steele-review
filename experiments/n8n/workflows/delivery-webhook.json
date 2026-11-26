@@ -1,0 +1,146 @@
+{
+  "id": "SteeleExpDlvrHook1",
+  "name": "Delivery: deliver (webhook)",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Deliver request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/delivery/deliver",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-delivery-deliver"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const b = $json.body ?? {};\nconst articleId = String(b.articleId ?? '');\nif (!/^n8n-\\d{8}T\\d{6}Z-[0-9a-f]{4}\\/article@sha256:[0-9a-f]{64}$/.test(articleId)) throw new Error('invalid-request: articleId must be a saved n8n article ID');\nconst target = b.target === undefined ? 'service' : String(b.target);\nif (!['service', 'fake'].includes(target)) throw new Error('invalid-request: target must be service or fake');\nconst scenario = b.scenario === undefined ? 'normal' : String(b.scenario);\nif (!['normal', 'lost-response', 'uncertain-once'].includes(scenario) || (scenario !== 'normal' && target !== 'fake')) throw new Error('invalid-request: scenario');\nif (b.mutate !== undefined && (b.mutate !== 'title' || target !== 'fake')) throw new Error('invalid-request: mutate');\nreturn [{ json: { articleId, target, scenario, mutate: b.mutate ?? null } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "run",
+      "name": "Deliver",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpDlvr0001",
+        "options": {}
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        600,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        420
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { httpStatus: 400, error: String($json.error?.message ?? $json.error).replace(/ \\[line \\d+\\]$/, '') } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Deliver request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Deliver",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "POST {articleId, target?: service|fake, scenario?, mutate?}. Delivers (or re-delivers, idempotently) one saved article. scenario and mutate are for the fake service only."
+  },
+  "pinData": {}
+}
