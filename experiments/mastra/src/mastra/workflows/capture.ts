@@ -18,6 +18,8 @@ import { VersionStore } from "../../capture/store.js";
 export const versions = new VersionStore(process.env.STEELE_EXP_MASTRA_SOURCES_DB ?? "file:./.data/sources.db");
 const feed = new FeedStore(process.env.STEELE_EXP_MASTRA_FEED_DB ?? "file:./.data/feed.db");
 
+const PERMANENT_CAPTURE_ERRORS = new Set(["post-not-found", "restricted", "wrong-publication"]);
+
 const Captured = z.object({
   url: z.string(),
   outcome: z.enum(["captured", "failed"]),
@@ -84,6 +86,8 @@ export const capturePendingWorkflow = createWorkflow({
           const r = await captureOne(item.canonicalUrl);
           // Clear the durable flag only at the fingerprint that was captured.
           if (r.outcome === "captured") await feed.markCaptured(item.canonicalUrl, item.fingerprint);
+          // Permanent failures leave the queue (reason kept); transient ones stay for the next run.
+          else if (r.error && PERMANENT_CAPTURE_ERRORS.has(r.error)) await feed.markCaptureFailed(item.canonicalUrl, item.fingerprint, r.error);
           results.push(r);
         }
         return { results };

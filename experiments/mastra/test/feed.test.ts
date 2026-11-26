@@ -162,3 +162,17 @@ test("new, edited and selected items stay durably pending until captured at thei
   await h.store.select({ canonicalUrl: `https://${HOST}/p/old`, slug: "old" }, new Date().toISOString());
   assert.ok((await h.store.pendingCapture(10)).some((i) => i.slug === "old"));
 });
+
+test("a permanent capture failure leaves the queue with its reason; an edit queues the item again", async () => {
+  const h = harness();
+  h.set(feed(item("one", "One", "1")));
+  await pollFeed(h.store, h.config);
+  h.set(feed(item("gone", "Gone", "2"), item("one", "One", "1")));
+  await pollFeed(h.store, h.config);
+  const [gone] = await h.store.pendingCapture(10);
+  assert.equal(await h.store.markCaptureFailed(gone!.canonicalUrl, gone!.fingerprint, "post-not-found"), true);
+  assert.equal((await h.store.pendingCapture(10)).length, 0, "it no longer blocks the queue");
+  h.set(feed(item("gone", "Gone (edited)", "2"), item("one", "One", "1")));
+  await pollFeed(h.store, h.config);
+  assert.deepEqual((await h.store.pendingCapture(10)).map((i) => i.slug), ["gone"]);
+});

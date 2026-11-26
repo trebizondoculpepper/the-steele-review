@@ -108,3 +108,17 @@ test("a transcript whose segments are all blank falls back to article text with 
   assert.equal(r.bundle.text, "Article body");
   assert.ok(r.warnings.includes("supplied-transcript-unusable"));
 });
+
+test("blank segments are kept in the canonical text; a malformed transcript URL falls back safely", async () => {
+  const kept = await capturePost(`https://${HOST}/p/a-post`, cfg(fakeSubstack({ transcript: ["One.", "  ", "Two."] })));
+  assert.equal(kept.bundle.text, "One.\n\nTwo.");
+  const malformed = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/v1/posts/a-post")
+      return Response.json({ id: 42, slug: "a-post", title: "t", type: "podcast", audience: "everyone", body_html: "<p>Body</p>", podcastUpload: { id: "u", transcription: { status: "transcribed", cdn_url: "/relative/transcription.json" } } });
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+  const r = await capturePost(`https://${HOST}/p/a-post`, cfg(malformed));
+  assert.equal(r.bundle.textSource, "article-html");
+  assert.ok(r.warnings.includes("supplied-transcript-host-not-allowed"));
+});

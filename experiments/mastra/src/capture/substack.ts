@@ -167,18 +167,20 @@ export async function capturePost(postUrl: string, cfg: CaptureConfig): Promise<
   let rawTranscript: string | null = null;
   let mediaUploadId: string | null = post.videoUpload?.id ?? post.podcastUpload?.id ?? null;
   if (upload?.transcription?.cdn_url) {
-    const cdn = new URL(upload.transcription.cdn_url);
-    if (cdn.protocol === "https:" && cdn.hostname === SUBSTACK_CDN_HOST) {
+    let cdn: URL | undefined;
+    try {
+      cdn = new URL(upload.transcription.cdn_url);
+    } catch {
+      cdn = undefined;
+    }
+    if (cdn && cdn.protocol === "https:" && cdn.hostname === SUBSTACK_CDN_HOST) {
       try {
         const t = await boundedText(cdn, cfg);
         const segs = t.status === 200 ? Segments.safeParse(JSON.parse(t.body)) : undefined;
-        const joined = segs?.success
-          ? segs.data
-              .map((s) => s.text.trim())
-              .filter(Boolean)
-              .join("\n")
-          : "";
-        if (joined) {
+        // The contract's normalisation: every segment trimmed, joined with "\n"
+        // (blank segments kept, so both platforms hash identical bytes).
+        const joined = segs?.success ? segs.data.map((s) => s.text.trim()).join("\n") : "";
+        if (joined.trim()) {
           text = joined;
           textSource = "supplied-transcript";
           rawTranscript = t.body;

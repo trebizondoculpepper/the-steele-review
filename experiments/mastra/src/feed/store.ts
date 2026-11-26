@@ -83,6 +83,7 @@ export class FeedStore {
         const cols = await this.db.execute("PRAGMA table_info(feed_items)");
         if (!cols.rows.some((c) => c.name === "needs_capture"))
           await this.db.execute("ALTER TABLE feed_items ADD COLUMN needs_capture INTEGER NOT NULL DEFAULT 0");
+        if (!cols.rows.some((c) => c.name === "capture_error")) await this.db.execute("ALTER TABLE feed_items ADD COLUMN capture_error TEXT");
       })
       .catch((e) => {
         // Allow a later call to retry after a transient failure.
@@ -193,11 +194,26 @@ export class FeedStore {
     return r.rows.map(toStored);
   }
 
+  /**
+   * Records a permanent capture failure (the post is gone, restricted or not
+   * on the publication). The item leaves the queue with its reason kept, so
+   * it cannot starve other pending items; a later edit or manual selection
+   * queues it again.
+   */
+  async markCaptureFailed(canonicalUrl: string, fingerprint: string, reason: string): Promise<boolean> {
+    await this.init();
+    const r = await this.db.execute({
+      sql: "UPDATE feed_items SET needs_capture = 0, capture_error = ? WHERE canonical_url = ? AND fingerprint = ?",
+      args: [reason, canonicalUrl, fingerprint],
+    });
+    return r.rowsAffected === 1;
+  }
+
   /** Clears the capture flag, only if the item has not changed since `fingerprint` was captured. */
   async markCaptured(canonicalUrl: string, fingerprint: string): Promise<boolean> {
     await this.init();
     const r = await this.db.execute({
-      sql: "UPDATE feed_items SET needs_capture = 0 WHERE canonical_url = ? AND fingerprint = ?",
+      sql: "UPDATE feed_items SET needs_capture = 0, capture_error = NULL WHERE canonical_url = ? AND fingerprint = ?",
       args: [canonicalUrl, fingerprint],
     });
     return r.rowsAffected === 1;
