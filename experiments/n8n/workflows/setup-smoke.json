@@ -23,7 +23,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "return [{ json: { status: 'ok', fixture: 'setup-smoke' } }];"
+        "jsCode": "return [{ json: { status: 'ok', fixture: 'setup-smoke', revision: 2 } }];"
       }
     }
   ],
