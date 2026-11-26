@@ -98,7 +98,9 @@ Delivery follows the contract's "Delivery request" section and uses the shared d
   - **Reconcile first:** an unanswered or uncertain create is reconciled through the service's reconcile operation, never re-created.
   - **No retries for refusals:** `conflict`, `invalid` and `forbidden` are never retried.
   - **Strict readback:** success requires the expected title, unpublished, and no email sent. If that readback is missing, one fresh readback is requested; otherwise the result is `unverified`.
-- **The record:** the outcome, draft ID, receipt, readback and every try go to `steele_dl.deliveries`, one record per destination (`service` or `fake`) and request ID. The private editor link is never returned or stored.
+- **The record:** the outcome, draft ID, receipt, readback and every try go to `steele_dl.deliveries`, one record per destination (`service` or `fake`) and request ID.
+- **Editor link:** the private editor link is left out of the webhook result and out of `steele_dl.deliveries`. However, n8n's execution history keeps each HTTP step's raw response, which includes the editor link. So treat execution exports as private.
+- **Test double's history:** the test double saves no execution data, so a platform token sent to it is never journalled.
 - **Switches:** real delivery is off unless `STEELE_EXP_N8N_DELIVERY_ENABLED=1` in the private `stack.env`. The service URL also comes from there.
 - **Platform token:** like the model key, it is currently a placeholder. The mechanism is the open question on #916.
 

@@ -55,7 +55,7 @@ CREATE OR REPLACE FUNCTION steele_dl.record(p_request_id text, p_article_id text
   INSERT INTO steele_dl.deliveries (request_id, article_id, target, payload_sha256, status, draft_id, receipt_id, readback, history, error, first_at, updated_at)
   VALUES (p_request_id, p_article_id, p_target, p_payload_sha256, p_status, p_draft_id, p_receipt_id, p_readback, p_history, p_error, clock_timestamp(), clock_timestamp())
   ON CONFLICT (target, request_id) DO UPDATE SET status = excluded.status, draft_id = coalesce(excluded.draft_id, steele_dl.deliveries.draft_id),
-    receipt_id = coalesce(excluded.receipt_id, steele_dl.deliveries.receipt_id), readback = coalesce(excluded.readback, steele_dl.deliveries.readback),
+    receipt_id = coalesce(excluded.receipt_id, steele_dl.deliveries.receipt_id), readback = coalesce(nullif(excluded.readback, 'null'::jsonb), steele_dl.deliveries.readback),
     history = steele_dl.deliveries.history || excluded.history, error = excluded.error, updated_at = clock_timestamp()
   RETURNING jsonb_build_object('requestId', request_id, 'target', target, 'status', status, 'draftId', draft_id, 'receiptId', receipt_id, 'tries', jsonb_array_length(history));
 $$;

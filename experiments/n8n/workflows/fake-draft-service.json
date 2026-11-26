@@ -292,10 +292,11 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true,
-    "saveDataSuccessExecution": "all",
-    "saveDataErrorExecution": "all",
-    "callerPolicy": "workflowsFromSameOwner"
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveExecutionProgress": false
   },
   "meta": {
     "description": "Test double of experiments/draft-service for delivery tests: the same routes, statuses and HTTP codes, with scenarios (normal, lost-response, uncertain-once) and database-backed state that survives restarts. Never contacts Substack."
