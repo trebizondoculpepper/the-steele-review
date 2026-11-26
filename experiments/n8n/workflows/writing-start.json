@@ -1,0 +1,236 @@
+{
+  "id": "SteeleExpWrStart01",
+  "name": "Writing: start an attempt",
+  "nodes": [
+    {
+      "id": "hook",
+      "name": "Start request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "steele-exp/writing/start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "steele-exp-writing-start"
+    },
+    {
+      "id": "val",
+      "name": "Validate request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// startRun / rerun: always a new attempt ID, pinned to the given version (an older one is fine).\nconst crypto = require('crypto');\nconst b = $json.body ?? {};\nconst store = b.store === undefined ? 'live' : String(b.store);\nif (!/^(live|fixture-[a-z0-9-]{1,40})$/.test(store)) throw new Error('invalid-request: unknown store');\nconst version = String(b.version ?? '');\nif (!/^substack:[a-z0-9-]+:\\d{1,15}@sha256:[0-9a-f]{64}$/.test(version)) throw new Error('invalid-request: version must be a source version ID');\nconst mode = b.mode === undefined ? 'fake' : String(b.mode);\nif (!['fake', 'live'].includes(mode)) throw new Error('invalid-request: mode must be fake or live');\nconst fakeBehaviour = b.fakeBehaviour === undefined ? null : String(b.fakeBehaviour);\nif (fakeBehaviour !== null && (mode !== 'fake' || !['valid', 'malformed', 'partial', 'slow'].includes(fakeBehaviour))) throw new Error('invalid-request: fakeBehaviour');\nconst rerunOf = b.rerunOf === undefined ? null : String(b.rerunOf);\nconst stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\\.\\d{3}Z$/, 'Z');\nreturn [{ json: { attempt: `n8n-${stamp}-${crypto.randomBytes(2).toString('hex')}`, store, version, mode, fakeBehaviour, rerunOf } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "create",
+      "name": "Create attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT steele_wr.create_attempt($1, $2, $3, $4, $5, 'summary-critique-v1', $6) AS result",
+        "options": {
+          "queryReplacement": "={{ [$json.attempt, $json.store, $json.version, $json.mode, $json.fakeBehaviour, $json.rerunOf] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "SteeleExpPgFeed01",
+          "name": "steele-exp feed postgres"
+        }
+      }
+    },
+    {
+      "id": "created",
+      "name": "Created",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const r = $json.result;\nif (r.error) throw new Error(r.error);\nreturn [{ json: { attempt: r.attempt } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "run",
+      "name": "Run attempt",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        800,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "SteeleExpWrRun0001",
+        "options": {}
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nreturn [{ json: { ...r, httpStatus: r.status === 'saved' ? 200 : r.status === 'failed' ? 422 : 409 } }];"
+      }
+    },
+    {
+      "id": "ok",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus ?? 200 }}"
+        }
+      }
+    },
+    {
+      "id": "rej",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const m = String($json.error?.message ?? $json.error).replace(/ \\[line \\d+\\]$/, '');\nreturn [{ json: { httpStatus: m.startsWith('not-found') ? 404 : m.startsWith('live-model-disabled') ? 409 : 400, error: m } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Start request": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Create attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create attempt": {
+      "main": [
+        [
+          {
+            "node": "Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Created": {
+      "main": [
+        [
+          {
+            "node": "Run attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run attempt": {
+      "main": [
+        [
+          {
+            "node": "Shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "description": "startRun / rerun: POST {version, store?, mode?: fake|live, fakeBehaviour?, rerunOf?}. Always creates a new attempt pinned to that version (an older one is fine) and runs it."
+  },
+  "pinData": {}
+}
