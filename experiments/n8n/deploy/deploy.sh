@@ -55,23 +55,15 @@ SQL
 # importer, which encrypts it. The plaintext only ever exists in a memory-backed tmpfs inside the
 # container (compose.yaml), and is removed on exit, interruption or failure.
 python3 - <<'PY' | "${compose[@]}" exec -T -e N8N_RUNNERS_BROKER_PORT=5690 n8n sh -c 'set -u; f=/run/import/cred.json; trap "rm -f $f /run/import/cred.log" EXIT INT TERM HUP; umask 077; cat >"$f"; n8n import:credentials --input="$f" >/run/import/cred.log 2>&1 || { tail -5 /run/import/cred.log >&2; exit 1; }'
-import json, os, re
-def live_key():
-    # TOML: ignore comments; exactly one active OPENROUTER_API_KEY assignment is accepted.
-    text = open(os.environ["STEELE_EXP_N8N_MODEL_KEY_FILE"]).read()
-    pattern = re.compile(r"^\s*OPENROUTER_API_KEY\s*=\s*([\"'])([^\"']+)\1\s*(#.*)?$")
-    keys = [m.group(2) for l in text.split("\n") if not l.lstrip().startswith("#") for m in [pattern.match(l)] if m]
-    if len(keys) != 1 or not re.fullmatch(r"[A-Za-z0-9._-]{20,200}", keys[0]):
-        raise SystemExit("model key unavailable")
-    return keys[0]
+import json, os
 print(json.dumps([{"id": "SteeleExpPgFeed01", "name": "steele-exp feed postgres", "type": "postgres",
   "data": {"host": os.environ["STEELE_EXP_N8N_DB_HOST"], "port": int(os.environ.get("STEELE_EXP_N8N_DB_PORT", "5432")),
            "database": os.environ["STEELE_EXP_N8N_DB_NAME"], "user": os.environ["STEELE_EXP_N8N_DB_USER"],
            "password": open("secrets/postgres.password").read().strip(), "ssl": "disable"}},
-  # OpenRouter (#916): the key is read from the canonical model-provider file only while live calls are
-  # enabled; otherwise the credential holds a placeholder, so no usable key stays in n8n's store.
+  # OpenRouter (#916): always a placeholder. How the live call reads the canonical key without a second
+  # persisted copy is an open design question on #916; until it is decided no real key enters n8n.
   {"id": "SteeleExpOpenRtr01", "name": "steele-exp openrouter", "type": "httpHeaderAuth",
-   "data": {"name": "Authorization", "value": "Bearer " + (live_key() if os.environ.get("STEELE_EXP_N8N_LIVE_MODEL_ENABLED") == "1" else "live-calls-disabled")}}]))
+   "data": {"name": "Authorization", "value": "Bearer live-key-not-configured"}}]))
 PY
 # Create or update every workflow from its Git definition (stable IDs make re-import an update).
 # Copied in fresh on every deploy: a bind mount would keep pointing at the swapped-out src.

@@ -65,8 +65,10 @@ This is one bounded writing step, following the contract's "Writing step" (`doc/
   - the budget (USD 0.05, with a USD 0.01 pre-check estimate).
 
   A started live call counts even if it is interrupted.
-- **Live switch:** `STEELE_EXP_N8N_LIVE_MODEL_ENABLED` in the private `stack.env`, default 0, is copied into `steele_wr.settings` on deploy. The OpenRouter credential holds the key from the canonical model-provider file only while the switch is on. Otherwise every deploy overwrites it with a placeholder.
-- **Interruptions:** a `calling` attempt older than its call window (live 130 s, fake 45 s) was interrupted. A live call becomes `provider-uncertain` and is never resent; a fake call becomes `interrupted-fake-call`.
+- **Live switch:** `STEELE_EXP_N8N_LIVE_MODEL_ENABLED` in the private `stack.env`, default 0, is copied into `steele_wr.settings` on deploy.
+- **OpenRouter credential:** for now it always holds a placeholder. How the live call should read the canonical key without a second persisted copy is an open design question on #916. It must be settled before the live call in #923.
+- **Interruptions:** a `calling` attempt older than its call window (live 130 s, fake 75 s) was interrupted. A live call becomes `provider-uncertain` and is never resent; a fake call becomes `interrupted-fake-call`.
+- **Source load failures:** if the pinned source can't be loaded, saved progress still wins, and model output that is already saved is validated without it. A pending attempt stops as `source-unavailable` and can be retried. Only a missing or corrupt version fails it.
 - **Outcomes:**
   - Output is validated against `article-v1`, unsupported Markdown is refused, and the article is rendered deterministically. The shared fixture renders exactly, and word counts match the Mastra track.
   - The article is saved immutably as `<attempt>/article@sha256:<hex of the Markdown>`.

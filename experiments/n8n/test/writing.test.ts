@@ -87,3 +87,16 @@ test("empty and oversized sources stop before any call", () => {
   assert.equal(runPlan(pending, { bundle: { text: "  " } })[0]!.json.reason, "no-usable-text");
   assert.equal(runPlan(pending, { bundle: { text: "x".repeat(60001) } })[0]!.json.reason, "source-too-large");
 });
+
+test("a source that cannot be loaded never destroys saved progress", () => {
+  assert.equal(runPlan(attempt({ status: "model-done" }), { loadError: "source-unavailable: database down" })[0]!.json.action, "validate");
+  const transient = runPlan(attempt({ status: "pending", mode: "fake" }), { loadError: "connect ECONNREFUSED" })[0]!.json;
+  assert.deepEqual([transient.action, transient.reason], ["stop", "source-unavailable: connect ECONNREFUSED"]);
+  const missing = runPlan(attempt({ status: "pending", mode: "fake" }), { loadError: "not-found: no source version v" })[0]!.json;
+  assert.deepEqual([missing.action, missing.reason], ["fail", "not-found: no source version v"]);
+});
+
+test("the fake call window outlasts the slowest fake call (60 s)", () => {
+  assert.equal(runPlan(attempt({ status: "calling", mode: "fake", secondsSinceCallStarted: 70 }))[0]!.json.reason, "model-call-in-progress");
+  assert.equal(runPlan(attempt({ status: "calling", mode: "fake", secondsSinceCallStarted: 76 }))[0]!.json.reason, "interrupted-fake-call");
+});
