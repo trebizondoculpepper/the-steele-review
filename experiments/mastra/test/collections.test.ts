@@ -570,3 +570,21 @@ test("the file checkpoint is written atomically and leaves no temporary file beh
   await assert.rejects(blocked.save({ schemaVersion: 1, namespace: NS, collections: {} }));
   assert.deepEqual(readdirSync(join(dir, "state")), ["collection-index.json"]);
 });
+
+test("a collection whose declaration cannot be read fails alone; the others are indexed (review on #947)", async () => {
+  const h = harness();
+  h.declare("alpha", 1, {});
+  h.declare("beta", 1, {});
+  h.write("beta/b.json", { b: 1 });
+  h.commit();
+  const repo = new GitRepository(h.root);
+  const readText = repo.readText.bind(repo);
+  repo.readText = async (revision, path, signal) => {
+    if (path.startsWith("alpha/")) throw new Error("blob unreadable");
+    return readText(revision, path, signal);
+  };
+  const report = await reconcileCollections({ repo, index: h.index, checkpoint: h.checkpoint, namespace: NS });
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.collections.map((c) => [c.directory, c.action]), [["alpha", "failed"], ["beta", "built"]]);
+  assert.deepEqual(nameCollections(NS, ["a\\b", "ok"]).rejected, [{ directory: "a\\b", reason: "invalid-name" }]);
+});

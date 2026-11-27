@@ -69,7 +69,7 @@ export function nameCollections(
     if (directory.startsWith(".")) continue;
     // The directory name is a checkpoint key, so it must start with a letter or
     // digit: this also excludes "__proto__", which a plain object would not keep.
-    if (!/^[A-Za-z0-9]/.test(directory)) {
+    if (!/^[A-Za-z0-9]/.test(directory) || /[\\\0]/.test(directory)) {
       rejected.push({ directory, reason: "invalid-name" });
       continue;
     }

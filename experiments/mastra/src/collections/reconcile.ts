@@ -97,7 +97,23 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
   report.removed = Object.keys(state.collections).filter((d) => !present.has(d));
 
   for (const collection of discovered.collections) {
-    const declaration = await readDeclaration(options.repo, head, collection.directory);
+    let declaration: Awaited<ReturnType<typeof readDeclaration>>;
+    try {
+      declaration = await readDeclaration(options.repo, head, collection.directory);
+    } catch {
+      // A declaration that cannot be read fails this collection only; the pass goes on.
+      report.collections.push({
+        directory: collection.directory,
+        alias: collection.alias,
+        backing: state.collections[collection.directory]?.live?.backing ?? "",
+        action: "failed",
+        indexed: 0,
+        deleted: 0,
+        failed: [{ path: `${collection.directory}/${DECLARATION_FILE}`, reason: "unreadable" }],
+      });
+      report.ok = false;
+      continue;
+    }
     if ("reason" in declaration) {
       report.rejected.push({ directory: collection.directory, reason: declaration.reason });
       continue;
