@@ -4,12 +4,14 @@ import { z } from "zod";
 
 import { ConfigDirectory, ConfigError, type ConfigSection } from "../common/config/index.js";
 import { fileCheckpoint } from "./checkpoint.js";
+import { collectionsRoot } from "./paths.js";
 import { GitRepository } from "../common/git/index.js";
 import { DEFAULT_NAMESPACE, validateNamespace } from "./names.js";
 import { reconcileCollections, type ReconcileReport } from "./reconcile.js";
 import { ElasticsearchIndex } from "./search-index.js";
 
 export { reconcileCollections, type ReconcileReport } from "./reconcile.js";
+export { collectionsRoot } from "./paths.js";
 
 /**
  * Deployment wiring for collection indexing (#942).
@@ -62,7 +64,7 @@ export async function elasticsearchClient(config: ConfigDirectory): Promise<Clie
 export function collectionIndexerFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const config = ConfigDirectory.fromEnv(env);
   const appDir = env.STEELE_APP_DIR;
-  const root = env.STEELE_COLLECTIONS_ROOT ?? (appDir ? join(appDir, "collections") : undefined);
+  const root = collectionsRoot(env);
   const checkpointPath = env.STEELE_COLLECTIONS_CHECKPOINT ?? (appDir ? join(appDir, "state", "collection-index.json") : undefined);
   if (!root || !checkpointPath) throw new Error("set STEELE_APP_DIR, or STEELE_COLLECTIONS_ROOT and STEELE_COLLECTIONS_CHECKPOINT");
   const namespace = validateNamespace(env.STEELE_INDEX_NAMESPACE || DEFAULT_NAMESPACE);

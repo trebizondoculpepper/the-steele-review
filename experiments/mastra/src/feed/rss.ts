@@ -16,6 +16,8 @@ import { z } from "zod";
 export interface FeedItem {
   /** Canonical `https://<publication host>/p/<slug>`; the discovery key. */
   canonicalUrl: string;
+  /** The item's link exactly as the feed gave it (#943). */
+  link: string;
   slug: string;
   /** Numeric post ID when the feed reveals it, else null. */
   postId: string | null;
@@ -82,6 +84,7 @@ export function parseFeed(xml: string, publicationHost: string): FeedItem[] {
     const published = it.pubDate ? new Date(it.pubDate) : null;
     const item = {
       canonicalUrl: url.href,
+      link: it.link.trim(),
       slug,
       postId,
       sourceItem: postId ? `substack:${publication}:${postId}` : null,

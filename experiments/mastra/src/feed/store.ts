@@ -23,7 +23,7 @@ import type { FeedItem } from "./rss.js";
 
 export type ItemStatus = "baseline" | "new" | "selected";
 
-export interface StoredItem extends FeedItem {
+export interface StoredItem extends Omit<FeedItem, "link"> {
   status: ItemStatus;
   firstSeenAt: string;
   lastSeenAt: string;

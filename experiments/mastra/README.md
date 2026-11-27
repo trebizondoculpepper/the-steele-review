@@ -138,3 +138,31 @@ Commits use Git plumbing, as the earlier GitArtifactStore did: a temporary index
 Errors are `GitError` with a category: `not-a-repository`, `conflict`, `invalid-path`, `cancelled`, `timeout` or `failed`. Messages never contain Git's output or paths. Absence is a result (`null` or an empty list), never an error. Calls run the installed Git executable with an argument array, a timeout and an optional AbortSignal. The environment is stripped of every variable that could point Git at another repository, index or configuration. Paths and revisions are validated before Git sees them. A custom `GitRunner` can be injected to observe or fake Git.
 
 The service wraps the Git executable rather than a Git library such as isomorphic-git. The executable is what the deployment already runs, it gives exactly Git's own behaviour, and the plumbing approach is proven by the earlier store.
+
+## Substack poller step (#943)
+
+`src/mastra/steps/poll-substack-feeds.ts` (`poll-substack-feeds`) is a reusable Mastra step; #944 registers it as a workflow. Each run:
+
+- reads the enabled Substack sources from the configuration directory (`sources/sources.json`, see #945);
+- polls each source's RSS feed;
+- keeps one discovery record per observed item at `feeds/<sourceId>/<itemId>.json` in the collections repository (`STEELE_COLLECTIONS_ROOT`, or `<STEELE_APP_DIR>/collections`).
+
+**Records.** The item ID is the post's slug, which is the stable part of its canonical URL. A record holds:
+- the original URL as the feed gave it, and the canonical URL;
+- the title;
+- the publication date, only when the feed supplies one;
+- the post ID and source item, when the feed reveals them;
+- the medium;
+- the fingerprint used to detect edits.
+
+A record holds no poll time, so an unchanged item is never rewritten.
+
+**Commits.** All new and changed records from a run go into one commit through the common Git service. An unchanged run makes no commit, and a lost commit race is retried against the new head. The first run also commits `feeds/collection.json`, the collection's mapping declaration, so the collection indexer (#942) picks the feeds up. An existing declaration is never overwritten.
+
+**Output.** The step returns:
+- `sources`: for each source, its status, a failure category (never a URL or response body), and its item, new, changed and unchanged counts;
+- `committed`: the references to the committed records (path, change and commit).
+
+A failing feed is reported and does not discard the other feeds' results.
+
+**Out of scope.** The step does no capture, SQLite, NATS, indexing or publishing. A test checks its imports to confirm this.

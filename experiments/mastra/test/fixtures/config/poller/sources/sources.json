@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "sources": [
+    { "id": "alpha", "type": "substack", "name": "Alpha Fixture", "feedUrl": "https://alpha.example.org/feed" },
+    { "id": "beta", "type": "substack", "name": "Beta Fixture", "feedUrl": "https://beta.example.org/feed" },
+    { "id": "gamma", "type": "substack", "name": "Gamma Fixture (disabled)", "feedUrl": "https://gamma.example.org/feed", "enabled": false }
+  ]
+}
