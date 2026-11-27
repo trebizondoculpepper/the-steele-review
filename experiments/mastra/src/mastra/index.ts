@@ -2,20 +2,6 @@ import { Mastra } from "@mastra/core/mastra";
 import { LibSQLStore } from "@mastra/libsql";
 import { PinoLogger } from "@mastra/loggers";
 import { MastraStorageExporter, Observability } from "@mastra/observability";
-import { helloWorkflow } from "./workflows/hello.js";
-import { feedStatusWorkflow, pollFeedWorkflow, selectFeedItemWorkflow } from "./workflows/feed.js";
-import {
-  captureSourceWorkflow,
-  capturePendingWorkflow,
-  exportVersionWorkflow,
-  importVersionWorkflow,
-  listSourcesWorkflow,
-  listVersionsWorkflow,
-  readVersionWorkflow,
-} from "./workflows/capture.js";
-import { listAttemptsWorkflow, readArticleWorkflow, retryWritingWorkflow, startWritingWorkflow } from "./workflows/writing.js";
-import { deliverArticleWorkflow, listDeliveriesWorkflow } from "./workflows/delivery.js";
-
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
  *
@@ -31,25 +17,6 @@ import { deliverArticleWorkflow, listDeliveriesWorkflow } from "./workflows/deli
  */
 
 export const mastra = new Mastra({
-  workflows: {
-    hello: helloWorkflow,
-    "poll-feed": pollFeedWorkflow,
-    "select-feed-item": selectFeedItemWorkflow,
-    "feed-status": feedStatusWorkflow,
-    "capture-source": captureSourceWorkflow,
-    "capture-pending": capturePendingWorkflow,
-    "list-sources": listSourcesWorkflow,
-    "list-versions": listVersionsWorkflow,
-    "read-version": readVersionWorkflow,
-    "export-version": exportVersionWorkflow,
-    "import-version": importVersionWorkflow,
-    "start-writing": startWritingWorkflow,
-    "retry-writing": retryWritingWorkflow,
-    "list-attempts": listAttemptsWorkflow,
-    "read-article": readArticleWorkflow,
-    "deliver-article": deliverArticleWorkflow,
-    "list-deliveries": listDeliveriesWorkflow,
-  },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
     url: process.env.STEELE_EXP_MASTRA_DB ?? "file:./.data/mastra.db",
