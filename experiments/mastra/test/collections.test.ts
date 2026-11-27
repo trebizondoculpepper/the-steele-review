@@ -588,3 +588,24 @@ test("a collection whose declaration cannot be read fails alone; the others are 
   assert.deepEqual(report.collections.map((c) => [c.directory, c.action]), [["alpha", "failed"], ["beta", "built"]]);
   assert.deepEqual(nameCollections(NS, ["a\\b", "ok"]).rejected, [{ directory: "a\\b", reason: "invalid-name" }]);
 });
+
+test("a failing alias lookup during staging recovery fails that collection alone (review on #947)", async () => {
+  const h = harness();
+  h.declare("alpha", 1, {});
+  h.write("alpha/bad.json", "not json");
+  h.declare("beta", 1, {});
+  h.write("beta/b.json", { b: 1 });
+  h.commit();
+  await h.run(); // alpha's build fails and leaves staging state
+  assert.ok(h.checkpoint.state!.collections["alpha"]!.staging);
+  const aliasTargets = h.index.aliasTargets.bind(h.index);
+  h.index.aliasTargets = async (alias) => {
+    if (alias.endsWith("-alpha")) throw new Error("cluster unavailable");
+    return aliasTargets(alias);
+  };
+  h.write("beta/c.json", { c: 1 });
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => [c.directory, c.action]), [["alpha", "failed"], ["beta", "updated"]]);
+  assert.equal(h.index.read("steele-review-beta")!.size, 2);
+});

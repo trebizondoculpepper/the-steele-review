@@ -125,7 +125,24 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
     // A pass that stopped after switching the alias but before saving: the
     // staging index is already what readers see, so record it as live rather
     // than ever writing into it as staging again.
-    if (previous.staging && (await options.index.aliasTargets(collection.alias)).includes(previous.staging.backing)) {
+    let promoted: boolean;
+    try {
+      promoted = !!previous.staging && (await options.index.aliasTargets(collection.alias)).includes(previous.staging.backing);
+    } catch {
+      // A search-cluster failure here fails this collection only; the pass goes on.
+      report.collections.push({
+        directory: collection.directory,
+        alias: collection.alias,
+        backing: previous.staging?.backing ?? previous.live?.backing ?? "",
+        action: "failed",
+        indexed: 0,
+        deleted: 0,
+        failed: [{ path: collection.directory, reason: "index-failed" }],
+      });
+      report.ok = false;
+      continue;
+    }
+    if (promoted && previous.staging) {
       const { backing, mappingVersion, rebuild, head: built } = previous.staging;
       previous = { directory: previous.directory, alias: previous.alias, live: { backing, mappingVersion, rebuild, commit: built } };
       state.collections[collection.directory] = previous;
