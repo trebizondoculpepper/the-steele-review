@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { ConfigError } from "../common/config/index.js";
 import type { CheckpointState, CheckpointStore, CollectionState, LiveIndex, StagingIndex } from "./checkpoint.js";
 import { DECLARATION_FILE, parseDeclaration, type CollectionDeclaration } from "./declaration.js";
-import type { GitRepository, PathChange } from "./git.js";
+import type { GitRepository } from "../common/git/index.js";
 import { backingIndexName, documentId, nameCollections, validateNamespace, type CollectionName, type NameRejection } from "./names.js";
 import type { IndexDocument, SearchIndexPort } from "./search-index.js";
 
@@ -87,11 +87,11 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
   if (loaded && loaded.namespace !== namespace) throw new Error("the indexing checkpoint belongs to a different namespace");
   const state: CheckpointState = loaded ?? { schemaVersion: 1, namespace, collections: {} };
 
-  const head = await options.repo.head();
+  const head = await options.repo.resolve("HEAD");
   if (!head) return report;
   report.head = head;
 
-  const discovered = nameCollections(namespace, await options.repo.topLevelDirectories(head));
+  const discovered = nameCollections(namespace, await options.repo.listDirectories(head));
   report.rejected.push(...discovered.rejected);
   const present = new Set(discovered.collections.map((c) => c.directory));
   report.removed = Object.keys(state.collections).filter((d) => !present.has(d));
@@ -138,7 +138,7 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
         action: "failed",
         indexed: 0,
         deleted: 0,
-        failed: [{ path: collection.directory, reason: error instanceof Error && error.name === "GitReadError" ? "unreadable" : "index-failed" }],
+        failed: [{ path: collection.directory, reason: error instanceof Error && error.name === "GitError" ? "unreadable" : "index-failed" }],
       };
     }
     report.collections.push(result);
@@ -154,7 +154,7 @@ async function readDeclaration(
   head: string,
   directory: string,
 ): Promise<CollectionDeclaration | { reason: "missing-declaration" | "invalid-declaration" }> {
-  const file = await repo.read(head, `${directory}/${DECLARATION_FILE}`);
+  const file = await repo.readText(head, `${directory}/${DECLARATION_FILE}`);
   if (!file) return { reason: "missing-declaration" };
   try {
     return parseDeclaration(directory, file.text);
@@ -192,7 +192,7 @@ async function readDocument(
 ): Promise<{ document: IndexDocument } | { absent: true } | { failure: CollectionFailure }> {
   let file;
   try {
-    file = await repo.read(head, path);
+    file = await repo.readText(head, path);
   } catch {
     return { failure: { path, reason: "unreadable" } };
   }
@@ -274,8 +274,8 @@ async function chooseStaging(
     const stale = new Set(prior.touched ?? []);
     if (prior.head === head || (await options.repo.isAncestor(prior.head, head))) {
       if (prior.head !== head)
-        for (const c of await options.repo.changes(prior.head, head))
-          if (c.change === "delete" && isDocumentPath(collection, c.path)) stale.add(c.path);
+        for (const c of await options.repo.compare(prior.head, head, collection.directory))
+          if (c.change === "deleted" && isDocumentPath(collection, c.path)) stale.add(c.path);
       const touched = [...stale].sort();
       return { staging: { ...prior, head, ...(touched.length ? { touched } : {}) }, created: false, stalePaths: touched };
     }
@@ -313,7 +313,7 @@ async function build(
   // Recorded before writing, so the next attempt reuses this index rather than making another.
   await save({ ...previous, staging });
 
-  const paths = (await options.repo.files(head, collection.directory)).map((e) => e.path).filter((p) => isDocumentPath(collection, p));
+  const paths = (await options.repo.listFiles(head, collection.directory)).map((e) => e.path).filter((p) => isDocumentPath(collection, p));
   await applyPaths(options, collection, staging.backing, head, [...paths, ...stalePaths], report);
   // Readers keep the previous index until the new one is complete.
   if (report.failed.length) {
@@ -350,7 +350,7 @@ async function update(
   };
   const paths = new Set(live.touched ?? []);
   if (live.commit !== head)
-    for (const c of await options.repo.changes(live.commit, head)) if (isDocumentPath(collection, c.path)) paths.add(c.path);
+    for (const c of await options.repo.compare(live.commit, head, collection.directory)) if (isDocumentPath(collection, c.path)) paths.add(c.path);
   if (paths.size === 0) {
     await save({ ...previous, live: { ...live, commit: head } });
     return report;

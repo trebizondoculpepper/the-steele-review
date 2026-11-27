@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { ConfigDirectory, ConfigError, type ConfigSection } from "../common/config/index.js";
 import { fileCheckpoint } from "./checkpoint.js";
-import { GitRepository } from "./git.js";
+import { GitRepository } from "../common/git/index.js";
 import { DEFAULT_NAMESPACE, validateNamespace } from "./names.js";
 import { reconcileCollections, type ReconcileReport } from "./reconcile.js";
 import { ElasticsearchIndex } from "./search-index.js";

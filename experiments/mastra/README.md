@@ -118,3 +118,23 @@ The Substack poller owns its source settings (`src/feed/substack-sources.ts`). `
 - **Checkpoint:** a JSON file, `<STEELE_APP_DIR>/state/collection-index.json`, with no SQLite. It moves forward only after every change in a collection has succeeded.
 - **Safety:** nothing outside the namespace is created, written or re-pointed. Nothing is deleted: a rebuild keeps the previous backing index, and a collection removed from Git keeps its index and is reported.
 - **Live test:** `STEELE_TEST_ELASTICSEARCH_URL=http://127.0.0.1:9200 npx tsx --test test/collections-live.test.ts` runs the adapter against a disposable cluster. Never run it against a shared cluster.
+
+## Git service (#949)
+
+`src/common/git/` is the only place that runs Git. Application modules call typed operations on `GitRepository` and never build Git arguments or import a Git library:
+
+- `resolve(revision)` returns the commit a revision names, or `null` for an unknown ref or an unborn branch.
+- `isAncestor(a, b)`.
+- `listDirectories(revision, dir?)` and `listFiles(revision, dir?)` list the tree at an exact revision; `listFiles` includes blob IDs.
+- `readFile` and `readText(revision, path)` return the content at an exact revision, or `null` when there is no file there.
+- `compare(from, to, dir?)` lists added, modified and deleted paths.
+- `commit({parent, writes, deletes, message})` makes one commit for all the given writes and deletes.
+
+Commits use Git plumbing, as the earlier GitArtifactStore did: a temporary index, `write-tree`, `commit-tree`, and a compare-and-swap `update-ref`. That means:
+- no working tree is touched;
+- a concurrent writer causes a `conflict` error rather than a lost commit;
+- content identical to the current tree makes no commit (`changed: false`), so repeated polls add no history.
+
+Errors are `GitError` with a category: `not-a-repository`, `conflict`, `invalid-path`, `cancelled`, `timeout` or `failed`. Messages never contain Git's output or paths. Absence is a result (`null` or an empty list), never an error. Calls run the installed Git executable with an argument array, a timeout and an optional AbortSignal. The environment is stripped of every variable that could point Git at another repository, index or configuration. Paths and revisions are validated before Git sees them. A custom `GitRunner` can be injected to observe or fake Git.
+
+The service wraps the Git executable rather than a Git library such as isomorphic-git. The executable is what the deployment already runs, it gives exactly Git's own behaviour, and the plumbing approach is proven by the earlier store.

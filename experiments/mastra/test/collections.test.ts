@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { memoryCheckpoint } from "../src/collections/checkpoint.js";
-import { GitRepository } from "../src/collections/git.js";
+import { GitRepository } from "../src/common/git/index.js";
 import { nameCollections, normaliseCollectionName } from "../src/collections/names.js";
 import { reconcileCollections } from "../src/collections/reconcile.js";
 import { guardNamespace, SearchIndexError, type IndexDocument, type SearchIndexPort } from "../src/collections/search-index.js";
@@ -519,7 +519,7 @@ test("a missing or broken repository is a failure, not an empty pass (review on 
   const missing = join(tmpdir(), `no-such-collections-${process.pid}`);
   await assert.rejects(
     reconcileCollections({ repo: new GitRepository(missing), index, checkpoint: memoryCheckpoint(), namespace: NS }),
-    (e: unknown) => e instanceof Error && e.name === "GitReadError" && !e.message.includes(missing),
+    (e: unknown) => e instanceof Error && e.name === "GitError" && !e.message.includes(missing),
   );
   const notRepo = mkdtempSync(join(tmpdir(), "not-a-repo-"));
   await assert.rejects(reconcileCollections({ repo: new GitRepository(notRepo), index, checkpoint: memoryCheckpoint(), namespace: NS }));

@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { Client } from "@elastic/elasticsearch";
 
 import { memoryCheckpoint } from "../src/collections/checkpoint.js";
-import { GitRepository } from "../src/collections/git.js";
+import { GitRepository } from "../src/common/git/index.js";
 import { reconcileCollections } from "../src/collections/reconcile.js";
 import { ElasticsearchIndex } from "../src/collections/search-index.js";
 
