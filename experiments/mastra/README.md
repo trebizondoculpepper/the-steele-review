@@ -100,3 +100,23 @@ How discovery works:
 `src/common/config/` reads configuration from one directory, the existing owner configuration root named by `STEELE_CONFIG_PATH` (for example `sources/sources.json`). Callers pass the root, so tests point it at `test/fixtures/config/`. The shared layer handles files and generic validation only. Each consumer declares its own schema as a `ConfigSection` and gets a typed value back, or a `ConfigError` (`no-root`, `outside-root`, `missing`, `unreadable`, `malformed`, `invalid`) that names the file and the location of each problem but never a value. Files are read on every call, so a change applies without a restart.
 
 The Substack poller owns its source settings (`src/feed/substack-sources.ts`). `enabledSubstackFeeds(config)` reads `sources/sources.json` in either existing format (the versioned document or the earlier bare array) and returns the enabled Substack sources with their feed URL and publication host. It validates only the fields it uses and leaves settings owned by other consumers alone. Two optional fields are new: `enabled` (default `true`) and `feedUrl` (an https URL; default `https://<id>.substack.com/feed`). Existing files stay valid without them.
+
+## Git service (#949)
+
+`src/common/git/` is the only place that runs Git. Application modules call typed operations on `GitRepository` and never build Git arguments or import a Git library:
+
+- `resolve(revision)` returns the commit a revision names, or `null` for an unknown ref or an unborn branch.
+- `isAncestor(a, b)`.
+- `listDirectories(revision, dir?)` and `listFiles(revision, dir?)` list the tree at an exact revision; `listFiles` includes blob IDs.
+- `readFile` and `readText(revision, path)` return the content at an exact revision, or `null` when there is no file there.
+- `compare(from, to, dir?)` lists added, modified and deleted paths.
+- `commit({parent, writes, deletes, message})` makes one commit for all the given writes and deletes.
+
+Commits use Git plumbing, as the earlier GitArtifactStore did: a temporary index, `write-tree`, `commit-tree`, and a compare-and-swap `update-ref`. That means:
+- no working tree is touched;
+- a concurrent writer causes a `conflict` error rather than a lost commit;
+- content identical to the current tree makes no commit (`changed: false`), so repeated polls add no history.
+
+Errors are `GitError` with a category: `not-a-repository`, `conflict`, `invalid-path`, `cancelled`, `timeout` or `failed`. Messages never contain Git's output or paths. Absence is a result (`null` or an empty list), never an error. Calls run the installed Git executable with an argument array, a timeout and an optional AbortSignal. The environment is stripped of every variable that could point Git at another repository, index or configuration. Paths and revisions are validated before Git sees them. A custom `GitRunner` can be injected to observe or fake Git.
+
+The service wraps the Git executable rather than a Git library such as isomorphic-git. The executable is what the deployment already runs, it gives exactly Git's own behaviour, and the plumbing approach is proven by the earlier store.

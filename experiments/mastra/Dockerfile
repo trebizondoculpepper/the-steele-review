@@ -11,6 +11,8 @@ RUN npx tsc --noEmit && npx mastra build --studio
 FROM node:22.23.4-bookworm-slim
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4111 MASTRA_STUDIO_PATH=/app/studio MASTRA_SKIP_DOTENV=1 STEELE_EXP_SHARED_DIR=/shared
 WORKDIR /app
+# Collection indexing (#942) reads committed content with the git CLI.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/.mastra/output ./
 # Shared prompts, schemas and fixtures, exactly as committed (#911).
 COPY shared /shared
