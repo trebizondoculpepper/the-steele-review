@@ -66,6 +66,9 @@ export async function main(
       const settings: Record<string, string> = Object.fromEntries(HOOK_SETTINGS.map((k) => [k, env[k] ?? ""]));
       // The hook always indexes the repository it is installed in.
       settings.STEELE_COLLECTIONS_ROOT = resolve(root);
+      // Saved paths are resolved now: the hook runs from Git's working directory, not this one.
+      for (const key of ["STEELE_CONFIG_PATH", "STEELE_APP_DIR", "STEELE_COLLECTIONS_CHECKPOINT"])
+        if (settings[key]) settings[key] = resolve(settings[key]!);
       const result = await installHook(new GitRepository(resolve(root)), settings);
       out.write(`${result.replaced ? "replaced" : "installed"} ${result.hookPath}\nsettings ${result.envFile}\n`);
       return 0;

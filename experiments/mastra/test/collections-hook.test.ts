@@ -115,25 +115,79 @@ test("a slow pass never holds up the Git operation beyond the hook deadline (rev
   assert.equal(h.calledTimes().length, 1);
 });
 
-test("passes take a cross-process lock; an abandoned lock is taken over (review on #957)", async () => {
-  const { withLock, LockTimeoutError } = await import("../src/collections/lock.js");
-  const dir = mkdtempSync(join(tmpdir(), "lock-"));
-  const lock = join(dir, "state", "collection-index.json.lock");
-  const order: string[] = [];
-  const slow = (name: string) => withLock(lock, async () => {
-    order.push(`${name}-start`);
-    await new Promise((r) => setTimeout(r, 100));
-    order.push(`${name}-end`);
-  }, { pollMs: 10 });
-  await Promise.all([slow("a"), slow("b")]);
-  assert.deepEqual(order.slice(0, 2), [`${order[0]!.split("-")[0]}-start`, `${order[0]!.split("-")[0]}-end`], "passes never interleave");
+test("passes never interleave, and exactly one of many contenders takes over an abandoned lock (review on #957)", async () => {
+  const { withLock, LOCK_REF } = await import("../src/collections/lock.js");
+  const root = mkdtempSync(join(tmpdir(), "lock-"));
+  execFileSync("git", ["init", "-q", "--bare", root]);
+  const repo = new GitRepository(root);
+  let inside = 0;
+  let overlapped = false;
+  const pass = () =>
+    withLock(repo, async () => {
+      inside++;
+      if (inside > 1) overlapped = true;
+      await new Promise((r) => setTimeout(r, 30));
+      inside--;
+    }, { pollMs: 5 });
+  await Promise.all([pass(), pass(), pass()]);
+  assert.equal(overlapped, false);
 
-  // Held by a live process: wait times out.
-  mkdirSync(lock);
-  writeFileSync(join(lock, "owner"), `${process.pid}\n`);
-  await assert.rejects(withLock(lock, async () => 1, { waitMs: 100, pollMs: 10 }), LockTimeoutError);
-  // Held by a process that has gone: taken over.
-  writeFileSync(join(lock, "owner"), "999999\n");
-  assert.equal(await withLock(lock, async () => "ran", { waitMs: 1000, pollMs: 10 }), "ran");
-  assert.equal(existsSync(lock), false, "the lock is released");
+  // An abandoned lock: its owner on this host has exited. Five contenders race for it.
+  const dead = await repo.writeBlob(JSON.stringify({ host: "this-host", pid: 999999, token: "t", at: Date.now() }));
+  await repo.swapRef(LOCK_REF, dead, null);
+  const contenders = Array.from({ length: 5 }, () =>
+    withLock(repo, async () => {
+      inside++;
+      if (inside > 1) overlapped = true;
+      await new Promise((r) => setTimeout(r, 30));
+      inside--;
+    }, { pollMs: 5, host: "this-host", isAlive: () => false }),
+  );
+  await Promise.all(contenders);
+  assert.equal(overlapped, false, "no two contenders were ever inside together");
+  assert.equal(await repo.readRef(LOCK_REF), null, "the lock is released at the end");
+});
+
+test("a live owner's lock makes others wait; a stale or unreadable one is taken over; release only removes our own (review on #957)", async () => {
+  const { withLock, LockTimeoutError, LOCK_REF } = await import("../src/collections/lock.js");
+  const root = mkdtempSync(join(tmpdir(), "lock-"));
+  execFileSync("git", ["init", "-q", "--bare", root]);
+  const repo = new GitRepository(root);
+  const live = await repo.writeBlob(JSON.stringify({ host: "h", pid: 1, token: "x", at: Date.now() }));
+  await repo.swapRef(LOCK_REF, live, null);
+  await assert.rejects(withLock(repo, async () => 1, { waitMs: 50, pollMs: 5, host: "h", isAlive: () => true }), LockTimeoutError);
+  await assert.rejects(withLock(repo, async () => 1, { waitMs: 50, pollMs: 5, host: "other-host", isAlive: () => false }), LockTimeoutError, "another host's live-looking lock is respected until stale");
+  assert.equal(await withLock(repo, async () => "stale", { staleMs: 1, now: () => Date.now() + 10, pollMs: 5, host: "h", isAlive: () => true }), "stale");
+  const junk = await repo.writeBlob("not json");
+  await repo.swapRef(LOCK_REF, junk, null);
+  assert.equal(await withLock(repo, async () => "unreadable", { pollMs: 5 }), "unreadable");
+  // A pass whose lock was taken over does not delete the new owner's lock.
+  let stolen: string | null = null;
+  await withLock(repo, async () => {
+    const other = await repo.writeBlob(JSON.stringify({ host: "h2", pid: 2, token: "y", at: Date.now() }));
+    await repo.swapRef(LOCK_REF, other, await repo.readRef(LOCK_REF));
+    stolen = other;
+  }, { pollMs: 5 });
+  assert.equal(await repo.readRef(LOCK_REF), stolen);
+});
+
+test("install-hook saves absolute paths, so the hook resolves them as the installer did (review on #957)", async () => {
+  const base = mkdtempSync(join(tmpdir(), "hook-paths-"));
+  const root = join(base, "collections");
+  execFileSync("git", ["init", "-q", root]);
+  const cwd = process.cwd();
+  process.chdir(base);
+  try {
+    const out = { write: () => true } as unknown as NodeJS.WritableStream;
+    const code = await main(["install-hook", "--repo", "collections"], { STEELE_CONFIG_PATH: "config", STEELE_COLLECTIONS_CHECKPOINT: "state/c.json", STEELE_INDEX_NAMESPACE: "ns" }, out, out);
+    assert.equal(code, 0);
+  } finally {
+    process.chdir(cwd);
+  }
+  const env = readFileSync(join(root, ".git", "steele-collections.env"), "utf8");
+  const { realpathSync } = await import("node:fs");
+  const real = realpathSync(base);
+  assert.ok(env.includes(`STEELE_CONFIG_PATH='${join(real, "config")}'`) || env.includes(`STEELE_CONFIG_PATH='${join(base, "config")}'`), env);
+  assert.ok(env.includes("state/c.json'") && !env.includes("STEELE_COLLECTIONS_CHECKPOINT='state/"), env);
+  assert.match(env, /STEELE_INDEX_NAMESPACE='ns'/);
 });

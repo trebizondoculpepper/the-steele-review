@@ -121,6 +121,54 @@ export class GitRepository {
     }
   }
 
+  /** The object a ref points at, without peeling, or null when the ref does not exist. */
+  async readRef(ref: string, signal?: AbortSignal): Promise<string | null> {
+    await this.check(signal);
+    try {
+      return (await this.run("rev-parse", ["rev-parse", "--verify", "--quiet", "--end-of-options", assertRevision(ref, "rev-parse")], { signal })).trim() || null;
+    } catch (error) {
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return null;
+      throw error;
+    }
+  }
+
+  /** A blob's UTF-8 text by object ID, or null when there is no such blob. */
+  async readBlob(id: string, signal?: AbortSignal): Promise<string | null> {
+    if (!OBJECT_ID.test(id)) throw new GitError("invalid-path", "cat-file");
+    try {
+      if ((await this.run("cat-file", ["cat-file", "-t", id], { signal })).trim() !== "blob") return null;
+    } catch (error) {
+      if (error instanceof GitError && error.code === "failed") return null;
+      throw error;
+    }
+    return (await this.runBytes("cat-file", ["cat-file", "blob", id], { signal })).toString("utf8");
+  }
+
+  /** Store bytes as a blob and return its object ID. */
+  async writeBlob(content: string | Buffer, signal?: AbortSignal): Promise<string> {
+    return (await this.run("hash-object", ["hash-object", "-w", "--stdin"], { input: content, signal })).trim();
+  }
+
+  /**
+   * Compare-and-swap a ref: point `ref` at `value` (or delete it when `value`
+   * is null) only if it currently points at `expected` (or does not exist when
+   * `expected` is null). Otherwise throws GitError("conflict").
+   */
+  async swapRef(ref: string, value: string | null, expected: string | null, signal?: AbortSignal): Promise<void> {
+    if (!/^refs\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(ref) || ref.includes("..") || ref.endsWith(".lock")) throw new GitError("invalid-path", "update-ref");
+    for (const id of [value, expected]) if (id !== null && !OBJECT_ID.test(id)) throw new GitError("invalid-path", "update-ref");
+    if (value === null && expected === null) throw new GitError("invalid-path", "update-ref");
+    const args =
+      value === null ? ["update-ref", "-d", ref, expected!] : ["update-ref", ref, value, expected ?? NO_COMMIT];
+    try {
+      await this.run("update-ref", args, { signal });
+    } catch (error) {
+      // A missing or different current value is a lost race, never damage.
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) throw new GitError("conflict", "update-ref", 1);
+      throw error;
+    }
+  }
+
   /** Absolute path of a file in the repository's Git directory, e.g. `hooks`. */
   async gitPath(name: string, signal?: AbortSignal): Promise<string> {
     const out = (await this.run("rev-parse", ["rev-parse", "--path-format=absolute", "--git-path", assertRepositoryPath(name, "rev-parse")], { signal })).trim();

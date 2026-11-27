@@ -86,7 +86,7 @@ export function collectionIndexerFromEnv(env: NodeJS.ProcessEnv = process.env) {
       // In-process and cross-process: a hook-triggered pass, a manual recovery
       // and a scheduled pass never interleave on one checkpoint and its indexes.
       return serial(() =>
-        withLock(`${checkpointPath}.lock`, async () => {
+        withLock(repo, async () => {
           const client = await elasticsearchClient(config);
           try {
             return await reconcileCollections({ repo, index: new ElasticsearchIndex(client, namespace), checkpoint, namespace, rebuild });
