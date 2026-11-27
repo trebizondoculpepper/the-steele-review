@@ -36,6 +36,8 @@ const StagingIndex = z.object({
   rebuild: z.number().int().min(0),
   /** The HEAD the last build attempt indexed. */
   head: z.string(),
+  /** Paths still to reconcile in this index (deleted in Git since an earlier attempt); kept until promotion. */
+  touched: z.array(z.string()).optional(),
 });
 
 const CollectionState = z.object({

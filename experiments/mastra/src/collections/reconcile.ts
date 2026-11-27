@@ -239,13 +239,16 @@ async function chooseStaging(
 ): Promise<{ staging: StagingIndex; created: boolean; stalePaths: string[] }> {
   const prior = previous.staging;
   if (prior && prior.mappingVersion === declaration.mappingVersion && (await options.index.indexExists(prior.backing))) {
-    if (prior.head === head) return { staging: { ...prior, head }, created: false, stalePaths: [] };
-    // Documents the earlier attempt indexed that are gone at HEAD must not survive into the new index.
-    if (await options.repo.isAncestor(prior.head, head)) {
-      const stalePaths = (await options.repo.changes(prior.head, head))
-        .filter((c) => c.change === "delete" && isDocumentPath(collection, c.path))
-        .map((c) => c.path);
-      return { staging: { ...prior, head }, created: false, stalePaths };
+    // Documents an earlier attempt indexed that are gone at HEAD must not
+    // survive into the new index. They stay in `touched` until promotion, so a
+    // failed or interrupted deletion is retried by every later attempt.
+    const stale = new Set(prior.touched ?? []);
+    if (prior.head === head || (await options.repo.isAncestor(prior.head, head))) {
+      if (prior.head !== head)
+        for (const c of await options.repo.changes(prior.head, head))
+          if (c.change === "delete" && isDocumentPath(collection, c.path)) stale.add(c.path);
+      const touched = [...stale].sort();
+      return { staging: { ...prior, head, ...(touched.length ? { touched } : {}) }, created: false, stalePaths: touched };
     }
   }
   // Never reuse an index readers use now, or one whose contents are unknown.

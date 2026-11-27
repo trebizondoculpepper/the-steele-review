@@ -414,3 +414,41 @@ test("the Elasticsearch connection is read from the configuration directory on e
     server.close();
   }
 });
+
+test("a staging deletion that fails is retried until the build is promoted (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/x.json", { title: "X" });
+  h.write("feeds/bad.json", "not json");
+  h.commit();
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["failed"]);
+  assert.ok(h.index.indexes.get("steele-review-feeds-v1")!.docs.has("x.json"));
+
+  h.remove("feeds/x.json");
+  h.commit();
+  const deleteDocument = h.index.deleteDocument.bind(h.index);
+  h.index.deleteDocument = async () => {
+    throw new Error("unavailable");
+  };
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["failed"]);
+  assert.deepEqual(h.checkpoint.state!.collections["feeds"]!.staging!.touched, ["feeds/x.json"]);
+
+  h.index.deleteDocument = deleteDocument;
+  h.remove("feeds/bad.json");
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => [c.action, c.backing]), [["built", "steele-review-feeds-v1"]]);
+  assert.equal(h.index.read("steele-review-feeds")!.has("x.json"), false);
+});
+
+test("collection names that look like backing indexes are rejected (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, {});
+  h.declare("feeds-v1", 1, {});
+  h.declare("feeds-v2-r3", 1, {});
+  h.declare("v1", 1, {});
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.rejected.map((r) => `${r.directory}:${r.reason}`).sort(), ["feeds-v1:reserved-suffix", "feeds-v2-r3:reserved-suffix"]);
+  assert.deepEqual(report.collections.map((c) => c.alias), ["steele-review-feeds", "steele-review-v1"]);
+});

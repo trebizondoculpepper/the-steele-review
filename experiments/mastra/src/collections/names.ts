@@ -46,8 +46,16 @@ export interface CollectionName {
 
 export interface NameRejection {
   directory: string;
-  reason: "invalid-name" | "name-collision" | "name-too-long";
+  reason: "invalid-name" | "name-collision" | "name-too-long" | "reserved-suffix";
 }
+
+/**
+ * Backing indexes end in `-v<n>` or `-v<n>-r<n>`. A collection name with that
+ * ending could make its alias equal another collection's backing index
+ * (`feeds-v1` against `feeds` at version 1), and Elasticsearch indexes and
+ * aliases share one namespace, so such names are rejected.
+ */
+const RESERVED_SUFFIX = /-v[0-9]+(-r[0-9]+)?$/;
 
 /** Name every discovered directory, rejecting invalid names and collisions. */
 export function nameCollections(
@@ -62,6 +70,10 @@ export function nameCollections(
     const name = normaliseCollectionName(directory);
     if (!name) {
       rejected.push({ directory, reason: "invalid-name" });
+      continue;
+    }
+    if (RESERVED_SUFFIX.test(name)) {
+      rejected.push({ directory, reason: "reserved-suffix" });
       continue;
     }
     if (Buffer.byteLength(`${namespace}-${name}`) > MAX_INDEX_BYTES - SUFFIX_ROOM) {
