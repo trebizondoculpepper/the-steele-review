@@ -2,7 +2,8 @@ import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import type { z } from "zod";
 
-import { ConfigError, formatIssuePath } from "./errors.js";
+import { sanitizeIssues } from "./diagnostics.js";
+import { ConfigError } from "./errors.js";
 
 /**
  * Shared configuration services (#945).
@@ -40,6 +41,12 @@ export interface ConfigSection<T> {
   schema: z.ZodType<T>;
   /** Defaults to JSON. */
   parser?: ConfigParser;
+  /**
+   * Keys that may appear in error paths beyond those the schema declares
+   * visibly, e.g. keys of schemas applied inside a transform. Every other
+   * string in a path is redacted. Custom issue messages must be value-free.
+   */
+  keys?: readonly string[];
 }
 
 /** What a consumer needs from the configuration layer; tests can supply their own. */
@@ -121,9 +128,5 @@ export function parseSection<T>(section: ConfigSection<T>, text: string): T {
   }
   const result = section.schema.safeParse(document);
   if (result.success) return result.data;
-  throw new ConfigError(
-    "invalid",
-    section.file,
-    result.error.issues.map((issue) => ({ path: formatIssuePath(issue.path), message: issue.message })),
-  );
+  throw new ConfigError("invalid", section.file, sanitizeIssues(result.error.issues, section.schema, section.keys));
 }

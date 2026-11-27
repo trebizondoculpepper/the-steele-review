@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ConfigReader, ConfigSection } from "../common/config/index.js";
+import { declaredKeys, sanitizeIssues, type ConfigReader, type ConfigSection } from "../common/config/index.js";
 
 /**
  * The Substack poller's view of the source configuration (#945, used by #943).
@@ -84,9 +84,12 @@ const LegacyRegistry = z
 
 /** Either registry format; the format is chosen by shape so errors describe that format, not both. */
 const Registry = z.unknown().transform((input, ctx): Entry[] => {
-  const result = (Array.isArray(input) ? LegacyRegistry : DocumentRegistry).safeParse(input);
+  const format = Array.isArray(input) ? LegacyRegistry : DocumentRegistry;
+  const result = format.safeParse(input);
   if (!result.success) {
-    for (const issue of result.error.issues) ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+    // Re-raise with value-free descriptions; the shared layer redacts undeclared path keys.
+    const safe = sanitizeIssues(result.error.issues, format);
+    result.error.issues.forEach((issue, i) => ctx.addIssue({ code: "custom", path: issue.path, message: safe[i]!.message }));
     return z.NEVER;
   }
   const { entries, at } = result.data;
@@ -110,6 +113,8 @@ export interface SubstackFeed {
 
 export const SubstackFeedsSection: ConfigSection<SubstackFeed[]> = {
   file: SOURCES_FILE,
+  // The registry schemas run inside a transform, so their keys are listed for error paths.
+  keys: [...declaredKeys(DocumentRegistry), ...declaredKeys(LegacyRegistry)],
   schema: Registry.transform((entries) =>
     entries
       .filter((entry) => entry.type === "substack" && entry.enabled !== false)

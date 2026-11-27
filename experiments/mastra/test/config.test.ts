@@ -104,3 +104,21 @@ test("consumers depend on the reader protocol, so a test double can stand in", a
   };
   assert.deepEqual((await enabledSubstackFeeds(double)).map((f) => f.feedUrl), ["https://a.substack.com/feed"]);
 });
+
+test("schema diagnostics never echo keys, values or alternatives from the file", async () => {
+  const section = {
+    file: "settings.json",
+    schema: z.strictObject({
+      endpoints: z.record(z.string(), z.string()),
+      mode: z.enum(["fixture-allowed-a", "fixture-allowed-b"]),
+    }),
+  };
+  const error = await configError(dir("leaky").read(section));
+  assert.equal(error.code, "invalid");
+  assert.doesNotMatch(error.message, /fixture-not-a-secret|private-endpoint|fixture-allowed/);
+  assert.doesNotMatch(JSON.stringify(error.issues), /fixture-not-a-secret|private-endpoint|fixture-allowed/);
+  assert.deepEqual(
+    error.issues.map((i) => `${i.path}: ${i.message}`).sort(),
+    ["(root): unexpected key", "endpoints.[key]: expected string", "mode: not an allowed value"].map((s) => s.replace("(root)", "")).sort(),
+  );
+});

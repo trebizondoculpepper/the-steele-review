@@ -1,0 +1,5 @@
+{
+  "endpoints": { "https://private-endpoint.invalid/fixture-not-a-secret": 5 },
+  "mode": "fixture-not-a-secret",
+  "fixture-not-a-secret-key": true
+}

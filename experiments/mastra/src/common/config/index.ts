@@ -8,3 +8,4 @@ export {
   type ConfigReader,
   type ConfigSection,
 } from "./directory.js";
+export { declaredKeys, sanitizeIssues } from "./diagnostics.js";
