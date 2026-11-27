@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "sources": [
+    { "id": "saveusnow", "type": "substack", "name": "Save Us Now" },
+    { "id": "saveusnow", "type": "substack", "name": "Save Us Now again" }
+  ]
+}

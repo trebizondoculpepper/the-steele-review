@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "sources": [
+    { "id": "saveusnow", "type": "substack", "name": "Save Us Now", "feedUrl": "http://user:fixture-not-a-secret@saveusnow.substack.com/feed" },
+    { "id": "otherpub", "type": "substack", "name": "Other Publication", "enabled": "yes" }
+  ]
+}
