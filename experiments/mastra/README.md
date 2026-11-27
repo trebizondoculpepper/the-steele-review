@@ -184,3 +184,7 @@ Settings come from the environment, and the hook saves them at install time:
 - `STEELE_INDEX_NAMESPACE`.
 
 Exit status is 0 on success, 1 when a pass reported failures, and 2 for usage or configuration errors.
+
+Passes take a cross-process lock beside the checkpoint (`<checkpoint>.lock`), so a hook-triggered pass, a manual recovery and a scheduled pass never interleave. A lock whose holder has exited is taken over. The hook starts the pass in the background and waits up to `STEELE_HOOK_WAIT_SECONDS` (20 by default) to report the outcome. A slower pass carries on detached and logs to `steele-collections.log` in the Git directory, so it never holds up the Git operation that triggered it.
+
+`cli/proof-952.sh <elasticsearch-url>` is the end-to-end proof from #952. It must run on the deployment host as the account that runs Git, and the URL is passed in rather than stored. It uses a temporary repository and the `steele-review-proof952` namespace. `cli/proof-952-cleanup.sh` removes that namespace's indexes by exact name.

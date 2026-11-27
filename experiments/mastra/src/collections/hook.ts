@@ -22,9 +22,13 @@ export const HOOK_NAME = "reference-transaction";
 const MARKER = "# steele-collections indexing hook";
 
 export function hookScript(envFile: string): string {
+  const dir = shellQuote(dirname(envFile));
   return `#!/bin/sh
 ${MARKER} (#952). Reinstall with: steele-collections install-hook
-# Runs after each branch update; never blocks or undoes a commit.
+# Runs after each branch update; never blocks or undoes a commit. Indexing runs
+# in the background: the hook waits up to STEELE_HOOK_WAIT_SECONDS (default 20)
+# to report the outcome, then leaves the pass running and returns, so a slow
+# pass never holds up the Git operation that triggered it.
 [ "$1" = "committed" ] || exit 0
 branch=0
 while read -r old new ref; do
@@ -36,9 +40,30 @@ if [ -f ${shellQuote(envFile)} ]; then
   . ${shellQuote(envFile)}
   set +a
 fi
-if ! steele-collections reconcile --quiet; then
-  echo "steele-collections: indexing did not complete; the commit is kept." >&2
-  echo "steele-collections: recover with: steele-collections reconcile" >&2
+log=${dir}/steele-collections.log
+out=$(mktemp) || exit 0
+status=$(mktemp) || exit 0
+: > "$status"
+(
+  steele-collections reconcile --quiet > "$out" 2>&1
+  rc=$?
+  { date -u +%Y-%m-%dT%H:%M:%SZ; cat "$out"; } >> "$log" 2>/dev/null
+  echo "$rc" > "$status.done"
+) < /dev/null > /dev/null 2>&1 &
+wait_ticks=$(( \${STEELE_HOOK_WAIT_SECONDS:-20} * 5 ))
+while [ ! -f "$status.done" ] && [ "$wait_ticks" -gt 0 ]; do
+  sleep 0.2
+  wait_ticks=$((wait_ticks - 1))
+done
+if [ -f "$status.done" ]; then
+  if [ "$(cat "$status.done")" != 0 ]; then
+    cat "$out" >&2
+    echo "steele-collections: indexing did not complete; the commit is kept." >&2
+    echo "steele-collections: recover with: steele-collections reconcile" >&2
+  fi
+  rm -f "$out" "$status" "$status.done"
+else
+  echo "steele-collections: indexing continues in the background; see $log" >&2
 fi
 exit 0
 `;
