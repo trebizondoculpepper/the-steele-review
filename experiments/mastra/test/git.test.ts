@@ -174,3 +174,14 @@ test("a no-op commit on a stale parent is a conflict (review on #950)", async ()
   await r.commit({ writes: [{ path: "a", content: "2" }], message: "B" });
   assert.equal((await gitError(r.commit({ parent: a.commit, writes: [{ path: "a", content: "1" }], message: "stale" }))).code, "conflict");
 });
+
+test("an annotated tag of a non-commit names no commit (review on #951)", async () => {
+  const { repo: r, git } = repo(true);
+  const { commit } = await r.commit({ parent: null, writes: [{ path: "a.json", content: "{}" }], message: "m" });
+  const blob = git("rev-parse", `${commit}:a.json`);
+  execFileSync("git", ["-C", r.root, "-c", "user.name=t", "-c", "user.email=t@e", "tag", "-a", "-m", "blob tag", "blobtag", blob]);
+  execFileSync("git", ["-C", r.root, "-c", "user.name=t", "-c", "user.email=t@e", "tag", "-a", "-m", "commit tag", "committag", commit!]);
+  assert.equal(await r.resolve("blobtag"), null);
+  assert.equal(await r.isAncestor("blobtag", "main"), false);
+  assert.equal(await r.resolve("committag"), commit);
+});

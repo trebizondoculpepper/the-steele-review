@@ -157,7 +157,13 @@ export class GitRepository {
     const type = (await this.run("cat-file", ["cat-file", "-t", id], { signal })).trim();
     if (type === "commit") return id;
     if (type !== "tag") return null;
-    return (await this.run("rev-parse", ["rev-parse", "--verify", `${id}^{commit}`], { signal })).trim() || null;
+    // An existing tag that does not lead to a commit (a tag of a tree or blob) names no commit.
+    try {
+      return (await this.run("rev-parse", ["rev-parse", "--verify", "--quiet", `${id}^{commit}`], { signal })).trim() || null;
+    } catch (error) {
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return null;
+      throw error;
+    }
   }
 
   /** Whether `ancestor` is reachable from `descendant`; false when either is unknown. */
