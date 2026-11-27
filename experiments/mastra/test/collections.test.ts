@@ -479,3 +479,44 @@ test("directory names that cannot be checkpoint keys are rejected (review on #94
   assert.deepEqual(Object.keys(h.checkpoint.state!.collections), ["feeds"]);
   assert.deepEqual((await h.run()).collections.map((c) => c.action), ["unchanged"]);
 });
+
+test("a build promoted just before an interrupted save is recognised as live (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  const first = h.commit();
+  // Interrupt the pass straight after the alias switch, before the checkpoint records it.
+  const pointAlias = h.index.pointAlias.bind(h.index);
+  h.index.pointAlias = async (alias, index) => {
+    await pointAlias(alias, index);
+    throw new Error("interrupted");
+  };
+  await assert.rejects(h.run());
+  h.index.pointAlias = pointAlias;
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.staging!.backing, "steele-review-feeds-v1");
+
+  h.write("feeds/a.json", { title: "A2" });
+  h.write("feeds/b.json", { title: "B" });
+  h.commit();
+  h.index.failIds.add("b.json");
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => c.action), ["updated"]);
+  const state = h.checkpoint.state!.collections["feeds"]!;
+  assert.equal(state.staging, undefined);
+  assert.equal(state.live!.commit, first, "the failed update does not advance the checkpoint");
+  assert.deepEqual(state.live!.touched, ["feeds/a.json", "feeds/b.json"]);
+  h.index.failIds.clear();
+  assert.equal((await h.run()).ok, true);
+  assert.deepEqual([...h.index.read("steele-review-feeds")!.keys()].sort(), ["a.json", "b.json"]);
+});
+
+test("a missing or broken repository is a failure, not an empty pass (review on #947)", async () => {
+  const index = new FakeIndex();
+  const missing = join(tmpdir(), `no-such-collections-${process.pid}`);
+  await assert.rejects(
+    reconcileCollections({ repo: new GitRepository(missing), index, checkpoint: memoryCheckpoint(), namespace: NS }),
+    (e: unknown) => e instanceof Error && e.name === "GitReadError" && !e.message.includes(missing),
+  );
+  const notRepo = mkdtempSync(join(tmpdir(), "not-a-repo-"));
+  await assert.rejects(reconcileCollections({ repo: new GitRepository(notRepo), index, checkpoint: memoryCheckpoint(), namespace: NS }));
+});

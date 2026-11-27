@@ -46,8 +46,11 @@ export class GitRepository {
     });
   }
 
-  /** The commit the indexer can see, or undefined for a repository with no commits. */
+  /** The commit the indexer can see, or undefined for a valid repository with no commits yet. */
   async head(): Promise<string | undefined> {
+    // A missing, unreadable or broken repository is a technical failure, not an
+    // empty one: this throws GitReadError, so a pass can never report success.
+    await this.run("rev-parse", ["rev-parse", "--git-dir"]);
     try {
       return (await this.run("rev-parse", ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).trim() || undefined;
     } catch {

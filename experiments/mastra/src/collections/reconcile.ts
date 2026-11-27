@@ -104,8 +104,17 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
     }
     const known = state.collections[collection.directory];
     // A renamed alias (another namespace rule) starts afresh.
-    const previous: CollectionState =
+    let previous: CollectionState =
       known && known.alias === collection.alias ? known : { directory: collection.directory, alias: collection.alias };
+    // A pass that stopped after switching the alias but before saving: the
+    // staging index is already what readers see, so record it as live rather
+    // than ever writing into it as staging again.
+    if (previous.staging && (await options.index.aliasTargets(collection.alias)).includes(previous.staging.backing)) {
+      const { backing, mappingVersion, rebuild, head: built } = previous.staging;
+      previous = { directory: previous.directory, alias: previous.alias, live: { backing, mappingVersion, rebuild, commit: built } };
+      state.collections[collection.directory] = previous;
+      await options.checkpoint.save(state);
+    }
     const save = async (next: CollectionState) => {
       state.collections[collection.directory] = next;
       await options.checkpoint.save(state);
