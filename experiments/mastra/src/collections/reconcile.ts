@@ -304,7 +304,11 @@ async function chooseStaging(
   head: string,
 ): Promise<{ staging: StagingIndex; created: boolean; stalePaths: string[] }> {
   const prior = previous.staging;
-  if (prior && prior.mappingVersion === declaration.mappingVersion && (await options.index.indexExists(prior.backing))) {
+  // A recorded staging name whose creation never completed (or whose answer was
+  // lost) is created under the same name, so retries never add indexes.
+  if (prior && prior.mappingVersion === declaration.mappingVersion && !(await options.index.indexExists(prior.backing)))
+    return { staging: { ...prior, head, touched: undefined }, created: true, stalePaths: [] };
+  if (prior && prior.mappingVersion === declaration.mappingVersion) {
     // Documents an earlier attempt indexed that are gone at HEAD must not
     // survive into the new index. They stay in `touched` until promotion, so a
     // failed or interrupted deletion is retried by every later attempt.
@@ -346,9 +350,10 @@ async function build(
     deleted: 0,
     failed: [],
   };
-  if (created) await options.index.createIndex(staging.backing, declaration.mapping);
-  // Recorded before writing, so the next attempt reuses this index rather than making another.
+  // Recorded before the index is created or written, so the next attempt
+  // reuses this name and index rather than making another.
   await save({ ...previous, staging });
+  if (created) await options.index.createIndex(staging.backing, declaration.mapping);
 
   const paths = (await options.repo.listFiles(head, collection.directory)).map((e) => e.path).filter((p) => isDocumentPath(collection, p));
   await applyPaths(options, collection, staging.backing, head, [...paths, ...stalePaths], report);

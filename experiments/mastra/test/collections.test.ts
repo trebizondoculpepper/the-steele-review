@@ -621,3 +621,33 @@ test("dotted keys in the reserved provenance namespace are refused (review on #9
   assert.deepEqual(report.collections[0]!.failed, [{ path: "feeds/a.json", reason: "reserved-field" }]);
   assert.deepEqual(report.rejected, [{ directory: "bad", reason: "invalid-declaration" }]);
 });
+
+test("a create whose answer is lost is retried under the same name (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, {});
+  h.write("feeds/a.json", { a: 1 });
+  h.commit();
+  const createIndex = h.index.createIndex.bind(h.index);
+  h.index.createIndex = async (index, mapping) => {
+    await createIndex(index, mapping);
+    throw new Error("response lost");
+  };
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["failed"]);
+  // The index the lost call did create is found and reused; no second index is made.
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => [c.action, c.backing]), [["built", "steele-review-feeds-v1"]]);
+  assert.deepEqual([...h.index.indexes.keys()], ["steele-review-feeds-v1"]);
+  h.index.createIndex = createIndex;
+
+  // A recorded name whose creation never happened is created on the next attempt.
+  const g = harness();
+  g.declare("feeds", 1, {});
+  g.commit();
+  const create = g.index.createIndex.bind(g.index);
+  g.index.createIndex = async () => {
+    throw new Error("unavailable");
+  };
+  await g.run();
+  g.index.createIndex = create;
+  assert.deepEqual((await g.run()).collections.map((c) => [c.action, c.backing]), [["built", "steele-review-feeds-v1"]]);
+});
