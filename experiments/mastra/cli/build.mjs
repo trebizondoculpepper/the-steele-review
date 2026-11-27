@@ -1,10 +1,11 @@
 // Bundles the steele-collections command into one file (#952).
 import { chmod } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const outfile = new URL("./dist/steele-collections.mjs", import.meta.url).pathname;
+const outfile = fileURLToPath(new URL("./dist/steele-collections.mjs", import.meta.url));
 await build({
-  entryPoints: [new URL("../src/collections/bin.ts", import.meta.url).pathname],
+  entryPoints: [fileURLToPath(new URL("../src/collections/bin.ts", import.meta.url))],
   bundle: true,
   platform: "node",
   format: "esm",

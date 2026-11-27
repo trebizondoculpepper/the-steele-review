@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { ConfigError } from "../common/config/index.js";
-import { GitRepository } from "../common/git/index.js";
+import { GitError, GitRepository } from "../common/git/index.js";
 import { installHook } from "./hook.js";
 import { collectionIndexerFromEnv } from "./index.js";
 import { collectionsRoot } from "./paths.js";
@@ -79,7 +79,17 @@ export async function main(
       err.write(`steele-collections: ${error.message}\n`);
       return 2;
     }
-    if (error instanceof Error && (error.name === "GitError" || error.message.startsWith("set ") || error.message.startsWith("refusing"))) {
+    // Argument parsing: a usage error, reported without echoing the input.
+    if (error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string" && (error as NodeJS.ErrnoException).code!.startsWith("ERR_PARSE_ARGS")) {
+      err.write("steele-collections: unrecognised or incomplete options; run without arguments for usage\n");
+      return 2;
+    }
+    // A missing or invalid repository is configuration; a Git timeout or other failure is operational.
+    if (error instanceof GitError) {
+      err.write(`steele-collections: ${error.message}\n`);
+      return error.code === "not-a-repository" || error.code === "invalid-path" ? 2 : 1;
+    }
+    if (error instanceof Error && (error.message.startsWith("set ") || error.message.startsWith("refusing") || error.message.startsWith("the index namespace"))) {
       err.write(`steele-collections: ${error.message}\n`);
       return 2;
     }

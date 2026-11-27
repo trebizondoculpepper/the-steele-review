@@ -191,3 +191,11 @@ test("install-hook saves absolute paths, so the hook resolves them as the instal
   assert.ok(env.includes("state/c.json'") && !env.includes("STEELE_COLLECTIONS_CHECKPOINT='state/"), env);
   assert.match(env, /STEELE_INDEX_NAMESPACE='ns'/);
 });
+
+test("CLI exit codes: bad options and invalid settings are 2 (review on #957)", async () => {
+  const sink = () => ({ write: () => true }) as unknown as NodeJS.WritableStream;
+  assert.equal(await main(["reconcile", "--unknown"], {}, sink(), sink()), 2);
+  assert.equal(await main(["install-hook", "--repo"], {}, sink(), sink()), 2);
+  const config = mkdtempSync(join(tmpdir(), "cfg-"));
+  assert.equal(await main(["reconcile"], { STEELE_CONFIG_PATH: config, STEELE_COLLECTIONS_ROOT: config, STEELE_COLLECTIONS_CHECKPOINT: join(config, "c.json"), STEELE_INDEX_NAMESPACE: "UPPER" }, sink(), sink()), 2);
+});
