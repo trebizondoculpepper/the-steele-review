@@ -137,6 +137,39 @@ test("a lost commit race is retried against the new head", async () => {
   assert.equal(report.committed.length, 3);
 });
 
+test("a pass that loses a race fetches again instead of overwriting newer observations (review on #955)", async () => {
+  const h = harness();
+  await h.poll();
+  const { parseFeed } = await import("../src/feed/rss.js");
+  const { toRecord } = await import("../src/feed/substack-poller.js");
+  let interleaved = false;
+  const slow = (async (input: string | URL) => {
+    if (!interleaved) {
+      interleaved = true;
+      // While this pass fetches the old feed, a newer writer commits the edited record.
+      const edited = parseFeed(feedXml("alpha-edited"), "alpha.example.org")[0]!;
+      await h.repo.commit({
+        writes: [{ path: recordPath("alpha", "first-post"), content: `${JSON.stringify(toRecord("alpha", edited), null, 2)}\n` }],
+        message: "newer pass",
+      });
+      h.net.routes["https://alpha.example.org/feed"] = feedXml("alpha-edited");
+      return new Response(feedXml("alpha"), { status: 200 });
+    }
+    return h.net.fetch(input);
+  }) as typeof fetch;
+  const report = await pollSubstackFeeds({ config: h.config, repo: h.repo, fetch: slow });
+  const record = JSON.parse((await h.repo.readText("main", recordPath("alpha", "first-post")))!.text);
+  assert.equal(record.title, "First alpha post (corrected)", "the older observation never overwrites the newer one");
+  assert.deepEqual(report.committed, [], "the refetched pass finds nothing new");
+});
+
+test("passes on one repository are serialised in-process (review on #955)", async () => {
+  const h = harness();
+  const [a, b] = await Promise.all([h.poll(), h.poll()]);
+  assert.equal([a, b].filter((r) => r.commit && r.committed.length).length, 1, "exactly one pass commits the first observations");
+  assert.equal(h.git("rev-list", "--count", "main"), "1");
+});
+
 test("the Mastra step returns the per-source summary and committed references", async () => {
   const h = harness();
   const step = createPollSubstackFeedsStep(() => ({ config: h.config, repo: h.repo, fetch: h.net.fetch }));

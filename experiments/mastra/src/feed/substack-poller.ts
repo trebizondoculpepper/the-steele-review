@@ -152,14 +152,28 @@ async function pollOne(feed: SubstackFeed, options: PollerOptions): Promise<Poll
 
 /** Poll every enabled Substack feed and commit new or changed discovery records. */
 export async function pollSubstackFeeds(options: PollerOptions): Promise<PollReport> {
-  const feeds = await enabledSubstackFeeds(options.config);
-  const polled: Polled[] = [];
-  for (const feed of feeds) polled.push(await pollOne(feed, options));
+  // Passes on one repository run one at a time in this process.
+  const key = options.repo.root;
+  const previous = running.get(key) ?? Promise.resolve();
+  const pass = previous.then(() => pollOnce(options), () => pollOnce(options));
+  running.set(key, pass.catch(() => undefined));
+  return pass;
+}
 
+const running = new Map<string, Promise<unknown>>();
+
+async function pollOnce(options: PollerOptions): Promise<PollReport> {
+  const feeds = await enabledSubstackFeeds(options.config);
   const branch = options.branch ?? "main";
   const attempts = options.maxCommitAttempts ?? 3;
   for (let attempt = 1; ; attempt++) {
+    // The head is read before the feeds are fetched and is the commit's
+    // expected parent: if another writer commits meanwhile (for example an
+    // overlapping pass with newer observations), the compare-and-swap fails
+    // and this pass fetches again rather than overwriting newer records.
     const head = await options.repo.resolve(`refs/heads/${branch}`);
+    const polled: Polled[] = [];
+    for (const feed of feeds) polled.push(await pollOne(feed, options));
     const sources: SourceSummary[] = [];
     const writes: Array<{ path: string; content: string }> = [];
     const pending: Array<Omit<CommittedRecord, "commit">> = [];
