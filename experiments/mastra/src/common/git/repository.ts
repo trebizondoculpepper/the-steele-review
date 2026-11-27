@@ -126,26 +126,51 @@ export class GitRepository {
     await this.run("rev-parse", ["rev-parse", "--git-dir"], { signal });
   }
 
-  /** The commit a revision names, or null when it names nothing (an unknown ref, an unborn branch). */
+  /**
+   * The commit a revision names, or null when it names nothing (an unknown ref,
+   * an unborn branch, or a name for something other than a commit). A name
+   * that points at a missing or corrupt object is a technical failure.
+   */
   async resolve(revision = "HEAD", signal?: AbortSignal): Promise<string | null> {
     await this.check(signal);
+    let id: string;
     try {
-      const out = await this.run("rev-parse", ["rev-parse", "--verify", "--quiet", "--end-of-options", `${assertRevision(revision, "rev-parse")}^{commit}`], { signal });
-      return out.trim() || null;
+      // Without peeling, so a ref to a missing object still yields its ID here.
+      id = (await this.run("rev-parse", ["rev-parse", "--verify", "--quiet", "--end-of-options", assertRevision(revision, "rev-parse")], { signal })).trim();
     } catch (error) {
-      // --verify --quiet exits 1 without output for a name that resolves to nothing.
-      if (error instanceof GitError && error.code === "failed") return null;
+      // --verify --quiet exits 1, silently, for a name that resolves to nothing.
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return null;
       throw error;
     }
+    if (!id) return null;
+    // A bare object ID that is not in the repository is simply unknown. A ref
+    // (or an existing object) whose content cannot be read is damage, and
+    // cat-file fails for it.
+    if (OBJECT_ID.test(revision)) {
+      try {
+        await this.run("cat-file", ["cat-file", "-e", id], { signal });
+      } catch (error) {
+        if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return null;
+        throw error;
+      }
+    }
+    const type = (await this.run("cat-file", ["cat-file", "-t", id], { signal })).trim();
+    if (type === "commit") return id;
+    if (type !== "tag") return null;
+    return (await this.run("rev-parse", ["rev-parse", "--verify", `${id}^{commit}`], { signal })).trim() || null;
   }
 
   /** Whether `ancestor` is reachable from `descendant`; false when either is unknown. */
   async isAncestor(ancestor: string, descendant: string, signal?: AbortSignal): Promise<boolean> {
+    // An unknown name is a result (false); resolving first keeps it apart from damage.
+    const [a, d] = [await this.resolve(ancestor, signal), await this.resolve(descendant, signal)];
+    if (!a || !d) return false;
     try {
-      await this.run("merge-base", ["merge-base", "--is-ancestor", assertRevision(ancestor, "merge-base"), assertRevision(descendant, "merge-base")], { signal });
+      await this.run("merge-base", ["merge-base", "--is-ancestor", a, d], { signal });
       return true;
     } catch (error) {
-      if (error instanceof GitError && error.code === "failed") return false;
+      // Exit 1 means "not an ancestor"; anything else is a technical failure.
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return false;
       throw error;
     }
   }
@@ -243,8 +268,13 @@ export class GitRepository {
       const tree = (await this.run("write-tree", ["write-tree"], { env, signal })).trim();
       if (parent) {
         const parentTree = (await this.run("rev-parse", ["rev-parse", `${parent}^{tree}`], { signal })).trim();
-        // Repeating identical content makes no commit, so a repeated poll creates no duplicate history.
-        if (parentTree === tree) return { commit: parent, changed: false };
+        // Repeating identical content makes no commit, so a repeated poll creates
+        // no duplicate history; but only if the branch is still at the expected
+        // parent, otherwise the caller's view is stale.
+        if (parentTree === tree) {
+          if ((await this.resolve(ref, signal)) !== parent) throw new GitError("conflict", "commit");
+          return { commit: parent, changed: false };
+        }
       }
       const author = request.author ?? DEFAULT_AUTHOR;
       const identity = {
@@ -276,8 +306,9 @@ function classify(operation: string, error: unknown): GitError {
   if (error.reason === "timeout") return new GitError("timeout", operation);
   if (error.reason === "spawn") return new GitError("failed", operation);
   const message = error.stderr;
+  const code = error.exitCode;
   if (/not a git repository|cannot change to|No such file or directory|unsafe repository|dubious ownership/i.test(message))
-    return new GitError("not-a-repository", operation);
-  if (operation === "update-ref" && /cannot lock ref|but expected|is at |\.lock/i.test(message)) return new GitError("conflict", operation);
-  return new GitError("failed", operation);
+    return new GitError("not-a-repository", operation, code);
+  if (operation === "update-ref" && /cannot lock ref|but expected|is at |\.lock/i.test(message)) return new GitError("conflict", operation, code);
+  return new GitError("failed", operation, code);
 }
