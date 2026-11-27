@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 
@@ -80,8 +80,20 @@ export function fileCheckpoint(path: string): CheckpointStore {
     async save(state) {
       await mkdir(dirname(path), { recursive: true });
       const temporary = `${path}.tmp-${process.pid}`;
-      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-      await rename(temporary, path);
+      try {
+        // Flushed before the rename, so a power loss cannot leave an empty checkpoint.
+        const file = await open(temporary, "w", 0o600);
+        try {
+          await file.writeFile(`${JSON.stringify(state, null, 2)}\n`);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        await rename(temporary, path);
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
     },
   };
 }

@@ -68,16 +68,26 @@ export function collectionIndexerFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const namespace = validateNamespace(env.STEELE_INDEX_NAMESPACE || DEFAULT_NAMESPACE);
   const repo = new GitRepository(root);
   const checkpoint = fileCheckpoint(checkpointPath);
+  // Passes in this process run one at a time: a notification that arrives
+  // during a pass waits for it rather than racing it on the same checkpoint.
+  let running: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = running.then(work, work);
+    running = next.catch(() => undefined);
+    return next;
+  };
   return {
     namespace,
     /** One pass; call it after each commit notification and on a schedule. */
-    async reconcile(rebuild?: readonly string[] | "all"): Promise<ReconcileReport> {
-      const client = await elasticsearchClient(config);
-      try {
-        return await reconcileCollections({ repo, index: new ElasticsearchIndex(client, namespace), checkpoint, namespace, rebuild });
-      } finally {
-        await client.close();
-      }
+    reconcile(rebuild?: readonly string[] | "all"): Promise<ReconcileReport> {
+      return serial(async () => {
+        const client = await elasticsearchClient(config);
+        try {
+          return await reconcileCollections({ repo, index: new ElasticsearchIndex(client, namespace), checkpoint, namespace, rebuild });
+        } finally {
+          await client.close();
+        }
+      });
     },
   };
 }

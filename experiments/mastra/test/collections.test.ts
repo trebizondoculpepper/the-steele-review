@@ -49,6 +49,10 @@ class FakeIndex implements SearchIndexPort {
     this.indexes.get(this.guard(index))!.docs.delete(id);
     this.writes++;
   }
+  refreshed: string[] = [];
+  async refresh(index: string) {
+    this.refreshed.push(this.guard(index));
+  }
   /** Documents readers see through an alias. */
   read(alias: string) {
     const [backing] = this.aliases.get(alias) ?? [];
@@ -491,7 +495,7 @@ test("a build promoted just before an interrupted save is recognised as live (re
     await pointAlias(alias, index);
     throw new Error("interrupted");
   };
-  await assert.rejects(h.run());
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["failed"]);
   h.index.pointAlias = pointAlias;
   assert.equal(h.checkpoint.state!.collections["feeds"]!.staging!.backing, "steele-review-feeds-v1");
 
@@ -519,4 +523,50 @@ test("a missing or broken repository is a failure, not an empty pass (review on 
   );
   const notRepo = mkdtempSync(join(tmpdir(), "not-a-repo-"));
   await assert.rejects(reconcileCollections({ repo: new GitRepository(notRepo), index, checkpoint: memoryCheckpoint(), namespace: NS }));
+});
+
+test("one collection's technical failure does not stop the others (review on #947)", async () => {
+  const h = harness();
+  h.declare("alpha", 1, {});
+  h.declare("beta", 1, {});
+  h.write("alpha/a.json", { a: 1 });
+  h.write("beta/b.json", { b: 1 });
+  h.commit();
+  const createIndex = h.index.createIndex.bind(h.index);
+  h.index.createIndex = async (index, mapping) => {
+    if (index.includes("alpha")) throw new Error("cluster unavailable");
+    return createIndex(index, mapping);
+  };
+  const report = await h.run();
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.collections.map((c) => [c.directory, c.action]), [["alpha", "failed"], ["beta", "built"]]);
+  assert.deepEqual(report.collections[0]!.failed, [{ path: "alpha", reason: "index-failed" }]);
+  h.index.createIndex = createIndex;
+  assert.equal((await h.run()).ok, true);
+  assert.equal(h.index.read("steele-review-alpha")!.size, 1);
+});
+
+test("a new index is refreshed before readers are switched to it, and declarations need object field mappings (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  h.write("bad/collection.json", { mappingVersion: 1, mapping: { properties: { title: "text" } } });
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(h.index.refreshed, ["steele-review-feeds-v1"]);
+  assert.deepEqual(report.rejected, [{ directory: "bad", reason: "invalid-declaration" }]);
+});
+
+test("the file checkpoint is written atomically and leaves no temporary file behind (review on #947)", async () => {
+  const { fileCheckpoint } = await import("../src/collections/checkpoint.js");
+  const { readdirSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "checkpoint-"));
+  const store = fileCheckpoint(join(dir, "state", "collection-index.json"));
+  assert.equal(await store.load(), undefined);
+  await store.save({ schemaVersion: 1, namespace: NS, collections: {} });
+  assert.deepEqual(await store.load(), { schemaVersion: 1, namespace: NS, collections: {} });
+  assert.deepEqual(readdirSync(join(dir, "state")), ["collection-index.json"]);
+  const blocked = fileCheckpoint(join(dir, "state", "collection-index.json", "nested.json"));
+  await assert.rejects(blocked.save({ schemaVersion: 1, namespace: NS, collections: {} }));
+  assert.deepEqual(readdirSync(join(dir, "state")), ["collection-index.json"]);
 });

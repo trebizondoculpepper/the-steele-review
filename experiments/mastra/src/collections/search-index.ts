@@ -30,6 +30,8 @@ export interface SearchIndexPort {
   indexDocuments(index: string, documents: readonly IndexDocument[]): Promise<string[]>;
   /** Deletes a document; a missing document is not an error. */
   deleteDocument(index: string, id: string): Promise<void>;
+  /** Makes everything written so far searchable. */
+  refresh(index: string): Promise<void>;
 }
 
 export class SearchIndexError extends Error {
@@ -111,6 +113,11 @@ export class ElasticsearchIndex implements SearchIndexPort {
         });
     }
     return failed;
+  }
+
+  async refresh(index: string) {
+    const target = this.name(index);
+    await this.call(() => this.client.indices.refresh({ index: target }));
   }
 
   async deleteDocument(index: string, id: string) {

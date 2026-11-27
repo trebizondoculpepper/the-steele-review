@@ -121,13 +121,29 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
     };
     const rebuildRequested = options.rebuild === "all" || (options.rebuild?.includes(collection.directory) ?? false);
     const live = previous.live;
-    const result =
-      live && !(await needsBuild(options, collection, declaration, live, previous.staging, head, rebuildRequested))
-        ? await update(options, collection, previous, live, head, save)
-        : await build(options, collection, declaration, previous, head, save);
+    let result: CollectionReport;
+    try {
+      result =
+        live && !(await needsBuild(options, collection, declaration, live, previous.staging, head, rebuildRequested))
+          ? await update(options, collection, previous, live, head, save)
+          : await build(options, collection, declaration, previous, head, save);
+    } catch (error) {
+      // One collection's technical failure (search cluster, Git) must not stop
+      // the others. Its checkpoint state is whatever was durably saved, so the
+      // next pass resumes it. Only a category is reported, never the raw error.
+      result = {
+        directory: collection.directory,
+        alias: collection.alias,
+        backing: previous.staging?.backing ?? live?.backing ?? "",
+        action: "failed",
+        indexed: 0,
+        deleted: 0,
+        failed: [{ path: collection.directory, reason: error instanceof Error && error.name === "GitReadError" ? "unreadable" : "index-failed" }],
+      };
+    }
     report.collections.push(result);
     if (result.action === "failed" || result.failed.length) report.ok = false;
-    await save({ ...state.collections[collection.directory]!, completedAt: now().toISOString() });
+    if (state.collections[collection.directory]) await save({ ...state.collections[collection.directory]!, completedAt: now().toISOString() });
   }
   if (report.rejected.length) report.ok = false;
   return report;
@@ -304,6 +320,8 @@ async function build(
     report.action = "failed";
     return report;
   }
+  // Readers switched to the new index must see all of it at once.
+  await options.index.refresh(staging.backing);
   await options.index.pointAlias(collection.alias, staging.backing);
   await save({
     directory: collection.directory,

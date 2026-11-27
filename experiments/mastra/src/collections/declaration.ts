@@ -37,7 +37,7 @@ const Declaration = z.strictObject({
   mappingVersion: z.number().int().min(1).max(9999),
   mapping: z.looseObject({
     properties: z
-      .record(z.string(), z.unknown())
+      .record(z.string(), z.looseObject({}))
       .refine((p) => !(PROVENANCE_FIELD in p), "must not define the provenance field, which the indexer adds")
       .optional(),
   }),
