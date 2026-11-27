@@ -237,7 +237,9 @@ async function readDocument(
     return { failure: { path, reason: "not-json-object" } };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { failure: { path, reason: "not-json-object" } };
-  if ("provenance" in body) return { failure: { path, reason: "reserved-field" } };
+  // `provenance` is the indexer's own field. Elasticsearch expands dotted names
+  // ("provenance.collection") into objects, so those are reserved too.
+  if (Object.keys(body).some(isReservedKey)) return { failure: { path, reason: "reserved-field" } };
   const relative = path.slice(collection.directory.length + 1);
   return {
     document: {
@@ -246,6 +248,8 @@ async function readDocument(
     },
   };
 }
+
+const isReservedKey = (key: string) => key === "provenance" || key.startsWith("provenance.");
 
 const isDocumentPath = (collection: CollectionName, path: string) =>
   path.startsWith(`${collection.directory}/`) && path.endsWith(".json") && path !== `${collection.directory}/${DECLARATION_FILE}`;

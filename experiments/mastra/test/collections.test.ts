@@ -609,3 +609,15 @@ test("a failing alias lookup during staging recovery fails that collection alone
   assert.deepEqual(report.collections.map((c) => [c.directory, c.action]), [["alpha", "failed"], ["beta", "updated"]]);
   assert.equal(h.index.read("steele-review-beta")!.size, 2);
 });
+
+test("dotted keys in the reserved provenance namespace are refused (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, {});
+  h.write("feeds/a.json", { "provenance.collection": "other" });
+  h.write("feeds/b.json", { ok: true });
+  h.write("bad/collection.json", { mappingVersion: 1, mapping: { properties: { "provenance.path": { type: "keyword" } } } });
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.collections[0]!.failed, [{ path: "feeds/a.json", reason: "reserved-field" }]);
+  assert.deepEqual(report.rejected, [{ directory: "bad", reason: "invalid-declaration" }]);
+});

@@ -38,7 +38,10 @@ const Declaration = z.strictObject({
   mapping: z.looseObject({
     properties: z
       .record(z.string(), z.looseObject({}))
-      .refine((p) => !(PROVENANCE_FIELD in p), "must not define the provenance field, which the indexer adds")
+      .refine(
+        (p) => !Object.keys(p).some((k) => k === PROVENANCE_FIELD || k.startsWith(`${PROVENANCE_FIELD}.`)),
+        "must not define the provenance field, which the indexer adds",
+      )
       .optional(),
   }),
 });
