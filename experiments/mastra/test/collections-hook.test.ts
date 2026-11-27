@@ -103,7 +103,8 @@ test("a slow pass never holds up the Git operation beyond the hook deadline (rev
   writeFileSync(join(h.root, "a.json"), "{}");
   h.git("add", "a.json");
   const started = Date.now();
-  const commit = spawnSync("git", ["-C", h.root, "commit", "-q", "-m", "slow"], { env: { ...h.env, STEELE_HOOK_WAIT_SECONDS: "1" }, encoding: "utf8" });
+  const tmpDir = mkdtempSync(join(tmpdir(), "hook-tmp-"));
+  const commit = spawnSync("git", ["-C", h.root, "commit", "-q", "-m", "slow"], { env: { ...h.env, STEELE_HOOK_WAIT_SECONDS: "1", TMPDIR: tmpDir }, encoding: "utf8" });
   const elapsed = Date.now() - started;
   assert.equal(commit.status, 0);
   assert.ok(elapsed < 3000, `the commit returned after ${elapsed} ms`);
@@ -112,6 +113,11 @@ test("a slow pass never holds up the Git operation beyond the hook deadline (rev
   const log = join(h.root, ".git", "steele-collections.log");
   for (let i = 0; i < 50 && !existsSync(log); i++) await new Promise((r) => setTimeout(r, 200));
   assert.ok(existsSync(log), "the background pass logged its outcome");
+  // ...and removed its temporary files once nobody was waiting for them.
+  const { readdirSync } = await import("node:fs");
+  await new Promise((r) => setTimeout(r, 300));
+  const leftovers = readdirSync(tmpDir).filter((n) => n.startsWith("tmp."));
+  assert.deepEqual(leftovers, [], "no temporary files are left behind");
   assert.equal(h.calledTimes().length, 1);
 });
 
@@ -157,7 +163,12 @@ test("a live owner's lock makes others wait; a stale or unreadable one is taken 
   await repo.swapRef(LOCK_REF, live, null);
   await assert.rejects(withLock(repo, async () => 1, { waitMs: 50, pollMs: 5, host: "h", isAlive: () => true }), LockTimeoutError);
   await assert.rejects(withLock(repo, async () => 1, { waitMs: 50, pollMs: 5, host: "other-host", isAlive: () => false }), LockTimeoutError, "another host's live-looking lock is respected until stale");
-  assert.equal(await withLock(repo, async () => "stale", { staleMs: 1, now: () => Date.now() + 10, pollMs: 5, host: "h", isAlive: () => true }), "stale");
+  await assert.rejects(
+    withLock(repo, async () => 1, { staleMs: 1, now: () => Date.now() + 10, waitMs: 50, pollMs: 5, host: "h", isAlive: () => true }),
+    LockTimeoutError,
+    "a live local owner is never taken over, however old its lock",
+  );
+  assert.equal(await withLock(repo, async () => "stale", { staleMs: 1, now: () => Date.now() + 10, pollMs: 5, host: "elsewhere", isAlive: () => true }), "stale");
   const junk = await repo.writeBlob("not json");
   await repo.swapRef(LOCK_REF, junk, null);
   assert.equal(await withLock(repo, async () => "unreadable", { pollMs: 5 }), "unreadable");

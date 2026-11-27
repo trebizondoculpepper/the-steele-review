@@ -14,9 +14,10 @@ import { GitError, type GitRepository } from "../common/git/index.js";
  * atomic compare-and-swap ref update, so:
  *
  * - taking it creates the ref only if it does not exist;
- * - taking over an abandoned lock (its owner on this host has exited, or it is
- *   older than `staleMs`) moves the ref only if it still names that abandoned
- *   owner, so when several contenders find it abandoned exactly one wins;
+ * - taking over an abandoned lock (its owner on this host has exited; for an
+ *   owner on another host, it is older than `staleMs`) moves the ref only if it
+ *   still names that abandoned owner, so when several contenders find it
+ *   abandoned exactly one wins. A live local owner is never taken over;
  * - releasing deletes the ref only if it still names this owner, so a pass can
  *   never remove a lock someone else holds;
  * - the owner record is written before the ref exists, so there is never a
@@ -80,8 +81,11 @@ export async function withLock<T>(repo: GitRepository, work: () => Promise<T>, o
       return true; // an unreadable owner record can never be released by its owner
     }
     if (!held || typeof held.at !== "number") return true;
-    if (now() - held.at > staleMs) return true;
-    return held.host === host && !isAlive(held.pid);
+    // An owner on this host is abandoned only when its process has exited,
+    // however long it has been running: a live pass is never taken over.
+    if (held.host === host) return !isAlive(held.pid);
+    // Liveness cannot be checked across hosts; fall back to age.
+    return now() - held.at > staleMs;
   };
 
   for (;;) {

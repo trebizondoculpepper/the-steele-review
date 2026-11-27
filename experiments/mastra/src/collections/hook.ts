@@ -49,6 +49,8 @@ status=$(mktemp) || exit 0
   rc=$?
   { date -u +%Y-%m-%dT%H:%M:%SZ; cat "$out"; } >> "$log" 2>/dev/null
   echo "$rc" > "$status.done"
+  # The hook stopped waiting (it removed its marker): clean up after ourselves.
+  [ -f "$status" ] || rm -f "$out" "$status.done"
 ) < /dev/null > /dev/null 2>&1 &
 wait_ticks=$(( \${STEELE_HOOK_WAIT_SECONDS:-20} * 5 ))
 while [ ! -f "$status.done" ] && [ "$wait_ticks" -gt 0 ]; do
@@ -63,6 +65,10 @@ if [ -f "$status.done" ]; then
   fi
   rm -f "$out" "$status" "$status.done"
 else
+  # Stop waiting: the marker tells the background pass to clean up when done.
+  rm -f "$status"
+  # If it finished in the meantime, clean up here instead (rm -f is idempotent).
+  [ -f "$status.done" ] && rm -f "$out" "$status.done"
   echo "steele-collections: indexing continues in the background; see $log" >&2
 fi
 exit 0
