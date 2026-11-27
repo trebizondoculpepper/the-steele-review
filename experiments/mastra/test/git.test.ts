@@ -136,7 +136,10 @@ test("cancellation and timeouts are reported as such", async () => {
   const controller = new AbortController();
   controller.abort();
   assert.equal((await gitError(new GitRepository(root).resolve("main", controller.signal))).code, "cancelled");
-  const slow: GitRunner = (r, args, options) => executableGitRunner({ timeoutMs: 1, binary: "sleep" })(r, ["5"], options);
+  // A stand-in executable that ignores Git's arguments and keeps running.
+  const fixture = join(mkdtempSync(join(tmpdir(), "slow-git-")), "slow-git");
+  writeFileSync(fixture, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+  const slow = executableGitRunner({ timeoutMs: 300, binary: fixture });
   assert.equal((await gitError(new GitRepository(root, { runner: slow }).check())).code, "timeout");
 });
 
@@ -151,6 +154,36 @@ test("callers depend only on typed operations: an injected runner sees every Git
   const r = new GitRepository(root, { runner: observing });
   await r.commit({ parent: null, writes: [{ path: "a.json", content: "{}" }], message: "m" });
   assert.deepEqual(seen, ["read-tree", "hash-object", "update-index", "write-tree", "commit-tree", "update-ref"]);
+});
+
+test("a corrupt object is a technical failure, not absence (review on #950)", async () => {
+  const { root, repo: r, git } = repo(true);
+  const { commit } = await r.commit({ parent: null, writes: [{ path: "a.json", content: "{}" }], message: "m" });
+  const { rmSync } = await import("node:fs");
+  rmSync(join(root, "objects", commit!.slice(0, 2), commit!.slice(2)), { force: true });
+  assert.equal(git("rev-parse", "main"), commit, "the ref still names the commit");
+  assert.equal((await gitError(r.resolve("main"))).code, "failed");
+  await gitError(r.isAncestor(commit!, "main"));
+  assert.equal(await r.resolve("no-such-branch"), null, "an unknown name is still absence");
+  assert.equal(await r.isAncestor("no-such-branch", "main").catch(() => "threw"), "threw", "a corrupt side still fails");
+});
+
+test("a no-op commit on a stale parent is a conflict (review on #950)", async () => {
+  const { repo: r } = repo(true);
+  const a = await r.commit({ parent: null, writes: [{ path: "a", content: "1" }], message: "A" });
+  await r.commit({ writes: [{ path: "a", content: "2" }], message: "B" });
+  assert.equal((await gitError(r.commit({ parent: a.commit, writes: [{ path: "a", content: "1" }], message: "stale" }))).code, "conflict");
+});
+
+test("an annotated tag of a non-commit names no commit (review on #951)", async () => {
+  const { repo: r, git } = repo(true);
+  const { commit } = await r.commit({ parent: null, writes: [{ path: "a.json", content: "{}" }], message: "m" });
+  const blob = git("rev-parse", `${commit}:a.json`);
+  execFileSync("git", ["-C", r.root, "-c", "user.name=t", "-c", "user.email=t@e", "tag", "-a", "-m", "blob tag", "blobtag", blob]);
+  execFileSync("git", ["-C", r.root, "-c", "user.name=t", "-c", "user.email=t@e", "tag", "-a", "-m", "commit tag", "committag", commit!]);
+  assert.equal(await r.resolve("blobtag"), null);
+  assert.equal(await r.isAncestor("blobtag", "main"), false);
+  assert.equal(await r.resolve("committag"), commit);
 });
 
 test("only src/common/git starts Git: application modules use its typed interface (#949)", async () => {

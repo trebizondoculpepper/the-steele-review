@@ -31,6 +31,8 @@ export class GitError extends Error {
     readonly code: GitErrorCode,
     /** The Git subcommand, never its arguments. */
     readonly operation: string,
+    /** Git's exit status, when it ran and refused. */
+    readonly exitCode?: number,
   ) {
     super(`git ${operation}: ${code}`);
     this.name = "GitError";
