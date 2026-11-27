@@ -74,11 +74,14 @@ export async function withLock<T>(repo: GitRepository, work: () => Promise<T>, o
   const mine = await repo.writeBlob(JSON.stringify(owner));
 
   const abandoned = async (current: string): Promise<boolean> => {
+    // A failure to read the record is not evidence the owner has gone: it is
+    // raised, and the lock is left alone.
+    const text = await repo.readBlob(current);
     let held: Owner;
     try {
-      held = JSON.parse((await repo.readBlob(current)) ?? "null") as Owner;
+      held = JSON.parse(text ?? "null") as Owner;
     } catch {
-      return true; // an unreadable owner record can never be released by its owner
+      return true; // a malformed owner record can never be released by its owner
     }
     if (!held || typeof held.at !== "number") return true;
     // An owner on this host is abandoned only when its process has exited,

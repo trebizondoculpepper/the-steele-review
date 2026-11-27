@@ -147,7 +147,7 @@ test("passes never interleave, and exactly one of many contenders takes over an 
       if (inside > 1) overlapped = true;
       await new Promise((r) => setTimeout(r, 30));
       inside--;
-    }, { pollMs: 5, host: "this-host", isAlive: () => false }),
+    }, { pollMs: 5, host: "this-host", isAlive: (pid) => pid !== 999999 }),
   );
   await Promise.all(contenders);
   assert.equal(overlapped, false, "no two contenders were ever inside together");
@@ -209,4 +209,20 @@ test("CLI exit codes: bad options and invalid settings are 2 (review on #957)", 
   assert.equal(await main(["install-hook", "--repo"], {}, sink(), sink()), 2);
   const config = mkdtempSync(join(tmpdir(), "cfg-"));
   assert.equal(await main(["reconcile"], { STEELE_CONFIG_PATH: config, STEELE_COLLECTIONS_ROOT: config, STEELE_COLLECTIONS_CHECKPOINT: join(config, "c.json"), STEELE_INDEX_NAMESPACE: "UPPER" }, sink(), sink()), 2);
+});
+
+test("a failure to read the lock owner never counts as abandonment (review on #957)", async () => {
+  const { withLock, LOCK_REF } = await import("../src/collections/lock.js");
+  const root = mkdtempSync(join(tmpdir(), "lock-"));
+  execFileSync("git", ["init", "-q", "--bare", root]);
+  const repo = new GitRepository(root);
+  const live = await repo.writeBlob(JSON.stringify({ host: "h", pid: 1, token: "x", at: 0 }));
+  await repo.swapRef(LOCK_REF, live, null);
+  const contender = new GitRepository(root);
+  const { GitError } = await import("../src/common/git/index.js");
+  contender.readBlob = async () => {
+    throw new GitError("timeout", "cat-file");
+  };
+  await assert.rejects(withLock(contender, async () => "stolen", { pollMs: 5, host: "h", isAlive: () => false }), (e: unknown) => e instanceof GitError && e.code === "timeout");
+  assert.equal(await repo.readRef(LOCK_REF), live, "the owner keeps its lock");
 });

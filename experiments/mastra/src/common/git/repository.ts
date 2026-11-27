@@ -136,11 +136,13 @@ export class GitRepository {
   async readBlob(id: string, signal?: AbortSignal): Promise<string | null> {
     if (!OBJECT_ID.test(id)) throw new GitError("invalid-path", "cat-file");
     try {
-      if ((await this.run("cat-file", ["cat-file", "-t", id], { signal })).trim() !== "blob") return null;
+      // -e exits 1, silently, only when the object does not exist.
+      await this.run("cat-file", ["cat-file", "-e", id], { signal });
     } catch (error) {
-      if (error instanceof GitError && error.code === "failed") return null;
+      if (error instanceof GitError && error.code === "failed" && error.exitCode === 1) return null;
       throw error;
     }
+    if ((await this.run("cat-file", ["cat-file", "-t", id], { signal })).trim() !== "blob") return null;
     return (await this.runBytes("cat-file", ["cat-file", "blob", id], { signal })).toString("utf8");
   }
 
