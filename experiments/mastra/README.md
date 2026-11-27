@@ -101,6 +101,24 @@ How discovery works:
 
 The Substack poller owns its source settings (`src/feed/substack-sources.ts`). `enabledSubstackFeeds(config)` reads `sources/sources.json` in either existing format (the versioned document or the earlier bare array) and returns the enabled Substack sources with their feed URL and publication host. It validates only the fields it uses and leaves settings owned by other consumers alone. Two optional fields are new: `enabled` (default `true`) and `feedUrl` (an https URL; default `https://<id>.substack.com/feed`). Existing files stay valid without them.
 
+## Collection indexes (#942)
+
+`src/collections/` indexes each Git-backed collection in its own Elasticsearch index. The collections root (`<STEELE_APP_DIR>/collections`) is a Git repository, and each immediate child directory is a collection. Nested directories belong to their parent collection. The real host path stays in the private deployment configuration.
+
+- **Declaration:** each collection commits a `collection.json` holding `mappingVersion` (an integer) and `mapping` (an Elasticsearch mapping). A collection with no valid declaration is reported and left unindexed. The indexer adds a `provenance` object to the mapping and to every document: the collection, the path within it, the Git revision, and the blob.
+- **Documents:** documents are the committed `*.json` files in the collection. A document's ID is its path inside the collection. Only committed content is read, never the working tree.
+- **Names:** an alias is `<namespace>-<collection>`; the namespace is `STEELE_INDEX_NAMESPACE` and defaults to `steele-review`. The backing index is `<alias>-v<mappingVersion>`, or `<alias>-v<version>-r<n>` for a rebuild at the same version. Directory names are lower-cased and characters Elasticsearch disallows become `-`. Invalid names, collisions, and names ending in the reserved backing suffix `-v<n>` or `-v<n>-r<n>` are rejected before any index is touched, so an alias can never equal a backing index.
+- **A pass:** `collectionIndexerFromEnv().reconcile()` discovers collections at HEAD, so a new directory needs no deployment. For each collection it does one of two things:
+  - **Rebuild:** this happens on a first build, a new mapping version, an explicit `reconcile(["<dir>"])` or `reconcile("all")`, a missing index or alias, or a history rewrite. The indexer builds a new backing index and points the alias at it only once that index is complete.
+  - **Incremental:** otherwise it applies the Git changes since the checkpoint, the same catch-up pattern as #250.
+
+  Passes are idempotent. Run one after each commit notification and on a schedule; a missed notification is caught up by the next pass. Run one pass at a time.
+- **Recovery:** every path an unfinished pass may have written stays in the checkpoint until a pass succeeds, and is then reconciled against HEAD: indexed if present, deleted if absent. Repeated failures or a reset history therefore cannot leave stale documents. A build that fails keeps its unfinished index as staging and reuses it on the next attempt, so a document that keeps failing costs one index, not one per pass.
+- **Connection:** the Elasticsearch connection is read from the configuration directory on every pass, from `elasticsearch/connection.json` (`{"url": ..., "apiKeyFile": "elasticsearch/api.key"}`; the key file is optional). A rotated key applies on the next pass, and nothing is cached between passes.
+- **Checkpoint:** a JSON file, `<STEELE_APP_DIR>/state/collection-index.json`, with no SQLite. It moves forward only after every change in a collection has succeeded.
+- **Safety:** nothing outside the namespace is created, written or re-pointed. Nothing is deleted: a rebuild keeps the previous backing index, and a collection removed from Git keeps its index and is reported.
+- **Live test:** `STEELE_TEST_ELASTICSEARCH_URL=http://127.0.0.1:9200 npx tsx --test test/collections-live.test.ts` runs the adapter against a disposable cluster. Never run it against a shared cluster.
+
 ## Git service (#949)
 
 `src/common/git/` is the only place that runs Git. Application modules call typed operations on `GitRepository` and never build Git arguments or import a Git library:

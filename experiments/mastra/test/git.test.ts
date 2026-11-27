@@ -185,3 +185,24 @@ test("an annotated tag of a non-commit names no commit (review on #951)", async 
   assert.equal(await r.isAncestor("blobtag", "main"), false);
   assert.equal(await r.resolve("committag"), commit);
 });
+
+test("only src/common/git starts Git: application modules use its typed interface (#949)", async () => {
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = fileURLToPath(new URL("../src/", import.meta.url));
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name.endsWith(".ts") && !full.includes(join("src", "common", "git"))) {
+        const text = readFileSync(full, "utf8");
+        if (/node:child_process|["'](isomorphic-git|simple-git|nodegit)["']/.test(text)) offenders.push(full.slice(src.length));
+      }
+    }
+  };
+  walk(src);
+  assert.deepEqual(offenders, []);
+  const indexer = readFileSync(join(src, "collections", "reconcile.ts"), "utf8");
+  assert.match(indexer, /from "\.\.\/common\/git\/index\.js"/, "the collection indexer imports the shared service");
+});
