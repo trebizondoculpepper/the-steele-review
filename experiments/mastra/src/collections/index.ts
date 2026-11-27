@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { ConfigDirectory, ConfigError, type ConfigSection } from "../common/config/index.js";
 import { fileCheckpoint } from "./checkpoint.js";
+import { withLock } from "./lock.js";
 import { collectionsRoot } from "./paths.js";
 import { GitRepository } from "../common/git/index.js";
 import { DEFAULT_NAMESPACE, validateNamespace } from "./names.js";
@@ -82,14 +83,18 @@ export function collectionIndexerFromEnv(env: NodeJS.ProcessEnv = process.env) {
     namespace,
     /** One pass; call it after each commit notification and on a schedule. */
     reconcile(rebuild?: readonly string[] | "all"): Promise<ReconcileReport> {
-      return serial(async () => {
-        const client = await elasticsearchClient(config);
-        try {
-          return await reconcileCollections({ repo, index: new ElasticsearchIndex(client, namespace), checkpoint, namespace, rebuild });
-        } finally {
-          await client.close();
-        }
-      });
+      // In-process and cross-process: a hook-triggered pass, a manual recovery
+      // and a scheduled pass never interleave on one checkpoint and its indexes.
+      return serial(() =>
+        withLock(repo, async () => {
+          const client = await elasticsearchClient(config);
+          try {
+            return await reconcileCollections({ repo, index: new ElasticsearchIndex(client, namespace), checkpoint, namespace, rebuild });
+          } finally {
+            await client.close();
+          }
+        }),
+      );
     },
   };
 }

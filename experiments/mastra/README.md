@@ -166,3 +166,25 @@ A record holds no poll time, so an unchanged item is never rewritten.
 A failing feed is reported and does not discard the other feeds' results.
 
 **Out of scope.** The step does no capture, SQLite, NATS, indexing or publishing. A test checks its imports to confirm this.
+
+## Indexing command and Git hook (#952)
+
+The `steele-collections` command (`cli/`) runs the collection indexer. `npm run pack:cli` bundles it into one file and packs a globally installable tarball; install it with `npm install -g ./cli/steele-collections-<version>.tgz`. It needs Node 22.
+
+- `steele-collections reconcile` runs one indexing pass. It is safe to repeat, because it applies everything committed since the last checkpoint. It is also the recovery command after a failed or missed pass.
+- `steele-collections reconcile --rebuild <dir>` (or `--rebuild-all`) rebuilds a collection into a fresh index before switching its alias.
+- `steele-collections install-hook [--repo PATH]` installs the repository's `reference-transaction` hook. Its settings are saved beside it in `steele-collections.env` (mode 600), so the hook itself holds no paths or credentials.
+
+The hook runs after every branch update, so it covers both `git commit` and the plumbing commits made by the common Git service (`post-commit` would miss those). It calls `steele-collections reconcile` by name on the `PATH` of the account that runs Git. It never blocks or undoes a commit: if indexing fails, Git keeps the commit and the hook prints the recovery command.
+
+Settings come from the environment, and the hook saves them at install time:
+- `STEELE_CONFIG_PATH`: the configuration directory, which holds the Elasticsearch connection;
+- `STEELE_APP_DIR` or `STEELE_COLLECTIONS_ROOT`;
+- `STEELE_COLLECTIONS_CHECKPOINT`;
+- `STEELE_INDEX_NAMESPACE`.
+
+Exit status is 0 on success, 1 when a pass reported failures, and 2 for usage or configuration errors.
+
+Passes take a cross-process lock, so a hook-triggered pass, a manual recovery and a scheduled pass never interleave. The lock is the ref `refs/steele-collections/index-lock` in the collections repository. It points at an owner record (host, PID, token and time), and every change to it is an atomic compare-and-swap. A lock whose owner has exited, or that is more than an hour old, can therefore be taken over by exactly one waiting pass. A pass only ever releases its own lock. The hook starts the pass in the background and waits up to `STEELE_HOOK_WAIT_SECONDS` (20 by default) to report the outcome. A slower pass carries on detached and logs to `steele-collections.log` in the Git directory, so it never holds up the Git operation that triggered it.
+
+`cli/proof-952.sh <elasticsearch-url>` is the end-to-end proof from #952. It must run on the deployment host as the account that runs Git, and the URL is passed in rather than stored. It uses a temporary repository and the `steele-review-proof952` namespace. `cli/proof-952-cleanup.sh` removes that namespace's indexes by exact name.
