@@ -113,6 +113,8 @@ The Substack poller owns its source settings (`src/feed/substack-sources.ts`). `
   - **Incremental:** otherwise it applies the Git changes since the checkpoint, the same catch-up pattern as #250.
 
   Passes are idempotent. Run one after each commit notification and on a schedule; a missed notification is caught up by the next pass. Run one pass at a time.
+- **Recovery:** every path an unfinished pass may have written stays in the checkpoint until a pass succeeds, and is then reconciled against HEAD: indexed if present, deleted if absent. Repeated failures or a reset history therefore cannot leave stale documents. A build that fails keeps its unfinished index as staging and reuses it on the next attempt, so a document that keeps failing costs one index, not one per pass.
+- **Connection:** the Elasticsearch connection is read from the configuration directory on every pass, from `elasticsearch/connection.json` (`{"url": ..., "apiKeyFile": "elasticsearch/api.key"}`; the key file is optional). A rotated key applies on the next pass, and nothing is cached between passes.
 - **Checkpoint:** a JSON file, `<STEELE_APP_DIR>/state/collection-index.json`, with no SQLite. It moves forward only after every change in a collection has succeeded.
 - **Safety:** nothing outside the namespace is created, written or re-pointed. Nothing is deleted: a rebuild keeps the previous backing index, and a collection removed from Git keeps its index and is reported.
 - **Live test:** `STEELE_TEST_ELASTICSEARCH_URL=http://127.0.0.1:9200 npx tsx --test test/collections-live.test.ts` runs the adapter against a disposable cluster. Never run it against a shared cluster.
