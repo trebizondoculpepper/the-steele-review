@@ -188,3 +188,13 @@ Exit status is 0 on success, 1 when a pass reported failures, and 2 for usage or
 Passes take a cross-process lock, so a hook-triggered pass, a manual recovery and a scheduled pass never interleave. The lock is the ref `refs/steele-collections/index-lock` in the collections repository. It points at an owner record (host, PID, token and time), and every change to it is an atomic compare-and-swap. A lock whose owner has exited, or that is more than an hour old, can therefore be taken over by exactly one waiting pass. A pass only ever releases its own lock. The hook starts the pass in the background and waits up to `STEELE_HOOK_WAIT_SECONDS` (20 by default) to report the outcome. A slower pass carries on detached and logs to `steele-collections.log` in the Git directory, so it never holds up the Git operation that triggered it.
 
 `cli/proof-952.sh <elasticsearch-url>` is the end-to-end proof from #952. It must run on the deployment host as the account that runs Git, and the URL is passed in rather than stored. It uses a temporary repository and the `steele-review-proof952` namespace. `cli/proof-952-cleanup.sh` removes that namespace's indexes by exact name.
+
+## Poll Substack Feeds workflow (#944)
+
+The reset pilot registers exactly one workflow, **Poll Substack Feeds** (`src/mastra/workflows/poll-substack-feeds.ts`). Its graph is the Substack poller step alone. It is triggered manually from Studio or the API and has no schedule. It returns the poller's per-source summary and the committed record references. Capture, publishing, messaging and scheduling stay outside it.
+
+In the deployment, the container mounts two directories:
+- the owner configuration directory, read-only at `/config`; it holds `sources/sources.json` and `elasticsearch/connection.json`;
+- the collections Git repository, read-write at `/collections`.
+
+The indexing checkpoint lives at `/data/collection-index.json`. The image includes the `steele-collections` command, and the hook is installed inside the container with `docker exec <container> steele-collections install-hook`. A poll's commits therefore trigger indexing of the `feeds` collection with no further step.
