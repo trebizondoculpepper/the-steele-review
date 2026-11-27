@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "revision": 3,
+  "sources": [
+    {
+      "id": "saveusnow",
+      "type": "substack",
+      "name": "Save Us Now",
+      "defaultAuthor": { "id": "example-author", "name": "Example Author" },
+      "attributionBasis": "owner-configured"
+    },
+    {
+      "id": "otherpub",
+      "type": "substack",
+      "name": "Other Publication",
+      "feedUrl": "https://news.example.org/feed",
+      "enabled": true
+    },
+    { "id": "example-site", "type": "blog", "name": "Example Blog" }
+  ]
+}
