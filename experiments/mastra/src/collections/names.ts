@@ -67,6 +67,12 @@ export function nameCollections(
   for (const directory of directories) {
     // Hidden directories (".git", ".github", ...) are never collections.
     if (directory.startsWith(".")) continue;
+    // The directory name is a checkpoint key, so it must start with a letter or
+    // digit: this also excludes "__proto__", which a plain object would not keep.
+    if (!/^[A-Za-z0-9]/.test(directory)) {
+      rejected.push({ directory, reason: "invalid-name" });
+      continue;
+    }
     const name = normaliseCollectionName(directory);
     if (!name) {
       rejected.push({ directory, reason: "invalid-name" });

@@ -452,3 +452,30 @@ test("collection names that look like backing indexes are rejected (review on #9
   assert.deepEqual(report.rejected.map((r) => `${r.directory}:${r.reason}`).sort(), ["feeds-v1:reserved-suffix", "feeds-v2-r3:reserved-suffix"]);
   assert.deepEqual(report.collections.map((c) => c.alias), ["steele-review-feeds", "steele-review-v1"]);
 });
+
+test("an unfinished explicit rebuild is resumed by later passes without being requested again (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  h.commit();
+  await h.run();
+  h.index.failIds.add("a.json");
+  assert.deepEqual((await h.run(["feeds"])).collections.map((c) => c.action), ["failed"]);
+  h.index.failIds.clear();
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => [c.action, c.backing]), [["rebuilt", "steele-review-feeds-v1-r1"]]);
+  assert.deepEqual(h.index.aliases.get("steele-review-feeds"), ["steele-review-feeds-v1-r1"]);
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["unchanged"]);
+});
+
+test("directory names that cannot be checkpoint keys are rejected (review on #947)", async () => {
+  const h = harness();
+  h.declare("__proto__", 1, {});
+  h.declare("_drafts", 1, {});
+  h.declare("feeds", 1, {});
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.rejected.map((r) => `${r.directory}:${r.reason}`).sort(), ["__proto__:invalid-name", "_drafts:invalid-name"]);
+  assert.deepEqual(Object.keys(h.checkpoint.state!.collections), ["feeds"]);
+  assert.deepEqual((await h.run()).collections.map((c) => c.action), ["unchanged"]);
+});

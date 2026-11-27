@@ -113,7 +113,7 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
     const rebuildRequested = options.rebuild === "all" || (options.rebuild?.includes(collection.directory) ?? false);
     const live = previous.live;
     const result =
-      live && !(await needsBuild(options, collection, declaration, live, head, rebuildRequested))
+      live && !(await needsBuild(options, collection, declaration, live, previous.staging, head, rebuildRequested))
         ? await update(options, collection, previous, live, head, save)
         : await build(options, collection, declaration, previous, head, save);
     report.collections.push(result);
@@ -144,10 +144,14 @@ async function needsBuild(
   collection: CollectionName,
   declaration: CollectionDeclaration,
   live: LiveIndex,
+  staging: StagingIndex | undefined,
   head: string,
   rebuildRequested: boolean,
 ): Promise<boolean> {
   if (rebuildRequested || live.mappingVersion !== declaration.mappingVersion) return true;
+  // An unfinished build (a requested rebuild that failed or was interrupted)
+  // is resumed by every later pass until it is promoted.
+  if (staging) return true;
   if (!(await options.index.indexExists(live.backing))) return true;
   if (!(await options.index.aliasTargets(collection.alias)).includes(live.backing)) return true;
   // A rewritten history leaves no reliable diff; rebuild from the current tree.
