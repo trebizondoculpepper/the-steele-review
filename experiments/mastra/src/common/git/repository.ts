@@ -121,6 +121,13 @@ export class GitRepository {
     }
   }
 
+  /** Absolute path of a file in the repository's Git directory, e.g. `hooks`. */
+  async gitPath(name: string, signal?: AbortSignal): Promise<string> {
+    const out = (await this.run("rev-parse", ["rev-parse", "--path-format=absolute", "--git-path", assertRepositoryPath(name, "rev-parse")], { signal })).trim();
+    if (!out) throw new GitError("failed", "rev-parse");
+    return out;
+  }
+
   /** Confirms the root is a readable repository; throws GitError otherwise. */
   async check(signal?: AbortSignal): Promise<void> {
     await this.run("rev-parse", ["rev-parse", "--git-dir"], { signal });

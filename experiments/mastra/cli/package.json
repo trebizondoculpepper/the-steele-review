@@ -1,0 +1,16 @@
+{
+  "name": "steele-collections",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Collection indexing command for the Steele Review collections repository (#942, #952)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "steele-collections": "dist/steele-collections.mjs"
+  },
+  "files": [
+    "dist/"
+  ]
+}
