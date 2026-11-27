@@ -5,28 +5,49 @@ import { z } from "zod";
 /**
  * Indexing checkpoints (#942), kept as one JSON file rather than in SQLite.
  *
- * For each collection the checkpoint records which backing index its alias
- * uses, at which mapping version, and the Git commit that index fully
- * reflects. A pass records `pending` before writing and only moves `commit`
- * after every change succeeded, so an interrupted or failed pass is retried
- * from the last good commit (the pattern of the earlier catch-up indexer,
- * #250). Writes are atomic: a temporary file renamed over the target.
+ * For each collection the checkpoint records:
+ * - `live`: the backing index its alias uses, at which mapping version, and
+ *   the Git commit that index fully reflects;
+ * - `touched`: every document path an unfinished pass may have written since
+ *   that commit. It is saved before any write and kept until a pass succeeds,
+ *   so every such path is reconciled against the current HEAD (indexed if
+ *   present, deleted if absent) however many passes fail in a row, and even if
+ *   the revisions those passes applied are later reset or rewritten away;
+ * - `staging`: a backing index whose build has not completed. The next build
+ *   at the same mapping version reuses it, so a document that keeps failing
+ *   costs one retained index, not one per pass.
+ *
+ * Writes are atomic: a temporary file renamed over the target.
  */
+
+const LiveIndex = z.object({
+  backing: z.string(),
+  mappingVersion: z.number().int(),
+  /** Rebuild number at this mapping version; 0 for the first build. */
+  rebuild: z.number().int().min(0),
+  /** The commit the backing index fully reflects. */
+  commit: z.string(),
+  touched: z.array(z.string()).optional(),
+});
+
+const StagingIndex = z.object({
+  backing: z.string(),
+  mappingVersion: z.number().int(),
+  rebuild: z.number().int().min(0),
+  /** The HEAD the last build attempt indexed. */
+  head: z.string(),
+});
 
 const CollectionState = z.object({
   directory: z.string(),
   alias: z.string(),
-  backing: z.string(),
-  mappingVersion: z.number().int(),
-  /** Number of rebuilds at this mapping version; 0 for the first build. */
-  rebuild: z.number().int().min(0),
-  /** The commit the backing index fully reflects. */
-  commit: z.string().optional(),
-  /** A head a pass began applying and has not finished. */
-  pending: z.string().optional(),
+  live: LiveIndex.optional(),
+  staging: StagingIndex.optional(),
   completedAt: z.string().optional(),
 });
 export type CollectionState = z.infer<typeof CollectionState>;
+export type LiveIndex = z.infer<typeof LiveIndex>;
+export type StagingIndex = z.infer<typeof StagingIndex>;
 
 export const CheckpointState = z.object({
   schemaVersion: z.literal(1),

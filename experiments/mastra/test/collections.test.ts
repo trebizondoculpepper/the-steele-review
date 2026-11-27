@@ -115,7 +115,7 @@ test("each collection gets its own alias and backing index with its declared map
     blob: h.git("rev-parse", `${head}:raw-content/saveusnow/1.json`),
   });
   assert.equal(h.index.read("steele-review-empty")!.size, 0);
-  assert.equal(h.checkpoint.state!.collections["research"]!.commit, head);
+  assert.equal(h.checkpoint.state!.collections["research"]!.live!.commit, head);
 });
 
 test("a missed notification is caught up: one pass applies every commit since the checkpoint", async () => {
@@ -238,7 +238,7 @@ test("a failed write keeps the checkpoint, and the next pass retries it", async 
   const failed = await h.run();
   assert.equal(failed.ok, false);
   assert.deepEqual(failed.collections[0]!.failed.map((f) => `${f.path}:${f.reason}`).sort(), ["feeds/b.json:index-failed", "feeds/c.json:not-json-object"]);
-  assert.equal(h.checkpoint.state!.collections["feeds"]!.commit, first);
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.live!.commit, first);
 
   h.index.failIds.clear();
   h.write("feeds/c.json", { title: "C" });
@@ -246,7 +246,7 @@ test("a failed write keeps the checkpoint, and the next pass retries it", async 
   const retried = await h.run();
   assert.equal(retried.ok, true);
   assert.deepEqual([...h.index.read("steele-review-feeds")!.keys()].sort(), ["a.json", "b.json", "c.json"]);
-  assert.equal(h.checkpoint.state!.collections["feeds"]!.commit, head);
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.live!.commit, head);
 });
 
 test("a failed build leaves readers on the previous index", async () => {
@@ -261,7 +261,7 @@ test("a failed build leaves readers on the previous index", async () => {
   const report = await h.run();
   assert.deepEqual(report.collections.map((c) => c.action), ["failed"]);
   assert.deepEqual(h.index.aliases.get("steele-review-feeds"), ["steele-review-feeds-v1"]);
-  assert.equal(h.checkpoint.state!.collections["feeds"]!.backing, "steele-review-feeds-v1");
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.live!.backing, "steele-review-feeds-v1");
 });
 
 test("reconciliation never touches indexes outside its namespace", async () => {
@@ -299,4 +299,118 @@ test("an empty repository is a no-op, and a checkpoint from another namespace is
   assert.deepEqual(await h.run(), { ok: true, collections: [], rejected: [], removed: [] });
   const other = memoryCheckpoint({ schemaVersion: 1, namespace: "elsewhere", collections: {} });
   await assert.rejects(reconcileCollections({ repo: new GitRepository(h.root), index: h.index, checkpoint: other, namespace: NS }), /different namespace/);
+});
+
+test("paths from consecutive failed passes are never forgotten (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  h.commit();
+  await h.run();
+
+  // Pass 1: x is indexed, y fails.
+  h.write("feeds/x.json", { title: "X" });
+  h.write("feeds/y.json", { title: "Y" });
+  h.commit();
+  h.index.failIds.add("y.json");
+  assert.equal((await h.run()).ok, false);
+  assert.ok(h.index.read("steele-review-feeds")!.has("x.json"));
+
+  // Pass 2: x is removed from Git, but its deletion fails.
+  h.remove("feeds/x.json");
+  h.commit();
+  const deleteDocument = h.index.deleteDocument.bind(h.index);
+  h.index.deleteDocument = async () => {
+    throw new Error("unavailable");
+  };
+  assert.equal((await h.run()).ok, false);
+
+  // Pass 3: everything works again. x must not survive.
+  h.index.deleteDocument = deleteDocument;
+  h.index.failIds.clear();
+  const report = await h.run();
+  assert.equal(report.ok, true);
+  assert.deepEqual([...h.index.read("steele-review-feeds")!.keys()].sort(), ["a.json", "y.json"]);
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.live!.touched, undefined);
+});
+
+test("documents written by a partial pass are removed when that revision is reset away (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  const good = h.commit();
+  await h.run();
+
+  h.write("feeds/x.json", { title: "X" });
+  h.write("feeds/y.json", { title: "Y" });
+  h.commit();
+  h.index.failIds.add("y.json");
+  assert.equal((await h.run()).ok, false);
+  assert.ok(h.index.read("steele-review-feeds")!.has("x.json"));
+
+  h.git("reset", "-q", "--hard", good);
+  h.index.failIds.clear();
+  const report = await h.run();
+  assert.equal(report.ok, true);
+  assert.deepEqual([...h.index.read("steele-review-feeds")!.keys()], ["a.json"]);
+});
+
+test("a build that keeps failing reuses one staging index instead of making one per pass (review on #947)", async () => {
+  const h = harness();
+  h.declare("feeds", 1, { title: { type: "text" } });
+  h.write("feeds/a.json", { title: "A" });
+  h.write("feeds/bad.json", "not json");
+  h.commit();
+  for (let i = 0; i < 3; i++) assert.deepEqual((await h.run()).collections.map((c) => c.action), ["failed"]);
+  assert.deepEqual([...h.index.indexes.keys()], ["steele-review-feeds-v1"]);
+  assert.equal(h.index.aliases.get("steele-review-feeds"), undefined, "readers never see an incomplete index");
+
+  // The fix lands in a later commit, and a document is removed meanwhile.
+  h.remove("feeds/bad.json");
+  h.remove("feeds/a.json");
+  h.write("feeds/b.json", { title: "B" });
+  h.commit();
+  const report = await h.run();
+  assert.deepEqual(report.collections.map((c) => [c.action, c.backing]), [["built", "steele-review-feeds-v1"]]);
+  assert.deepEqual([...h.index.read("steele-review-feeds")!.keys()], ["b.json"], "documents gone from Git do not survive in the reused index");
+  assert.equal(h.checkpoint.state!.collections["feeds"]!.staging, undefined);
+});
+
+test("the Elasticsearch connection is read from the configuration directory on each pass (review on #947)", async () => {
+  const { createServer } = await import("node:http");
+  const { ConfigDirectory, ConfigError } = await import("../src/common/config/index.js");
+  const { elasticsearchClient } = await import("../src/collections/index.js");
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization ?? "");
+    res.writeHead(200, { "content-type": "application/json", "x-elastic-product": "Elasticsearch" });
+    res.end(JSON.stringify({ name: "stub", cluster_name: "stub", cluster_uuid: "x", version: { number: "8.19.2" }, tagline: "" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const root = mkdtempSync(join(tmpdir(), "es-config-"));
+  mkdirSync(join(root, "elasticsearch"));
+  const config = new ConfigDirectory(root);
+  const writeConfig = (connection: unknown, key?: string) => {
+    writeFileSync(join(root, "elasticsearch/connection.json"), JSON.stringify(connection));
+    if (key !== undefined) writeFileSync(join(root, "elasticsearch/api.key"), key);
+  };
+  try {
+    writeConfig({ url: `http://127.0.0.1:${port}`, apiKeyFile: "elasticsearch/api.key" }, "fixture-key-one\n");
+    let client = await elasticsearchClient(config);
+    await client.info();
+    await client.close();
+    writeConfig({ url: `http://127.0.0.1:${port}`, apiKeyFile: "elasticsearch/api.key" }, "fixture-key-two");
+    client = await elasticsearchClient(config);
+    await client.info();
+    await client.close();
+    assert.deepEqual(seen, ["ApiKey fixture-key-one", "ApiKey fixture-key-two"]);
+
+    rmSync(join(root, "elasticsearch/api.key"));
+    await assert.rejects(elasticsearchClient(config), (e: unknown) => e instanceof ConfigError && e.code === "missing" && !/fixture/.test(e.message));
+    writeConfig({ url: "http://user:fixture-secret@127.0.0.1:1" });
+    await assert.rejects(elasticsearchClient(config), (e: unknown) => e instanceof ConfigError && e.code === "invalid" && !/fixture-secret/.test(e.message));
+  } finally {
+    server.close();
+  }
 });

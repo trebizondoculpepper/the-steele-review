@@ -69,7 +69,7 @@ test("two collections, distinct mappings, a missed notification and a rebuild ag
     commit();
     const rejected = await run(checkpoint);
     assert.deepEqual(rejected.collections.find((c) => c.directory === "raw-content")!.failed, [{ path: "raw-content/d.json", reason: "index-failed" }]);
-    assert.equal(checkpoint.state!.collections["raw-content"]!.commit, head);
+    assert.equal(checkpoint.state!.collections["raw-content"]!.live!.commit, head);
 
     write("raw-content/d.json", { title: "D" });
     commit();

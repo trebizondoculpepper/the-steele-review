@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { ConfigError } from "../common/config/index.js";
-import type { CheckpointState, CheckpointStore, CollectionState } from "./checkpoint.js";
+import type { CheckpointState, CheckpointStore, CollectionState, LiveIndex, StagingIndex } from "./checkpoint.js";
 import { DECLARATION_FILE, parseDeclaration, type CollectionDeclaration } from "./declaration.js";
 import type { GitRepository, PathChange } from "./git.js";
 import { backingIndexName, documentId, nameCollections, validateNamespace, type CollectionName, type NameRejection } from "./names.js";
@@ -24,7 +24,8 @@ import type { IndexDocument, SearchIndexPort } from "./search-index.js";
  *      build, a new mapping version, an explicit rebuild, a missing index or
  *      alias, or a checkpoint commit no longer in history); or
  *    - applies the changes between the checkpoint commit and HEAD to the
- *      current backing index (the earlier catch-up pattern, #250).
+ *      current backing index (the earlier catch-up pattern, #250), together
+ *      with every path an earlier unfinished pass may have written.
  *
  * Documents are the committed `*.json` files under the collection (except its
  * declaration). A document's ID is its path inside the collection, so it is
@@ -59,6 +60,7 @@ export interface CollectionReport {
   directory: string;
   alias: string;
   backing: string;
+  /** "failed": a build did not complete; readers stay on the previous index. */
   action: "built" | "rebuilt" | "updated" | "unchanged" | "failed";
   indexed: number;
   deleted: number;
@@ -100,15 +102,23 @@ export async function reconcileCollections(options: ReconcileOptions): Promise<R
       report.rejected.push({ directory: collection.directory, reason: declaration.reason });
       continue;
     }
-    const previous = state.collections[collection.directory];
+    const known = state.collections[collection.directory];
+    // A renamed alias (another namespace rule) starts afresh.
+    const previous: CollectionState =
+      known && known.alias === collection.alias ? known : { directory: collection.directory, alias: collection.alias };
+    const save = async (next: CollectionState) => {
+      state.collections[collection.directory] = next;
+      await options.checkpoint.save(state);
+    };
     const rebuildRequested = options.rebuild === "all" || (options.rebuild?.includes(collection.directory) ?? false);
-    const result = (await needsBuild(options, collection, declaration, previous, head, rebuildRequested))
-      ? await build(options, collection, declaration, previous, head)
-      : await update(options, collection, previous!, head, state);
-    report.collections.push(result.report);
-    if (result.state) state.collections[collection.directory] = { ...result.state, completedAt: now().toISOString() };
-    if (result.report.action === "failed" || result.report.failed.length) report.ok = false;
-    await options.checkpoint.save(state);
+    const live = previous.live;
+    const result =
+      live && !(await needsBuild(options, collection, declaration, live, head, rebuildRequested))
+        ? await update(options, collection, previous, live, head, save)
+        : await build(options, collection, declaration, previous, head, save);
+    report.collections.push(result);
+    if (result.action === "failed" || result.failed.length) report.ok = false;
+    await save({ ...state.collections[collection.directory]!, completedAt: now().toISOString() });
   }
   if (report.rejected.length) report.ok = false;
   return report;
@@ -133,16 +143,15 @@ async function needsBuild(
   options: ReconcileOptions,
   collection: CollectionName,
   declaration: CollectionDeclaration,
-  previous: CollectionState | undefined,
+  live: LiveIndex,
   head: string,
   rebuildRequested: boolean,
 ): Promise<boolean> {
-  if (!previous?.commit || rebuildRequested) return true;
-  if (previous.alias !== collection.alias || previous.mappingVersion !== declaration.mappingVersion) return true;
-  if (!(await options.index.indexExists(previous.backing))) return true;
-  if (!(await options.index.aliasTargets(collection.alias)).includes(previous.backing)) return true;
+  if (rebuildRequested || live.mappingVersion !== declaration.mappingVersion) return true;
+  if (!(await options.index.indexExists(live.backing))) return true;
+  if (!(await options.index.aliasTargets(collection.alias)).includes(live.backing)) return true;
   // A rewritten history leaves no reliable diff; rebuild from the current tree.
-  return !(await options.repo.isAncestor(previous.commit, head));
+  return !(await options.repo.isAncestor(live.commit, head));
 }
 
 /** Read one committed document as the body to index, or the reason it cannot be. */
@@ -179,109 +188,146 @@ async function readDocument(
 const isDocumentPath = (collection: CollectionName, path: string) =>
   path.startsWith(`${collection.directory}/`) && path.endsWith(".json") && path !== `${collection.directory}/${DECLARATION_FILE}`;
 
-async function build(
+const idOf = (collection: CollectionName, path: string) => documentId(path.slice(collection.directory.length + 1), sha256);
+
+/**
+ * Make each path in the index match HEAD: index it when present, delete it when
+ * absent. Returns the failures; the report counts what succeeded.
+ */
+async function applyPaths(
   options: ReconcileOptions,
   collection: CollectionName,
-  declaration: CollectionDeclaration,
-  previous: CollectionState | undefined,
+  backing: string,
   head: string,
-): Promise<{ report: CollectionReport; state?: CollectionState }> {
-  // Never reuse an existing backing index: it may be the one readers use now,
-  // or a leftover from an interrupted build.
-  let rebuild = previous && previous.mappingVersion === declaration.mappingVersion && previous.alias === collection.alias ? previous.rebuild + 1 : 0;
-  while (await options.index.indexExists(backingIndexName(collection.alias, declaration.mappingVersion, rebuild))) rebuild++;
-  const backing = backingIndexName(collection.alias, declaration.mappingVersion, rebuild);
-  const report: CollectionReport = {
-    directory: collection.directory,
-    alias: collection.alias,
-    backing,
-    action: previous ? "rebuilt" : "built",
-    indexed: 0,
-    deleted: 0,
-    failed: [],
-  };
-  await options.index.createIndex(backing, declaration.mapping);
-
-  const documents: IndexDocument[] = [];
-  for (const entry of await options.repo.files(head, collection.directory)) {
-    if (!isDocumentPath(collection, entry.path)) continue;
-    const read = await readDocument(options.repo, head, collection, entry.path);
-    if ("document" in read) documents.push(read.document);
-    else if ("failure" in read) report.failed.push(read.failure);
-  }
-  const failedIds = new Set(await options.index.indexDocuments(backing, documents));
-  for (const document of documents) {
-    if (failedIds.has(document.id)) report.failed.push({ path: `${collection.directory}/${(document.body.provenance as { path: string }).path}`, reason: "index-failed" });
-    else report.indexed++;
-  }
-  // Readers keep the previous index until the new one is complete.
-  if (report.failed.length) {
-    report.action = "failed";
-    return { report };
-  }
-  await options.index.pointAlias(collection.alias, backing);
-  return {
-    report,
-    state: { directory: collection.directory, alias: collection.alias, backing, mappingVersion: declaration.mappingVersion, rebuild, commit: head },
-  };
-}
-
-async function update(
-  options: ReconcileOptions,
-  collection: CollectionName,
-  previous: CollectionState,
-  head: string,
-  state: CheckpointState,
-): Promise<{ report: CollectionReport; state?: CollectionState }> {
-  const report: CollectionReport = {
-    directory: collection.directory,
-    alias: collection.alias,
-    backing: previous.backing,
-    action: "unchanged",
-    indexed: 0,
-    deleted: 0,
-    failed: [],
-  };
-  if (previous.commit === head && !previous.pending) return { report, state: previous };
-
-  const inCollection = (c: PathChange) => isDocumentPath(collection, c.path);
-  const changes = (await options.repo.changes(previous.commit!, head)).filter(inCollection);
-  // A pass that stopped part-way may have written documents at its own head
-  // that later commits removed or reverted: reconcile those paths too.
-  if (previous.pending && previous.pending !== head && (await options.repo.isAncestor(previous.pending, head))) {
-    const seen = new Set(changes.map((c) => c.path));
-    for (const c of (await options.repo.changes(previous.pending, head)).filter(inCollection))
-      if (!seen.has(c.path)) changes.push({ path: c.path, change: "upsert" });
-  }
-  if (changes.length === 0) return { report, state: { ...previous, commit: head, pending: undefined } };
-
-  // Recorded before any write, so an interrupted pass is never trusted.
-  state.collections[collection.directory] = { ...previous, pending: head };
-  await options.checkpoint.save(state);
-  report.action = "updated";
-
+  paths: Iterable<string>,
+  report: CollectionReport,
+): Promise<void> {
   const upserts: IndexDocument[] = [];
-  const paths = new Map<string, string>();
-  for (const { path, change } of changes) {
-    const relative = path.slice(collection.directory.length + 1);
-    const id = documentId(relative, sha256);
-    const read = change === "delete" ? ({ absent: true } as const) : await readDocument(options.repo, head, collection, path);
+  const pathOf = new Map<string, string>();
+  for (const path of paths) {
+    const read = await readDocument(options.repo, head, collection, path);
     if ("failure" in read) report.failed.push(read.failure);
     else if ("document" in read) {
       upserts.push(read.document);
-      paths.set(read.document.id, path);
+      pathOf.set(read.document.id, path);
     } else {
       try {
-        await options.index.deleteDocument(previous.backing, id);
+        await options.index.deleteDocument(backing, idOf(collection, path));
         report.deleted++;
       } catch {
         report.failed.push({ path, reason: "delete-failed" });
       }
     }
   }
-  for (const id of await options.index.indexDocuments(previous.backing, upserts)) report.failed.push({ path: paths.get(id)!, reason: "index-failed" });
-  report.indexed = upserts.length - report.failed.filter((f) => f.reason === "index-failed").length;
+  let failedIds: string[];
+  try {
+    failedIds = await options.index.indexDocuments(backing, upserts);
+  } catch {
+    failedIds = upserts.map((d) => d.id);
+  }
+  for (const id of failedIds) report.failed.push({ path: pathOf.get(id)!, reason: "index-failed" });
+  report.indexed += upserts.length - failedIds.length;
+}
 
-  if (report.failed.length) return { report, state: { ...previous, pending: head } };
-  return { report, state: { ...previous, commit: head, pending: undefined } };
+/** The staging index a build should use: the unfinished one when it can be reused, else a new name. */
+async function chooseStaging(
+  options: ReconcileOptions,
+  collection: CollectionName,
+  declaration: CollectionDeclaration,
+  previous: CollectionState,
+  head: string,
+): Promise<{ staging: StagingIndex; created: boolean; stalePaths: string[] }> {
+  const prior = previous.staging;
+  if (prior && prior.mappingVersion === declaration.mappingVersion && (await options.index.indexExists(prior.backing))) {
+    if (prior.head === head) return { staging: { ...prior, head }, created: false, stalePaths: [] };
+    // Documents the earlier attempt indexed that are gone at HEAD must not survive into the new index.
+    if (await options.repo.isAncestor(prior.head, head)) {
+      const stalePaths = (await options.repo.changes(prior.head, head))
+        .filter((c) => c.change === "delete" && isDocumentPath(collection, c.path))
+        .map((c) => c.path);
+      return { staging: { ...prior, head }, created: false, stalePaths };
+    }
+  }
+  // Never reuse an index readers use now, or one whose contents are unknown.
+  const live = previous.live;
+  let rebuild = Math.max(
+    live && live.mappingVersion === declaration.mappingVersion ? live.rebuild + 1 : 0,
+    prior && prior.mappingVersion === declaration.mappingVersion ? prior.rebuild + 1 : 0,
+  );
+  while (await options.index.indexExists(backingIndexName(collection.alias, declaration.mappingVersion, rebuild))) rebuild++;
+  const backing = backingIndexName(collection.alias, declaration.mappingVersion, rebuild);
+  return { staging: { backing, mappingVersion: declaration.mappingVersion, rebuild, head }, created: true, stalePaths: [] };
+}
+
+async function build(
+  options: ReconcileOptions,
+  collection: CollectionName,
+  declaration: CollectionDeclaration,
+  previous: CollectionState,
+  head: string,
+  save: (next: CollectionState) => Promise<void>,
+): Promise<CollectionReport> {
+  const { staging, created, stalePaths } = await chooseStaging(options, collection, declaration, previous, head);
+  const report: CollectionReport = {
+    directory: collection.directory,
+    alias: collection.alias,
+    backing: staging.backing,
+    action: previous.live ? "rebuilt" : "built",
+    indexed: 0,
+    deleted: 0,
+    failed: [],
+  };
+  if (created) await options.index.createIndex(staging.backing, declaration.mapping);
+  // Recorded before writing, so the next attempt reuses this index rather than making another.
+  await save({ ...previous, staging });
+
+  const paths = (await options.repo.files(head, collection.directory)).map((e) => e.path).filter((p) => isDocumentPath(collection, p));
+  await applyPaths(options, collection, staging.backing, head, [...paths, ...stalePaths], report);
+  // Readers keep the previous index until the new one is complete.
+  if (report.failed.length) {
+    report.action = "failed";
+    return report;
+  }
+  await options.index.pointAlias(collection.alias, staging.backing);
+  await save({
+    directory: collection.directory,
+    alias: collection.alias,
+    live: { backing: staging.backing, mappingVersion: staging.mappingVersion, rebuild: staging.rebuild, commit: head },
+  });
+  return report;
+}
+
+async function update(
+  options: ReconcileOptions,
+  collection: CollectionName,
+  previous: CollectionState,
+  live: LiveIndex,
+  head: string,
+  save: (next: CollectionState) => Promise<void>,
+): Promise<CollectionReport> {
+  const report: CollectionReport = {
+    directory: collection.directory,
+    alias: collection.alias,
+    backing: live.backing,
+    action: "unchanged",
+    indexed: 0,
+    deleted: 0,
+    failed: [],
+  };
+  const paths = new Set(live.touched ?? []);
+  if (live.commit !== head)
+    for (const c of await options.repo.changes(live.commit, head)) if (isDocumentPath(collection, c.path)) paths.add(c.path);
+  if (paths.size === 0) {
+    await save({ ...previous, live: { ...live, commit: head } });
+    return report;
+  }
+  // Saved before any write and kept until a pass succeeds, so no path this
+  // pass may write can be forgotten by a later failure or history rewrite.
+  const touched = [...paths].sort();
+  await save({ ...previous, live: { ...live, touched } });
+  report.action = "updated";
+  await applyPaths(options, collection, live.backing, head, touched, report);
+  if (report.failed.length) return report;
+  await save({ ...previous, live: { backing: live.backing, mappingVersion: live.mappingVersion, rebuild: live.rebuild, commit: head } });
+  return report;
 }
