@@ -3,6 +3,10 @@
 #                            and the API have no login (#930), so this bind is the access control.
 #   STEELE_EXP_MASTRA_DATA     host directory for persistent LibSQL storage
 #   STEELE_EXP_MASTRA_MODEL_CONFIG_DIR  canonical model provider configuration directory (mounted read-only)
+#   STEELE_EXP_MASTRA_CONFIG_DIR       owner configuration directory (sources/sources.json,
+#                                      elasticsearch/connection.json), mounted read-only (#945, #942)
+#   STEELE_EXP_MASTRA_COLLECTIONS      host Git repository of collections (#943, #944), read-write;
+#                                      its indexing hook runs steele-collections inside this container
 name: steele-exp-mastra
 services:
   mastra:
@@ -24,12 +28,19 @@ services:
       STEELE_EXP_MASTRA_DELIVERY_ENABLED: ${STEELE_EXP_MASTRA_DELIVERY_ENABLED:-0}
       STEELE_EXP_MASTRA_DRAFT_SERVICE_URL: ${STEELE_EXP_MASTRA_DRAFT_SERVICE_URL:?set the private draft service URL}
       STEELE_EXP_MASTRA_DRAFT_TOKEN_FILE: /run/draft-service/token
+      # Poll Substack Feeds (#944) and collection indexing (#942, #952).
+      STEELE_CONFIG_PATH: /config
+      STEELE_COLLECTIONS_ROOT: /collections
+      STEELE_COLLECTIONS_CHECKPOINT: /data/collection-index.json
+      STEELE_INDEX_NAMESPACE: ${STEELE_INDEX_NAMESPACE:-steele-review}
     volumes:
       - ${STEELE_EXP_MASTRA_DATA:?set the data directory}:/data
       # Canonical model provider configuration, read-only; never copied.
       - ${STEELE_EXP_MASTRA_MODEL_CONFIG_DIR:?set the model provider configuration directory}:/run/model:ro
       # Mastra's own draft-service token (the service stores only its hash).
       - ${STEELE_EXP_MASTRA_DRAFT_TOKEN:?set the draft service token file}:/run/draft-service/token:ro
+      - ${STEELE_EXP_MASTRA_CONFIG_DIR:?set the owner configuration directory}:/config:ro
+      - ${STEELE_EXP_MASTRA_COLLECTIONS:?set the collections repository}:/collections
     mem_limit: 768m
     read_only: true
     tmpfs:

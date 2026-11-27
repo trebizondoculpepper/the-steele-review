@@ -2,6 +2,8 @@ import { Mastra } from "@mastra/core/mastra";
 import { LibSQLStore } from "@mastra/libsql";
 import { PinoLogger } from "@mastra/loggers";
 import { MastraStorageExporter, Observability } from "@mastra/observability";
+
+import { pollSubstackFeedsWorkflow } from "./workflows/poll-substack-feeds.js";
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
  *
@@ -17,6 +19,8 @@ import { MastraStorageExporter, Observability } from "@mastra/observability";
  */
 
 export const mastra = new Mastra({
+  // The reset pilot registers one workflow (#944). Add others deliberately.
+  workflows: { pollSubstackFeeds: pollSubstackFeedsWorkflow },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
     url: process.env.STEELE_EXP_MASTRA_DB ?? "file:./.data/mastra.db",
