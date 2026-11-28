@@ -299,7 +299,7 @@ The status, usage and timings are in `operation.meta`.
 
 What happens in other cases:
 - **No text at all:** recorded as `skipped`, with the reason.
-- **Model failure:** recorded as `model-failed` and retried by later runs, at most 3 attempts.
+- **Model failure:** recorded as `model-failed`. Every later run also looks for unfinished summaries that still have attempts left, up to 10 per run, and retries them even when the feed brings nothing new. Each source version gets at most 3 attempts.
 - **A technical error on one item:** reported, and the other items continue.
 - **Replays and interrupted runs:** they reuse the completed summary of the same source version, with no model call.
 - **A changed source version:** gets its own summary.

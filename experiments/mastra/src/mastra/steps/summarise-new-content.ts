@@ -4,7 +4,7 @@ import { z } from "zod";
 import { GitRepository } from "../../common/git/index.js";
 import { OpenRouterChat } from "../../common/model/openrouter.js";
 import { collectionsRoot } from "../../collections/paths.js";
-import { DEFAULT_SUMMARY_MODEL, summariseSource, type SummariseOptions } from "../../summaries/summarise.js";
+import { DEFAULT_SUMMARY_MODEL, summariseSource, unfinishedSummaries, type SummariseOptions } from "../../summaries/summarise.js";
 import { FetchSubstackContentOutput } from "./fetch-substack-content.js";
 
 /**
@@ -26,6 +26,8 @@ const ItemSummary = z.object({
   path: z.string().optional(),
   usage: z.object({ promptTokens: z.number().nullable(), completionTokens: z.number().nullable(), costUsd: z.number().nullable() }).nullable().optional(),
   totalMs: z.number().optional(),
+  /** True when this came from an earlier run's unfinished summary, not this run's capture. */
+  retried: z.boolean().optional(),
 });
 
 export const SummariseNewContentOutput = FetchSubstackContentOutput.extend({ summaries: z.array(ItemSummary) });
@@ -47,12 +49,22 @@ export function createSummariseNewContentStep(options: () => SummariseOptions = 
     inputSchema: FetchSubstackContentOutput,
     outputSchema: SummariseNewContentOutput,
     execute: async ({ inputData }) => {
-      const captured = inputData.fetched.filter((f) => f.status === "captured" && f.path && f.commit);
+      const captured = inputData.fetched
+        .filter((f) => f.status === "captured" && f.path && f.commit)
+        .map((f) => ({ sourceId: f.sourceId, itemId: f.itemId, path: f.path!, commit: f.commit!, retried: false }));
       const summaries: z.infer<typeof ItemSummary>[] = [];
-      const opts = captured.length ? options() : null;
+      const opts = options();
+      // Earlier runs' unfinished summaries are retried too, so a transient model
+      // failure is recovered even when the feed brings nothing new.
+      const seen = new Set(captured.map((c) => `${c.path}@${c.commit}`));
+      for (const ref of await unfinishedSummaries(opts.repo, opts.branch)) {
+        if (seen.has(`${ref.path}@${ref.commit}`)) continue;
+        const [, , sourceId, itemId] = ref.path.split("/");
+        captured.push({ sourceId: sourceId ?? "", itemId: itemId ?? "", path: ref.path, commit: ref.commit, retried: true });
+      }
       for (const item of captured) {
         try {
-          const r = await summariseSource({ path: item.path!, commit: item.commit! }, opts!);
+          const r = await summariseSource({ path: item.path, commit: item.commit }, opts);
           summaries.push({
             sourceId: item.sourceId,
             itemId: item.itemId,
@@ -62,6 +74,7 @@ export function createSummariseNewContentStep(options: () => SummariseOptions = 
             ...(r.summary ? { summaryId: r.summary.summaryId, path: r.summary.path } : {}),
             usage: r.usage,
             totalMs: r.timings.totalMs,
+            ...(item.retried ? { retried: true } : {}),
           });
         } catch {
           // A technical failure for one item is reported; the others continue.

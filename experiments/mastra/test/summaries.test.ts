@@ -121,3 +121,22 @@ test("the workflow step summarises newly captured items automatically, isolates 
   assert.equal(replay.summaries[0]!.reused, true);
   assert.equal(model.calls.length, 1, "no duplicate model call on replay");
 });
+
+test("an unfinished summary is retried by a later run with nothing new captured (review on #968)", async () => {
+  const h = await harness();
+  const fetchedOutput = {
+    poll: { ok: true, commit: null, sources: [], committed: [] },
+    fetched: [{ sourceId: "fixturepub", itemId: "pinned-episode", status: "captured" as const, path: PATH, commit: h.ref.commit }],
+  };
+  const run = (model: ChatModel, input: unknown) =>
+    (createSummariseNewContentStep(() => ({ repo: h.repo, model })).execute as (a: unknown) => Promise<{ summaries: Array<{ outcome: string; retried?: boolean }> }>)({ inputData: input });
+  const first = await run(scripted([new ModelError("provider-error", "500")]), fetchedOutput);
+  assert.equal(first.summaries[0]!.outcome, "model-failed");
+
+  const empty = { poll: fetchedOutput.poll, fetched: [] };
+  const model = scripted([JSON.stringify(SUMMARY)]);
+  const later = await run(model, empty);
+  assert.deepEqual(later.summaries.map((s) => [s.outcome, s.retried]), [["proposed", true]]);
+  const after = await run(scripted([]), empty);
+  assert.deepEqual(after.summaries, [], "a completed summary is not retried again");
+});

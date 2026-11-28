@@ -2,6 +2,7 @@ import type { GitRepository } from "../common/git/index.js";
 import type { ChatModel } from "../common/model/openrouter.js";
 import type { ArticleRecord } from "../content/substack-article.js";
 import {
+  MAX_MODEL_ATTEMPTS,
   normalise,
   runOperation,
   sha256,
@@ -163,4 +164,34 @@ export async function summariseSource(ref: SourceRef, options: SummariseOptions)
   const { items, ...rest } = result;
   const item = items[0];
   return { ...rest, summary: item ? { summaryId: item.id, text: item.label, path: item.path } : null };
+}
+
+/** At most this many unfinished summaries are retried per workflow run. */
+export const MAX_SUMMARY_RETRIES_PER_RUN = 10;
+
+/**
+ * Summary operations that did not complete (model failure or an interrupted
+ * attempt) and still have attempts left, as references to the exact source
+ * version they were for. Later workflow runs retry them even when the feed
+ * brought nothing new.
+ */
+export async function unfinishedSummaries(repo: GitRepository, branch = "main", limit = MAX_SUMMARY_RETRIES_PER_RUN): Promise<SourceRef[]> {
+  const head = await repo.resolve(`refs/heads/${branch}`);
+  if (!head) return [];
+  const metas = (await repo.listFiles(head, SUMMARIES)).filter((e) => e.path.endsWith("/operation.meta"));
+  const refs: SourceRef[] = [];
+  for (const entry of metas) {
+    if (refs.length >= limit) break;
+    const text = await repo.readText(head, entry.path);
+    if (!text) continue;
+    let meta: OperationMeta;
+    try {
+      meta = JSON.parse(text.text) as OperationMeta;
+    } catch {
+      continue;
+    }
+    if (meta.outcome === "model-failed" && (meta.attempts ?? 0) < MAX_MODEL_ATTEMPTS && meta.source?.path && meta.source.commit)
+      refs.push({ path: meta.source.path, commit: meta.source.commit });
+  }
+  return refs;
 }
