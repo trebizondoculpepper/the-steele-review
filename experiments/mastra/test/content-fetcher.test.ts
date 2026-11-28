@@ -390,3 +390,18 @@ test("review fixes on #965: content types, img src forms, newsletters with audio
   const retried = await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
   assert.deepEqual(retried.map((s) => `${s.sourceId}/${s.itemId}:${s.status}`), ["fixturepub/written-post:captured"]);
 });
+
+test("a transcript response that is not a segment list stays retryable and keeps the original (review on #965)", async () => {
+  const { PENDING_FILE } = await import("../src/content/raw-content.js");
+  const h = harness();
+  const base = network();
+  const odd = (async (input: string | URL) =>
+    String(input).startsWith("https://substackcdn.com/transcripts/intelligible.json") ? new Response("{}", { status: 200 }) : base.fetch(input)) as typeof fetch;
+  await fetchCommittedItems(await h.commitFeed(["audio-intelligible"]), { config: h.config, repo: h.repo, model: fakeModel(), fetch: odd });
+  const r = await h.read("audio-intelligible");
+  assert.equal(r.transcript.status, "fetch-failed");
+  assert.equal(r.transcript.original, "transcript.raw");
+  const folder = itemFolder("substack", "fixturepub", "audio-intelligible");
+  assert.equal((await h.repo.readText("main", `${folder}/transcript.raw`))!.text, "{}");
+  assert.ok(await h.repo.readText("main", `${folder}/${PENDING_FILE}`));
+});

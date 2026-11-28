@@ -247,7 +247,11 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
           transcriptOriginal = t.body;
           const segs = Segments.safeParse(JSON.parse(t.body));
           transcriptText = segs.success ? normaliseText(segs.data.map((s) => s.text.trim()).join("\n")) : null;
-          if (!segs.success) warnings.push("transcript-not-segments");
+          if (!segs.success) {
+            // A response that is not a segment list is a technical failure (retried), not absence.
+            warnings.push("transcript-not-segments");
+            transcriptFetchFailed = true;
+          }
         } else {
           warnings.push(`transcript-http-${t.status}`);
           transcriptFetchFailed = true;
