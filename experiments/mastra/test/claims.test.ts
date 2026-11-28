@@ -179,3 +179,13 @@ test("malformed retained word metadata leaves the speaker unknown with a warning
     assert.equal(c.location.startSeconds, 4, "timings still come from the well-formed segment fields");
   }
 });
+
+test("segment ranges index the retained transcript.raw, blank segments included (review on #967)", async () => {
+  const segs = JSON.parse(fixture("transcript-single.json"));
+  const withBlank = [{ start: 0, end: 0.1, text: "   ", words: [] }, ...segs];
+  const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json"), [`${REC}/transcript.raw`]: JSON.stringify(withBlank) });
+  const r = await extractClaims({ path: `${REC}/article.json`, commit: h.commit }, { repo: h.repo, model: scripted([JSON.stringify(RECORDING_CLAIMS)]) });
+  const c = await h.read(r.claims[0]!.path);
+  assert.equal(c.location.segmentStart, 2);
+  assert.equal(withBlank[c.location.segmentStart!].text.trim(), RECORDING_CLAIMS.claims[0]!.quote);
+});

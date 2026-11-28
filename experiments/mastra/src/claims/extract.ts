@@ -151,9 +151,9 @@ interface Segment {
 
 /** Where each transcript segment sits in the whitespace-normalised text, and its speaker label. */
 function segmentIndex(segments: Segment[]) {
-  const spans: Array<{ from: number; to: number; start: number; end: number; label: string | null }> = [];
+  const spans: Array<{ from: number; to: number; start: number; end: number; label: string | null; index: number }> = [];
   let offset = 0;
-  for (const s of segments) {
+  for (const [index, s] of segments.entries()) {
     const text = normaliseForQuotes(s.text);
     if (!text) continue;
     if (offset > 0) offset += 1; // the single space that joins segments after normalisation
@@ -161,7 +161,8 @@ function segmentIndex(segments: Segment[]) {
     const labels = new Set(words.map((w) => w.speaker).filter((l): l is string => Boolean(l)));
     // A label counts only if every word carries it and the metadata was well-formed.
     const complete = !s.malformed && words.length > 0 && words.every((w) => w.speaker);
-    spans.push({ from: offset, to: offset + text.length, start: s.start, end: s.end, label: complete && labels.size === 1 ? [...labels][0]! : null });
+    // `index` is the segment's position in the retained transcript.raw, blanks included.
+    spans.push({ from: offset, to: offset + text.length, start: s.start, end: s.end, label: complete && labels.size === 1 ? [...labels][0]! : null, index });
     offset += text.length;
   }
   return spans;
@@ -257,9 +258,7 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
           const location: ClaimUtterance["location"] = { charStart: at, charEnd: at + q.length };
           let label: string | null = null;
           if (spans) {
-            const covering = spans
-              .map((s, index) => ({ ...s, index }))
-              .filter((s) => s.to > location.charStart && s.from < location.charEnd);
+            const covering = spans.filter((s) => s.to > location.charStart && s.from < location.charEnd);
             if (covering.length) {
               location.segmentStart = covering[0]!.index;
               location.segmentEnd = covering.at(-1)!.index;
