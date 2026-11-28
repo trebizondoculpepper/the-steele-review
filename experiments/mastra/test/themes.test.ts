@@ -205,3 +205,23 @@ test("output cut off at the token limit is a retryable failure, bounded in attem
   assert.equal(stopped.outcome, "model-failed");
   assert.equal(model.calls.length, 0, "no further calls after the attempt bound");
 });
+
+test("attempts are reserved before each paid call, so concurrent retries never exceed the bound (review on #966)", async () => {
+  const { MAX_MODEL_ATTEMPTS } = await import("../src/themes/propose.js");
+  const h = await harness();
+  let calls = 0;
+  // Each model call starts another full run of the same operation while it is in flight.
+  const nested: ChatModel = {
+    async complete() {
+      calls++;
+      if (calls < MAX_MODEL_ATTEMPTS + 3) await proposeThemes(h.ref, { repo: h.repo, model: nested });
+      throw new ModelError("provider-error", "500");
+    },
+  };
+  await proposeThemes(h.ref, { repo: h.repo, model: nested });
+  assert.ok(calls <= MAX_MODEL_ATTEMPTS, `model calls (${calls}) never exceed the bound`);
+  const r = await proposeThemes(h.ref, { repo: h.repo, model: scripted([]) });
+  assert.equal(r.outcome, "model-failed", "the bound is reached and no further call is made");
+  const meta = JSON.parse((await h.repo.readText("main", r.themes.length ? r.themes[0]!.path : `themes/substack/fixturepub/pinned-episode/${r.operation}/operation.meta`))!.text);
+  assert.equal(meta.attempts, calls, "every call is counted");
+});

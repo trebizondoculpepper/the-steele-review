@@ -122,6 +122,8 @@ export interface ProposeOptions {
   modelId?: string;
   branch?: string;
   now?: () => Date;
+  /** Internal: how many times a lost reservation race has restarted this run. */
+  reservationRetries?: number;
 }
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -209,16 +211,23 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   const warnings: string[] = [];
   const base = { schema: "theme-operation-v1" as const, operation, prompt: prompt.identity, model: modelId, source, attempts: previousAttempts };
 
+  // After a reservation, results are committed on top of it.
+  let reservedHeadForFinish: string | null = null;
+  const latestHead = () => reservedHeadForFinish ?? head;
   const finish = async (meta: Omit<OperationMeta, "timings">, modelMs: number | null, writes: Array<{ path: string; content: string }>) => {
     const finished = now();
     const timings = { startedAt: started.toISOString(), finishedAt: finished.toISOString(), modelMs, totalMs: finished.getTime() - started.getTime() };
-    const full: OperationMeta = { ...meta, timings };
+    // Concurrent runs may have counted further attempts meanwhile: never record fewer.
+    const current = await options.repo.resolve(`refs/heads/${branch}`);
+    const latest = current ? await options.repo.readText(current, `${folder}/operation.meta`) : null;
+    const latestAttempts = latest ? ((JSON.parse(latest.text) as OperationMeta).attempts ?? 0) : 0;
+    const full: OperationMeta = { ...meta, attempts: Math.max(meta.attempts, latestAttempts), timings };
     const all = [...writes, { path: `${folder}/operation.meta`, content: `${JSON.stringify(full, null, 2)}\n` }];
     if (!head || !(await options.repo.readText(head, `${THEMES}/collection.json`)))
       all.push({ path: `${THEMES}/collection.json`, content: `${JSON.stringify(THEMES_DECLARATION, null, 2)}\n` });
     let commit: string | undefined;
     try {
-      commit = await commitWithRetry(options.repo, branch, head, `${folder}/operation.meta`, all, `Themes for ${sourceId}/${itemId}`);
+      commit = await commitWithRetry(options.repo, branch, latestHead(), `${folder}/operation.meta`, all, `Themes for ${sourceId}/${itemId}`);
     } catch (error) {
       // Another run completed this operation meanwhile: return its saved result (no further model call).
       if (error instanceof AlreadyCompleted) return proposeThemes(ref, options);
@@ -251,6 +260,35 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
     .replace("{{source.medium}}", () => record.medium ?? "unknown")
     .replace("{{source.textType}}", () => textType)
     .replace("{{source.text}}", () => input.replaceAll("</source>", "&lt;/source>"));
+  // Reserve this attempt atomically before the paid call. The reservation is a
+  // compare-and-swap commit of operation.meta with the attempt counted; a run
+  // that loses the race starts over from the state it lost to, so concurrent
+  // runs never exceed the attempt bound. An interrupted run leaves its
+  // reservation (an attempt already counted, reason "in-progress").
+  const reservation: OperationMeta = {
+    ...base,
+    attempts: previousAttempts + 1,
+    outcome: "model-failed",
+    reason: "in-progress",
+    themes: [],
+    rejected: [],
+    warnings,
+    usage: null,
+    timings: { startedAt: started.toISOString(), finishedAt: started.toISOString(), modelMs: null, totalMs: 0 },
+  };
+  try {
+    await options.repo.commit({
+      branch,
+      parent: head,
+      writes: [{ path: `${folder}/operation.meta`, content: `${JSON.stringify(reservation, null, 2)}\n` }],
+      message: `Reserve theme attempt ${reservation.attempts} for ${sourceId}/${itemId}`,
+    });
+  } catch (error) {
+    if (error instanceof GitError && error.code === "conflict" && (options.reservationRetries ?? 0) < 5)
+      return proposeThemes(ref, { ...options, reservationRetries: (options.reservationRetries ?? 0) + 1 });
+    throw error;
+  }
+  reservedHeadForFinish = await options.repo.resolve(`refs/heads/${branch}`);
   const modelStarted = Date.now();
   let result;
   try {
