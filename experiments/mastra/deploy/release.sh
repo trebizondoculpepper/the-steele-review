@@ -38,8 +38,14 @@ else
   target="$(docker image inspect "$repo:$version" --format '{{index .RepoDigests 0}}')"
 fi
 set_env() { grep -q "^$1=" stack.env || echo "$1=" >> stack.env; sed -i "s|^$1=.*|$1=$2|" stack.env; }
-set_env STEELE_EXP_MASTRA_IMAGE "$target"
-set_env STEELE_EXP_MASTRA_IMAGE_PREVIOUS "$current"
+# Keep the last working reference: a retry after a failed or interrupted
+# attempt (or a redeploy of the same release) finds the target already
+# configured and must not overwrite the rollback reference with it.
+if [ "$target" != "$current" ]; then
+  set_env STEELE_EXP_MASTRA_IMAGE_PREVIOUS "$current"
+  set_env STEELE_EXP_MASTRA_IMAGE "$target"
+fi
+current="$(grep '^STEELE_EXP_MASTRA_IMAGE_PREVIOUS=' stack.env | cut -d= -f2 || true)"
 docker compose --env-file stack.env -f src/mastra/deploy/compose.yaml up -d --wait >/dev/null
 container="$(docker compose --env-file stack.env -f src/mastra/deploy/compose.yaml ps -q mastra)"
 health="$(docker inspect "$container" --format '{{.State.Health.Status}}')"
