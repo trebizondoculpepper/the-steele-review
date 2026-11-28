@@ -1,0 +1,21 @@
+{
+  "id": 106,
+  "slug": "video-missing",
+  "title": "A video without a transcript",
+  "type": "video",
+  "audience": "everyone",
+  "post_date": "2026-11-20T10:00:00.000Z",
+  "updated_at": "2026-11-20T11:00:00.000Z",
+  "body_html": "<p>Only a description.</p>",
+  "subtitle": null,
+  "cover_image": null,
+  "publishedBylines": [
+    {
+      "name": "Jane Example"
+    }
+  ],
+  "language": "en",
+  "videoUpload": {
+    "id": "u-106"
+  }
+}

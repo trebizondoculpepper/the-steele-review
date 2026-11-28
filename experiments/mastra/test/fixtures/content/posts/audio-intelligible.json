@@ -1,0 +1,27 @@
+{
+  "id": 102,
+  "slug": "audio-intelligible",
+  "title": "An audio post",
+  "type": "podcast",
+  "audience": "everyone",
+  "post_date": "2026-11-20T10:00:00.000Z",
+  "updated_at": "2026-11-20T11:00:00.000Z",
+  "body_html": "<p>Show notes describing the recording.</p>",
+  "subtitle": null,
+  "cover_image": null,
+  "publishedBylines": [
+    {
+      "name": "Fixture Publication"
+    }
+  ],
+  "language": "en",
+  "podcastUpload": {
+    "id": "u-102",
+    "transcription": {
+      "status": "transcribed",
+      "media_upload_id": "u-102",
+      "language": "en",
+      "cdn_url": "https://substackcdn.com/transcripts/intelligible.json?Expires=1&Signature=FIXTURE"
+    }
+  }
+}

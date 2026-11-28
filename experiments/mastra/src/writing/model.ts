@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readOpenRouterKey } from "../common/model/openrouter.js";
 
 /**
  * The one bounded writing call (#921), behind a narrow adapter.
@@ -72,18 +72,12 @@ export class OpenRouterModel implements WritingModel {
     this.fetchImpl = fetchImpl;
   }
   private key(): string {
-    const text = readFileSync(this.keyFile, "utf8");
-    // TOML: ignore comments; the last active assignment wins, as a TOML reader would reject duplicates anyway.
-    const active = text
-      .split("\n")
-      .map((l) => l.replace(/^\s+/, ""))
-      .filter((l) => !l.startsWith("#"))
-      .map((l) => /^OPENROUTER_API_KEY\s*=\s*"([^"]+)"\s*(#.*)?$/.exec(l)?.[1] ?? /^OPENROUTER_API_KEY\s*=\s*'([^']+)'\s*(#.*)?$/.exec(l)?.[1])
-      .filter((v): v is string => Boolean(v));
-    if (active.length !== 1) throw new ModelError("unauthorised", "model key unavailable");
-    const key = active[0]!;
-    if (!/^[A-Za-z0-9._-]{20,200}$/.test(key)) throw new ModelError("unauthorised", "model key unavailable");
-    return key;
+    // The shared model boundary reads the canonical key file (#953).
+    try {
+      return readOpenRouterKey(this.keyFile);
+    } catch {
+      throw new ModelError("unauthorised", "model key unavailable");
+    }
   }
   async complete(system: string, user: string): Promise<ModelResult> {
     const authorization = `Bearer ${this.key()}`;

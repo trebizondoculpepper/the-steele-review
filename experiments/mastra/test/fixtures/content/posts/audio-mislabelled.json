@@ -1,0 +1,23 @@
+{
+  "id": 103,
+  "slug": "audio-mislabelled",
+  "title": "A mislabelled transcript",
+  "type": "podcast",
+  "audience": "everyone",
+  "post_date": "2026-11-20T10:00:00.000Z",
+  "updated_at": "2026-11-20T11:00:00.000Z",
+  "body_html": "<p>Show notes.</p>",
+  "subtitle": null,
+  "cover_image": null,
+  "publishedBylines": [],
+  "language": "en",
+  "podcastUpload": {
+    "id": "u-103",
+    "transcription": {
+      "status": "transcribed",
+      "media_upload_id": "u-103",
+      "language": "es",
+      "cdn_url": "https://substackcdn.com/transcripts/intelligible.json?Expires=1&Signature=FIXTURE"
+    }
+  }
+}

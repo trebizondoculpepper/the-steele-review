@@ -27,6 +27,7 @@ test("the poller gets a typed list of enabled Substack feeds from the existing d
       name: "Save Us Now",
       feedUrl: "https://saveusnow.substack.com/feed",
       publicationHost: "saveusnow.substack.com",
+      defaultAuthor: { id: "example-author", name: "Example Author" },
     },
     {
       sourceId: "otherpub",

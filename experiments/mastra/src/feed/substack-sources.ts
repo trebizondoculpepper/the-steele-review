@@ -42,12 +42,17 @@ const FeedUrl = z
 const PollerFields = {
   enabled: z.boolean().optional(),
   feedUrl: FeedUrl.optional(),
+  // Read for attribution by the content fetcher (#953); owned by the source registry.
+  sourceAccountBylines: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
 };
+
+const DocumentAuthor = z.looseObject({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/).optional(), name: z.string().trim().min(1).max(200) });
 
 const DocumentEntry = z.looseObject({
   id: SourceId,
   type: z.string().min(1).max(40),
   name: z.string().trim().min(1).max(200),
+  defaultAuthor: DocumentAuthor.optional(),
   ...PollerFields,
 });
 
@@ -55,6 +60,8 @@ const LegacyEntry = z.looseObject({
   sourceId: SourceId,
   sourceType: z.string().min(1).max(40),
   displayName: z.string().trim().min(1).max(200),
+  defaultAuthor: z.string().trim().min(1).max(200).optional(),
+  defaultAuthorId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/).optional(),
   ...PollerFields,
 });
 
@@ -64,6 +71,14 @@ interface Entry {
   name: string;
   enabled?: boolean;
   feedUrl?: string;
+  defaultAuthor?: ConfiguredAuthor;
+  sourceAccountBylines?: string[];
+}
+
+/** The source's configured default author, used when a post has no personal byline. */
+export interface ConfiguredAuthor {
+  id?: string;
+  name: string;
 }
 
 const DocumentRegistry = z
@@ -72,13 +87,32 @@ const DocumentRegistry = z
     revision: z.number().int().min(1),
     sources: z.array(DocumentEntry).max(500),
   })
-  .transform((doc): { entries: Entry[]; at: PropertyKey[] } => ({ entries: doc.sources, at: ["sources"] }));
+  .transform((doc): { entries: Entry[]; at: PropertyKey[] } => ({
+    entries: doc.sources.map((e) => ({
+      id: e.id,
+      type: e.type,
+      name: e.name,
+      enabled: e.enabled,
+      feedUrl: e.feedUrl,
+      sourceAccountBylines: e.sourceAccountBylines,
+      defaultAuthor: e.defaultAuthor ? { ...(e.defaultAuthor.id ? { id: e.defaultAuthor.id } : {}), name: e.defaultAuthor.name } : undefined,
+    })),
+    at: ["sources"],
+  }));
 
 const LegacyRegistry = z
   .array(LegacyEntry)
   .max(500)
   .transform((rows): { entries: Entry[]; at: PropertyKey[] } => ({
-    entries: rows.map((r) => ({ id: r.sourceId, type: r.sourceType, name: r.displayName, enabled: r.enabled, feedUrl: r.feedUrl })),
+    entries: rows.map((r) => ({
+      id: r.sourceId,
+      type: r.sourceType,
+      name: r.displayName,
+      enabled: r.enabled,
+      feedUrl: r.feedUrl,
+      sourceAccountBylines: r.sourceAccountBylines,
+      defaultAuthor: r.defaultAuthor ? { ...(r.defaultAuthorId ? { id: r.defaultAuthorId } : {}), name: r.defaultAuthor } : undefined,
+    })),
     at: [],
   }));
 
@@ -109,6 +143,9 @@ export interface SubstackFeed {
   feedUrl: string;
   /** Host of the feed, used to recognise the publication's own post links. */
   publicationHost: string;
+  defaultAuthor?: ConfiguredAuthor;
+  /** Bylines that name the publication account rather than a person. */
+  sourceAccountBylines?: string[];
 }
 
 export const SubstackFeedsSection: ConfigSection<SubstackFeed[]> = {
@@ -120,7 +157,14 @@ export const SubstackFeedsSection: ConfigSection<SubstackFeed[]> = {
       .filter((entry) => entry.type === "substack" && entry.enabled !== false)
       .map((entry) => {
         const feedUrl = entry.feedUrl ?? `https://${entry.id.toLowerCase()}.substack.com/feed`;
-        return { sourceId: entry.id, name: entry.name, feedUrl, publicationHost: new URL(feedUrl).host };
+        return {
+          sourceId: entry.id,
+          name: entry.name,
+          feedUrl,
+          publicationHost: new URL(feedUrl).host,
+          ...(entry.defaultAuthor ? { defaultAuthor: entry.defaultAuthor } : {}),
+          ...(entry.sourceAccountBylines?.length ? { sourceAccountBylines: entry.sourceAccountBylines } : {}),
+        };
       }),
   ),
 };
