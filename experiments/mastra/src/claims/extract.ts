@@ -172,7 +172,9 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
   // The retained transcript segments (if any) give times and speaker labels.
   const folder = ref.path.replace(/\/article\.json$/, "");
   let segments: Segment[] | null = null;
-  const raw = await options.repo.readText(ref.commit, `${folder}/transcript.raw`).catch(() => null);
+  // readText returns null for an absent file; any other failure is technical and
+  // is raised before the model is called (never treated as missing evidence).
+  const raw = await options.repo.readText(ref.commit, `${folder}/transcript.raw`);
   let malformedWords = false;
   if (raw) {
     try {

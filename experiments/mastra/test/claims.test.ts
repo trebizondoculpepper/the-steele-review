@@ -201,3 +201,16 @@ test("a change to the retained transcript metadata alone is a new operation (rev
   assert.equal(second.reused, false);
   assert.equal((await h.read(second.claims[0]!.path)).location.startSeconds, 40);
 });
+
+test("a failure reading the retained transcript stops before any model call (review on #967)", async () => {
+  const { GitError } = await import("../src/common/git/index.js");
+  const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json"), [`${REC}/transcript.raw`]: fixture("transcript-single.json") });
+  const readText = h.repo.readText.bind(h.repo);
+  h.repo.readText = async (revision, path, signal) => {
+    if (path.endsWith("/transcript.raw")) throw new GitError("timeout", "ls-tree");
+    return readText(revision, path, signal);
+  };
+  const model = scripted([]);
+  await assert.rejects(extractClaims({ path: `${REC}/article.json`, commit: h.commit }, { repo: h.repo, model }), (e: unknown) => e instanceof GitError && e.code === "timeout");
+  assert.equal(model.calls.length, 0);
+});
