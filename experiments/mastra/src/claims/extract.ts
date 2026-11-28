@@ -201,7 +201,10 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
         const isTranscript = ctx.source.textType === "transcript";
         const spans = isTranscript && segments ? segmentIndex(segments) : null;
         if (isTranscript && !spans) warnings.push("transcript-segments-unavailable");
-        const allLabels = new Set(spans?.map((s) => s.label).filter((l): l is string => Boolean(l)) ?? []);
+        // The author is named only on complete evidence: every segment carries exactly
+        // one speaker label, and it is the same label throughout. Unlabelled or
+        // mixed-label segments leave the speaker unknown.
+        const singleSpeaker = Boolean(spans && spans.length > 0 && spans.every((s) => s.label) && new Set(spans.map((s) => s.label)).size === 1);
         const speakerFor = (label: string | null): ClaimUtterance["speaker"] => {
           const author = ctx.record.attribution;
           if (!isTranscript)
@@ -209,7 +212,7 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
               ? { name: author.author, id: author.authorId ?? null, basis: author.basis, label: null }
               : { name: null, id: null, basis: "unknown", label: null };
           // A recording: the author only when one speaker is heard throughout.
-          if (spans && allLabels.size <= 1 && author?.author)
+          if (singleSpeaker && author?.author)
             return { name: author.author, id: author.authorId ?? null, basis: "single-speaker-recording", label };
           return { name: null, id: null, basis: "unknown", label };
         };

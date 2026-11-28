@@ -280,7 +280,7 @@ themes/<platform>/<source>/<item>/<operation>/operation.meta   outcome, rejected
 **What each saved claim records** (`claims/<platform>/<source>/<item>/<operation>/<claimId>.json`):
 - **Location:** character offsets in the whitespace-normalised source. For a transcript it also records the segment range and the start and end times, taken from the retained `transcript.raw`.
 - **Speaker, for an article:** the article's resolved author, with its attribution basis.
-- **Speaker, for a recording:** the author only when a single speaker label is used throughout, with basis `single-speaker-recording`. Otherwise the speaker is explicitly unknown, with the diarisation label of the quote's segments kept.
+- **Speaker, for a recording:** the author only when every segment carries exactly one speaker label and it is the same label throughout, with basis `single-speaker-recording`. Otherwise the speaker is explicitly unknown, with the diarisation label of the quote's segments kept.
 - **Date:** the source's publication date, when it gives one.
 - **Identity:** the source path, commit and blob, the prompt identity and the model.
 - **ID:** a hash of the source blob and the normalised quote, so it is stable across runs.

@@ -160,7 +160,9 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
     // Completed operations are reused; a failed one is retried until the attempt bound.
     if (meta.outcome !== "model-failed" || previousAttempts >= MAX_MODEL_ATTEMPTS) {
       const items: SavedItem[] = [];
-      for (const id of meta.items) {
+      // Records saved before the shared operation named this list `themes` (#960).
+      const savedIds = meta.items ?? (meta as unknown as { themes?: string[] }).themes ?? [];
+      for (const id of savedIds) {
         const doc = await options.repo.readText(head!, `${folder}/${id}.json`);
         items.push({ id, label: doc ? spec.label(JSON.parse(doc.text) as Doc) : "", path: `${folder}/${id}.json` });
       }

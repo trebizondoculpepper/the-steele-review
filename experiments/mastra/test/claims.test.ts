@@ -134,3 +134,35 @@ test("the step runs on its own, and the claims declaration is valid for the inde
   const declared = Object.keys(CLAIMS_DECLARATION.mapping.properties);
   assert.deepEqual(Object.keys(saved).filter((k) => !declared.includes(k)), []);
 });
+
+test("without complete speaker evidence the speaker stays unknown (review on #967)", async () => {
+  const segs = JSON.parse(fixture("transcript-single.json"));
+  const unlabelled = segs.map((s: { words?: unknown }) => ({ ...s, words: undefined }));
+  const partial = segs.map((s: { words: Array<{ speaker?: string }> }, i: number) => (i === 2 ? { ...s, words: s.words.map((w) => ({ ...w, speaker: undefined })) } : s));
+  const mixedSegment = segs.map((s: { words: Array<{ speaker?: string }> }, i: number) => (i === 0 ? { ...s, words: s.words.map((w, j) => ({ ...w, speaker: j % 2 ? "SPEAKER_01" : "SPEAKER_00" })) } : s));
+  for (const transcript of [unlabelled, partial, mixedSegment]) {
+    const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json"), [`${REC}/transcript.raw`]: JSON.stringify(transcript) });
+    const r = await extractClaims({ path: `${REC}/article.json`, commit: h.commit }, { repo: h.repo, model: scripted([JSON.stringify(RECORDING_CLAIMS)]) });
+    const c = await h.read(r.claims[0]!.path);
+    assert.equal(c.speaker.name, null);
+    assert.equal(c.speaker.basis, "unknown");
+  }
+});
+
+test("theme operations saved before the shared operation are still reused (review on #967)", async () => {
+  const { proposeThemes } = await import("../src/themes/propose.js");
+  const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json") });
+  const ref = { path: `${REC}/article.json`, commit: h.commit };
+  const good = { themes: [{ title: "Road budget decisions", description: "The source discusses a council road budget.", evidence: ["The council approved a budget of four million pounds for the new road scheme last March."] }] };
+  const first = await proposeThemes(ref, { repo: h.repo, model: scripted([JSON.stringify(good)]) });
+  // Rewrite the saved metadata in the earlier shape (`themes` instead of `items`).
+  const metaPath = first.themes[0]!.path.replace(/[^/]+\.json$/, "operation.meta");
+  const meta = JSON.parse((await h.repo.readText("main", metaPath))!.text);
+  meta.themes = meta.items;
+  delete meta.items;
+  await h.repo.commit({ writes: [{ path: metaPath, content: JSON.stringify(meta) }], message: "legacy meta" });
+  const model = scripted([]);
+  const again = await proposeThemes(ref, { repo: h.repo, model });
+  assert.equal(model.calls.length, 0);
+  assert.deepEqual(again.themes.map((t) => t.themeId), first.themes.map((t) => t.themeId));
+});
