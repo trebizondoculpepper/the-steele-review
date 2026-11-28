@@ -1,0 +1,4 @@
+{
+  "version": "0.2.0",
+  "note": "Release versions for the rebuilt pipeline (#959) start here, on the commit that adds this file. The archived pipeline used v0.1.0 to v0.1.60 from scripts/release/BASELINE; this baseline is above every historical tag, so new versions never collide with them. See scripts/release/version.mjs."
+}
