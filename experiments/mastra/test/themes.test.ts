@@ -149,3 +149,25 @@ test("the step is independently runnable, and the themes declaration is valid fo
   const declared = Object.keys(THEMES_DECLARATION.mapping.properties);
   assert.deepEqual(Object.keys(saved).filter((k) => !declared.includes(k)), []);
 });
+
+test("a run that loses a race never overwrites a completed result for the same operation (review on #966)", async () => {
+  const h = await harness();
+  const commit = h.repo.commit.bind(h.repo);
+  let raced = false;
+  // While this run's model call fails, a concurrent run completes the same operation.
+  h.repo.commit = async (request) => {
+    if (!raced) {
+      raced = true;
+      h.repo.commit = commit;
+      await proposeThemes(h.ref, { repo: h.repo, model: scripted([JSON.stringify(GOOD)]) });
+    }
+    return commit(request);
+  };
+  const r = await proposeThemes(h.ref, { repo: h.repo, model: scripted([new ModelError("provider-error", "500")]) });
+  assert.equal(r.outcome, "proposed", "the completed result is returned");
+  assert.equal(r.reused, true);
+  const model = scripted([]);
+  const again = await proposeThemes(h.ref, { repo: h.repo, model });
+  assert.equal(again.outcome, "proposed");
+  assert.equal(model.calls.length, 0, "the completed operation is still reused");
+});

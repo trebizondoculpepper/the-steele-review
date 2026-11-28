@@ -208,7 +208,14 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
     const all = [...writes, { path: `${folder}/operation.meta`, content: `${JSON.stringify(full, null, 2)}\n` }];
     if (!head || !(await options.repo.readText(head, `${THEMES}/collection.json`)))
       all.push({ path: `${THEMES}/collection.json`, content: `${JSON.stringify(THEMES_DECLARATION, null, 2)}\n` });
-    const commit = await commitWithRetry(options.repo, branch, head, all, `Themes for ${sourceId}/${itemId}`);
+    let commit: string | undefined;
+    try {
+      commit = await commitWithRetry(options.repo, branch, head, `${folder}/operation.meta`, all, `Themes for ${sourceId}/${itemId}`);
+    } catch (error) {
+      // Another run completed this operation meanwhile: return its saved result (no further model call).
+      if (error instanceof AlreadyCompleted) return proposeThemes(ref, options);
+      throw error;
+    }
     return {
       operation,
       outcome: full.outcome,
@@ -279,18 +286,27 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   );
 }
 
-async function commitWithRetry(repo: GitRepository, branch: string, head: string | null, writes: Array<{ path: string; content: string }>, message: string): Promise<string | undefined> {
+/** Another run completed this operation first; its saved result is used instead. */
+class AlreadyCompleted extends Error {}
+
+async function commitWithRetry(
+  repo: GitRepository,
+  branch: string,
+  head: string | null,
+  metaPath: string,
+  writes: Array<{ path: string; content: string }>,
+  message: string,
+): Promise<string | undefined> {
   let parent = head;
   for (let attempt = 1; ; attempt++) {
     try {
       return (await repo.commit({ branch, parent, writes, message })).commit ?? undefined;
     } catch (error) {
-      // Operation folders are content-addressed and written whole: rebasing onto a newer head is safe.
-      if (error instanceof GitError && error.code === "conflict" && attempt < 3) {
-        parent = await repo.resolve(`refs/heads/${branch}`);
-        continue;
-      }
-      throw error;
+      if (!(error instanceof GitError && error.code === "conflict") || attempt >= 3) throw error;
+      parent = await repo.resolve(`refs/heads/${branch}`);
+      // A concurrent run may have saved this very operation: never overwrite a completed result.
+      const saved = parent ? await repo.readText(parent, metaPath) : null;
+      if (saved && (JSON.parse(saved.text) as OperationMeta).outcome !== "model-failed") throw new AlreadyCompleted();
     }
   }
 }
