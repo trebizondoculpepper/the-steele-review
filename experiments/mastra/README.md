@@ -198,3 +198,40 @@ In the deployment, the container mounts two directories:
 - the collections Git repository, read-write at `/collections`.
 
 The indexing checkpoint lives at `/data/collection-index.json`. The image includes the `steele-collections` command, and the hook is installed inside the container with `docker exec <container> steele-collections install-hook`. A poll's commits therefore trigger indexing of the `feeds` collection with no further step.
+
+## Substack content fetcher (#953)
+
+**Poll Substack Feeds** now has two steps: the poller, then `fetch-substack-content`. For each new or changed feed item the poller committed, the fetcher reads the exact committed feed record, fetches the public post, and commits one folder per item in a single commit:
+
+```
+raw_content/substack/<sourceId>/<itemId>/
+  article.json      the record (indexed as one document)
+  thumbnail.<ext>   the cover image, when there is one
+  images/<sha>.<ext> images from the article body
+  post.raw          the original post JSON, signed links removed
+  transcript.raw    the supplied transcript as received, when one was fetched
+```
+
+`raw_content/collection.json` declares the collection's strict mapping. The originals use `.raw`, so the indexer never indexes them as documents.
+
+What `article.json` records:
+- **Item details:** the original and canonical URLs, the title and subtitle, the publication and update dates, and the medium. `representation` is `article` or `recording`, and the record references the feed record it came from (path and commit).
+- **Text:** the article HTML as text. Its `role` is `article` for written posts and `description` for recordings, so it is never mistaken for a transcript.
+- **Transcript:** the supplied transcript, kept separate from the description. Its status is `usable`, `unusable`, `missing` or `check-failed`. The record also keeps the transcript's language label and the check: model, prompt identity, verdict, usage, and whether the label matched the text.
+- **Analysis:** `use` is `article`, `transcript` or `skip`, with a reason when skipped: `transcript-missing`, `-garbled`, `-not-english`, `-check-failed`, or `no-article-text`.
+- **Attribution:** the observed bylines are always kept.
+  - A single personal byline becomes the author.
+  - If there is no byline, or only the publication's account byline (`sourceAccountBylines`), the source's configured `defaultAuthor` is used.
+  - Several bylines leave the author unknown.
+
+  The `basis` field records which of these applied.
+
+Transcript check:
+- **Model:** a single small call judges whether the transcript text is intelligible English, using `experiments/shared/prompts/transcript-intelligibility-v1.md` on a bounded sample. It goes through the shared model boundary (`src/common/model/openrouter.ts`), which reads the canonical mounted key. The model is set by `STEELE_TRANSCRIPT_CHECK_MODEL` and defaults to `deepseek/deepseek-v4.1-flash`, whose ID I verified against OpenRouter's model list on 2026-11-28.
+- **Provider errors:** a provider error never loses the fetched content. It is recorded as `check-failed`, which is distinct from `unusable`, and is retried when the item is fetched again.
+- **No repeat charges:** an unchanged transcript reuses its earlier verdict, so there is no second model call.
+
+Limits on what the fetcher downloads:
+- **Hosts:** images come only from Substack's own hosts, over https.
+- **Size and type:** at most 10 MB each, image types only.
+- **What is never fetched:** no audio or video is downloaded, and nothing is transcribed.

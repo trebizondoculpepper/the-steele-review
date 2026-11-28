@@ -33,14 +33,19 @@ const Upload = z
   .looseObject({
     id: z.string().optional(),
     transcription: z
-      .looseObject({ status: z.string().optional(), cdn_url: z.string().nullable().optional(), media_upload_id: z.string().optional() })
+      .looseObject({
+        status: z.string().optional(),
+        cdn_url: z.string().nullable().optional(),
+        media_upload_id: z.string().optional(),
+        language: z.string().nullable().optional(),
+      })
       .nullable()
       .optional(),
   })
   .nullable()
   .optional();
 
-const PostSchema = z.looseObject({
+export const PostSchema = z.looseObject({
   id: z.union([z.number().int(), z.string().regex(/^\d+$/)]).transform(String),
   slug: z.string(),
   title: z.string().nullable().optional(),
@@ -53,9 +58,13 @@ const PostSchema = z.looseObject({
   podcastUpload: Upload,
   videoUpload: Upload,
   publishedBylines: z.array(z.looseObject({ name: z.string().optional() })).nullable().optional(),
+  subtitle: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  cover_image: z.string().nullable().optional(),
+  language: z.string().nullable().optional(),
 });
 
-const Segments = z.array(z.looseObject({ start: z.number(), end: z.number(), text: z.string() })).min(1);
+export const Segments = z.array(z.looseObject({ start: z.number(), end: z.number(), text: z.string() })).min(1);
 
 export interface CaptureResult {
   bundle: SourceBundle;
@@ -72,7 +81,7 @@ export interface CaptureConfig {
   timeoutMs?: number;
 }
 
-async function boundedText(url: URL, cfg: CaptureConfig): Promise<{ status: number; body: string }> {
+export async function boundedText(url: URL, cfg: CaptureConfig): Promise<{ status: number; body: string }> {
   const res = await (cfg.fetch ?? fetch)(url, {
     redirect: "error",
     signal: AbortSignal.timeout(cfg.timeoutMs ?? 20_000),
@@ -95,14 +104,14 @@ async function boundedText(url: URL, cfg: CaptureConfig): Promise<{ status: numb
   return { status: res.status, body: new TextDecoder().decode(Buffer.concat(chunks)) };
 }
 
-function isoOrNull(v: string | null | undefined): string | null {
+export function isoOrNull(v: string | null | undefined): string | null {
   if (!v) return null;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 /** Removes signed URLs (ephemeral credentials) from the retained post JSON. */
-function sanitisePost(raw: unknown): unknown {
+export function sanitisePost(raw: unknown): unknown {
   if (Array.isArray(raw)) return raw.map(sanitisePost);
   if (raw && typeof raw === "object")
     return Object.fromEntries(

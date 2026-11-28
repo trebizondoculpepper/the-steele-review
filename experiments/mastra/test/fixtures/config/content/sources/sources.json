@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "sources": [
+    {
+      "id": "fixturepub",
+      "type": "substack",
+      "name": "Fixture Publication",
+      "feedUrl": "https://fixturepub.example.org/feed",
+      "sourceAccountBylines": ["Fixture Publication"],
+      "defaultAuthor": { "id": "example-author", "name": "Example Author" }
+    }
+  ]
+}

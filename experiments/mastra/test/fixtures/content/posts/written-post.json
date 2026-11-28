@@ -1,0 +1,18 @@
+{
+  "id": 101,
+  "slug": "written-post",
+  "title": "A written post",
+  "type": "newsletter",
+  "audience": "everyone",
+  "post_date": "2026-11-20T10:00:00.000Z",
+  "updated_at": "2026-11-20T11:00:00.000Z",
+  "body_html": "<p>This is the article text.</p><figure><img src=\"https://substackcdn.com/image/fetch/w_800/body-image.png\"></figure><p>It continues here.</p><img src=\"https://evil.example.com/tracker.png\">",
+  "subtitle": null,
+  "cover_image": "https://substack-post-media.s3.amazonaws.com/public/images/cover.jpg",
+  "publishedBylines": [
+    {
+      "name": "Jane Example"
+    }
+  ],
+  "language": "en"
+}

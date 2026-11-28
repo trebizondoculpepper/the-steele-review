@@ -1,0 +1,30 @@
+{
+  "id": 104,
+  "slug": "audio-garbled",
+  "title": "A garbled transcript",
+  "type": "podcast",
+  "audience": "everyone",
+  "post_date": "2026-11-20T10:00:00.000Z",
+  "updated_at": "2026-11-20T11:00:00.000Z",
+  "body_html": "<p>Show notes.</p>",
+  "subtitle": null,
+  "cover_image": null,
+  "publishedBylines": [
+    {
+      "name": "Jane Example"
+    },
+    {
+      "name": "John Example"
+    }
+  ],
+  "language": "en",
+  "podcastUpload": {
+    "id": "u-104",
+    "transcription": {
+      "status": "transcribed",
+      "media_upload_id": "u-104",
+      "language": "en",
+      "cdn_url": "https://substackcdn.com/transcripts/garbled.json?Expires=1&Signature=FIXTURE"
+    }
+  }
+}
