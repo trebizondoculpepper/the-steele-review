@@ -1,0 +1,274 @@
+name: Version and publish experiment images
+
+# #959: every push to main gets a new release version, and the Mastra and draft
+# service images are built natively on ARM64, in parallel, and published to
+# GHCR with that version and the commit SHA. The GitHub release is created only
+# after both images are checked and published. n8n keeps its pinned upstream
+# image and Git-tracked workflows. Deploying to the Pi stays separate.
+#
+# Pull requests and manual runs build and check both images without publishing,
+# which also records build timings.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Scanner pinned by version (ported from #297); the action is pinned by commit below.
+  TRIVY_VERSION: v0.76.2
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The version is derived from first-parent history, and tags are checked.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+
+      - name: Test the version allocator and publishing rules
+        run: node --experimental-strip-types --test scripts/release/version.test.ts scripts/ci/publish-image.test.ts
+
+      # A pure function of main's history: a rerun of this commit always gets the
+      # same version, and two commits never share one.
+      - name: Allocate the release version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(node scripts/release/version.mjs "$GITHUB_SHA")"
+          # A tag of this version may only name this commit; never reissue one.
+          if git rev-parse -q --verify "refs/tags/v${version}" > /dev/null; then
+            target="$(git rev-parse "v${version}^{commit}")"
+            test "$target" = "$GITHUB_SHA" || { echo "::error::v${version} already names ${target}"; exit 1; }
+          fi
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then publish=true; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Release version: v$version (publish: $publish)" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      # Both images are always attempted; the release needs both.
+      fail-fast: false
+      matrix:
+        image: [mastra, draft-service]
+    # Runs of the same commit and image are serialised, so two reruns can never
+    # race on its tags; different commits are never grouped or cancelled.
+    concurrency:
+      group: image-${{ matrix.image }}-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      LOCAL: steele-${{ matrix.image }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Stage the build context from tracked files only
+        run: scripts/ci/stage-context.sh "${{ matrix.image }}" "$GITHUB_SHA" "$RUNNER_TEMP/context"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Note the build start
+        run: echo "BUILD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Build the ARM64 image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/context
+          file: ${{ runner.temp }}/context/${{ matrix.image == 'mastra' && 'mastra/Dockerfile' || 'Dockerfile' }}
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: ${{ env.LOCAL }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.title=${{ matrix.image }}
+          # One cache per image, so the two builds never evict each other.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+      - name: Check architecture, labels and contents
+        run: |
+          set -euo pipefail
+          echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
+          test "$(docker image inspect --format '{{.Architecture}}' "$LOCAL")" = arm64
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$LOCAL")" = "$VERSION"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$LOCAL")" = "$GITHUB_SHA"
+          if [ "${{ matrix.image }}" = mastra ]; then
+            docker run --rm --network none --entrypoint sh "$LOCAL" -c 'test -f index.mjs && steele-collections 2>&1 | grep -q "^steele-collections: usage" && git --version > /dev/null'
+          else
+            docker run --rm --network none --entrypoint node "$LOCAL" -e 'require("node:fs").accessSync("src/main.ts")'
+          fi
+
+      # Fails closed: a detected secret, or a scan that cannot complete, stops the
+      # job here, so nothing below is pushed. Only rule IDs and paths are shown.
+      - name: Scan the image for secrets (blocks publishing)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: ${{ env.LOCAL }}
+          scanners: secret
+          format: json
+          output: trivy-secrets.json
+          exit-code: "1"
+          hide-progress: true
+
+      - name: Summarise the secret scan
+        if: always()
+        run: scripts/ci/trivy-summary.sh secrets trivy-secrets.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scan the image for known vulnerabilities (report only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: ${{ env.LOCAL }}
+          scanners: vuln
+          format: json
+          output: trivy-vulns.json
+          exit-code: "0"
+          hide-progress: true
+          skip-setup-trivy: true
+
+      - name: Summarise known vulnerabilities
+        run: scripts/ci/trivy-summary.sh vulns trivy-vulns.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to GHCR (main only)
+        id: publish
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.image }}"
+          digest="$(scripts/ci/publish-image.sh "$LOCAL" "$repo" "$VERSION" "$GITHUB_SHA" | tail -1)"
+          echo "UPLOAD_SECONDS=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+          echo "Published ${repo}:${VERSION} and :sha-${GITHUB_SHA} (${digest})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record timings
+        if: always()
+        run: |
+          echo "### ${{ matrix.image }} timings" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build ${BUILD_SECONDS:-?} s; upload ${UPLOAD_SECONDS:-not published} s (cache scope ${{ matrix.image }})." >> "$GITHUB_STEP_SUMMARY"
+
+  # Tag and release the version only after both images were checked and published.
+  release:
+    needs: [version, image]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Tag and release the published version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Both images must be published for this commit; their digests go in the notes.
+          labels() { docker buildx imagetools inspect "$1" --format '{{json .Image.Config.Labels}}' | jq -r '."org.opencontainers.image.revision"'; }
+          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | tr -d '"'; }
+          for image in mastra draft-service; do
+            test "$(labels "$repo/$image:$VERSION")" = "$GITHUB_SHA" || { echo "::error::$image:$VERSION is not this commit's image"; exit 1; }
+          done
+          MASTRA="$(digest "$repo/mastra:$VERSION")"
+          DRAFT="$(digest "$repo/draft-service:$VERSION")"
+          # An existing tag must already name this commit, release or not.
+          if target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq .sha 2> tag.err)"; then
+            test "$target" = "$GITHUB_SHA" || { echo "::error::${tag} already points at ${target}"; exit 1; }
+          elif ! grep -qiE 'not found|no commit found|422' tag.err; then
+            echo "::error::could not resolve ${tag}"
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "${tag} already released for this commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          notes="$(printf 'Images (linux/arm64):\n\n- `%s/mastra:%s` (`%s`)\n- `%s/draft-service:%s` (`%s`)\n' "$repo" "$VERSION" "$MASTRA" "$repo" "$VERSION" "$DRAFT")"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" --notes "$notes" --generate-notes
+          echo "Released ${tag}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Proves the secret gate blocks publishing, with no registry permissions and
+  # no credential-shaped string in the repository: a test-only rule and a value
+  # generated at runtime, in a throwaway image that is never pushed (ported).
+  secret-gate-test:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build a throwaway image with a synthetic secret
+        run: |
+          work="$(mktemp -d)"
+          printf 'synthetic_value=STEELESYNTHETIC%s\n' "$(openssl rand -hex 16)" > "$work/leak.conf"
+          printf 'FROM busybox:1.37.0\nCOPY leak.conf /etc/leak.conf\n' > "$work/Dockerfile"
+          docker build --quiet --tag steele-secret-gate-test:local "$work" > /dev/null
+          cat > trivy-secret-test.yaml <<'RULES'
+          rules:
+            - id: steele-synthetic-test
+              category: test
+              title: Synthetic test secret
+              severity: CRITICAL
+              regex: STEELESYNTHETIC[0-9a-f]{32}
+          RULES
+          printf 'secret:\n  config: trivy-secret-test.yaml\n' > trivy-test.yaml
+
+      - name: Scan the throwaway image (must fail)
+        id: scan
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: steele-secret-gate-test:local
+          scanners: secret
+          trivy-config: trivy-test.yaml
+          format: json
+          output: trivy-gate-test.json
+          exit-code: "1"
+          hide-progress: true
+
+      - name: Gated push (must be skipped)
+        id: push
+        if: steps.scan.outcome == 'success'
+        run: echo "would push"
+
+      - name: Check the gate held
+        run: |
+          scripts/ci/trivy-summary.sh secrets trivy-gate-test.json >> "$GITHUB_STEP_SUMMARY"
+          test "${{ steps.scan.outcome }}" = failure
+          test "${{ steps.push.outcome }}" = skipped
+          jq -e '[.Results[]?.Secrets[]? | select(.RuleID == "steele-synthetic-test")] | length > 0' trivy-gate-test.json > /dev/null
+          echo "Secret gate held: synthetic secret detected and the push step was skipped."

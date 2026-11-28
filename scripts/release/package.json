@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Release version allocator and its tests (#959); ESM operational scripts."
+}
