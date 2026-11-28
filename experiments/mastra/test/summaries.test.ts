@@ -185,3 +185,14 @@ test("a truncated reply whose provider names a different model stays queued (rev
   assert.equal(r.outcome, "model-failed");
   assert.equal((await unfinishedSummaries(h.repo)).length, 1);
 });
+
+test("warnings such as source-truncated reach the workflow output (review on #968)", async () => {
+  const rec = JSON.parse(pinned);
+  rec.transcript.content = "Word ".repeat(16000);
+  const h = await harness(JSON.stringify(rec));
+  const fetched = { poll: { ok: true, commit: null, sources: [], committed: [] }, fetched: [{ sourceId: "fixturepub", itemId: "pinned-episode", status: "captured" as const, path: PATH, commit: h.ref.commit }] };
+  const step = createSummariseNewContentStep(() => ({ repo: h.repo, model: scripted([JSON.stringify(SUMMARY)]) }));
+  const out = await (step.execute as (a: unknown) => Promise<{ summaries: Array<{ outcome: string; warnings?: string[] }> }>)({ inputData: fetched });
+  assert.equal(out.summaries[0]!.outcome, "proposed");
+  assert.ok(out.summaries[0]!.warnings?.includes("source-truncated"));
+});

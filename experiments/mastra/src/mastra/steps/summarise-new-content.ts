@@ -26,6 +26,8 @@ const ItemSummary = z.object({
   path: z.string().optional(),
   usage: z.object({ promptTokens: z.number().nullable(), completionTokens: z.number().nullable(), costUsd: z.number().nullable() }).nullable().optional(),
   totalMs: z.number().optional(),
+  /** E.g. source-truncated (only a prefix was summarised) or summary-over-length. */
+  warnings: z.array(z.string()).optional(),
   /** True when this came from an earlier run's unfinished summary, not this run's capture. */
   retried: z.boolean().optional(),
 });
@@ -74,6 +76,7 @@ export function createSummariseNewContentStep(options: () => SummariseOptions = 
             ...(r.summary ? { summaryId: r.summary.summaryId, path: r.summary.path } : {}),
             usage: r.usage,
             totalMs: r.timings.totalMs,
+            ...(r.warnings.length ? { warnings: r.warnings } : {}),
             ...(item.retried ? { retried: true } : {}),
           });
         } catch {
