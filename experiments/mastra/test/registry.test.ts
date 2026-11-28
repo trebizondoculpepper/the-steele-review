@@ -13,7 +13,7 @@ test("the reset pilot registers exactly one workflow, Poll Substack Feeds: the p
   assert.equal(workflow.id, "Poll Substack Feeds");
   assert.deepEqual(
     workflow.stepGraph.map((entry) => (entry.type === "step" ? entry.step.id : entry.type)),
-    ["poll-substack-feeds", "fetch-substack-content"],
+    ["poll-substack-feeds", "fetch-substack-content", "summarise-new-content"],
   );
   assert.equal(workflows.proposeThemes!.id, "Propose Themes");
   assert.deepEqual(workflows.proposeThemes!.stepGraph.map((e) => (e.type === "step" ? e.step.id : e.type)), ["propose-themes"]);
