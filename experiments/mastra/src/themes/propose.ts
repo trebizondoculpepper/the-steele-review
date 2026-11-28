@@ -30,6 +30,8 @@ export const PROMPT_NAME = "theme-proposals-v1";
 export const DEFAULT_THEME_MODEL = "deepseek/deepseek-v4.1-flash";
 export const MAX_SOURCE_CHARS = 60_000;
 export const MAX_THEMES = 8;
+/** Model attempts per operation; a failed operation is retried by later runs up to this bound. */
+export const MAX_MODEL_ATTEMPTS = 3;
 
 export const THEMES_DECLARATION = {
   mappingVersion: 1,
@@ -87,6 +89,8 @@ export interface OperationMeta {
   schema: "theme-operation-v1";
   operation: string;
   outcome: "proposed" | "partial" | "none-valid" | "skipped" | "model-failed";
+  /** Model attempts made for this operation so far (failed ones included). */
+  attempts: number;
   /** Why the source was skipped, or the model failure category. */
   reason?: string;
   source: ThemeProposal["source"] | { path: string; commit: string };
@@ -174,9 +178,11 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   // Reuse: a completed operation for this exact source, prompt and model.
   const head = await options.repo.resolve(`refs/heads/${branch}`);
   const saved = head ? await options.repo.readText(head, `${folder}/operation.meta`) : null;
+  const previousAttempts = saved ? ((JSON.parse(saved.text) as OperationMeta).attempts ?? 1) : 0;
   if (saved) {
     const meta = JSON.parse(saved.text) as OperationMeta;
-    if (meta.outcome !== "model-failed") {
+    // Completed operations are reused; a failed one is retried until the attempt bound.
+    if (meta.outcome !== "model-failed" || previousAttempts >= MAX_MODEL_ATTEMPTS) {
       const themes = [];
       for (const id of meta.themes) {
         const saved = await options.repo.readText(head!, `${folder}/${id}.json`);
@@ -201,7 +207,7 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   const text = record.analysis?.use === "transcript" ? (record.transcript?.content ?? "") : (record.text?.content ?? "");
   const source: ThemeProposal["source"] = { path: ref.path, commit: ref.commit, blob: file.blob, sourceId, itemId, url: record.url, textType };
   const warnings: string[] = [];
-  const base = { schema: "theme-operation-v1" as const, operation, prompt: prompt.identity, model: modelId, source };
+  const base = { schema: "theme-operation-v1" as const, operation, prompt: prompt.identity, model: modelId, source, attempts: previousAttempts };
 
   const finish = async (meta: Omit<OperationMeta, "timings">, modelMs: number | null, writes: Array<{ path: string; content: string }>) => {
     const finished = now();
@@ -248,15 +254,18 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   const modelStarted = Date.now();
   let result;
   try {
-    result = await options.model.complete({ model: modelId, system: prompt.system, user, maxTokens: 1500, temperature: 0.2, json: true, timeoutMs: 120_000 });
+    result = await options.model.complete({ model: modelId, system: prompt.system, user, maxTokens: 3000, temperature: 0.2, json: true, timeoutMs: 120_000 });
   } catch (error) {
     return finish(
-      { ...base, outcome: "model-failed", reason: error instanceof ModelError ? error.code : "provider-error", themes: [], rejected: [], warnings, usage: null },
+      { ...base, attempts: previousAttempts + 1, outcome: "model-failed", reason: error instanceof ModelError ? error.code : "provider-error", themes: [], rejected: [], warnings, usage: null },
       Date.now() - modelStarted,
       [],
     );
   }
   const modelMs = Date.now() - modelStarted;
+  // Output cut off at the token limit is a technical failure (retried), not a lack of valid themes.
+  if (result.finishReason === "length")
+    return finish({ ...base, attempts: previousAttempts + 1, model: result.model, outcome: "model-failed", reason: "output-limit", themes: [], rejected: [], warnings, usage: result.usage }, modelMs, []);
   let parsed: unknown;
   try {
     parsed = JSON.parse(result.raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
@@ -282,7 +291,7 @@ export async function proposeThemes(ref: SourceRef, options: ProposeOptions): Pr
   }));
   const outcome: OperationMeta["outcome"] = proposals.length === 0 ? "none-valid" : rejected.length ? "partial" : "proposed";
   return finish(
-    { ...base, model: result.model, outcome, themes: proposals.map((p) => p.themeId), rejected, warnings, usage: result.usage },
+    { ...base, attempts: previousAttempts + 1, model: result.model, outcome, themes: proposals.map((p) => p.themeId), rejected, warnings, usage: result.usage },
     modelMs,
     proposals.map((p) => ({ path: `${folder}/${p.themeId}.json`, content: `${JSON.stringify(p, null, 2)}\n` })),
   );

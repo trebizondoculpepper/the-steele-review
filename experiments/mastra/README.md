@@ -260,7 +260,7 @@ themes/<platform>/<source>/<item>/<operation>/operation.meta   outcome, rejected
 
 **Reuse and identity:**
 - The operation ID hashes the exact source blob, the prompt identity and the model. A retry or replay of a completed operation reuses the saved result, with no model call and no commit.
-- A failed model call is recorded as `model-failed` and completed by the next run.
+- A failed model call is recorded as `model-failed` and completed by the next run, up to 3 attempts per operation. Output cut off at the token limit counts as a failure (`output-limit`), not as "no valid themes".
 - A changed source version gets its own operation.
 - Theme IDs hash the source blob and the normalised title, so they are stable across retries.
 

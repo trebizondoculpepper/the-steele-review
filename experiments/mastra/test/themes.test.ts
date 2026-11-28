@@ -22,7 +22,7 @@ const GOOD = {
   ],
 };
 
-function scripted(replies: Array<string | Error>): ChatModel & { calls: ChatRequest[] } {
+function scripted(replies: Array<string | Error | { raw: string; finishReason: string }>): ChatModel & { calls: ChatRequest[] } {
   const calls: ChatRequest[] = [];
   return {
     calls,
@@ -31,7 +31,8 @@ function scripted(replies: Array<string | Error>): ChatModel & { calls: ChatRequ
       const next = replies.shift();
       if (next === undefined) throw new Error("unexpected model call");
       if (next instanceof Error) throw next;
-      return { model: request.model, raw: next, provider: "fake", finishReason: "stop", usage: { promptTokens: 400, completionTokens: 120, costUsd: 0.0001 } };
+      const { raw, finishReason } = typeof next === "string" ? { raw: next, finishReason: "stop" } : next;
+      return { model: request.model, raw, provider: "fake", finishReason, usage: { promptTokens: 400, completionTokens: 120, costUsd: 0.0001 } };
     },
   };
 }
@@ -184,4 +185,23 @@ test("a proposal with any invented quote is rejected, not silently trimmed (revi
   assert.equal(r.outcome, "partial");
   assert.deepEqual(r.rejected, [{ rank: 2, reason: "evidence-not-in-source" }]);
   assert.equal(r.themes.length, 1);
+});
+
+test("output cut off at the token limit is a retryable failure, bounded in attempts (review on #966)", async () => {
+  const { MAX_MODEL_ATTEMPTS } = await import("../src/themes/propose.js");
+  const h = await harness();
+  const cut = { raw: '{"themes": [{"title": "How technical', finishReason: "length" };
+  const first = await proposeThemes(h.ref, { repo: h.repo, model: scripted([cut]) });
+  assert.equal(first.outcome, "model-failed");
+  assert.equal(first.reason, "output-limit");
+  assert.deepEqual(first.usage, { promptTokens: 400, completionTokens: 120, costUsd: 0.0001 });
+  const recovered = await proposeThemes(h.ref, { repo: h.repo, model: scripted([JSON.stringify(GOOD)]) });
+  assert.equal(recovered.outcome, "proposed");
+
+  const g = await harness(pinned.replace("A pinned fixture episode", "Another fixture"));
+  for (let i = 0; i < MAX_MODEL_ATTEMPTS; i++) await proposeThemes(g.ref, { repo: g.repo, model: scripted([cut]) });
+  const model = scripted([]);
+  const stopped = await proposeThemes(g.ref, { repo: g.repo, model });
+  assert.equal(stopped.outcome, "model-failed");
+  assert.equal(model.calls.length, 0, "no further calls after the attempt bound");
 });
