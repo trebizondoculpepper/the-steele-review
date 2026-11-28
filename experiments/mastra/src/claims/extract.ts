@@ -145,6 +145,8 @@ interface Segment {
   end: number;
   text: string;
   words?: Array<{ speaker?: string }>;
+  /** The retained word metadata was malformed: no speaker evidence for this segment. */
+  malformed?: boolean;
 }
 
 /** Where each transcript segment sits in the whitespace-normalised text, and its speaker label. */
@@ -155,8 +157,11 @@ function segmentIndex(segments: Segment[]) {
     const text = normaliseForQuotes(s.text);
     if (!text) continue;
     if (offset > 0) offset += 1; // the single space that joins segments after normalisation
-    const labels = new Set((s.words ?? []).map((w) => w.speaker).filter((l): l is string => Boolean(l)));
-    spans.push({ from: offset, to: offset + text.length, start: s.start, end: s.end, label: labels.size === 1 ? [...labels][0]! : null });
+    const words = s.words ?? [];
+    const labels = new Set(words.map((w) => w.speaker).filter((l): l is string => Boolean(l)));
+    // A label counts only if every word carries it and the metadata was well-formed.
+    const complete = !s.malformed && words.length > 0 && words.every((w) => w.speaker);
+    spans.push({ from: offset, to: offset + text.length, start: s.start, end: s.end, label: complete && labels.size === 1 ? [...labels][0]! : null });
     offset += text.length;
   }
   return spans;
@@ -167,10 +172,26 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
   const folder = ref.path.replace(/\/article\.json$/, "");
   let segments: Segment[] | null = null;
   const raw = await options.repo.readText(ref.commit, `${folder}/transcript.raw`).catch(() => null);
+  let malformedWords = false;
   if (raw) {
     try {
-      const parsed = JSON.parse(raw.text);
-      if (Array.isArray(parsed)) segments = parsed as Segment[];
+      const parsed: unknown = JSON.parse(raw.text);
+      // Untrusted retained data: keep only well-formed segments, and only
+      // well-formed word speaker labels (anything else is no speaker evidence).
+      if (Array.isArray(parsed) && parsed.every((s) => s && typeof s === "object" && typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"))
+        segments = parsed.map((s: Record<string, unknown>) => {
+          const words = Array.isArray(s.words) ? s.words : s.words === undefined ? [] : null;
+          if (words === null || (words && !words.every((w) => w && typeof w === "object"))) malformedWords = true;
+          return {
+            start: s.start as number,
+            end: s.end as number,
+            text: s.text as string,
+            words: (Array.isArray(words) ? words : []).filter((w): w is { speaker?: string } => Boolean(w) && typeof w === "object").map((w) => ({
+              speaker: typeof w.speaker === "string" ? w.speaker : undefined,
+            })),
+            ...(words === null || (Array.isArray(words) && words.some((w) => !w || typeof w !== "object")) ? { malformed: true } : {}),
+          } as Segment;
+        });
     } catch {
       segments = null;
     }
@@ -201,6 +222,7 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
         const isTranscript = ctx.source.textType === "transcript";
         const spans = isTranscript && segments ? segmentIndex(segments) : null;
         if (isTranscript && !spans) warnings.push("transcript-segments-unavailable");
+        if (isTranscript && malformedWords) warnings.push("transcript-word-metadata-malformed");
         // The author is named only on complete evidence: every segment carries exactly
         // one speaker label, and it is the same label throughout. Unlabelled or
         // mixed-label segments leave the speaker unknown.

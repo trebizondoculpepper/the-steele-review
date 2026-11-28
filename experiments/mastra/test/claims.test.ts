@@ -166,3 +166,16 @@ test("theme operations saved before the shared operation are still reused (revie
   assert.equal(model.calls.length, 0);
   assert.deepEqual(again.themes.map((t) => t.themeId), first.themes.map((t) => t.themeId));
 });
+
+test("malformed retained word metadata leaves the speaker unknown with a warning, never a failed run (review on #967)", async () => {
+  const segs = JSON.parse(fixture("transcript-single.json"));
+  for (const bad of [segs.map((s: object, i: number) => (i === 1 ? { ...s, words: "oops" } : s)), segs.map((s: { words: unknown[] }, i: number) => (i === 1 ? { ...s, words: [null, ...s.words] } : s))]) {
+    const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json"), [`${REC}/transcript.raw`]: JSON.stringify(bad) });
+    const r = await extractClaims({ path: `${REC}/article.json`, commit: h.commit }, { repo: h.repo, model: scripted([JSON.stringify(RECORDING_CLAIMS)]) });
+    assert.equal(r.outcome, "proposed");
+    assert.ok(r.warnings.includes("transcript-word-metadata-malformed"));
+    const c = await h.read(r.claims[0]!.path);
+    assert.equal(c.speaker.basis, "unknown");
+    assert.equal(c.location.startSeconds, 4, "timings still come from the well-formed segment fields");
+  }
+});
