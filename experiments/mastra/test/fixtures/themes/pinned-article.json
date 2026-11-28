@@ -1,0 +1,45 @@
+{
+  "schema": "raw-content-article-v1",
+  "platform": "substack",
+  "sourceId": "fixturepub",
+  "itemId": "pinned-episode",
+  "postId": "301",
+  "url": "https://fixturepub.example.org/p/pinned-episode?utm_source=rss",
+  "canonicalUrl": "https://fixturepub.example.org/p/pinned-episode",
+  "title": "A pinned fixture episode",
+  "subtitle": null,
+  "publishedAt": "2026-11-20T10:00:00.000Z",
+  "updatedAt": null,
+  "medium": "audio",
+  "representation": "recording",
+  "feed": {
+    "path": "feeds/fixturepub/pinned-episode.json",
+    "commit": "0000000000000000000000000000000000000000"
+  },
+  "text": {
+    "role": "description",
+    "content": "Show notes for the pinned episode."
+  },
+  "transcript": {
+    "status": "usable",
+    "languageLabel": "en",
+    "content": "Welcome back to the programme. Today we look at how technical standards are written, and who gets to read them before they are adopted. The speaker argues that public consultation on new standards is too short for ordinary people to respond. He also says that patent filings reveal plans long before any announcement is made. Later in the episode the discussion turns to local councils and how they publish meeting minutes online. The speaker closes by asking listeners to read the documents themselves rather than relying on summaries.",
+    "original": "transcript.raw",
+    "check": null
+  },
+  "analysis": {
+    "use": "transcript"
+  },
+  "attribution": {
+    "author": "Example Author",
+    "authorId": "example-author",
+    "basis": "source-configured",
+    "observedBylines": []
+  },
+  "thumbnail": null,
+  "images": [],
+  "original": {
+    "post": "post.raw"
+  },
+  "warnings": []
+}
