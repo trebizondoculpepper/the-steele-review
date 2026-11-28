@@ -306,6 +306,12 @@ test("a run that loses a race to a newer capture of the same item never replaces
   const [summary] = await fetchCommittedItems(refs, { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
   assert.equal(summary!.status, "superseded");
   assert.equal((await h.repo.readText("main", `${folder}/article.json`))!.text, '{"newer":true}\n');
+  // A retry marker reconciles later from the feed record at the head (review on #965).
+  h.repo.commit = commit;
+  const [reconciled] = await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
+  assert.equal(reconciled!.status, "captured");
+  assert.equal(reconciled!.retried, true);
+  assert.equal((await h.read("written-post")).text.role, "article");
 });
 
 test("a transcript download failure is retryable, not 'missing' (review on #965)", async () => {

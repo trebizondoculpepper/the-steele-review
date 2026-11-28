@@ -227,7 +227,14 @@ export async function fetchCommittedItems(refs: readonly CommittedFeedRef[], opt
       });
     } catch (error) {
       if (error instanceof SupersededError) {
+        // Another capture of this item landed first; which revision is newer is
+        // not known here. Never overwrite it, but leave a retry marker: the next
+        // run captures from the feed record at the head (the newest revision),
+        // and finds nothing to change if the competing capture was already newest.
         summary.status = "superseded";
+        summary.error = "superseded";
+        await recordPending(options.repo, branch, ref, summary).catch(() => undefined);
+        delete summary.error;
         continue;
       }
       summary.error =
