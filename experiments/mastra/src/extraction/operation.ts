@@ -45,7 +45,8 @@ export interface SourceInfo {
   sourceId: string;
   itemId: string;
   url: string;
-  textType: "article" | "transcript";
+  /** Which text the operation read: the article, the transcript, or a recording's description. */
+  textType: "article" | "transcript" | "description";
 }
 
 export type Outcome = "proposed" | "partial" | "none-valid" | "skipped" | "model-failed";
@@ -116,6 +117,11 @@ export interface OperationSpec<Doc> {
   /** Validate the parsed model output item by item. */
   validate(parsed: unknown, context: ValidationContext): { docs: Array<{ id: string; doc: Doc }>; rejected: Rejection[]; warnings?: string[] };
   label(doc: Doc): string;
+  /**
+   * Choose the text to read. By default: the transcript when analysis uses it,
+   * the article text otherwise, and a skip when analysis says skip.
+   */
+  select?(record: ArticleRecord): { text: string; textType: SourceInfo["textType"] } | { skip: string };
 }
 
 export interface OperationOptions {
@@ -141,6 +147,11 @@ export const normaliseForQuotes = (s: string) => normalise(s).replace(/[“”]/
 /** Another run completed this operation first; its saved result is used instead. */
 class AlreadyCompleted extends Error {}
 
+/** The content-addressed operation ID: source blob, prompt identity, requested model, extra inputs. */
+export function operationId(blob: string, promptIdentity: string, modelId: string, identityExtra?: string): string {
+  return sha256(`${blob}\n${promptIdentity}\n${modelId}${identityExtra ? `\n${identityExtra}` : ""}`).slice(0, 24);
+}
+
 export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef, options: OperationOptions): Promise<OperationResult> {
   const now = options.now ?? (() => new Date());
   const started = now();
@@ -153,7 +164,7 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
   const [, platform, sourceId, itemId] = m as unknown as [string, string, string, string];
   const file = await options.repo.readText(ref.commit, ref.path);
   if (!file) throw new Error("the source is not in the repository at that commit");
-  const operation = sha256(`${file.blob}\n${prompt.identity}\n${modelId}${options.identityExtra ? `\n${options.identityExtra}` : ""}`).slice(0, 24);
+  const operation = operationId(file.blob, prompt.identity, modelId, options.identityExtra);
   const folder = `${spec.collection}/${platform}/${sourceId}/${itemId}/${operation}`;
   const metaPath = `${folder}/operation.meta`;
 
@@ -186,8 +197,15 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
   }
 
   const record = JSON.parse(file.text) as ArticleRecord;
-  const textType: SourceInfo["textType"] = record.analysis?.use === "transcript" ? "transcript" : "article";
-  const text = textType === "transcript" ? (record.transcript?.content ?? "") : (record.text?.content ?? "");
+  const selected = spec.select
+    ? spec.select(record)
+    : record.analysis?.use === "skip"
+      ? { skip: record.analysis.reason ?? "no-text" }
+      : record.analysis?.use === "transcript"
+        ? { text: record.transcript?.content ?? "", textType: "transcript" as const }
+        : { text: record.text?.content ?? "", textType: "article" as const };
+  const textType: SourceInfo["textType"] = "skip" in selected ? (record.analysis?.use === "transcript" ? "transcript" : "article") : selected.textType;
+  const text = "skip" in selected ? "" : selected.text;
   const source: SourceInfo = { path: ref.path, commit: ref.commit, blob: file.blob, sourceId, itemId, url: record.url, textType };
   const warnings: string[] = [];
   const base = { schema: spec.metaSchema, operation, prompt: prompt.identity, model: modelId, source, attempts: previousAttempts };
@@ -230,8 +248,8 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
     };
   };
 
-  if (record.analysis?.use === "skip" || !text.trim())
-    return finish({ ...base, outcome: "skipped", reason: record.analysis?.reason ?? "no-text", items: [], rejected: [], warnings, usage: null }, null, []);
+  if ("skip" in selected || !text.trim())
+    return finish({ ...base, outcome: "skipped", reason: "skip" in selected ? selected.skip : "no-text", items: [], rejected: [], warnings, usage: null }, null, []);
   let input = text;
   if (input.length > MAX_SOURCE_CHARS) {
     input = input.slice(0, MAX_SOURCE_CHARS);

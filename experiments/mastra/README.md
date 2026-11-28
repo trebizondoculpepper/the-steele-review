@@ -284,3 +284,23 @@ themes/<platform>/<source>/<item>/<operation>/operation.meta   outcome, rejected
 - **Date:** the source's publication date, when it gives one.
 - **Identity:** the source path, commit and blob, the prompt identity and the model.
 - **ID:** a hash of the source blob and the normalised quote, so it is stable across runs.
+
+## Summaries (#962)
+
+Poll Substack Feeds now has a third step, `summarise-new-content`, which runs automatically after the fetcher. For every item captured in this run, meaning a new or changed source version that has been durably saved, one bounded model call writes a short, neutral summary. It uses `source-summary-v1` and `STEELE_SUMMARY_MODEL`, which defaults to `deepseek/deepseek-v4.1-flash`. The summary attributes the source's assertions to the source rather than stating them as fact.
+
+The step runs on the shared extraction operation. Each summary is saved at `summaries/<platform>/<source>/<item>/<operation>/<summaryId>.json` and records:
+- the original URL;
+- the exact source version: path, commit and blob;
+- the text type: `transcript` when the transcript is usable; for a recording without one, `description`, and the summary says it describes the recording; `article` for a written post;
+- the prompt identity and the model.
+
+The status, usage and timings are in `operation.meta`.
+
+What happens in other cases:
+- **No text at all:** recorded as `skipped`, with the reason.
+- **Model failure or a technical error:** every later run also works out, from the retained sources themselves, which source versions have no completed summary for the current prompt and model. That covers a version that was never attempted because a reservation failed, and one that failed with attempts left. It summarises up to 10 of them per run, even when the feed brings nothing new. Each source version gets at most 3 model attempts.
+- **Content retained before this step, or after a prompt or model change:** it has no summary for the current configuration, so it is summarised gradually, at no more than 10 per run.
+- **A technical error on one item:** reported, and the other items continue.
+- **Replays and interrupted runs:** they reuse the completed summary of the same source version, with no model call.
+- **A changed source version:** gets its own summary.
