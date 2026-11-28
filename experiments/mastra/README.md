@@ -217,8 +217,8 @@ raw_content/substack/<sourceId>/<itemId>/
 What `article.json` records:
 - **Item details:** the original and canonical URLs, the title and subtitle, the publication and update dates, and the medium. `representation` is `article` or `recording`, and the record references the feed record it came from (path and commit).
 - **Text:** the article HTML as text. Its `role` is `article` for written posts and `description` for recordings, so it is never mistaken for a transcript.
-- **Transcript:** the supplied transcript, kept separate from the description. Its status is `usable`, `unusable`, `missing` or `check-failed`. The record also keeps the transcript's language label and the check: model, prompt identity, verdict, usage, and whether the label matched the text.
-- **Analysis:** `use` is `article`, `transcript` or `skip`, with a reason when skipped: `transcript-missing`, `-garbled`, `-not-english`, `-check-failed`, or `no-article-text`.
+- **Transcript:** the supplied transcript, kept separate from the description. Its status is `usable`, `unusable`, `missing`, `fetch-failed` (supplied but not downloadable; retried) or `check-failed`. The record also keeps the transcript's language label and the check: model, prompt identity, verdict, usage, and whether the label matched the text.
+- **Analysis:** `use` is `article`, `transcript` or `skip`, with a reason when skipped: `transcript-missing`, `-garbled`, `-not-english`, `-fetch-failed`, `-check-failed`, or `no-article-text`.
 - **Attribution:** the observed bylines are always kept.
   - A single personal byline becomes the author.
   - If there is no byline, or only the publication's account byline (`sourceAccountBylines`), the source's configured `defaultAuthor` is used.
@@ -232,7 +232,7 @@ Transcript check:
 - **No repeat charges:** an unchanged transcript reuses its earlier verdict, so there is no second model call.
 
 Recovery:
-- **Retry markers:** a capture that does not complete, because the fetch failed or the transcript check failed, leaves a `capture.pending` marker in the item's folder. The marker has no `.json` extension, so it is never indexed.
+- **Retry markers:** a capture that does not complete, because the post fetch, the transcript download or the transcript check failed, leaves a `capture.pending` marker in the item's folder. The marker has no `.json` extension, so it is never indexed.
 - **Retries:** every run retries pending items as well as the items newly committed by the poll, at most 10 per run and at most 5 attempts per item. After the fifth attempt the marker is kept, marked `exhausted`, for inspection.
 - **Races:** if another run commits a capture of the same item first, this run reports `superseded` and does not overwrite it.
 

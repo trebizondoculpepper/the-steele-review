@@ -91,7 +91,7 @@ export interface FetchSummary {
 }
 
 /**
- * Captures that did not complete (fetch failure or transcript-check failure)
+ * Captures that did not complete (post fetch, transcript download or transcript check failed)
  * leave a `capture.pending` marker in the item's folder. Every run retries
  * pending items as well as the newly committed ones, up to MAX_RETRIES_PER_RUN
  * per run and MAX_ATTEMPTS per item; the marker is removed when a capture
@@ -208,8 +208,9 @@ export async function fetchCommittedItems(refs: readonly CommittedFeedRef[], opt
       // A transcript check that failed is retried by later runs; a completed capture clears the marker.
       const existingMarker = head ? await options.repo.readText(head, `${folder}/${PENDING_FILE}`) : null;
       const deletes: string[] = [];
-      if (fetched.record.transcript.status === "check-failed") {
-        const marker = nextMarker(existingMarker?.text, ref.path, "transcript-check-failed");
+      const incomplete = fetched.record.transcript.status;
+      if (incomplete === "check-failed" || incomplete === "fetch-failed") {
+        const marker = nextMarker(existingMarker?.text, ref.path, `transcript-${incomplete}`);
         writes.push({ path: `${folder}/${PENDING_FILE}`, content: `${JSON.stringify(marker)}\n` });
         summary.pending = { attempts: marker.attempts, exhausted: marker.exhausted };
       } else if (existingMarker) deletes.push(`${folder}/${PENDING_FILE}`);

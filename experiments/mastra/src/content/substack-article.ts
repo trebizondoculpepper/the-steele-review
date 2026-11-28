@@ -74,7 +74,8 @@ export interface ArticleRecord {
   /** The article HTML as text: the article itself, or a recording's description. */
   text: { role: "article" | "description"; content: string };
   transcript: {
-    status: "usable" | "unusable" | "missing" | "check-failed";
+    /** `fetch-failed`: a transcript exists but could not be downloaded (retried later); `missing`: none supplied. */
+    status: "usable" | "unusable" | "missing" | "fetch-failed" | "check-failed";
     languageLabel: string | null;
     content: string | null;
     /** Original supplied segments, kept for inspection even when unusable. */
@@ -220,6 +221,8 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
   const languageLabel = upload?.transcription?.language ?? null;
   let transcriptText: string | null = null;
   let transcriptOriginal: string | null = null;
+  // A supplied transcript that could not be downloaded is a technical failure, not absence.
+  let transcriptFetchFailed = false;
   if (upload?.transcription?.cdn_url) {
     let cdn: URL | undefined;
     try {
@@ -235,16 +238,26 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
           const segs = Segments.safeParse(JSON.parse(t.body));
           transcriptText = segs.success ? normaliseText(segs.data.map((s) => s.text.trim()).join("\n")) : null;
           if (!segs.success) warnings.push("transcript-not-segments");
-        } else warnings.push(`transcript-http-${t.status}`);
+        } else {
+          warnings.push(`transcript-http-${t.status}`);
+          transcriptFetchFailed = true;
+        }
       } catch {
         warnings.push("transcript-unavailable");
+        transcriptFetchFailed = true;
       }
     } else warnings.push("transcript-host-not-allowed");
   }
 
   let transcript: ArticleRecord["transcript"];
   if (!transcriptText) {
-    transcript = { status: "missing", languageLabel, content: null, original: transcriptOriginal ? "transcript.raw" : null, check: null };
+    transcript = {
+      status: transcriptFetchFailed ? "fetch-failed" : "missing",
+      languageLabel,
+      content: null,
+      original: transcriptOriginal ? "transcript.raw" : null,
+      check: null,
+    };
   } else {
     const previous = options.previous?.transcript.check;
     const reusable = previous && previous.textSha256 === sha256(transcriptText) && previous.status !== "check-failed";
@@ -265,7 +278,9 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
       reason:
         transcript.status === "missing"
           ? "transcript-missing"
-          : transcript.status === "check-failed"
+          : transcript.status === "fetch-failed"
+            ? "transcript-fetch-failed"
+            : transcript.status === "check-failed"
             ? "transcript-check-failed"
             : transcript.check?.verdict === "not-english"
               ? "transcript-not-english"

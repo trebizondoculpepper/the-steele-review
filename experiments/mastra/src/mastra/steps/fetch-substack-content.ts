@@ -28,7 +28,7 @@ const FetchSummary = z.object({
   path: z.string().optional(),
   commit: z.string().optional(),
   analysis: z.object({ use: z.enum(["article", "transcript", "skip"]), reason: z.string().optional() }).optional(),
-  transcript: z.enum(["usable", "unusable", "missing", "check-failed"]).optional(),
+  transcript: z.enum(["usable", "unusable", "missing", "fetch-failed", "check-failed"]).optional(),
   images: z.number().optional(),
   thumbnail: z.boolean().optional(),
   retried: z.boolean().optional(),

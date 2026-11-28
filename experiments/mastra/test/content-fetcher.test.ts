@@ -307,3 +307,24 @@ test("a run that loses a race to a newer capture of the same item never replaces
   assert.equal(summary!.status, "superseded");
   assert.equal((await h.repo.readText("main", `${folder}/article.json`))!.text, '{"newer":true}\n');
 });
+
+test("a transcript download failure is retryable, not 'missing' (review on #965)", async () => {
+  const { PENDING_FILE } = await import("../src/content/raw-content.js");
+  const h = harness();
+  const cdn = (url: string) => url.startsWith("https://substackcdn.com/transcripts/intelligible.json");
+  const base = network();
+  const flaky = (async (input: string | URL) =>
+    cdn(String(input)) ? new Response("", { status: 503 }) : base.fetch(input)) as typeof fetch;
+  await fetchCommittedItems(await h.commitFeed(["audio-intelligible"]), { config: h.config, repo: h.repo, model: fakeModel(), fetch: flaky });
+  let r = await h.read("audio-intelligible");
+  assert.equal(r.transcript.status, "fetch-failed");
+  assert.deepEqual(r.analysis, { use: "skip", reason: "transcript-fetch-failed" });
+  assert.equal(r.text.content, "Show notes describing the recording.", "the partial content is kept");
+  const folder = itemFolder("substack", "fixturepub", "audio-intelligible");
+  assert.ok(await h.repo.readText("main", `${folder}/${PENDING_FILE}`));
+
+  await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
+  r = await h.read("audio-intelligible");
+  assert.equal(r.transcript.status, "usable");
+  assert.equal(await h.repo.readText("main", `${folder}/${PENDING_FILE}`), null);
+});
