@@ -28,8 +28,14 @@ case "$1 $2" in
       exit 0
     fi
     if [ "$sub" = create ]; then
+      # Like Docker: without --prefer-index=false, a single manifest is wrapped
+      # in a new index, so the tag gets a different digest.
+      keep=no
+      if [ "$4" = --prefer-index=false ]; then keep=yes; shift; fi
       echo "create $5 from $6" >> "$state/log"
-      cp "$state/registry/$(key "$6")" "$state/registry/$(key "$5")"; exit 0
+      read rev dig < "$state/registry/$(key "$6")"
+      [ "$keep" = yes ] || dig="sha256:index-of-$dig"
+      echo "$rev $dig" > "$state/registry/$(key "$5")"; exit 0
     fi ;;
 esac
 case "$1" in

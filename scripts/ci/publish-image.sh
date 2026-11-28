@@ -43,9 +43,11 @@ if [ "$(revision_of "$versioned")" = "$sha" ]; then
 fi
 # The commit tag was published by an earlier, interrupted run: never push a
 # rebuild over it (a rebuild can differ). Point the version tag at the very
-# same published image, server-side, and push nothing.
+# same published image, server-side, and push nothing. --prefer-index=false
+# keeps the original manifest (and so its digest) rather than wrapping it in a
+# new index.
 if [ "$(revision_of "$committed")" = "$sha" ]; then
-  docker buildx imagetools create --tag "$versioned" "$committed" >&2
+  docker buildx imagetools create --prefer-index=false --tag "$versioned" "$committed" >&2
   d="$(digest_of "$versioned")"
   test "$d" = "$(digest_of "$committed")"
   echo "${committed} already published; tagged it ${versioned} without pushing." >&2
