@@ -60,7 +60,8 @@ export async function checkTranscript(
     result = await model.complete({
       model: modelId,
       system: prompt.system,
-      user: prompt.userTemplate.replace("{{transcript.sample}}", sample),
+      // A callback inserts the sample literally (no `$&`-style replacement patterns).
+      user: prompt.userTemplate.replace("{{transcript.sample}}", () => sample),
       maxTokens: 120,
       temperature: 0,
       json: true,
@@ -69,25 +70,33 @@ export async function checkTranscript(
   } catch (error) {
     return { ...base, status: "check-failed", error: error instanceof ModelError ? error.code : "provider-error" };
   }
-  let parsed: { verdict?: unknown; reason?: unknown };
+  let value: unknown;
   try {
-    parsed = JSON.parse(result.raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    value = JSON.parse(result.raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
   } catch {
     return { ...base, status: "check-failed", error: "invalid-model-output", usage: result.usage, model: result.model };
   }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return { ...base, status: "check-failed", error: "invalid-model-output", usage: result.usage, model: result.model };
+  const parsed = value as { verdict?: unknown; reason?: unknown };
   const verdict = parsed.verdict;
   if (verdict !== "intelligible-english" && verdict !== "not-english" && verdict !== "garbled")
     return { ...base, status: "check-failed", error: "invalid-model-output", usage: result.usage, model: result.model };
   const reason = typeof parsed.reason === "string" ? parsed.reason.slice(0, 300) : undefined;
-  const english = verdict === "intelligible-english";
-  const labelSaysEnglish = languageLabel === null ? null : /^en(\b|[-_])/i.test(languageLabel);
   return {
     ...base,
     model: result.model,
-    status: english ? "usable" : "unusable",
+    status: verdict === "intelligible-english" ? "usable" : "unusable",
     verdict,
     ...(reason ? { reason } : {}),
-    labelMismatch: labelSaysEnglish !== null && labelSaysEnglish !== english && verdict !== "garbled",
+    labelMismatch: labelMismatch(verdict, languageLabel),
     usage: result.usage,
   };
+}
+
+/** Whether a language label disagrees with the verdict on the text (garbled text has no language). */
+export function labelMismatch(verdict: Verdict, languageLabel: string | null): boolean {
+  if (languageLabel === null || verdict === "garbled") return false;
+  const labelSaysEnglish = /^en(\b|[-_])/i.test(languageLabel);
+  return labelSaysEnglish !== (verdict === "intelligible-english");
 }

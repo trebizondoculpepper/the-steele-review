@@ -6,7 +6,7 @@ import type { ChatModel } from "../common/model/openrouter.js";
 import { canonicalPostUrl } from "../feed/rss.js";
 import type { FeedRecord } from "../feed/substack-poller.js";
 import type { SubstackFeed } from "../feed/substack-sources.js";
-import { checkTranscript, sha256, type TranscriptCheck } from "./intelligibility.js";
+import { checkTranscript, labelMismatch, sha256, type TranscriptCheck } from "./intelligibility.js";
 
 /**
  * Fetch one Substack post named by a committed feed record (#953) and build
@@ -31,7 +31,12 @@ import { checkTranscript, sha256, type TranscriptCheck } from "./intelligibility
 export const RECORD_SCHEMA = "raw-content-article-v1";
 const MAX_IMAGES = 20;
 const MAX_IMAGE_BYTES = 10_000_000;
-const IMAGE_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+const IMAGE_TYPES = new Map<string, string>([
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/gif", "gif"],
+  ["image/webp", "webp"],
+]);
 
 /** Hosts images and thumbnails may come from. */
 export function allowedAssetHost(host: string): boolean {
@@ -136,7 +141,7 @@ async function downloadAsset(rawUrl: string, options: FetchOptions, warnings: st
       return null;
     }
     const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-    if (!IMAGE_TYPES[type]) {
+    if (!IMAGE_TYPES.has(type)) {
       await res.body?.cancel().catch(() => undefined);
       warnings.push("asset-not-an-image");
       return null;
@@ -166,7 +171,12 @@ async function downloadAsset(rawUrl: string, options: FetchOptions, warnings: st
 
 function bodyImageUrls(html: string): string[] {
   const urls = new Set<string>();
-  for (const m of html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/gi)) urls.add(m[1]!.replaceAll("&amp;", "&"));
+  // The src attribute in any valid form: double-quoted, single-quoted or unquoted.
+  for (const tag of html.matchAll(/<img\b[^>]*>/gi)) {
+    const m = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag[0]);
+    const src = m?.[1] ?? m?.[2] ?? m?.[3];
+    if (src) urls.add(src.replaceAll("&amp;", "&"));
+  }
   return [...urls].slice(0, MAX_IMAGES);
 }
 
@@ -208,7 +218,7 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
   const medium: ArticleRecord["medium"] =
     post.videoUpload?.id || post.type === "video"
       ? "video"
-      : post.podcastUpload?.id || post.type === "podcast" || post.type === "audio"
+      : post.podcastUpload?.id || post.type === "podcast" || post.type === "audio" || post.podcast_url
         ? "audio"
         : (post.type === "newsletter" || post.type === "text") && !post.podcast_url
           ? "written"
@@ -262,7 +272,7 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
     const previous = options.previous?.transcript.check;
     const reusable = previous && previous.textSha256 === sha256(transcriptText) && previous.status !== "check-failed";
     const check: TranscriptCheck = reusable
-      ? { ...previous, languageLabel }
+      ? { ...previous, languageLabel, labelMismatch: previous.verdict ? labelMismatch(previous.verdict, languageLabel) : false }
       : await checkTranscript(transcriptText, languageLabel, options.model, options.modelId);
     const { languageLabel: _label, ...stored } = check;
     transcript = { status: check.status, languageLabel, content: transcriptText, original: "transcript.raw", check: stored };
@@ -293,7 +303,7 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
   if (post.cover_image) {
     const got = await downloadAsset(post.cover_image, options, warnings);
     if (got) {
-      const file = `thumbnail.${IMAGE_TYPES[got.ref.contentType]}`;
+      const file = `thumbnail.${IMAGE_TYPES.get(got.ref.contentType)}`;
       thumbnail = { file, ...got.ref };
       assets.push({ file, content: got.content });
     }
@@ -302,7 +312,7 @@ export async function fetchArticle(options: FetchOptions): Promise<FetchedArticl
   for (const src of bodyImageUrls(post.body_html ?? "")) {
     const got = await downloadAsset(src, options, warnings);
     if (!got) continue;
-    const file = `images/${got.ref.sha256.slice(0, 16)}.${IMAGE_TYPES[got.ref.contentType]}`;
+    const file = `images/${got.ref.sha256.slice(0, 16)}.${IMAGE_TYPES.get(got.ref.contentType)}`;
     if (images.some((i) => i.file === file)) continue;
     images.push({ file, ...got.ref });
     assets.push({ file, content: got.content });

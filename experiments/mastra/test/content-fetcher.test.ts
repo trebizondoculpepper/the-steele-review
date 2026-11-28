@@ -328,3 +328,65 @@ test("a transcript download failure is retryable, not 'missing' (review on #965)
   assert.equal(r.transcript.status, "usable");
   assert.equal(await h.repo.readText("main", `${folder}/${PENDING_FILE}`), null);
 });
+
+test("review fixes on #965: null verdicts, literal samples, label recompute", async () => {
+  const { checkTranscript, labelMismatch } = await import("../src/content/intelligibility.js");
+  const reply = (raw: string): ChatModel & { calls: ChatRequest[] } => {
+    const calls: ChatRequest[] = [];
+    return { calls, complete: async (r) => (calls.push(r), { model: r.model, raw, provider: null, finishReason: "stop", usage: { promptTokens: 1, completionTokens: 1, costUsd: 0 } }) };
+  };
+  for (const raw of ["null", "[]", "42", '"x"'])
+    assert.equal((await checkTranscript("Hello there.", "en", reply(raw))).error, "invalid-model-output", raw);
+  const literal = reply('{"verdict":"intelligible-english"}');
+  await checkTranscript("costs $& and $' today", "en", literal);
+  assert.match(literal.calls[0]!.user, /costs \$& and \$' today/);
+  assert.equal(labelMismatch("intelligible-english", "es"), true);
+  assert.equal(labelMismatch("intelligible-english", "en"), false);
+  assert.equal(labelMismatch("garbled", "en"), false);
+});
+
+test("review fixes on #965: content types, img src forms, newsletters with audio, disabled sources", async () => {
+  const h = harness();
+  const post = JSON.parse(readFileSync(join(fixtures, "content", "posts", "written-post.json"), "utf8"));
+  post.slug = "quoting";
+  post.id = 201;
+  post.body_html = `<p>Text.</p><img alt='a' src='https://substackcdn.com/image/single.png'><img src=https://substackcdn.com/image/bare.png><img src="https://substackcdn.com/image/odd-type.png">`;
+  post.cover_image = null;
+  const types: Record<string, string> = { "single.png": "image/png", "bare.png": "image/png", "odd-type.png": "constructor" };
+  const net = network({
+    [`https://${HOST}/api/v1/posts/quoting`]: () => new Response(JSON.stringify(post), { status: 200 }),
+    ...Object.fromEntries(
+      Object.entries(types).map(([f, t]) => [`https://substackcdn.com/image/${f}`, () => new Response(PNG, { status: 200, headers: { "content-type": t } })]),
+    ),
+  });
+  await fetchCommittedItems(await h.commitFeed(["quoting"]), { config: h.config, repo: h.repo, model: fakeModel(), fetch: net.fetch });
+  const r = await h.read("quoting");
+  assert.equal(r.images.length, 1, "single-quoted and unquoted src are found; the identical bytes share one file");
+  assert.ok(net.requested.includes("https://substackcdn.com/image/single.png") && net.requested.includes("https://substackcdn.com/image/bare.png"));
+  assert.ok(r.warnings.includes("asset-not-an-image"), "an inherited property name is not an image type");
+
+  const audioPost = { ...post, slug: "newsletter-audio", id: 202, type: "newsletter", podcast_url: "https://api.substack.com/x.mp3", body_html: "<p>Show notes.</p>" };
+  await fetchCommittedItems(await h.commitFeed(["newsletter-audio"]), {
+    config: h.config,
+    repo: h.repo,
+    model: fakeModel(),
+    fetch: network({ [`https://${HOST}/api/v1/posts/newsletter-audio`]: () => new Response(JSON.stringify(audioPost), { status: 200 }) }).fetch,
+  });
+  const audio = await h.read("newsletter-audio");
+  assert.equal(audio.medium, "audio");
+  assert.deepEqual(audio.analysis, { use: "skip", reason: "transcript-missing" });
+
+  // Pending markers of a disabled source never use up the retry quota.
+  const { PENDING_FILE, MAX_RETRIES_PER_RUN } = await import("../src/content/raw-content.js");
+  await h.repo.commit({
+    writes: Array.from({ length: MAX_RETRIES_PER_RUN + 2 }, (_, i) => ({
+      path: `raw_content/substack/aaa-disabled/item-${i}/${PENDING_FILE}`,
+      content: JSON.stringify({ feedPath: `feeds/aaa-disabled/item-${i}.json`, attempts: 1, exhausted: false, lastError: "x" }),
+    })),
+    message: "disabled source markers",
+  });
+  const down = network({ [`https://${HOST}/api/v1/posts/written-post`]: () => new Response("", { status: 503 }) });
+  await fetchCommittedItems(await h.commitFeed(["written-post"]), { config: h.config, repo: h.repo, model: fakeModel(), fetch: down.fetch });
+  const retried = await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
+  assert.deepEqual(retried.map((s) => `${s.sourceId}/${s.itemId}:${s.status}`), ["fixturepub/written-post:captured"]);
+});

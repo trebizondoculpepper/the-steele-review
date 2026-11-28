@@ -130,7 +130,7 @@ export interface CommittedFeedRef {
 }
 
 /** Items with an unexhausted retry marker, as references to their feed record at the branch head. */
-async function pendingRefs(repo: GitRepository, branch: string, exclude: Set<string>): Promise<CommittedFeedRef[]> {
+async function pendingRefs(repo: GitRepository, branch: string, exclude: Set<string>, enabled: Set<string>): Promise<CommittedFeedRef[]> {
   const head = await repo.resolve(`refs/heads/${branch}`);
   if (!head) return [];
   const refs: CommittedFeedRef[] = [];
@@ -144,7 +144,8 @@ async function pendingRefs(repo: GitRepository, branch: string, exclude: Set<str
     if (refs.length >= MAX_RETRIES_PER_RUN) break;
     const parts = entry.path.split("/"); // raw_content/substack/<source>/<item>/capture.pending
     const [, , sourceId, itemId] = parts;
-    if (!sourceId || !itemId || exclude.has(`${sourceId}/${itemId}`)) continue;
+    // Disabled sources never use up the per-run retry quota.
+    if (!sourceId || !itemId || !enabled.has(sourceId) || exclude.has(`${sourceId}/${itemId}`)) continue;
     const marker = JSON.parse((await repo.readText(head, entry.path))!.text) as PendingMarker;
     if (marker.exhausted) continue;
     refs.push({ sourceId, itemId, path: marker.feedPath, change: "changed", commit: head });
@@ -161,7 +162,7 @@ export async function fetchCommittedItems(refs: readonly CommittedFeedRef[], opt
   const branch = options.branch ?? "main";
   const summaries: FetchSummary[] = [];
   const fresh = new Set(refs.map((r) => `${r.sourceId}/${r.itemId}`));
-  const retries = await pendingRefs(options.repo, branch, fresh);
+  const retries = await pendingRefs(options.repo, branch, fresh, new Set(feeds.keys()));
   for (const ref of [...refs, ...retries]) {
     const summary: FetchSummary = { sourceId: ref.sourceId, itemId: ref.itemId, status: "failed" };
     if (!fresh.has(`${ref.sourceId}/${ref.itemId}`)) summary.retried = true;
