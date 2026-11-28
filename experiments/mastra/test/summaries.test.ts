@@ -140,3 +140,15 @@ test("an unfinished summary is retried by a later run with nothing new captured 
   const after = await run(scripted([]), empty);
   assert.deepEqual(after.summaries, [], "a completed summary is not retried again");
 });
+
+test("an unfinished summary superseded by a model change leaves the retry queue (review on #968)", async () => {
+  const { unfinishedSummaries } = await import("../src/summaries/summarise.js");
+  const h = await harness();
+  await summariseSource(h.ref, { repo: h.repo, model: scripted([new ModelError("provider-error", "500")]), modelId: "old/model" });
+  assert.equal((await unfinishedSummaries(h.repo, "main", 10, "old/model")).length, 1);
+  assert.deepEqual(await unfinishedSummaries(h.repo, "main", 10, "new/model"), [], "not queued under the current model");
+  const fetched = { poll: { ok: true, commit: null, sources: [], committed: [] }, fetched: [] };
+  const step = createSummariseNewContentStep(() => ({ repo: h.repo, model: scripted([]), modelId: "new/model" }));
+  const out = await (step.execute as (a: unknown) => Promise<{ summaries: unknown[] }>)({ inputData: fetched });
+  assert.deepEqual(out.summaries, []);
+});

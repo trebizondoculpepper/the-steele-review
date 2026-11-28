@@ -1,6 +1,7 @@
 import type { GitRepository } from "../common/git/index.js";
 import type { ChatModel } from "../common/model/openrouter.js";
 import type { ArticleRecord } from "../content/substack-article.js";
+import { loadWritingPrompt } from "../writing/prompt.js";
 import {
   MAX_MODEL_ATTEMPTS,
   normalise,
@@ -173,9 +174,18 @@ export const MAX_SUMMARY_RETRIES_PER_RUN = 10;
  * Summary operations that did not complete (model failure or an interrupted
  * attempt) and still have attempts left, as references to the exact source
  * version they were for. Later workflow runs retry them even when the feed
- * brought nothing new.
+ * brought nothing new. Only operations for the current prompt and model are
+ * queued: one superseded by a prompt edit or model change can never complete
+ * (a retry would compute the new operation), so it is not counted against the
+ * per-run quota.
  */
-export async function unfinishedSummaries(repo: GitRepository, branch = "main", limit = MAX_SUMMARY_RETRIES_PER_RUN): Promise<SourceRef[]> {
+export async function unfinishedSummaries(
+  repo: GitRepository,
+  branch = "main",
+  limit = MAX_SUMMARY_RETRIES_PER_RUN,
+  modelId: string = DEFAULT_SUMMARY_MODEL,
+): Promise<SourceRef[]> {
+  const prompt = loadWritingPrompt(PROMPT_NAME).identity;
   const head = await repo.resolve(`refs/heads/${branch}`);
   if (!head) return [];
   const metas = (await repo.listFiles(head, SUMMARIES)).filter((e) => e.path.endsWith("/operation.meta"));
@@ -190,6 +200,7 @@ export async function unfinishedSummaries(repo: GitRepository, branch = "main", 
     } catch {
       continue;
     }
+    if (meta.prompt !== prompt || meta.model !== modelId) continue;
     if (meta.outcome === "model-failed" && (meta.attempts ?? 0) < MAX_MODEL_ATTEMPTS && meta.source?.path && meta.source.commit)
       refs.push({ path: meta.source.path, commit: meta.source.commit });
   }
