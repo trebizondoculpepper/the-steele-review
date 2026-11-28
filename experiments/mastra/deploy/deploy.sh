@@ -23,8 +23,9 @@ ssh -o BatchMode=yes "$STEELE_EXP_HOST" bash -s -- "$STEELE_EXP_DIR" "$tag" <<'R
 set -euo pipefail
 dir="$1"; tag="$2"; cd "$dir"
 docker build -q -f src/mastra/Dockerfile -t "steele-exp-mastra:$tag" src >/dev/null
-previous="$(grep '^STEELE_EXP_MASTRA_TAG=' stack.env | cut -d= -f2)"
-sed -i "s/^STEELE_EXP_MASTRA_TAG=.*/STEELE_EXP_MASTRA_TAG=$tag/" stack.env
+previous="$(grep '^STEELE_EXP_MASTRA_IMAGE=' stack.env | cut -d= -f2 || true)"
+grep -q '^STEELE_EXP_MASTRA_IMAGE=' stack.env || echo "STEELE_EXP_MASTRA_IMAGE=" >> stack.env
+sed -i "s|^STEELE_EXP_MASTRA_IMAGE=.*|STEELE_EXP_MASTRA_IMAGE=steele-exp-mastra:$tag|" stack.env
 docker compose --env-file stack.env -f src/mastra/deploy/compose.yaml up -d --wait >/dev/null
 echo "deployed steele-exp-mastra:$tag (previous: $previous)"
 REMOTE
