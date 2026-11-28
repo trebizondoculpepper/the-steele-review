@@ -294,7 +294,15 @@ export async function extractClaims(ref: SourceRef, options: ExtractOptions): Pr
       label: (doc) => doc.quote,
     },
     ref,
-    { repo: options.repo, model: options.model, modelId: options.modelId ?? DEFAULT_CLAIM_MODEL, branch: options.branch, now: options.now },
+    {
+      repo: options.repo,
+      model: options.model,
+      modelId: options.modelId ?? DEFAULT_CLAIM_MODEL,
+      branch: options.branch,
+      now: options.now,
+      // Segment ranges, times and speakers come from transcript.raw: a change to it is a new operation.
+      identityExtra: raw ? `transcript.raw@${raw.blob}` : undefined,
+    },
   );
   const { items, ...rest } = result;
   return { ...rest, claims: items.map((i) => ({ claimId: i.id, quote: i.label, path: i.path })) };

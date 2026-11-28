@@ -189,3 +189,15 @@ test("segment ranges index the retained transcript.raw, blank segments included 
   assert.equal(c.location.segmentStart, 2);
   assert.equal(withBlank[c.location.segmentStart!].text.trim(), RECORDING_CLAIMS.claims[0]!.quote);
 });
+
+test("a change to the retained transcript metadata alone is a new operation (review on #967)", async () => {
+  const h = await harness({ [`${REC}/article.json`]: fixture("recording-article.json"), [`${REC}/transcript.raw`]: fixture("transcript-single.json") });
+  const first = await extractClaims({ path: `${REC}/article.json`, commit: h.commit }, { repo: h.repo, model: scripted([JSON.stringify(RECORDING_CLAIMS)]) });
+  const segs = JSON.parse(fixture("transcript-single.json"));
+  segs[1].start = 40;
+  const { commit } = await h.repo.commit({ writes: [{ path: `${REC}/transcript.raw`, content: JSON.stringify(segs) }], message: "corrected timestamps" });
+  const second = await extractClaims({ path: `${REC}/article.json`, commit: commit! }, { repo: h.repo, model: scripted([JSON.stringify(RECORDING_CLAIMS)]) });
+  assert.notEqual(second.operation, first.operation);
+  assert.equal(second.reused, false);
+  assert.equal((await h.read(second.claims[0]!.path)).location.startSeconds, 40);
+});

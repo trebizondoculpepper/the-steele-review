@@ -126,6 +126,11 @@ export interface OperationOptions {
   now?: () => Date;
   /** Internal: how many times a lost reservation race has restarted this run. */
   reservationRetries?: number;
+  /**
+   * Further inputs the saved items depend on (e.g. a retained transcript's blob),
+   * folded into the operation identity so a change to them is never reused.
+   */
+  identityExtra?: string;
 }
 
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -148,7 +153,7 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
   const [, platform, sourceId, itemId] = m as unknown as [string, string, string, string];
   const file = await options.repo.readText(ref.commit, ref.path);
   if (!file) throw new Error("the source is not in the repository at that commit");
-  const operation = sha256(`${file.blob}\n${prompt.identity}\n${modelId}`).slice(0, 24);
+  const operation = sha256(`${file.blob}\n${prompt.identity}\n${modelId}${options.identityExtra ? `\n${options.identityExtra}` : ""}`).slice(0, 24);
   const folder = `${spec.collection}/${platform}/${sourceId}/${itemId}/${operation}`;
   const metaPath = `${folder}/operation.meta`;
 
