@@ -1,4 +1,6 @@
 # Separately named experiment stack (#918). Real values are supplied privately:
+#   STEELE_EXP_MASTRA_IMAGE  image reference: ghcr.io/...@sha256:<digest> for a release (#969),
+#                            or steele-exp-mastra:<tag> for a local build
 #   STEELE_EXP_MASTRA_BIND   host address:port to publish on. PRIVATE INTERFACE ONLY: Studio
 #                            and the API have no login (#930), so this bind is the access control.
 #   STEELE_EXP_MASTRA_DATA     host directory for persistent LibSQL storage
@@ -10,7 +12,8 @@
 name: steele-exp-mastra
 services:
   mastra:
-    image: steele-exp-mastra:${STEELE_EXP_MASTRA_TAG:?set the image tag}
+    # A published release pinned by digest (release.sh), or a local build (deploy.sh).
+    image: ${STEELE_EXP_MASTRA_IMAGE:?set the image reference}
     restart: unless-stopped
     ports:
       - "${STEELE_EXP_MASTRA_BIND:?set a private bind address}:4111"

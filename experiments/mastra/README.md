@@ -304,3 +304,13 @@ What happens in other cases:
 - **A technical error on one item:** reported, and the other items continue.
 - **Replays and interrupted runs:** they reuse the completed summary of the same source version, with no model call.
 - **A changed source version:** gets its own summary.
+
+## Deploying a release (#969)
+
+`deploy/release.sh <version>` deploys a published, reviewed ARM64 image (`ghcr.io/trebizondoculpepper/the-steele-review/mastra:<version>`) pinned by its digest. It does not build anything on the host and makes no model calls. It:
+- pulls the image;
+- writes the `@sha256:` reference into the host's private `stack.env` as `STEELE_EXP_MASTRA_IMAGE`, keeping the previous reference as `STEELE_EXP_MASTRA_IMAGE_PREVIOUS`;
+- restarts the stack;
+- prints the digest, the source revision, the health status and the registered workflows.
+
+Persistent data, configuration mounts and the collections repository with its indexing hook are all mounts, so a deploy leaves them untouched. `deploy/release.sh --rollback` restores the previous reference. `deploy/deploy.sh` still builds and deploys the working tree for experiments.
