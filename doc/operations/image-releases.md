@@ -6,7 +6,7 @@ Every push to `main` gets a new release version, and the workflow `.github/workf
 
 - **How a version is chosen:** `scripts/release/version.mjs <sha>` derives the version from `main`'s first-parent history alone, so rerunning a commit always gives it the same version and different commits always get different ones.
 - **Baseline:** the commit that adds `scripts/release/baseline.json` is **v0.2.0**. Every later commit bumps the patch number unless its message carries `feat:` or `Semver: minor` (minor), or `type!:` or `Semver: major` (major). Before 1.0, a major bump raises the minor number instead.
-- **Why 0.2.0:** the archived pipeline published v0.1.0 to v0.1.60. Those tags are never reissued. A test checks that the baseline sits above every existing tag, and the workflow refuses a version whose tag already names another commit.
+- **Why 0.2.0:** the archived pipeline published v0.1.0 to v0.1.60. Those tags are never reissued. A test checks that the baseline sits above every archived tag, and the workflow refuses a version whose tag already names another commit.
 
 ## Images
 
@@ -29,7 +29,7 @@ It is then published under both `:<version>` and `:sha-<commit>` (`scripts/ci/pu
 
 ## Tags and recovery
 
-A published tag is never moved. If the version tag already exists for the same commit, which happens on a rerun after only one image was published, it is reused and nothing is pushed. A tag that names another commit stops the job.
+A published tag is never moved. If the version tag already exists for the same commit, it is reused. If only the commit tag exists, left by an interrupted run, the version tag is added to that same published image on the server. Nothing is pushed in either case, so a rebuild never replaces a published image. A tag that names another commit stops the job.
 
 The Git tag and the GitHub release are created only after both images are published for the commit. The release notes record both image digests.
 

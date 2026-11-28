@@ -3,10 +3,12 @@
 # Usage: publish-image.sh <local-image> <repository> <version> <sha>
 # Prints the published digest on stdout (the last line).
 #
-# A published tag is never moved. If the version (or commit) tag already
-# exists, it must be an image of this same commit (its revision label): then it
-# is reused and nothing is pushed, which is how a rerun recovers after only one
-# of the images was published. A tag that names another commit stops the job.
+# A published tag is never moved. If the version or commit tag already exists,
+# it must be an image of this same commit (its revision label). An existing
+# version tag is reused as is; an existing commit tag (an interrupted earlier
+# run) gets the version tag added server-side to that same image. Nothing is
+# pushed in either case, which is how a rerun recovers after a partial publish.
+# A tag that names another commit stops the job.
 # Only an explicit "not found" counts as absent; any other inspection failure
 # stops the job rather than risk moving a tag.
 set -euo pipefail
@@ -37,6 +39,17 @@ done
 if [ "$(revision_of "$versioned")" = "$sha" ]; then
   echo "${versioned} already published for this commit; nothing pushed." >&2
   digest_of "$versioned"
+  exit 0
+fi
+# The commit tag was published by an earlier, interrupted run: never push a
+# rebuild over it (a rebuild can differ). Point the version tag at the very
+# same published image, server-side, and push nothing.
+if [ "$(revision_of "$committed")" = "$sha" ]; then
+  docker buildx imagetools create --tag "$versioned" "$committed" >&2
+  d="$(digest_of "$versioned")"
+  test "$d" = "$(digest_of "$committed")"
+  echo "${committed} already published; tagged it ${versioned} without pushing." >&2
+  echo "$d"
   exit 0
 fi
 docker tag "$local_image" "$committed"
