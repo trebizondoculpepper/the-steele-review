@@ -249,7 +249,7 @@ Limits on what the fetcher downloads:
 - It makes one bounded model call, using `experiments/shared/prompts/theme-proposals-v1.md` and `STEELE_THEME_MODEL`, which defaults to `deepseek/deepseek-v4.1-flash`.
 - The input is the source's transcript when analysis uses the transcript, and its article text otherwise. Input is capped at 60,000 characters, and a source marked as skipped makes no call.
 - The model proposes up to 8 themes. Each has a title, a neutral description and 1 to 3 evidence quotes.
-- Each proposal is validated on its own. Every quote must occur verbatim in the source, and duplicate titles are refused. Valid proposals are saved even when others are rejected.
+- Each proposal is validated on its own. Every quote must occur verbatim in the source; a proposal with any invented quote is rejected whole. Duplicate titles are refused. Valid proposals are saved even when others are rejected.
 
 **Where results are saved:**
 

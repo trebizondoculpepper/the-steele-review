@@ -142,9 +142,11 @@ function validate(raw: unknown, sourceNormalised: string): { valid: Array<{ rank
     if (typeof title !== "string" || normalise(title).length < 3 || normalise(title).length > 120) return rejected.push({ rank, reason: "invalid-title" });
     if (typeof description !== "string" || !normalise(description) || description.length > 800) return rejected.push({ rank, reason: "invalid-description" });
     if (!Array.isArray(evidence) || evidence.length === 0) return rejected.push({ rank, reason: "no-evidence" });
-    const quotes = evidence.filter((e): e is string => typeof e === "string").slice(0, 3);
-    const grounded = quotes.filter((q) => quoteFound(q, sourceNormalised));
-    if (grounded.length === 0) return rejected.push({ rank, reason: "evidence-not-in-source" });
+    if (evidence.length > 3 || evidence.some((e) => typeof e !== "string")) return rejected.push({ rank, reason: "invalid-evidence" });
+    const quotes = evidence as string[];
+    // Every quote must be grounded: one invented quote rejects the whole proposal.
+    if (!quotes.every((q) => quoteFound(q, sourceNormalised))) return rejected.push({ rank, reason: "evidence-not-in-source" });
+    const grounded = quotes;
     const key = normalise(title).toLowerCase();
     if (seen.has(key)) return rejected.push({ rank, reason: "duplicate-title" });
     seen.add(key);

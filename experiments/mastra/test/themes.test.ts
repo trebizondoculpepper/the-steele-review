@@ -171,3 +171,17 @@ test("a run that loses a race never overwrites a completed result for the same o
   assert.equal(again.outcome, "proposed");
   assert.equal(model.calls.length, 0, "the completed operation is still reused");
 });
+
+test("a proposal with any invented quote is rejected, not silently trimmed (review on #966)", async () => {
+  const h = await harness();
+  const mixed = {
+    themes: [
+      GOOD.themes[0],
+      { title: "Consultation periods", description: "Mixed evidence.", evidence: ["public consultation on new standards is too short for ordinary people to respond", "this quote was invented by the model and is not in the source"] },
+    ],
+  };
+  const r = await proposeThemes(h.ref, { repo: h.repo, model: scripted([JSON.stringify(mixed)]) });
+  assert.equal(r.outcome, "partial");
+  assert.deepEqual(r.rejected, [{ rank: 2, reason: "evidence-not-in-source" }]);
+  assert.equal(r.themes.length, 1);
+});
