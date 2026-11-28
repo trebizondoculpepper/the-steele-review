@@ -65,14 +65,43 @@ test("a commit before the baseline has no version", () => {
   assert.throws(() => versionAt(early, r.dir), /no release baseline/);
 });
 
-test("the declared baseline is above every historical tag in this repository", async () => {
+test("the declared baseline is above every tag from before it (the archived releases)", async () => {
   const { readFileSync } = await import("node:fs");
   const { parseVersion } = await import("./version.mjs");
+  const git = (...a) => execFileSync("git", a, { encoding: "utf8" }).trim();
   const base = parseVersion(JSON.parse(readFileSync(new URL("./baseline.json", import.meta.url), "utf8")).version);
-  const tags = execFileSync("git", ["tag", "-l", "v[0-9]*"], { encoding: "utf8" })
-    .split("\n")
-    .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
-    .map((t) => t.slice(1).split(".").map(Number));
+  // The commit that added the baseline, when it is committed; until then every tag predates it.
+  const baselineCommit = git("log", "--first-parent", "--diff-filter=A", "--format=%H", "HEAD", "--", BASELINE_PATH).split("\n").filter(Boolean)[0];
+  const isArchived = (tag) => {
+    if (!baselineCommit) return true;
+    try {
+      execFileSync("git", ["merge-base", "--is-ancestor", baselineCommit, `${tag}^{commit}`]);
+      return false; // released on or after the baseline: one of ours
+    } catch {
+      return true;
+    }
+  };
   const below = (a, b) => a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])));
-  for (const tag of tags) assert.ok(below(tag, base), `v${tag.join(".")} must be below the baseline`);
+  const tags = git("tag", "-l", "v[0-9]*").split("\n").filter((t) => /^v\d+\.\d+\.\d+$/.test(t));
+  for (const tag of tags.filter(isArchived)) assert.ok(below(tag.slice(1).split(".").map(Number), base), `${tag} must be below the baseline`);
+});
+
+test("tags released after the baseline do not count as collisions with it (review on #964)", () => {
+  const r = repo();
+  r.commit("archived", {});
+  r.git("tag", "v0.1.9");
+  const b = r.commit("base", { [BASELINE_PATH]: JSON.stringify({ version: "0.2.0" }) });
+  r.git("tag", "v0.2.0", b);
+  const next = r.commit("next");
+  assert.equal(versionAt(next, r.dir), "0.2.1");
+  // The archived tag predates the baseline; v0.2.0 descends from it and is ours.
+  const descends = (tag) => {
+    try {
+      execFileSync("git", ["merge-base", "--is-ancestor", b, `${tag}^{commit}`], { cwd: r.dir });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.deepEqual(["v0.1.9", "v0.2.0"].map(descends), [false, true]);
 });
