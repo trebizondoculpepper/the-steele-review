@@ -240,3 +240,28 @@ Limits on what the fetcher downloads:
 - **Hosts:** images come only from Substack's own hosts, over https.
 - **Size and type:** at most 10 MB each, image types only.
 - **What is never fetched:** no audio or video is downloaded, and nothing is transcribed.
+
+## Theme proposals (#960)
+
+**Propose Themes** (`proposeThemes`) runs the `propose-themes` step on its own for one retained source. Its input is `{path, commit}`: a `raw_content/.../article.json` and the commit to read it at.
+
+**What the step does:**
+- It makes one bounded model call, using `experiments/shared/prompts/theme-proposals-v1.md` and `STEELE_THEME_MODEL`, which defaults to `deepseek/deepseek-v4.1-flash`.
+- The input is the source's transcript when analysis uses the transcript, and its article text otherwise. Input is capped at 60,000 characters, and a source marked as skipped makes no call.
+- The model proposes up to 8 themes. Each has a title, a neutral description and 1 to 3 evidence quotes.
+- Each proposal is validated on its own. Every quote must occur verbatim in the source; a proposal with any invented quote is rejected whole. Duplicate titles are refused. Valid proposals are saved even when others are rejected.
+
+**Where results are saved:**
+
+```
+themes/<platform>/<source>/<item>/<operation>/<themeId>.json   one per valid proposal (indexed)
+themes/<platform>/<source>/<item>/<operation>/operation.meta   outcome, rejected proposals, warnings, usage, timings
+```
+
+**Reuse and identity:**
+- The operation ID hashes the exact source blob, the prompt identity and the model. A retry or replay of a completed operation reuses the saved result, with no model call and no commit.
+- A failed model call is recorded as `model-failed` and completed by the next run, up to 3 attempts per operation. Output cut off at the token limit counts as a failure (`output-limit`), not as "no valid themes".
+- A changed source version gets its own operation.
+- Theme IDs hash the source blob and the normalised title, so they are stable across retries.
+
+**Output:** the step returns the operation, the outcome (`proposed`, `partial`, `none-valid`, `skipped` or `model-failed`), the theme IDs and titles, the rejected proposals, warnings, usage and timings.
