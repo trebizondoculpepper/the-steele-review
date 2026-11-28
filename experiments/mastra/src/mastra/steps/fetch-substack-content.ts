@@ -23,7 +23,7 @@ import { PollSubstackFeedsOutput } from "./poll-substack-feeds.js";
 const FetchSummary = z.object({
   sourceId: z.string(),
   itemId: z.string(),
-  status: z.enum(["captured", "unchanged", "failed"]),
+  status: z.enum(["captured", "unchanged", "failed", "superseded"]),
   error: z.string().optional(),
   path: z.string().optional(),
   commit: z.string().optional(),
@@ -31,6 +31,8 @@ const FetchSummary = z.object({
   transcript: z.enum(["usable", "unusable", "missing", "check-failed"]).optional(),
   images: z.number().optional(),
   thumbnail: z.boolean().optional(),
+  retried: z.boolean().optional(),
+  pending: z.object({ attempts: z.number(), exhausted: z.boolean() }).optional(),
 });
 
 export const FetchSubstackContentOutput = z.object({
@@ -56,8 +58,8 @@ export function createFetchSubstackContentStep(options: () => FetchContentOption
     inputSchema: PollSubstackFeedsOutput,
     outputSchema: FetchSubstackContentOutput,
     execute: async ({ inputData }) => {
-      const refs = inputData.committed;
-      const fetched = refs.length ? await fetchCommittedItems(refs, options()) : [];
+      // Runs even when the poll committed nothing: earlier incomplete captures are retried.
+      const fetched = await fetchCommittedItems(inputData.committed, options());
       return { poll: inputData, fetched };
     },
   });

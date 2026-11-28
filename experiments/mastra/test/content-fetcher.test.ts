@@ -244,3 +244,66 @@ test("the raw-content declaration is accepted by the collection indexer, and rec
   const declared = Object.keys(RAW_CONTENT_DECLARATION.mapping.properties);
   assert.deepEqual(Object.keys(r).filter((k) => !declared.includes(k)), [], "every record field is declared in the strict mapping");
 });
+
+test("a failed capture leaves a retry marker, and a later run with nothing new captures it (review on #965)", async () => {
+  const { PENDING_FILE } = await import("../src/content/raw-content.js");
+  const h = harness();
+  const refs = await h.commitFeed(["written-post"]);
+  const down = network({ [`https://${HOST}/api/v1/posts/written-post`]: () => new Response("", { status: 503 }) });
+  const [failed] = await fetchCommittedItems(refs, { config: h.config, repo: h.repo, model: fakeModel(), fetch: down.fetch });
+  assert.equal(failed!.status, "failed");
+  assert.deepEqual(failed!.pending, { attempts: 1, exhausted: false });
+  const folder = itemFolder("substack", "fixturepub", "written-post");
+  assert.ok(await h.repo.readText("main", `${folder}/${PENDING_FILE}`));
+
+  // The next poll commits nothing new; the pending item is still retried.
+  const [retried] = await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
+  assert.equal(retried!.status, "captured");
+  assert.equal(retried!.retried, true);
+  assert.equal(await h.repo.readText("main", `${folder}/${PENDING_FILE}`), null, "the marker is removed once captured");
+  assert.equal((await h.read("written-post")).text.role, "article");
+});
+
+test("a failed transcript check is retried by later runs until it succeeds (review on #965)", async () => {
+  const { PENDING_FILE } = await import("../src/content/raw-content.js");
+  const h = harness();
+  await fetchCommittedItems(await h.commitFeed(["audio-intelligible"]), { config: h.config, repo: h.repo, model: fakeModel(true), fetch: network().fetch });
+  const folder = itemFolder("substack", "fixturepub", "audio-intelligible");
+  assert.ok(await h.repo.readText("main", `${folder}/${PENDING_FILE}`));
+  const model = fakeModel();
+  const [again] = await fetchCommittedItems([], { config: h.config, repo: h.repo, model, fetch: network().fetch });
+  assert.equal(again!.status, "captured");
+  assert.equal((await h.read("audio-intelligible")).transcript.status, "usable");
+  assert.equal(model.calls.length, 1);
+  assert.equal(await h.repo.readText("main", `${folder}/${PENDING_FILE}`), null);
+});
+
+test("retries stop after the attempt limit and are then left for inspection (review on #965)", async () => {
+  const { MAX_ATTEMPTS } = await import("../src/content/raw-content.js");
+  const h = harness();
+  const down = network({ [`https://${HOST}/api/v1/posts/written-post`]: () => new Response("", { status: 503 }) });
+  let last;
+  [last] = await fetchCommittedItems(await h.commitFeed(["written-post"]), { config: h.config, repo: h.repo, model: fakeModel(), fetch: down.fetch });
+  for (let i = 1; i < MAX_ATTEMPTS; i++) [last] = await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: down.fetch });
+  assert.deepEqual(last!.pending, { attempts: MAX_ATTEMPTS, exhausted: true });
+  assert.deepEqual(await fetchCommittedItems([], { config: h.config, repo: h.repo, model: fakeModel(), fetch: down.fetch }), [], "an exhausted item is not retried");
+});
+
+test("a run that loses a race to a newer capture of the same item never replaces it (review on #965)", async () => {
+  const h = harness();
+  const refs = await h.commitFeed(["written-post"]);
+  const folder = itemFolder("substack", "fixturepub", "written-post");
+  const commit = h.repo.commit.bind(h.repo);
+  let raced = false;
+  h.repo.commit = async (request) => {
+    if (!raced) {
+      raced = true;
+      // A newer capture of the same item lands first.
+      await commit({ writes: [{ path: `${folder}/article.json`, content: '{"newer":true}\n' }], message: "newer capture" });
+    }
+    return commit(request);
+  };
+  const [summary] = await fetchCommittedItems(refs, { config: h.config, repo: h.repo, model: fakeModel(), fetch: network().fetch });
+  assert.equal(summary!.status, "superseded");
+  assert.equal((await h.repo.readText("main", `${folder}/article.json`))!.text, '{"newer":true}\n');
+});

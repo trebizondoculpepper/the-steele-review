@@ -231,6 +231,11 @@ Transcript check:
 - **Provider errors:** a provider error never loses the fetched content. It is recorded as `check-failed`, which is distinct from `unusable`, and is retried when the item is fetched again.
 - **No repeat charges:** an unchanged transcript reuses its earlier verdict, so there is no second model call.
 
+Recovery:
+- **Retry markers:** a capture that does not complete, because the fetch failed or the transcript check failed, leaves a `capture.pending` marker in the item's folder. The marker has no `.json` extension, so it is never indexed.
+- **Retries:** every run retries pending items as well as the items newly committed by the poll, at most 10 per run and at most 5 attempts per item. After the fifth attempt the marker is kept, marked `exhausted`, for inspection.
+- **Races:** if another run commits a capture of the same item first, this run reports `superseded` and does not overwrite it.
+
 Limits on what the fetcher downloads:
 - **Hosts:** images come only from Substack's own hosts, over https.
 - **Size and type:** at most 10 MB each, image types only.
