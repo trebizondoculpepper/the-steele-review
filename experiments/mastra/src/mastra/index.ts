@@ -5,6 +5,7 @@ import { MastraStorageExporter, Observability } from "@mastra/observability";
 
 import { pollSubstackFeedsWorkflow } from "./workflows/poll-substack-feeds.js";
 import { proposeThemesWorkflow } from "./workflows/propose-themes.js";
+import { extractClaimsWorkflow } from "./workflows/extract-claims.js";
 /**
  * Mastra track of the n8n versus Mastra experiment (#911, #918).
  *
@@ -21,8 +22,8 @@ import { proposeThemesWorkflow } from "./workflows/propose-themes.js";
 
 export const mastra = new Mastra({
   // The reset pilot's workflows, added deliberately: intake (#944, #953) and
-  // the independently runnable theme step (#960).
-  workflows: { pollSubstackFeeds: pollSubstackFeedsWorkflow, proposeThemes: proposeThemesWorkflow },
+  // the independently runnable extraction steps (#960, #961).
+  workflows: { pollSubstackFeeds: pollSubstackFeedsWorkflow, proposeThemes: proposeThemesWorkflow, extractClaims: extractClaimsWorkflow },
   storage: new LibSQLStore({
     id: "steele-exp-mastra",
     url: process.env.STEELE_EXP_MASTRA_DB ?? "file:./.data/mastra.db",

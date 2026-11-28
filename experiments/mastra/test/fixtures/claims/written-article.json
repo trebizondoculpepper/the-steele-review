@@ -1,0 +1,47 @@
+{
+  "schema": "raw-content-article-v1",
+  "platform": "substack",
+  "sourceId": "fixturepub",
+  "itemId": "pinned-written",
+  "postId": "301",
+  "url": "https://fixturepub.example.org/p/pinned-episode?utm_source=rss",
+  "canonicalUrl": "https://fixturepub.example.org/p/pinned-episode",
+  "title": "A pinned claims episode",
+  "subtitle": null,
+  "publishedAt": "2026-11-21T08:00:00.000Z",
+  "updatedAt": null,
+  "medium": "written",
+  "representation": "article",
+  "feed": {
+    "path": "feeds/fixturepub/pinned-episode.json",
+    "commit": "0000000000000000000000000000000000000000"
+  },
+  "text": {
+    "role": "article",
+    "content": "The report says unemployment fell to four point two percent in October, the lowest level this year. Critics argue the figure excludes part-time workers who want more hours."
+  },
+  "transcript": {
+    "status": "missing",
+    "languageLabel": null,
+    "content": null,
+    "original": null,
+    "check": null
+  },
+  "analysis": {
+    "use": "article"
+  },
+  "attribution": {
+    "author": "Jane Example",
+    "authorId": null,
+    "basis": "post-byline",
+    "observedBylines": [
+      "Jane Example"
+    ]
+  },
+  "thumbnail": null,
+  "images": [],
+  "original": {
+    "post": "post.raw"
+  },
+  "warnings": []
+}
