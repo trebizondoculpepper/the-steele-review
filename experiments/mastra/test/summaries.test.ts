@@ -146,9 +146,42 @@ test("an unfinished summary superseded by a model change leaves the retry queue 
   const h = await harness();
   await summariseSource(h.ref, { repo: h.repo, model: scripted([new ModelError("provider-error", "500")]), modelId: "old/model" });
   assert.equal((await unfinishedSummaries(h.repo, "main", 10, "old/model")).length, 1);
-  assert.deepEqual(await unfinishedSummaries(h.repo, "main", 10, "new/model"), [], "not queued under the current model");
+  // Under the new model the summary is simply missing: it is queued once,
+  // and after it succeeds the superseded failure occupies no slot.
   const fetched = { poll: { ok: true, commit: null, sources: [], committed: [] }, fetched: [] };
-  const step = createSummariseNewContentStep(() => ({ repo: h.repo, model: scripted([]), modelId: "new/model" }));
-  const out = await (step.execute as (a: unknown) => Promise<{ summaries: unknown[] }>)({ inputData: fetched });
-  assert.deepEqual(out.summaries, []);
+  const run = (model: ChatModel) =>
+    (createSummariseNewContentStep(() => ({ repo: h.repo, model, modelId: "new/model" })).execute as (a: unknown) => Promise<{ summaries: Array<{ outcome: string }> }>)({ inputData: fetched });
+  assert.deepEqual((await run(scripted([JSON.stringify(SUMMARY)]))).summaries.map((x) => x.outcome), ["proposed"]);
+  assert.deepEqual(await unfinishedSummaries(h.repo, "main", 10, "new/model"), []);
+  assert.deepEqual((await run(scripted([]))).summaries, []);
+});
+
+test("a version whose reservation never committed is still found and summarised later (review on #968)", async () => {
+  const { unfinishedSummaries } = await import("../src/summaries/summarise.js");
+  const h = await harness();
+  const commit = h.repo.commit.bind(h.repo);
+  h.repo.commit = async () => {
+    throw new Error("storage unavailable");
+  };
+  const fetched = { poll: { ok: true, commit: null, sources: [], committed: [] }, fetched: [{ sourceId: "fixturepub", itemId: "pinned-episode", status: "captured" as const, path: PATH, commit: h.ref.commit }] };
+  const run = (model: ChatModel, input: unknown) =>
+    (createSummariseNewContentStep(() => ({ repo: h.repo, model })).execute as (a: unknown) => Promise<{ summaries: Array<{ outcome: string; retried?: boolean }> }>)({ inputData: input });
+  assert.equal((await run(scripted([]), fetched)).summaries[0]!.outcome, "error");
+  h.repo.commit = commit;
+  assert.equal((await unfinishedSummaries(h.repo)).length, 1);
+  const later = await run(scripted([JSON.stringify(SUMMARY)]), { ...fetched, fetched: [] });
+  assert.deepEqual(later.summaries.map((s) => [s.outcome, s.retried]), [["proposed", true]]);
+});
+
+test("a truncated reply whose provider names a different model stays queued (review on #968)", async () => {
+  const { unfinishedSummaries } = await import("../src/summaries/summarise.js");
+  const h = await harness();
+  const truncating: ChatModel = {
+    async complete() {
+      return { model: "deepseek/deepseek-v4.1-flash-20261101", raw: "{\"summ", provider: "fake", finishReason: "length", usage: { promptTokens: 1, completionTokens: 1, costUsd: 0 } };
+    },
+  };
+  const r = await summariseSource(h.ref, { repo: h.repo, model: truncating });
+  assert.equal(r.outcome, "model-failed");
+  assert.equal((await unfinishedSummaries(h.repo)).length, 1);
 });

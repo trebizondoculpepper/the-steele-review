@@ -147,6 +147,11 @@ export const normaliseForQuotes = (s: string) => normalise(s).replace(/[“”]/
 /** Another run completed this operation first; its saved result is used instead. */
 class AlreadyCompleted extends Error {}
 
+/** The content-addressed operation ID: source blob, prompt identity, requested model, extra inputs. */
+export function operationId(blob: string, promptIdentity: string, modelId: string, identityExtra?: string): string {
+  return sha256(`${blob}\n${promptIdentity}\n${modelId}${identityExtra ? `\n${identityExtra}` : ""}`).slice(0, 24);
+}
+
 export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef, options: OperationOptions): Promise<OperationResult> {
   const now = options.now ?? (() => new Date());
   const started = now();
@@ -159,7 +164,7 @@ export async function runOperation<Doc>(spec: OperationSpec<Doc>, ref: SourceRef
   const [, platform, sourceId, itemId] = m as unknown as [string, string, string, string];
   const file = await options.repo.readText(ref.commit, ref.path);
   if (!file) throw new Error("the source is not in the repository at that commit");
-  const operation = sha256(`${file.blob}\n${prompt.identity}\n${modelId}${options.identityExtra ? `\n${options.identityExtra}` : ""}`).slice(0, 24);
+  const operation = operationId(file.blob, prompt.identity, modelId, options.identityExtra);
   const folder = `${spec.collection}/${platform}/${sourceId}/${itemId}/${operation}`;
   const metaPath = `${folder}/operation.meta`;
 

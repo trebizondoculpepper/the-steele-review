@@ -5,6 +5,7 @@ import { loadWritingPrompt } from "../writing/prompt.js";
 import {
   MAX_MODEL_ATTEMPTS,
   normalise,
+  operationId,
   runOperation,
   sha256,
   type OperationMeta,
@@ -171,13 +172,15 @@ export async function summariseSource(ref: SourceRef, options: SummariseOptions)
 export const MAX_SUMMARY_RETRIES_PER_RUN = 10;
 
 /**
- * Summary operations that did not complete (model failure or an interrupted
- * attempt) and still have attempts left, as references to the exact source
- * version they were for. Later workflow runs retry them even when the feed
- * brought nothing new. Only operations for the current prompt and model are
- * queued: one superseded by a prompt edit or model change can never complete
- * (a retry would compute the new operation), so it is not counted against the
- * per-run quota.
+ * Retained source versions whose summary, for the current prompt and requested
+ * model, is missing or unfinished (model-failed with attempts left), as
+ * references at the branch head. The queue is derived from the retained
+ * sources themselves, not from saved metadata, so it also covers a version
+ * whose attempt reservation never committed (a technical failure before any
+ * operation.meta existed). Each candidate's expected operation ID is computed
+ * exactly as summariseSource computes it, so superseded operations (an earlier
+ * prompt or model) are never queued, and the provider's resolved model name in
+ * the metadata does not matter.
  */
 export async function unfinishedSummaries(
   repo: GitRepository,
@@ -185,24 +188,29 @@ export async function unfinishedSummaries(
   limit = MAX_SUMMARY_RETRIES_PER_RUN,
   modelId: string = DEFAULT_SUMMARY_MODEL,
 ): Promise<SourceRef[]> {
-  const prompt = loadWritingPrompt(PROMPT_NAME).identity;
   const head = await repo.resolve(`refs/heads/${branch}`);
   if (!head) return [];
-  const metas = (await repo.listFiles(head, SUMMARIES)).filter((e) => e.path.endsWith("/operation.meta"));
+  const prompt = loadWritingPrompt(PROMPT_NAME).identity;
+  const articles = (await repo.listFiles(head, "raw_content")).filter((e) =>
+    /^raw_content\/[a-z0-9-]+\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/article\.json$/.test(e.path),
+  );
   const refs: SourceRef[] = [];
-  for (const entry of metas) {
+  for (const entry of articles) {
     if (refs.length >= limit) break;
-    const text = await repo.readText(head, entry.path);
-    if (!text) continue;
+    const folder = entry.path.replace(/^raw_content\//, `${SUMMARIES}/`).replace(/\/article\.json$/, "");
+    const metaPath = `${folder}/${operationId(entry.blob, prompt, modelId)}/operation.meta`;
+    const text = await repo.readText(head, metaPath);
+    if (!text) {
+      refs.push({ path: entry.path, commit: head });
+      continue;
+    }
     let meta: OperationMeta;
     try {
       meta = JSON.parse(text.text) as OperationMeta;
     } catch {
       continue;
     }
-    if (meta.prompt !== prompt || meta.model !== modelId) continue;
-    if (meta.outcome === "model-failed" && (meta.attempts ?? 0) < MAX_MODEL_ATTEMPTS && meta.source?.path && meta.source.commit)
-      refs.push({ path: meta.source.path, commit: meta.source.commit });
+    if (meta.outcome === "model-failed" && (meta.attempts ?? 0) < MAX_MODEL_ATTEMPTS) refs.push({ path: entry.path, commit: head });
   }
   return refs;
 }

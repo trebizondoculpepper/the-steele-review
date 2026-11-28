@@ -56,9 +56,9 @@ export function createSummariseNewContentStep(options: () => SummariseOptions = 
       const opts = options();
       // Earlier runs' unfinished summaries are retried too, so a transient model
       // failure is recovered even when the feed brings nothing new.
-      const seen = new Set(captured.map((c) => `${c.path}@${c.commit}`));
+      const seen = new Set(captured.map((c) => c.path));
       for (const ref of await unfinishedSummaries(opts.repo, opts.branch, undefined, opts.modelId ?? DEFAULT_SUMMARY_MODEL)) {
-        if (seen.has(`${ref.path}@${ref.commit}`)) continue;
+        if (seen.has(ref.path)) continue;
         const [, , sourceId, itemId] = ref.path.split("/");
         captured.push({ sourceId: sourceId ?? "", itemId: itemId ?? "", path: ref.path, commit: ref.commit, retried: true });
       }
