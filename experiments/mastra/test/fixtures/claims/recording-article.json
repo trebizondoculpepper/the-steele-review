@@ -1,0 +1,45 @@
+{
+  "schema": "raw-content-article-v1",
+  "platform": "substack",
+  "sourceId": "fixturepub",
+  "itemId": "pinned-claims",
+  "postId": "301",
+  "url": "https://fixturepub.example.org/p/pinned-episode?utm_source=rss",
+  "canonicalUrl": "https://fixturepub.example.org/p/pinned-episode",
+  "title": "A pinned claims episode",
+  "subtitle": null,
+  "publishedAt": "2026-11-21T08:00:00.000Z",
+  "updatedAt": null,
+  "medium": "audio",
+  "representation": "recording",
+  "feed": {
+    "path": "feeds/fixturepub/pinned-episode.json",
+    "commit": "0000000000000000000000000000000000000000"
+  },
+  "text": {
+    "role": "description",
+    "content": "Show notes for the pinned episode."
+  },
+  "transcript": {
+    "status": "usable",
+    "languageLabel": "en",
+    "content": "Welcome back to the programme, it is good to have you with us again.\nThe council approved a budget of four million pounds for the new road scheme last March.\nI think that is too much money for one road.\nAccording to the published minutes, construction will start in the spring of next year.\nThanks for listening and see you next week.",
+    "original": "transcript.raw",
+    "check": null
+  },
+  "analysis": {
+    "use": "transcript"
+  },
+  "attribution": {
+    "author": "Example Author",
+    "authorId": "example-author",
+    "basis": "source-configured",
+    "observedBylines": []
+  },
+  "thumbnail": null,
+  "images": [],
+  "original": {
+    "post": "post.raw"
+  },
+  "warnings": []
+}

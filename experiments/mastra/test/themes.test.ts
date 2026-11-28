@@ -64,7 +64,7 @@ test("proposes grounded themes, saved with source references, stable IDs, prompt
   assert.match(saved.prompt, /^theme-proposals-v1@sha256:[0-9a-f]{64}$/);
   assert.match(saved.themeId, /^[0-9a-f]{16}$/);
   const meta = JSON.parse((await h.repo.readText("main", r.themes[0]!.path.replace(/[^/]+\.json$/, "operation.meta")))!.text) as OperationMeta;
-  assert.deepEqual(meta.themes, r.themes.map((t) => t.themeId));
+  assert.deepEqual(meta.items, r.themes.map((t) => t.themeId));
   assert.ok(await h.repo.readText("main", "themes/collection.json"));
 });
 

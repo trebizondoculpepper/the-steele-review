@@ -265,3 +265,22 @@ themes/<platform>/<source>/<item>/<operation>/operation.meta   outcome, rejected
 - Theme IDs hash the source blob and the normalised title, so they are stable across retries.
 
 **Output:** the step returns the operation, the outcome (`proposed`, `partial`, `none-valid`, `skipped` or `model-failed`), the theme IDs and titles, the rejected proposals, warnings, usage and timings.
+
+## Claim utterances (#961)
+
+**Extract Claims** (`extractClaims`) runs the `extract-claims` step on its own for one retained source, given its `{path, commit}`. It is built on the shared extraction operation (`src/extraction/operation.ts`), the same one used by Propose Themes. The operation handles:
+- reuse of a completed result for the same source, prompt and model;
+- a reservation for each attempt before the paid call, at most 3 attempts;
+- recovery from failed or truncated calls;
+- results that are never overwritten after a lost race;
+- recording outcomes, usage and timings.
+
+**Extraction:** one call, using `claim-utterances-v1` and `STEELE_CLAIM_MODEL`, which defaults to `deepseek/deepseek-v4.1-flash`. It proposes up to 20 utterances, each an exact quote of 8 to 80 words plus a neutral restatement. Each quote must occur verbatim in the source. A candidate that is invented, the wrong length, a duplicate or malformed is rejected, with a reason in `operation.meta`.
+
+**What each saved claim records** (`claims/<platform>/<source>/<item>/<operation>/<claimId>.json`):
+- **Location:** character offsets in the whitespace-normalised source. For a transcript it also records the segment range and the start and end times, taken from the retained `transcript.raw`.
+- **Speaker, for an article:** the article's resolved author, with its attribution basis.
+- **Speaker, for a recording:** the author only when a single speaker label is used throughout, with basis `single-speaker-recording`. Otherwise the speaker is explicitly unknown, with the diarisation label of the quote's segments kept.
+- **Date:** the source's publication date, when it gives one.
+- **Identity:** the source path, commit and blob, the prompt identity and the model.
+- **ID:** a hash of the source blob and the normalised quote, so it is stable across runs.
